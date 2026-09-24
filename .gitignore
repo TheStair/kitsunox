@@ -219,6 +219,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Kitsunox local state: sqlite db, tarball cache, threat-intel mirror
-/data/
+.claude/
 
