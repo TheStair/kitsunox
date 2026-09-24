@@ -45,6 +45,13 @@ class Finding:
     rule_id: str
     severity: Severity
     rationale: str
+
+    # The historical attack this pattern is drawn from, if any. Kept apart from
+    # `rationale` because it is a teaching aid for a human reading a report, not evidence
+    # about this change -- and because naming a ground-truth incident inside a Tier 2
+    # prompt hands the model the answer it is being measured on. Reports show it; prompts
+    # never do.
+    precedent: str = ""
     file_path: str | None = None
     line: int | None = None
     evidence: str = ""

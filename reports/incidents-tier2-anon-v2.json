@@ -1,0 +1,126 @@
+{
+  "generated_at": "2026-09-24T18:46:57",
+  "tier2_ran": true,
+  "summary": {
+    "detection": {
+      "detected": 4,
+      "of": 4
+    },
+    "false_positives": {
+      "flagged": 0,
+      "of": 0
+    },
+    "escalated": 5,
+    "cost_usd": 0.099253,
+    "tier2_errors": 1
+  },
+  "incidents": [
+    {
+      "key": "xz-utils",
+      "repo": "tukaani-project/xz",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.binary_added"
+      ],
+      "verdict": "suspicious",
+      "confidence": 0.5,
+      "rationale": "The change adds five opaque compressed test fixtures to tests/files/ in what appears to be a compression library, which by itself is entirely ordinary \u2014 you cannot test decoder error paths without corrupt-by-design inputs, and binary corpora are normal here. What keeps this from a clean benign call is that the filenames (bad-3-corrupt_lzma2.xz, good-large_compressed.lzma) are exactly the carrier files used in the xz-utils backdoor, and this is a direct push to the default branch by a maintainer whose tenure profile matches that pattern, with a sixth unshown file that could be the harness (or something that consumes these blobs). Nothing in the shown evidence demonstrates the fixtures are read or executed outside the test runner, so I cannot call it malicious; a reviewer should confirm no build script or m4/configure fragment extracts or pipes these files, and that the fixtures decode to the content the tests claim.",
+      "tier2_error": null,
+      "input_tokens": 356,
+      "output_tokens": 1606,
+      "cost_usd": 0.041929999999999995
+    },
+    {
+      "key": "event-stream",
+      "repo": "dominictarr/event-stream",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 9,
+      "total_score": 12,
+      "escalated": true,
+      "rule_ids": [
+        "combo.new_maintainer_adds_dependency",
+        "content.dependency_added",
+        "context.new_contributor",
+        "context.new_maintainer_direct_push"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.85,
+      "rationale": "The package.json dependency list (duplexer, from, map-stream, pause-stream, split, stream-combiner, through) identifies this as event-stream, and the added dependency is flatmap-stream@^0.1.0 \u2014 the package published by a recently-handed-over maintainer that shipped an obfuscated payload in a later minor release to steal Copay wallet keys. The pattern matches exactly: maintainership granted days earlier, exercised by a direct push to the default branch that adds a brand-new, near-zero-reputation package with a name shadowing a legitimate one, where the actual payload lives outside this diff.",
+      "tier2_error": null,
+      "input_tokens": 611,
+      "output_tokens": 472,
+      "cost_usd": 0.0153345
+    },
+    {
+      "key": "reviewdog",
+      "repo": "reviewdog/action-setup",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 26,
+      "total_score": 29,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_in_build_script",
+        "content.decode_call",
+        "content.encoded_blob",
+        "context.build_script_touched"
+      ],
+      "verdict": null,
+      "confidence": null,
+      "rationale": null,
+      "tier2_error": "model declined to answer",
+      "input_tokens": 2365,
+      "output_tokens": 0,
+      "cost_usd": 0.012304500000000001
+    },
+    {
+      "key": "tj-actions",
+      "repo": "tj-actions/changed-files",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 51,
+      "total_score": 52,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_executed",
+        "combo.encoded_payload_in_artifact",
+        "content.decode_call",
+        "content.encoded_blob",
+        "content.shell_exec",
+        "context.artifact_modified"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "The added `updateFeatures` function in dist/index.js pipes a base64 blob into `base64 -d > /tmp/run.sh && bash /tmp/run.sh`; decoding it yields a script that curls `memdump.py` from a third-party GitHub gist, runs it as root via `sudo python3`, greps the runner process memory for `\"value\":...,\"isSecret\":true` entries, and double-base64 encodes the result for output. That is memory-scraping of GitHub Actions secrets with remote code fetched from an attacker-controlled endpoint, planted in a generated bundle where it would not be reviewed. No legitimate build or feature-update path decodes an opaque blob to shell out and dump the runner's secret store.",
+      "tier2_error": null,
+      "input_tokens": 1041,
+      "output_tokens": 350,
+      "cost_usd": 0.0144345
+    },
+    {
+      "key": "colors.js",
+      "repo": "Marak/colors.js",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.unbounded_loop"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.95,
+      "rationale": "lib/index.js adds a top-level infinite loop (`for (let i = 666; i < Infinity; i++;)`) plus an unconditional call into a newly-required `../lib/custom/american` module, all executed at import time. The '/* remove this line after testing */' comment is cover for code that is being shipped on the default branch, and the effect is to hang or crash every downstream consumer the moment the package is required \u2014 deliberate sabotage rather than a debugging leftover. This matches the known colors.js self-sabotage pattern (666 sentinel, zalgo.rainbow, 'american' module) committed by a long-tenured maintainer.",
+      "tier2_error": null,
+      "input_tokens": 289,
+      "output_tokens": 533,
+      "cost_usd": 0.015249500000000003
+    }
+  ],
+  "control": []
+}

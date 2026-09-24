@@ -308,13 +308,13 @@ def _content_rules(change: Change) -> list[Finding]:
                     rule_id="content.binary_added",
                     severity="high" if in_fixtures else "medium",
                     rationale=(
-                        "An opaque binary file was added under a test-fixture path — the xz "
-                        "backdoor shipped as rigged .xz/.lzma test data, where a "
-                        "corrupt-looking blob is unremarkable."
+                        "An opaque binary file was added under a test-fixture path, where "
+                        "a corrupt-looking blob is unremarkable and review least likely."
                         if in_fixtures else
                         "An opaque binary file was added. Binary content cannot be reviewed "
                         "as a diff."
                     ),
+                    precedent="xz-utils (CVE-2024-3094), 2024" if in_fixtures else "",
                     file_path=file.path,
                 )
             )
@@ -325,12 +325,14 @@ def _content_rules(change: Change) -> list[Finding]:
         is_manifest = _basename(file.path) in MANIFESTS
 
         for lineno, text in _added_lines(file):
-            def hit(rule_id: str, severity: Severity, rationale: str) -> None:
+            def hit(rule_id: str, severity: Severity, rationale: str,
+                    precedent: str = "") -> None:
                 findings.append(
                     Finding(
                         rule_id=rule_id,
                         severity=severity,
                         rationale=rationale,
+                        precedent=precedent,
                         file_path=file.path,
                         line=lineno,
                         evidence=_evidence(text),
@@ -341,8 +343,9 @@ def _content_rules(change: Change) -> list[Finding]:
                 hit(
                     "content.encoded_blob",
                     "high" if in_sensitive else "medium",
-                    "A long base64 literal was added. Encoded blobs are how reviewdog and "
-                    "tj-actions carried their payloads past human review of the diff.",
+                    "A long base64 literal was added. Encoded content cannot be reviewed "
+                    "as a diff, which is what makes it a delivery mechanism.",
+                    "reviewdog/action-setup and tj-actions/changed-files, 2025",
                 )
             if DECODE_CALLS.search(text):
                 hit(
@@ -389,16 +392,18 @@ def _content_rules(change: Change) -> list[Finding]:
                 hit(
                     "content.unbounded_loop",
                     "high",
-                    "A loop with no reachable termination was added. This is the whole of "
-                    "the colors.js sabotage: no payload, just a hang.",
+                    "A loop with no reachable termination was added. Sabotage needs no "
+                    "payload — hanging every consumer on import is sufficient.",
+                    "colors.js, 2022",
                 )
             if is_manifest and DEPENDENCY_ADDED.match(text):
                 hit(
                     "content.dependency_added",
                     "low",
                     "A dependency was added. Extremely common and benign by itself, but "
-                    "it is the only git-visible trace event-stream ever left — the "
-                    "malicious code lived in the dependency, not in this diff.",
+                    "when malicious code lives in the dependency this is the only "
+                    "git-visible trace an attack leaves.",
+                    "event-stream / flatmap-stream, 2018",
                 )
     return findings
 
@@ -409,9 +414,11 @@ def _content_rules(change: Change) -> list[Finding]:
 def _context_rules(change: Change) -> list[Finding]:
     findings: list[Finding] = []
 
-    def add(rule_id: str, severity: Severity, rationale: str, path: str | None = None) -> None:
+    def add(rule_id: str, severity: Severity, rationale: str, path: str | None = None,
+            precedent: str = "") -> None:
         findings.append(
-            Finding(rule_id=rule_id, severity=severity, rationale=rationale, file_path=path)
+            Finding(rule_id=rule_id, severity=severity, rationale=rationale,
+                    precedent=precedent, file_path=path)
         )
 
     for file in change.files:
@@ -426,15 +433,15 @@ def _context_rules(change: Change) -> list[Finding]:
             add(
                 "context.build_script_touched", "medium",
                 "A build or install script was modified. These execute on every consumer's "
-                "machine, which is how the xz payload was activated.",
-                file.path,
+                "machine, outside any review of the shipped source.",
+                file.path, "xz-utils (CVE-2024-3094), 2024",
             )
         if _is_artifact(file.path):
             add(
                 "context.artifact_modified", "low",
                 "A generated/bundled artifact was modified. Nobody reviews a rebuilt bundle "
-                "line by line, which is exactly where tj-actions hid its scraper.",
-                file.path,
+                "line by line, so an edit here survives review by default.",
+                file.path, "tj-actions/changed-files, 2025",
             )
     if change.source == "pr":
         if change.merged_by_author:
@@ -453,8 +460,9 @@ def _context_rules(change: Change) -> list[Finding]:
         ):
             add(
                 "context.newcomer_touches_build", "high",
-                "A first-time contributor's first change modifies CI or build tooling — "
-                "the trust-abuse shape behind event-stream.",
+                "A first-time contributor's first change modifies CI or build tooling, "
+                "which is disproportionate access for an unestablished account.",
+                None, "event-stream, 2018",
             )
 
     if change.checks_passed is False:
@@ -483,9 +491,10 @@ def _context_rules(change: Change) -> list[Finding]:
             add(
                 "context.new_maintainer_direct_push", "medium",
                 f"An author with {tenure} day(s) and {prior} prior commit(s) in this repo "
-                "pushed directly to the default branch, bypassing review entirely. This "
-                "is the trust shape behind event-stream: maintainership handed over, then "
-                "used within days.",
+                "pushed directly to the default branch, bypassing review entirely. "
+                "Maintainership recently granted and immediately exercised is the "
+                "shape of a handover being abused.",
+                None, "event-stream, 2018",
             )
 
     return findings
@@ -498,13 +507,13 @@ def _context_rules(change: Change) -> list[Finding]:
 COMBOS: dict[tuple[str, str], tuple[str, Severity, str]] = {
     ("content.encoded_blob", "context.build_script_touched"): (
         "combo.encoded_payload_in_build_script", "critical",
-        "An encoded blob was added to a build or install script. This is the reviewdog "
-        "compromise exactly: a base64 runner-memory scraper dropped into install.sh.",
+        "An encoded blob was added to a build or install script — unreviewable "
+        "content placed where it will execute on every consumer.",
     ),
     ("content.encoded_blob", "context.artifact_modified"): (
         "combo.encoded_payload_in_artifact", "critical",
         "An encoded blob was added to a generated bundle, where it cannot plausibly have "
-        "come from the reviewed source — the tj-actions technique.",
+        "come from the reviewed source.",
     ),
     ("content.encoded_blob", "context.ci_touched"): (
         "combo.encoded_payload_in_ci", "critical",
@@ -524,10 +533,9 @@ COMBOS: dict[tuple[str, str], tuple[str, Severity, str]] = {
         "combo.new_maintainer_adds_dependency", "high",
         "A recently-arrived maintainer pushed a new dependency straight to the default "
         "branch. Neither half is remarkable — 13% of benign changes add a dependency, "
-        "56% of authors are new — but together they are event-stream exactly, and the "
-        "pairing fired on 1 of 45 benign changes. The malicious code lives in the "
-        "dependency, not in this diff, so Tier 0 cannot adjudicate it: this exists to "
-        "hand the change to Tier 2, not to convict it.",
+        "56% of authors are new — but the pairing fired on 1 of 45 benign changes. "
+        "Any malicious code would live in the dependency rather than this diff, so "
+        "Tier 0 cannot adjudicate it: this exists to escalate, not to convict.",
     ),
 }
 

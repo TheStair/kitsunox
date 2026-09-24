@@ -70,6 +70,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
         for finding in sorted({f.rule_id: f for f in findings}.values(), key=lambda f: f.rule_id):
             where = f"  {finding.file_path}:{finding.line}" if finding.file_path else ""
             print(f"    [{finding.severity:8}] {finding.rule_id}{where}")
+            if finding.precedent:
+                print(f"                 precedent: {finding.precedent}")
             if finding.evidence:
                 print(f"                 {finding.evidence[:100]}")
     else:

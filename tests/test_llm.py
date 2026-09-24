@@ -360,3 +360,12 @@ def test_review_passes_anonymize_through_to_the_prompt():
     llm.review(_change([_file("a.js")], repo="tukaani-project/xz"), [_finding(file_path=None)],
                client=client, anonymize=True)
     assert "tukaani-project" not in client.calls[0]["messages"][0]["content"]
+
+
+def test_precedent_never_reaches_the_prompt():
+    # The whole reason precedent is a separate field.
+    finding = _finding(rationale="A pattern description.", line=1)
+    finding.precedent = "xz-utils (CVE-2024-3094), 2024"
+    prompt = llm.build_prompt(_change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")]), [finding])
+    assert "CVE-2024-3094" not in prompt and "xz-utils" not in prompt
+    assert "A pattern description." in prompt

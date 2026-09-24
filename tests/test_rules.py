@@ -712,3 +712,49 @@ def test_circumstance_still_adds_to_the_total_even_though_it_cannot_escalate():
     )
     assert rules.score(with_context) > rules.score(plain)
     assert rules.evidence_score(with_context) == rules.evidence_score(plain)
+
+
+# ============================================================== prompt contamination
+
+# Rationales go verbatim into the Tier 2 prompt. Naming a ground-truth incident there
+# hands the model the answer it is being measured on, which is a worse leak than the
+# repository name because it points straight at the verdict.
+
+
+def test_no_rationale_names_a_ground_truth_incident():
+    import re
+    from kitsunox.incidents import INCIDENTS
+
+    names = [i.key for i in INCIDENTS] + ["reviewdog", "tj-actions", "flatmap-stream"]
+    blob = "A" * 220
+    changes = [
+        _change([_file("install.sh", _added(f'X="{blob}"', "curl https://x.dev"))]),
+        _change([_file("tests/files/b.xz", change_type="added", is_binary=True)]),
+        _change([_file("a.js", _added("while (true) {"))]),
+        _change([_file("package.json", _added('  "x": "^1.0.0",'))],
+                source="push", author_tenure_days=4, author_prior_commits=9),
+        _change([_file("dist/index.js", _added(f'const b="{blob}";', "execSync(b)"))]),
+        _change([_file(".github/workflows/ci.yml", _added("run: echo hi"))],
+                source="pr", author_association="FIRST_TIME_CONTRIBUTOR",
+                author="bob", merged_by="carol"),
+    ]
+    offenders = []
+    for change in changes:
+        for finding in rules.scan(change):
+            for name in names:
+                if re.search(re.escape(name), finding.rationale, re.IGNORECASE):
+                    offenders.append(f"{finding.rule_id} names {name!r}")
+    assert not offenders, offenders
+
+
+def test_the_historical_example_is_kept_on_precedent_instead():
+    findings = rules.scan(_change([_file("tests/files/b.xz", change_type="added", is_binary=True)]))
+    binary = next(f for f in findings if f.rule_id == "content.binary_added")
+    assert "xz-utils" in binary.precedent
+    assert "xz" not in binary.rationale.lower()
+
+
+def test_precedent_is_empty_where_there_is_no_named_example():
+    findings = rules.scan(_change([_file("a.js", _added("process.env)"))]))
+    secret = next(f for f in findings if f.rule_id == "content.secret_access")
+    assert secret.precedent == ""
