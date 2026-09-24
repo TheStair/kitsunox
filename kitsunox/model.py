@@ -36,11 +36,6 @@ class FileDiff:
     deletions: int = 0
     patch: str = ""
 
-    # True when `patch` holds only the head of a larger file (see corpus.py's size cap).
-    # A rule that fails to fire on a truncated file has not cleared it, and any evaluation
-    # counting it as a true negative would be overstating the result.
-    truncated: bool = False
-
 
 @dataclass
 class Finding:
