@@ -26,6 +26,10 @@ and are comparatively under-tooled. `xz-utils` (CVE-2024-3094) is the canonical 
   control repos); outputs are report files. A flat JSON cache for fetched API responses
   is the most persistence this needs.
 - No multi-ecosystem support, no npm-registry-specific code.
+- **No package-artifact scanning.** Published tarballs are a different unit of
+  analysis with no commit, author or review metadata, and they are already well
+  covered (GuardDog, OSSGadget, Socket). External package corpora are used once, as
+  a source of findings about rule coverage (§7), never as the evaluation target.
 
 ## 3. Architecture
 
@@ -39,13 +43,13 @@ flowchart LR
     subgraph Ground["ground truth — fixed list, ~5 incidents"]
         INC["known malicious commits/PRs"]
     end
-    subgraph Control["control sample — fixed repo list"]
-        CTL["~100-150 merged PRs<br/>across 4 benign repos"]
+    subgraph Control["control sample — held out from tuning"]
+        CTL["~750 changes across 25 repos,<br/>10 languages: merged PRs + direct pushes"]
     end
 
     INC & CTL --> FETCH["fetch.py<br/>GitHub REST API: diff + author +<br/>reviews + checks + files touched"]
-    FETCH --> T0["rules.py — Tier 0<br/>diff patterns + metadata heuristics<br/>(no LLM, runs on everything)"]
-    T0 -->|score above threshold| T2["llm.py — Tier 2<br/>one Claude call, bounded diff hunks,<br/>structured verdict + rationale"]
+    FETCH --> T0["rules.py — Tier 0<br/>evidence: diff patterns, install hooks<br/>circumstance: review, CI, author tenure<br/>(no LLM, runs on everything)"]
+    T0 -->|evidence score above threshold| T2["llm.py — Tier 2<br/>one Claude call, bounded diff hunks,<br/>structured verdict + rationale"]
     T0 -->|below threshold| SKIP["skip Tier 2"]
     T2 & SKIP --> REPORT["evaluate.py<br/>detection rate + FP rate + cost accounting"]
 ```
@@ -54,9 +58,10 @@ flowchart LR
 
 ```
 kitsunox/
-  fetch.py       # GitHub REST API client: fetch_commit(), fetch_merged_prs()
-  model.py       # Change, FileDiff dataclasses
-  rules.py       # Tier 0: pattern scan (diff) + metadata heuristics
+  fetch.py       # GitHub REST API client: fetch_commit(), fetch_merged_prs(),
+                 #   fetch_direct_pushes(), author_history()/author_tenure()
+  model.py       # Change, FileDiff, Finding dataclasses
+  rules.py       # Tier 0: evidence rules + circumstance rules + capability scoring
   llm.py         # Tier 2: one Claude call -> structured verdict
   incidents.py   # the ~5 ground-truth incidents, hardcoded
   evaluate.py    # runs the pipeline over incidents + control sample -> report
@@ -68,33 +73,125 @@ Deliberately ~7 files. No ORM, no CLI subcommand sprawl. If it needs more struct
 ### Auth / access
 
 A GitHub personal access token (public-repo read scope is enough) raises the API rate
-limit from 60/hr to 5000/hr — required for pulling ~150 PRs' worth of diffs+metadata
-without babysitting rate limits. Store as `GITHUB_TOKEN` env var.
+limit from 60/hr to 5000/hr — required at this volume. Store as `GITHUB_TOKEN`.
+
+Responses are cached to `.cache/gh/`, keyed by URL and parameters, so re-runs during
+tuning cost nothing. One cache-design note that matters at repo scale: author history
+is fetched once per `(repo, author)` and tenure computed locally. Keying it on the
+change timestamp instead — as the first implementation did — means re-fetching the
+same history for every commit by that author, which is the difference between a
+feasible whole-repo scan and an infeasible one.
 
 ## 4. Detection design
 
+### Grounding
+
+Rule categories are an operationalisation of Ladisa et al., *Taxonomy of Attacks on
+Open-Source Software Supply Chains* (IEEE S&P 2023) — 107 attack vectors linked to 94
+real incidents and 33 safeguards. Citing it matters: it turns "regexes I invented" into
+"an implementation of a published taxonomy", and it defines the project's scope
+precisely. The five incidents sit in the **AV-300** (inject into sources) and **AV-400**
+(inject during build) subtrees; registry-level tools such as GuardDog cover **AV-500**
+(distribute a malicious version), which is a different problem.
+
+| Incident | Attack vector |
+|---|---|
+| `event-stream` | AV-800 Become a Maintainer → AV-302 Contribute as Maintainer |
+| `xz-utils` | AV-302 + AV-400 Inject During the Build of Legitimate Package |
+| `reviewdog/action-setup` | AV-602 Take-over Legitimate Account → AV-401 Run Malicious Build |
+| `tj-actions/changed-files` | AV-303 Tamper with Version Control System + AV-309 Hide in Generated/Compiled/Minified Code |
+| `colors.js` | AV-302 Contribute as Maintainer |
+
 ### Tier 0 — deterministic, runs on every fetched change
+
+Findings split into two families, and **the split is the core design decision**:
+
+- **Evidence** (`content.*`, `combo.*`) — what the change *contains*.
+- **Circumstance** (`context.*`) — where it landed, who merged it, whether CI passed.
+
+Only evidence can cross the escalation threshold. Circumstance corroborates, sharpens
+ranking, and gives Tier 2 context, but never accuses on its own.
+
+That is an empirical finding, not an aesthetic one. Measured on the control sample,
+circumstance rules fire constantly — CI touched 31%, self-merged 20%, no approvals 18%,
+failing checks 11% — so any three stack past any useful threshold on ordinary
+maintenance. `psf/requests#6968`, a Makefile tweak merged by its own author, escalated
+that way with no payload evidence at all. Splitting the score eliminated that entire
+false-positive class without weakening a single real detection.
+
+**Evidence rules** (what the change contains):
 
 | Signal | Why it matters |
 |---|---|
-| `.github/workflows/*` touched | CI/Action tampering — how `tj-actions/changed-files` was compromised (tag rewritten to point at credential-dumping code) |
-| build/install script touched (`Makefile`, `configure`, `setup.py`, `binding.gyp`, `m4/*`) | how the `xz-utils` payload was triggered at build time |
-| binary file added, or a file added under a "test fixture"-looking path with high entropy | xz hid its backdoor in a corrupted-looking test file |
-| merged PR with zero approving reviews, or merged by the PR's own author | bypassed review |
-| direct push to the default branch by an account that rarely pushes directly | account-compromise-shaped |
-| first-time contributor whose PR touches CI/build files | `event-stream`-shaped trust abuse (new contributor granted trust, then adds a malicious dependency) |
-| classic code patterns in diff hunks: `eval`/`exec`, base64→exec, obfuscated identifiers, secret exfiltration | carried over from the original npm-registry design, still directly relevant |
+| long base64 literal added | how reviewdog and tj-actions carried payloads past diff review; elevated inside build scripts, CI and generated bundles |
+| shell/eval execution primitive | *not* elevated inside CI config — a workflow's whole job is to run shell, and treating it as notable produced two false positives |
+| paste/tunnel host or routable IP | gist, pastebin, ngrok, and the OOB-interaction domains (burpcollaborator, canarytokens, `oast.*`, webhook.site) where a DNS lookup is often the entire payload |
+| credential/memory/environment access | `NPM_TOKEN`, `.npmrc`, `/proc/*/mem` — the target of CI secret theft |
+| npm lifecycle install hook (`preinstall`/`install`/`postinstall`/`prepare`) | graded by what the hook *does* — reaching the network, carrying an encoded payload, silencing its own output, collecting host identity. Declaring one is `low`: node-gyp builds declare them too |
+| binary file added, elevated under a test-fixture path | the xz backdoor shipped as rigged `.xz`/`.lzma` test data, where a corrupt-looking blob is unremarkable |
+| loop with no reachable termination | the entirety of the colors.js sabotage: no payload, just a hang |
+| dependency added | fires on 93% of malicious packages *and* 13% of benign changes — near-zero information alone, kept only as a combination ingredient |
 
-Each rule emits a `Finding` (rule id, severity, file, line, bounded evidence snippet,
-rationale) and contributes to a per-change score.
+**Circumstance rules** (how it landed): CI or build-script path touched, generated
+artifact modified, PR self-merged, zero approving reviews, merged with failing checks,
+first-time contributor touching build tooling, and author tenure (below).
+
+### Author tenure — the event-stream signal
+
+`event-stream` is the one incident whose diff contains nothing malicious: the payload
+lived in the `flatmap-stream` dependency, so the only git-visible trace is *who* added
+it and *how recently they arrived*. This is AV-800, "Become a Maintainer", made
+measurable.
+
+GitHub exposes no record of when commit rights were granted, so the proxy is the
+author's first commit in that repo:
+
+| Author | Tenure at the change | Prior commits |
+|---|---|---|
+| event-stream `right9ctrl` | **5 days** | **9** |
+| event-stream `dominictarr` (owner) | 7 years | 248 |
+| xz `JiaT75` | 2 years | 431 |
+| colors.js `Marak` (owner) | 11 years | 78 |
+
+Tenure alone is useless — 56% of benign PR authors are under 30 days, because popular
+repositories run on first-time contributors. What discriminates is **tenure × privilege**:
+a new contributor opening a *reviewed pull request* is ordinary open source; a
+five-day-old maintainer *pushing directly to the default branch* is event-stream. The
+combination of a new maintainer, a direct push, and a new dependency fired on 1 of 45
+benign changes where each half alone fired on 56% and 13%.
+
+xz is deliberately **not** caught this way: 756 days and 431 commits in. No tenure
+threshold catches the long con, and that limitation belongs in the write-up rather than
+being engineered around.
+
+### Capability scoring
+
+Named pairs (`COMBOS`) handle the highest-confidence co-occurrences — an encoded blob in
+an install script is the reviewdog compromise exactly. Beyond those, each evidence rule
+maps to a capability — obfuscation, execution, network, collection, concealment,
+sabotage, delivery — and distinct capabilities co-occurring earn a bonus (2 → +2,
+3 → +6, 4 → +10, capped). One capability is ordinary; several in one change is an attack
+chain. This is the correlation principle GuardDog uses (a capability *and* a threat
+indicator in the same file), rather than an invention.
+
+`delivery` alone scores zero, for the reason in the table above.
 
 ### Tier 2 — minimal LLM escalation
 
-When Tier 0's score crosses a threshold, make **one** Claude call with the specific
-flagged diff hunks + the Tier 0 reasons (never the whole diff/repo). Output: a structured
-verdict (`malicious` / `suspicious` / `benign`), a confidence, and a short rationale.
-Single model to start (no Haiku→Sonnet cascade) — that complexity can come later if the
-budget allows; a correct minimal version beats an elaborate broken one.
+When Tier 0's **evidence** score crosses the threshold, make **one** Claude call with
+only the flagged diff hunks plus three lines of context and the rule rationales — never
+the whole diff, never the repository. tj-actions produces a ~2KB prompt from a far larger
+file. Output is a structured, schema-validated verdict (`malicious`/`suspicious`/
+`benign`), a confidence, a rationale, and the files the verdict turned on.
+
+Three properties the implementation holds to, each pinned by a test:
+
+- **The prompt never contains `ground_truth`.** Tier 2 is measured against that label.
+- **A failed call is distinguishable from a benign verdict.** If an API error read as
+  "benign", §7's detection rate would silently count failures as clean changes.
+- **Cost is measured, not asserted.** Token counts and an estimated dollar figure come
+  back with every verdict. The system prompt is byte-identical across a run and carries a
+  cache breakpoint, so escalation 2..N bills that portion at a tenth.
 
 ## 5. Ground truth: the incident set
 
@@ -121,35 +218,102 @@ on these.
 
 ## 6. Control sample
 
-Four active, high-external-PR-volume repos, **none** connected to a known supply chain
-incident (keeps ground truth uncontaminated): `psf/requests`, `pallets/flask`,
-`expressjs/express`, `axios/axios`. Pull ~25-40 recent merged PRs from each (~100-150
-total) as the benign baseline for false-positive measurement.
+**All five incidents are direct pushes, not pull requests.** A control sample made only
+of merged PRs therefore measures false positives on a population that structurally cannot
+trigger the push-based rules. The sample has two halves:
+
+- **Merged pull requests** — review metadata, approvals, author association.
+- **Direct pushes to the default branch** — the population the incidents actually come
+  from.
+
+### Held-out design
+
+An early 81-change sample (psf/requests, pallets/flask, expressjs/express, axios/axios)
+was used to *tune* three rules; two regression tests are derived from its false
+positives. It is therefore **training data**, and any false-positive rate measured on it
+is circular. It is retained as a regression suite, not as a result.
+
+The reported figure comes from a **held-out corpus of ~750 changes across 25
+repositories in 10 languages** — Python, TypeScript, JavaScript, Go, Rust, Java, Ruby,
+PHP, C and C++ — none of which were touched during tuning. Language diversity is
+deliberate: rules keyed on `package.json`, `dist/` bundles and npm idioms had only ever
+been tested against Python and JavaScript web libraries, so any ecosystem-specific false
+positives will surface in repositories we never looked at.
+
+### Contamination
+
+Commits from an incident's own repository **cannot** be used as negatives. Excluding the
+single malicious SHA does not decontaminate a repository whose maintainer was
+compromised for a period. Measured directly: of 34 "benign" pushes drawn from the
+incident repos, 5 escalated — and all 5 were attack-adjacent, including `5999958d`, the
+`event-stream` 3.3.6 release commit that shipped the malicious dependency. An incident's
+repository is excluded from the control sample entirely.
 
 ## 7. Evaluation & deliverable
 
-- **Detection rate**: of the 5 incidents, how many does Tier 0 (+ Tier 2 where escalated)
-  flag as malicious/suspicious.
-- **False-positive rate**: of the ~100-150 control PRs, how many get flagged.
-- **Cost/volume accounting**: how many changes were seen, how many escalated to Tier 2,
-  and the resulting token/dollar cost — demonstrates the tiered-funnel's efficiency claim.
-- Presentation output: these three numbers plus a handful of concrete "here's the exact
-  commit and here's what fired" walkthroughs (xz-utils is the headline example).
+- **Detection rate** — of the 5 incidents, how many Tier 0 escalates and Tier 2 confirms.
+- **False-positive rate** — on the held-out corpus, reported separately for merged PRs
+  and direct pushes, since the rule populations differ.
+- **Cost/volume accounting** — changes seen, changes escalated, tokens and dollars spent.
+  This is the evidence for the tiered funnel's efficiency claim; it should not be
+  asserted without the number.
+- **Walkthroughs** — a handful of "here is the exact commit and here is what fired",
+  with xz-utils as the headline.
 
-**Stretch, only if weeks remain:** a thin GitHub Action / webhook front-end reusing the
-same `rules.py`/`llm.py` core, that comments on a live incoming PR. Explicitly out of
-scope for the graded deliverable; nice demo polish if time allows.
+### Stated limitations
+
+These belong in the write-up as findings, not as defects to engineer around:
+
+1. **The long con is out of reach.** xz's author had 756 days and 431 commits of
+   legitimate history. No tenure threshold distinguishes that from a real maintainer; xz
+   is caught by *what the commit contains*, not by who wrote it.
+2. **Diff-level analysis cannot see a malicious dependency.** `event-stream`'s commit is
+   a legitimate-looking feature. The tool escalates it on author trust, which flags *the
+   author*, not *the change* — it fires on essentially every commit that author made in
+   the window. That is defensible for Tier 2 triage and indefensible as a verdict, and
+   the distinction must not be blurred.
+3. **Sample size.** Five incidents is enough for a meaningful demonstration and too few
+   for a confidence interval.
+4. **External benchmarking revealed a blind spot our own ground truth could not.**
+   Against the ASE 2026 npm benchmark (6,420 malicious / 7,288 benign, expert-reviewed),
+   baseline detection of the content rules was 19.1%. The dominant miss was npm lifecycle
+   install hooks: 67% of malicious packages declare one, and *none of the five git-level
+   incidents do*, so no amount of work on our own corpus would have surfaced it. Adding
+   install-hook rules more than doubled detection on that corpus and costs nothing on
+   GitHub data. The general lesson — a five-incident ground truth cannot reveal the gaps
+   in its own coverage — is worth more than the number. Package-artifact scanning is
+   otherwise out of scope (§2); those corpora are not commits, and the adapter written to
+   read them was removed once the finding was banked.
 
 ## 8. Schedule (10 weeks × 5h ≈ 50h)
 
-| Weeks | Hours | Work | Checkpoint |
-|---|---|---|---|
-| 1-2 | 10 | `fetch.py` + `model.py`; verify each incident against the live API before assuming it needs a fixture | can print correct diffs/metadata for all 5 incidents |
-| 3-4 | 10 | `rules.py` (Tier 0) | fires on ≥3 of the 5 incidents |
-| 5 | 5 | Fetch + run control sample; inspect false positives, tune thresholds | FP rate measured and sane |
-| 6-7 | 10 | `llm.py` (Tier 2), wired to Tier 0's escalation | escalated cases get a structured verdict |
-| 8 | 5 | Full evaluation run across incidents + control sample | detection rate + FP rate + cost numbers in hand |
-| 9-10 | 10 | Buffer, write-up, slides; stretch goal (§7) if ahead of schedule | presentation-ready |
+| Weeks | Hours | Work | Checkpoint | Status |
+|---|---|---|---|---|
+| 1-2 | 10 | `fetch.py` + `model.py` + `incidents.py`; verify each incident against the live API before assuming it needs a fixture | correct diffs/metadata for all 5 incidents | **done** |
+| 3-4 | 10 | `rules.py` (Tier 0) | fires on ≥3 of the 5 incidents | **done** — 5/5 |
+| 5 | 5 | Held-out control corpus; inspect false positives, tune thresholds | FP rate measured on data not used for tuning | in progress |
+| 6-7 | 10 | `llm.py` (Tier 2), wired to Tier 0's escalation | escalated cases get a structured verdict | module written; unrun |
+| 8 | 5 | `evaluate.py` + `cli.py`; full run across incidents + control | detection + FP + cost numbers in hand | |
+| 9-10 | 10 | Buffer, write-up, slides; stretch goal (§7a) if ahead | presentation-ready | |
+
+### §7a — Whole-repository scan (stretch)
+
+`--repo owner/name` with the user's own PAT, walking a repository's history and ranking
+commits by score rather than flagging them.
+
+Two constraints, both measured. The commit list endpoint returns no diffs, so a naive
+scan costs one request per commit — 3,119 for `tukaani-project/xz`, ~6,200 for larger
+repos. `GET /commits?path=` narrows this sharply where the signal is path-shaped
+(`tests/files` cuts xz to 49 commits, and the malicious commit survives the filter), at
+the cost of only finding attacks in paths anticipated in advance — so it is a `--fast`
+mode, not the default.
+
+More importantly, base rates change the claim. One malicious commit among 3,119 means
+even a 1% false-positive rate buries it under 31 false alarms. The output must therefore
+**rank, not flag**, and the honest headline is *"pointed at xz-utils, JiaT75's commit
+ranks #N of 3,119"* — a stronger result than a detection rate on a curated set, and the
+precision-at-realistic-base-rates discussion is a genuine contribution rather than a
+weakness.
 
 ## 9. Risks
 
