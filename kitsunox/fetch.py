@@ -184,6 +184,60 @@ def _fetch_checks_passed(owner: str, repo: str, sha: str) -> bool | None:
     return True
 
 
+def author_tenure(owner: str, repo: str, author: str, until: datetime) -> tuple[int | None, int | None]:
+    """(days since this author's first commit to this repo, commits they had made) as of
+    `until`.
+
+    GitHub exposes no record of when someone was granted commit rights, so the first
+    commit in the repo is the proxy for "how long have they been around here".
+
+    Pages must be walked to the end rather than stopping at the first 100: the oldest
+    commit on page 1 is only the author's 100th-most-recent, which understates a prolific
+    author's tenure enormously. Reading a single page put xz's attacker at 91 days
+    instead of ~2 years — one day the wrong side of the "new maintainer" threshold, and a
+    false positive that would have looked like a correct miss.
+
+    Capped at 10 pages: an author with 1000+ commits here is established under any
+    threshold worth having. Cached on disk and keyed per (repo, author), so a whole-repo
+    scan pays this once per author rather than once per commit.
+    """
+    batch: list[dict] = []
+    count = 0
+    page = 1
+    while page <= 10:
+        try:
+            batch = _get_json(
+                f"{API_BASE}/repos/{owner}/{repo}/commits",
+                {"author": author, "until": until.isoformat() + "Z", "per_page": 100, "page": page},
+            )
+        except FetchError:
+            return None, None
+        if not batch:
+            break
+        count += len(batch)
+        if len(batch) < 100:
+            break  # last page: its final entry is the author's earliest commit
+        page += 1
+
+    if not count:
+        return None, None
+    if not batch:
+        return None, count  # ran off the end on a page boundary; count is still sound
+
+    first = _parse_ts(batch[-1].get("commit", {}).get("author", {}).get("date"))
+    if first is None:
+        return None, count
+    return max(0, (until - first).days), count
+
+
+def _attach_tenure(change: Change, owner: str, repo: str) -> Change:
+    if change.author and change.committed_at:
+        change.author_tenure_days, change.author_prior_commits = author_tenure(
+            owner, repo, change.author, change.committed_at
+        )
+    return change
+
+
 def fetch_commit(owner: str, repo: str, sha: str) -> Change:
     """Fetch a single commit's diff + metadata — for direct-push-style incidents
     (colors.js, most of xz-utils, the reviewdog/action-setup ref rewrite).
@@ -204,16 +258,20 @@ def fetch_commit(owner: str, repo: str, sha: str) -> Change:
 
     author = (data.get("author") or {}).get("login") or (data.get("commit", {}).get("author") or {}).get("name")
 
-    return Change(
-        repo=f"{owner}/{repo}",
-        source="push",
-        sha=sha,
-        shas=[sha],
-        author=author,
-        committed_at=_parse_ts(data.get("commit", {}).get("author", {}).get("date")),
-        files=_file_diffs(data.get("files", [])),
-        checks_passed=_fetch_checks_passed(owner, repo, sha),
-        pr_number=pr_number,
+    return _attach_tenure(
+        Change(
+            repo=f"{owner}/{repo}",
+            source="push",
+            sha=sha,
+            shas=[sha],
+            author=author,
+            committed_at=_parse_ts(data.get("commit", {}).get("author", {}).get("date")),
+            files=_file_diffs(data.get("files", [])),
+            checks_passed=_fetch_checks_passed(owner, repo, sha),
+            pr_number=pr_number,
+        ),
+        owner,
+        repo,
     )
 
 
@@ -259,19 +317,65 @@ def fetch_merged_prs(owner: str, repo: str, limit: int) -> list[Change]:
 
         head_sha = pr["merge_commit_sha"] or pr["head"]["sha"]
         changes.append(
-            Change(
-                repo=f"{owner}/{repo}",
-                source="pr",
-                sha=head_sha,
-                shas=shas or [head_sha],
-                author=(pr.get("user") or {}).get("login"),
-                committed_at=_parse_ts(pr.get("merged_at")),
-                files=_file_diffs(files_raw),
-                checks_passed=_fetch_checks_passed(owner, repo, head_sha),
-                pr_number=number,
-                author_association=pr.get("author_association"),
-                merged_by=(pr.get("merged_by") or {}).get("login"),
-                approving_review_count=approvals,
+            _attach_tenure(
+                Change(
+                    repo=f"{owner}/{repo}",
+                    source="pr",
+                    sha=head_sha,
+                    shas=shas or [head_sha],
+                    author=(pr.get("user") or {}).get("login"),
+                    committed_at=_parse_ts(pr.get("merged_at")),
+                    files=_file_diffs(files_raw),
+                    checks_passed=_fetch_checks_passed(owner, repo, head_sha),
+                    pr_number=number,
+                    author_association=pr.get("author_association"),
+                    merged_by=(pr.get("merged_by") or {}).get("login"),
+                    approving_review_count=approvals,
+                ),
+                owner,
+                repo,
             )
         )
+    return changes
+
+
+def fetch_direct_pushes(
+    owner: str, repo: str, limit: int, *, exclude: set[str] | None = None
+) -> list[Change]:
+    """Up to `limit` recent commits pushed straight to the default branch, newest first.
+
+    All five ground-truth incidents are direct pushes, so a control sample made only of
+    merged PRs measures false positives on a population that structurally cannot trigger
+    the push-based rules. This supplies the missing half.
+
+    A commit counts as a direct push when it has no associated pull request. Merge
+    commits (2+ parents) are skipped outright — they are the *result* of review, carry no
+    diff of their own worth scanning, and would dilute the sample.
+
+    `exclude` drops known-malicious SHAs, so an incident's own repo can safely be used as
+    a source of benign commits — which makes the hardest possible control set: the
+    attacker's other commits, in the same repo, in the same style.
+    """
+    exclude = exclude or set()
+    changes: list[Change] = []
+    page = 1
+    while len(changes) < limit and page <= 10:
+        batch = _get_json(
+            f"{API_BASE}/repos/{owner}/{repo}/commits", {"per_page": 100, "page": page}
+        )
+        if not batch:
+            break
+        for entry in batch:
+            if len(changes) >= limit:
+                break
+            sha = entry["sha"]
+            if sha in exclude or len(entry.get("parents", [])) > 1:
+                continue
+            try:
+                if _get_json(f"{API_BASE}/repos/{owner}/{repo}/commits/{sha}/pulls"):
+                    continue  # landed via a PR, so it belongs in the PR sample
+                changes.append(fetch_commit(owner, repo, sha))
+            except FetchError:
+                continue
+        page += 1
     return changes

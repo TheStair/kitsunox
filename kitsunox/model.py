@@ -36,6 +36,11 @@ class FileDiff:
     deletions: int = 0
     patch: str = ""
 
+    # True when `patch` holds only the head of a larger file (see corpus.py's size cap).
+    # A rule that fails to fire on a truncated file has not cleared it, and any evaluation
+    # counting it as a true negative would be overstating the result.
+    truncated: bool = False
+
 
 @dataclass
 class Finding:
@@ -82,6 +87,17 @@ class Change:
     author_association: str | None = None  # e.g. "OWNER", "FIRST_TIME_CONTRIBUTOR"
     merged_by: str | None = None
     approving_review_count: int = 0
+
+    # How long this author had been contributing to *this repo* when the change landed,
+    # and how many commits they had already made. Both None when not looked up (the
+    # lookup costs an API call per author) or when the history is unavailable.
+    #
+    # This is the only view we get of Ladisa et al.'s AV-800 "Become a Maintainer":
+    # event-stream's attacker had 5 days and 9 commits of history when he added the
+    # malicious dependency, against the owner's 7 years and 248. GitHub exposes no
+    # record of when commit rights were granted, so first-commit date is the proxy.
+    author_tenure_days: int | None = None
+    author_prior_commits: int | None = None
 
     # Set only by incidents.py (labels the 5 known-malicious changes) and by
     # evaluate.py (labels the control sample "benign"). fetch.py and rules.py must

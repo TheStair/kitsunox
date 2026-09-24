@@ -20,7 +20,7 @@ recalled.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -122,11 +122,15 @@ INCIDENTS_BY_KEY = {inc.key: inc for inc in INCIDENTS}
 
 
 def _load_fixture(incident: Incident) -> Change:
-    """Build a Change from a hardcoded fixture JSON. Its `files` entries are already
-    FileDiff-shaped; the rest of the file is provenance metadata that doesn't belong on
-    the Change."""
+    """Build a Change from a hardcoded fixture JSON.
+
+    Fixture entries carry provenance annotations (`*_note`, source URLs) interleaved with
+    the actual data, so keys are filtered to the dataclass's own fields rather than
+    splatted — a fixture should be free to document itself without breaking the loader.
+    """
     assert incident.fixture is not None
     data = json.loads((FIXTURE_DIR / incident.fixture).read_text(encoding="utf-8"))
+    diff_keys = {f.name for f in fields(FileDiff)}
     return Change(
         repo=data["repo"],
         source=data["source"],
@@ -134,7 +138,7 @@ def _load_fixture(incident: Incident) -> Change:
         shas=[data["sha"]],
         author=data["author"],
         committed_at=datetime.fromisoformat(data["committed_at"]),
-        files=[FileDiff(**f) for f in data["files"]],
+        files=[FileDiff(**{k: v for k, v in f.items() if k in diff_keys}) for f in data["files"]],
         checks_passed=None,  # unknowable after the fact; the repo's history is gone
         ground_truth="malicious",
     )
