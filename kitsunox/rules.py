@@ -19,6 +19,7 @@ Tuning is meant to happen in the tables at the top (`SEVERITY_WEIGHT`,
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 
@@ -103,11 +104,32 @@ NETWORK_FETCH = re.compile(
     re.IGNORECASE,
 )
 
-# Hosts that serve attacker-controlled content and appear in no legitimate build step.
+# Hosts that serve attacker-controlled content or collect out-of-band callbacks, and
+# appear in no legitimate build step. The OOB-interaction domains (burpcollaborator,
+# canarytokens, interact.sh and friends) are how a large share of npm install-hook
+# malware beacons home — often the entire payload is a DNS lookup to one of these.
 SUSPICIOUS_HOST = re.compile(
     r"(gist\.githubusercontent\.com|pastebin\.com|transfer\.sh|ngrok\.io|"
+    r"burpcollaborator\.net|canarytokens\.com|interact\.sh|oast\.(fun|pro|live|site|online)|"
+    r"dnslog\.cn|requestbin\.\w+|pipedream\.net|webhook\.site|\.onion\b|"
     r"\b(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\b)",
     re.IGNORECASE,
+)
+
+# npm lifecycle hooks that execute automatically on `npm install`, with no user action
+# and no review. This is the dominant npm attack vector and it is invisible to every
+# path-based build-script check, because it lives inside package.json rather than in a
+# file with a recognisable name.
+INSTALL_HOOKS = ("preinstall", "install", "postinstall", "prepare", "prepublish")
+
+# Output redirection inside an install hook. Legitimate build steps want their logs.
+SILENCED = re.compile(r">\s*/dev/null|2>&1|\s-s\s|--silent|>\s*nul\b", re.IGNORECASE)
+
+# Host/user/network reconnaissance — the first stage of a beacon that reports who it
+# landed on. Harmless alone, meaningful next to an outbound request.
+RECON = re.compile(
+    r"\b(hostname|whoami|os\.userInfo|os\.hostname|HOSTNAME|USERPROFILE|"
+    r"ifconfig|ipconfig|uname\s+-a|process\.cwd\(\)|USERDOMAIN)\b"
 )
 
 # Loopback, RFC1918, link-local and broadcast. Test suites are full of these — axios
@@ -199,6 +221,81 @@ def _scannable(file: FileDiff) -> bool:
 
 
 # --------------------------------------------------------------------------- content rules
+
+
+def _install_hook_rules(change: Change) -> list[Finding]:
+    """Inspect npm lifecycle hooks declared in package.json.
+
+    These run automatically on `npm install`, before any human reads a line of the code,
+    and they are where most npm package malware lives. Measured on the ASE 2026 corpus,
+    67% of malicious packages declare one — so the hook's *existence* is far too common
+    to accuse on its own (node-gyp builds declare them too). What the hook actually does
+    is the signal.
+    """
+    findings: list[Finding] = []
+    for file in change.files:
+        if _basename(file.path) != "package.json" or file.is_binary:
+            continue
+        body = "".join(
+            ln[1:] + "\n" for ln in file.patch.split("\n")
+            if ln.startswith("+") and not ln.startswith("+++")
+        )
+        try:
+            scripts = (json.loads(body) or {}).get("scripts") or {}
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if not isinstance(scripts, dict):
+            continue
+
+        for hook in INSTALL_HOOKS:
+            command = scripts.get(hook)
+            if not isinstance(command, str) or not command.strip():
+                continue
+
+            def hit(rule_id: str, severity: Severity, rationale: str) -> None:
+                findings.append(
+                    Finding(
+                        rule_id=rule_id, severity=severity, rationale=rationale,
+                        file_path=file.path, evidence=_evidence(f"{hook}: {command}"),
+                    )
+                )
+
+            hit(
+                "content.install_hook", "low",
+                f"package.json declares a '{hook}' script, which npm executes "
+                "automatically on install with no review and no user action.",
+            )
+            if NETWORK_FETCH.search(command) or _hits_suspicious_host(command):
+                hit(
+                    "content.install_hook_network", "high",
+                    f"The '{hook}' hook reaches the network at install time, pulling "
+                    "unreviewed content onto every consumer's machine.",
+                )
+            if SHELL_EXEC.search(command) or re.search(r"\bnode\s+(-e|--eval|\S+\.js)", command):
+                hit(
+                    "content.install_hook_exec", "medium",
+                    f"The '{hook}' hook executes code rather than running a declared "
+                    "build tool.",
+                )
+            if B64_BLOB.search(command) or DECODE_CALLS.search(command):
+                hit(
+                    "content.install_hook_obfuscated", "critical",
+                    f"The '{hook}' hook carries or decodes an encoded payload. There is "
+                    "no legitimate reason for install-time code to be obfuscated.",
+                )
+            if SILENCED.search(command):
+                hit(
+                    "content.install_hook_silenced", "medium",
+                    f"The '{hook}' hook discards its own output. Build steps want their "
+                    "logs; hiding them conceals what ran.",
+                )
+            if RECON.search(command):
+                hit(
+                    "content.install_hook_recon", "medium",
+                    f"The '{hook}' hook collects host or user identity — the first stage "
+                    "of a beacon reporting where it landed.",
+                )
+    return findings
 
 
 def _content_rules(change: Change) -> list[Finding]:
@@ -435,6 +532,48 @@ COMBOS: dict[tuple[str, str], tuple[str, Severity, str]] = {
 }
 
 
+# Each evidence rule contributes a capability, in the sense GuardDog uses: malware needs
+# to *do* something (execute, reach the network, read secrets) and to *hide* or *deliver*
+# it. One capability is ordinary — plenty of honest code executes subprocesses or makes
+# requests. Several distinct capabilities in one change is the shape of an attack chain,
+# and that is what `CATEGORY_BONUS` scores, independently of the named pairs in `COMBOS`.
+RULE_CATEGORY: dict[str, str] = {
+    "content.encoded_blob": "obfuscation",
+    "content.decode_call": "obfuscation",
+    "content.install_hook_obfuscated": "obfuscation",
+    "content.shell_exec": "execution",
+    "content.install_hook_exec": "execution",
+    "content.install_hook": "execution",
+    "content.network_in_build": "network",
+    "content.suspicious_host": "network",
+    "content.install_hook_network": "network",
+    "content.secret_access": "collection",
+    "content.install_hook_recon": "collection",
+    "content.install_hook_silenced": "concealment",
+    "content.binary_added": "concealment",
+    "content.unbounded_loop": "sabotage",
+    "content.dependency_added": "delivery",
+}
+
+# Added to the evidence score by distinct capability count. Two capabilities is common
+# enough in honest code to stay below the bar on its own; three or more is an attack
+# chain. Deliberately sub-linear at the top so a sprawling package cannot accumulate its
+# way past the threshold without any individually meaningful signal.
+CATEGORY_BONUS: dict[int, int] = {0: 0, 1: 0, 2: 2, 3: 6, 4: 10}
+MAX_CATEGORY_BONUS = 12
+
+
+def _category_bonus(findings: list[Finding]) -> int:
+    categories = {
+        RULE_CATEGORY[f.rule_id] for f in findings if f.rule_id in RULE_CATEGORY
+    }
+    # `delivery` alone is meaningless: 93% of malicious packages add a dependency, and so
+    # do 13% of benign changes. It only counts alongside something that acts.
+    if categories <= {"delivery"}:
+        return 0
+    return CATEGORY_BONUS.get(len(categories), MAX_CATEGORY_BONUS)
+
+
 def _combo_rules(findings: list[Finding]) -> list[Finding]:
     fired = {f.rule_id for f in findings}
     out = []
@@ -456,7 +595,7 @@ def _combo_rules(findings: list[Finding]) -> list[Finding]:
 def scan(change: Change) -> list[Finding]:
     """Run every Tier 0 rule over a change. Order is content, context, then combinations
     (which are derived from the first two)."""
-    findings = _content_rules(change) + _context_rules(change)
+    findings = _content_rules(change) + _install_hook_rules(change) + _context_rules(change)
     return findings + _combo_rules(findings)
 
 
@@ -485,11 +624,8 @@ def evidence_score(findings: list[Finding]) -> int:
     So circumstance corroborates, it doesn't accuse. It sharpens the ranking and gives
     Tier 2 context to reason about, but only content can cross the escalation bar.
     """
-    return sum(
-        SEVERITY_WEIGHT[f.severity]
-        for f in _dedup(findings)
-        if not f.rule_id.startswith("context.")
-    )
+    evidence = [f for f in _dedup(findings) if not f.rule_id.startswith("context.")]
+    return sum(SEVERITY_WEIGHT[f.severity] for f in evidence) + _category_bonus(evidence)
 
 
 def should_escalate(findings: list[Finding]) -> bool:

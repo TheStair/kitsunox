@@ -127,6 +127,61 @@ def to_change(entry: CorpusEntry) -> Change:
     )
 
 
+def from_tarball(name: str, version: str, fileobj, ground_truth: GroundTruth) -> Change:
+    """Build a `Change` straight from an npm `.tgz`, without unpacking it to disk.
+
+    The corpus ships 6,550 malicious tarballs and the benign half arrives from the npm
+    registry the same way, so reading the archive in memory avoids materialising ~2GB of
+    untrusted files. Nothing is executed and nothing is written — members are read as
+    bytes and decoded as text.
+
+    npm tarballs wrap everything in a `package/` directory; that prefix is stripped so
+    paths match what the path-based rules expect.
+    """
+    import tarfile
+
+    files: list[FileDiff] = []
+    with tarfile.open(fileobj=fileobj, mode="r:gz") as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            rel = member.name
+            if rel.startswith("package/"):
+                rel = rel[len("package/") :]
+            suffix = ("." + rel.rsplit(".", 1)[-1].lower()) if "." in rel else ""
+
+            if suffix not in TEXT_SUFFIXES:
+                files.append(FileDiff(path=rel, change_type="added", is_binary=True))
+                continue
+
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            raw = handle.read(MAX_FILE_BYTES)
+            text = raw.decode("utf-8", errors="replace")
+            files.append(
+                FileDiff(
+                    path=rel,
+                    change_type="added",
+                    is_binary=False,
+                    additions=text.count("\n") + 1,
+                    patch=_as_patch(text),
+                    truncated=member.size > MAX_FILE_BYTES,
+                )
+            )
+
+    return Change(
+        repo=f"{name}@{version}",
+        source="push",
+        sha=f"{name}@{version}",
+        shas=[],
+        author=None,
+        committed_at=None,
+        files=files,
+        ground_truth=ground_truth,
+    )
+
+
 def load_labels(package_label_dir: Path) -> dict[str, tuple[str, ...]]:
     """Read the corpus's expert `malicious_files` annotations.
 
