@@ -268,12 +268,30 @@ def test_review_captures_api_errors_rather_than_raising():
     assert not result.ok and "connection error" in result.error
 
 
-def test_review_does_not_call_the_api_without_a_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_review_reports_missing_credentials_instead_of_raising(monkeypatch):
+    # Credential resolution is the SDK's job (env var, auth token, OAuth profile, WIF),
+    # so this must not check one variable -- it must report what the SDK could not do.
+    import anthropic
+
+    def no_creds():
+        raise anthropic.AnthropicError("could not resolve authentication")
+
+    monkeypatch.setattr(anthropic, "Anthropic", no_creds)
     result = llm.review(_change([_file("a.js")]), [_finding(file_path=None)])
     assert not result.ok
-    assert "ANTHROPIC_API_KEY" in result.error
+    assert "credentials" in result.error
     assert result.prompt, "the prompt should still be built so it can be inspected offline"
+
+
+def test_review_uses_sdk_credential_resolution_not_a_single_env_var(monkeypatch):
+    # A machine with ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile and no
+    # ANTHROPIC_API_KEY is properly authenticated; refusing there would be wrong.
+    import anthropic
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: FakeClient())
+    result = llm.review(_change([_file("a.js")]), [_finding(file_path=None)])
+    assert result.ok
 
 
 def test_review_keeps_the_prompt_on_the_result():

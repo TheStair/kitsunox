@@ -26,7 +26,6 @@ no API key is read until `review()` is first invoked.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -267,13 +266,18 @@ def review(change: Change, findings: list[Finding], *, client=None, model: str =
     prompt = build_prompt(change, findings)
 
     if client is None:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        # Let the SDK resolve credentials rather than checking one env var: it also
+        # accepts ANTHROPIC_AUTH_TOKEN, an `ant auth login` profile, and workload
+        # identity federation. Checking only ANTHROPIC_API_KEY would refuse to run on a
+        # machine that is perfectly well authenticated.
+        try:
+            client = anthropic.Anthropic()
+        except Exception as exc:  # noqa: BLE001 — surfaced to the caller, never raised
             return Review(
                 verdict=None,
-                error="ANTHROPIC_API_KEY is not set; no Tier 2 call was attempted.",
+                error=f"no Anthropic credentials available ({exc}); no call was attempted.",
                 prompt=prompt,
             )
-        client = anthropic.Anthropic()
 
     try:
         response = client.messages.parse(
