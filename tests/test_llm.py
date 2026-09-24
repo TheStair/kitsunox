@@ -141,58 +141,114 @@ def test_prompt_includes_review_fields_for_a_pr():
 def test_prompt_dedupes_repeated_rule_hits():
     hits = [_finding(line=1) for _ in range(30)]
     prompt = llm.build_prompt(_change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")]), hits)
-    assert prompt.count("content.encoded_blob") == 1
+    # Once in the findings list; the file header naming it again is deliberate.
+    assert prompt.count("- [high] content.encoded_blob") == 1
 
 
-def test_prompt_is_truncated_with_an_explicit_warning(monkeypatch):
-    monkeypatch.setattr(llm, "MAX_EVIDENCE_CHARS", 200)
-    patch = "@@ -1,0 +1,400 @@\n" + "\n".join(f"+line {i} of filler" for i in range(400))
-    # Flag lines throughout the file, so the extracted evidence genuinely exceeds the cap.
-    hits = [_finding(rule_id=f"content.r{i}", file_path="big.js", line=i) for i in range(1, 400, 7)]
-    prompt = llm.build_prompt(_change([_file("big.js", patch)]), hits)
-    assert "truncated" in prompt
-    # The model must be told to prefer 'suspicious' over guessing past a truncation.
-    assert "suspicious" in prompt
-
-
-def test_prompt_handles_a_change_with_no_extractable_diff():
+def test_prompt_handles_a_change_with_no_files():
     prompt = llm.build_prompt(_change([]), [_finding(file_path=None)])
-    assert "judge on the metadata" in prompt
+    assert "no diff content available" in prompt
 
 
-# ============================================================== hunk extraction
+# ============================================================== the whole change
+
+# Tier 0 says *where to look*. Tier 2 reviews the change, so it needs the code around a
+# hit and the files Tier 0 was silent about. An early hunks-only version had the model
+# noting it was missing "a sixth unshown file that could be the harness" — which was
+# true, and entirely self-inflicted.
 
 
-def test_only_flagged_regions_are_sent_not_the_whole_file():
-    patch = "@@ -1,0 +1,200 @@\n" + "\n".join(f"+line{i}" for i in range(200))
-    blocks = llm._hunks_for(_change([_file("a.js", patch)]), [_finding(file_path="a.js", line=100)])
-    body = "\n".join(blocks)
-    assert "line99" in body  # the flagged line, with context around it
-    assert "line5" not in body  # ...but not the rest of the file
-    assert len(body) < len(patch) / 5
+def test_unflagged_files_are_included():
+    change = _change([
+        _file("flagged.js", "@@ -1,0 +1,1 @@\n+bad()"),
+        _file("quiet.js", "@@ -1,0 +1,1 @@\n+const helper = 1;"),
+    ])
+    prompt = llm.build_prompt(change, [_finding(file_path="flagged.js", line=1)])
+    assert "quiet.js" in prompt and "const helper = 1;" in prompt
 
 
-def test_gaps_between_flagged_regions_are_marked():
-    patch = "@@ -1,0 +1,60 @@\n" + "\n".join(f"+line{i}" for i in range(60))
-    change = _change([_file("a.js", patch)])
-    blocks = llm._hunks_for(change, [_finding(file_path="a.js", line=2), _finding(file_path="a.js", line=50)])
-    assert "..." in "\n".join(blocks)
+def test_unflagged_context_around_a_hit_is_included():
+    patch = "@@ -1,0 +1,5 @@\n+alpha\n+beta\n+TARGET\n+delta\n+epsilon"
+    prompt = llm.build_prompt(_change([_file("a.js", patch)]), [_finding(file_path="a.js", line=3)])
+    for token in ("alpha", "beta", "TARGET", "delta", "epsilon"):
+        assert token in prompt, token
+
+
+def test_flagged_lines_are_marked():
+    patch = "@@ -1,0 +1,3 @@\n+quiet one\n+PAYLOAD\n+quiet two"
+    prompt = llm.build_prompt(_change([_file("a.js", patch)]), [_finding(file_path="a.js", line=2)])
+    marked = [ln for ln in prompt.split("\n") if ln.startswith("  >>> ")]
+    assert len(marked) == 1 and "PAYLOAD" in marked[0]
+
+
+def test_file_headers_name_the_rules_that_fired():
+    prompt = llm.build_prompt(
+        _change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")]),
+        [_finding(rule_id="content.shell_exec", file_path="a.js", line=1)],
+    )
+    header = next(ln for ln in prompt.split("\n") if ln.startswith("--- a.js"))
+    assert "flagged: content.shell_exec" in header
 
 
 def test_binary_files_are_named_not_dumped():
-    change = _change([_file("blob.bin", change_type="added", is_binary=True)])
-    body = "\n".join(llm._hunks_for(change, [_finding(file_path="blob.bin")]))
-    assert "binary file" in body and "contents not shown" in body
+    prompt = llm.build_prompt(
+        _change([_file("blob.bin", change_type="added", is_binary=True)]),
+        [_finding(file_path="blob.bin")],
+    )
+    assert "binary file" in prompt and "contents not shown" in prompt
 
 
-def test_path_only_findings_fall_back_to_the_head_of_the_patch():
-    patch = "@@ -1,0 +1,50 @@\n" + "\n".join(f"+line{i}" for i in range(50))
-    body = "\n".join(llm._hunks_for(_change([_file("a.js", patch)]), [_finding(file_path="a.js", line=None)]))
-    assert "line0" in body and "line49" not in body
+def test_flagged_files_are_rendered_before_unflagged_ones():
+    # So that whatever survives truncation is what Tier 0 objected to.
+    change = _change([
+        _file("aaa_quiet.js", "@@ -1,0 +1,1 @@\n+quiet"),
+        _file("zzz_flagged.js", "@@ -1,0 +1,1 @@\n+loud"),
+    ])
+    prompt = llm.build_prompt(change, [_finding(file_path="zzz_flagged.js", line=1)])
+    assert prompt.index("--- zzz_flagged.js") < prompt.index("--- aaa_quiet.js")
 
 
-def test_findings_for_files_absent_from_the_change_are_skipped():
-    assert llm._hunks_for(_change([_file("a.js")]), [_finding(file_path="ghost.js")]) == []
+def test_an_oversized_change_keeps_the_flagged_file_and_says_it_truncated(monkeypatch):
+    monkeypatch.setattr(llm, "MAX_DIFF_CHARS", 900)
+    monkeypatch.setattr(llm, "PER_FILE_CHARS", 300)
+    filler = "@@ -1,0 +1,200 @@\n" + "\n".join(f"+padding line {i}" for i in range(200))
+    change = _change([
+        _file("flagged.js", "@@ -1,0 +1,1 @@\n+PAYLOAD"),
+        *[_file(f"bulk{i}.js", filler) for i in range(6)],
+    ])
+    prompt = llm.build_prompt(change, [_finding(file_path="flagged.js", line=1)])
+    assert "PAYLOAD" in prompt, "the flagged file must survive truncation"
+    assert "too large to include whole" in prompt
+    assert "suspicious" in prompt
+
+
+def test_a_single_huge_unflagged_file_cannot_crowd_out_the_change(monkeypatch):
+    monkeypatch.setattr(llm, "PER_FILE_CHARS", 200)
+    huge = "@@ -1,0 +1,400 @@\n" + "\n".join(f"+vendored {i}" for i in range(400))
+    change = _change([
+        _file("vendor.js", huge),
+        _file("flagged.js", "@@ -1,0 +1,1 @@\n+PAYLOAD"),
+    ])
+    prompt = llm.build_prompt(change, [_finding(file_path="flagged.js", line=1)])
+    assert "PAYLOAD" in prompt
+    assert "more lines of this file omitted" in prompt
+
+
+def test_a_real_incident_sends_every_file_it_touched():
+    from kitsunox.incidents import INCIDENTS_BY_KEY, load_incident
+
+    change = load_incident(INCIDENTS_BY_KEY["tj-actions"])  # fixture-backed, no network
+    prompt = llm.build_prompt(change, rules.scan(change))
+    for diff in change.files:
+        assert diff.path in prompt, diff.path
+    assert len(prompt) <= llm.MAX_DIFF_CHARS + 8000
+
+
+def test_prompt_asks_for_what_the_prefilter_missed():
+    # The reason for sending the whole change rather than the hits.
+    prompt = llm.build_prompt(_change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")]),
+                              [_finding(file_path="a.js", line=1)])
+    assert "did not flag" in prompt
 
 
 # ============================================================== review()
@@ -303,7 +359,7 @@ def test_review_keeps_the_prompt_on_the_result():
 # ============================================================== integration (offline)
 
 
-def test_a_real_incident_produces_a_bounded_prompt():
+def test_a_real_incident_prompt_carries_the_whole_diff_and_the_reasons():
     from kitsunox.incidents import INCIDENTS_BY_KEY, load_incident
 
     change = load_incident(INCIDENTS_BY_KEY["tj-actions"])  # fixture-backed, no network
@@ -311,9 +367,10 @@ def test_a_real_incident_produces_a_bounded_prompt():
     prompt = llm.build_prompt(change, findings)
 
     full_diff = sum(len(f.patch) for f in change.files)
-    assert len(prompt) < full_diff, "Tier 2 must send less than the whole diff"
-    assert len(prompt) <= llm.MAX_EVIDENCE_CHARS + 4000
+    assert len(prompt) > full_diff, "the whole change is sent, plus the flag reasons"
     assert "dist/index.js" in prompt
+    assert "updateFeatures" in prompt, "the payload itself must reach the reviewer"
+    assert "what the pre-filter flagged" in prompt.lower()
 
 
 # ============================================================== recognition ablation

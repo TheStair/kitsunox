@@ -26,13 +26,14 @@ no API key is read until `review()` is first invoked.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from kitsunox.model import Change, Finding
+from kitsunox.model import Change, FileDiff, Finding
 
 # Loaded here rather than relying on fetch.py having been imported first — this module
 # must work standalone.
@@ -54,10 +55,15 @@ EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "high"
 
 MAX_TOKENS = 4096
 
-# Ceiling on the evidence sent. Tier 0 flags a handful of lines; anything approaching
-# this means a rule matched a generated file, and sending more would not help the model.
-MAX_EVIDENCE_CHARS = 12_000
-HUNK_CONTEXT_LINES = 3
+# Ceiling on the diff sent. Tier 2 reviews the whole change, so this is sized for a
+# real commit rather than a snippet: ~60KB is roughly 15-20k tokens, a few cents on a
+# change that Tier 0 already decided was worth paying for. Flagged files are rendered
+# first so that whatever survives truncation is what Tier 0 objected to.
+MAX_DIFF_CHARS = 60_000
+
+# Per-file ceiling for files Tier 0 did *not* flag. They are context, and one enormous
+# vendored bundle should not crowd out the rest of the change.
+PER_FILE_CHARS = 6_000
 
 SYSTEM_PROMPT = """\
 You are reviewing a single change to a source repository for signs of a software supply \
@@ -140,91 +146,102 @@ class Review:
         return self.verdict is not None
 
 
-def _hunks_for(change: Change, findings: list[Finding]) -> list[str]:
-    """Extract just the flagged regions of the diff, with a little context.
+def _flagged_lines(diff: FileDiff, hits: list[Finding]) -> set[int]:
+    """Patch-text line offsets that tripped a rule, for the `>>>` markers."""
+    offsets: dict[int, int] = {}
+    lineno = 0
+    for idx, raw in enumerate(diff.patch.split("\n")):
+        if raw.startswith("@@"):
+            match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", raw)
+            if match:
+                lineno = int(match.group(1))
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            offsets.setdefault(lineno, idx)
+            lineno += 1
+        elif not raw.startswith("-"):
+            lineno += 1
+    return {offsets[h.line] for h in hits if h.line is not None and h.line in offsets}
 
-    Findings carry a file and a line; this pulls the surrounding lines out of that
-    file's patch so the model sees the code in situ rather than a bare snippet.
+
+def _render_file(diff: FileDiff, hits: list[Finding], budget: int) -> tuple[str, bool]:
+    """Render one file's full patch, marking the lines Tier 0 flagged.
+
+    Returns (text, truncated). Markers matter: without them a long diff buries the few
+    lines the pre-filter actually objected to.
+    """
+    header = f"--- {diff.path} ({diff.change_type}, +{diff.additions}/-{diff.deletions})"
+    if hits:
+        header += "   [flagged: " + ", ".join(sorted({h.rule_id for h in hits})) + "]"
+    if diff.is_binary:
+        return header + "\n    <binary file; contents not shown>", False
+    if not diff.patch:
+        return header + "\n    <no diff available>", False
+
+    marked = _flagged_lines(diff, hits)
+    lines = diff.patch.split("\n")
+    out, truncated, used = [header], False, len(header)
+    for idx, raw in enumerate(lines):
+        rendered = ("  >>> " if idx in marked else "      ") + raw
+        if used + len(rendered) > budget:
+            out.append(f"      <... {len(lines) - idx} more lines of this file omitted>")
+            truncated = True
+            break
+        out.append(rendered)
+        used += len(rendered) + 1
+    return "\n".join(out), truncated
+
+
+def _render_diff(change: Change, findings: list[Finding]) -> tuple[str, bool]:
+    """Render the whole commit, flagged files first.
+
+    Every file is included, not only the flagged ones. Tier 0 says *where to look*; a
+    reviewer still needs the code around the hit and the files Tier 0 was silent about —
+    in one early run the model explicitly noted it was missing "a sixth unshown file that
+    could be the harness", which was true and entirely our doing.
+
+    Ordering by flagged-first means that when a change is too large to send whole, what
+    survives truncation is what Tier 0 objected to.
     """
     by_path: dict[str, list[Finding]] = {}
     for finding in findings:
         if finding.file_path:
             by_path.setdefault(finding.file_path, []).append(finding)
 
-    files = {f.path: f for f in change.files}
-    blocks: list[str] = []
+    ordered = sorted(change.files, key=lambda f: (f.path not in by_path, f.path))
+    blocks, truncated, used = [], False, 0
 
-    for path, hits in by_path.items():
-        diff = files.get(path)
-        if diff is None:
-            continue
-        if diff.is_binary:
-            blocks.append(f"--- {path} (binary file, {diff.change_type}; contents not shown)")
-            continue
+    for diff in ordered:
+        remaining = MAX_DIFF_CHARS - used
+        if remaining < 400:
+            blocks.append(f"<... {len(ordered) - len(blocks)} further files omitted for length>")
+            truncated = True
+            break
+        # Flagged files get a bigger share; unflagged ones are context.
+        share = remaining if diff.path in by_path else min(remaining, PER_FILE_CHARS)
+        text, cut = _render_file(diff, by_path.get(diff.path, []), share)
+        truncated = truncated or cut
+        blocks.append(text)
+        used += len(text)
 
-        lines = diff.patch.split("\n")
-        wanted: set[int] = set()
-        numbered = list(enumerate(lines))
-        # Map finding line numbers back onto patch offsets by walking the patch the same
-        # way rules.py did, so the excerpt lands on the line that actually fired.
-        offsets = {}
-        lineno = 0
-        for idx, raw in numbered:
-            if raw.startswith("@@"):
-                import re
-
-                match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", raw)
-                if match:
-                    lineno = int(match.group(1))
-                continue
-            if raw.startswith("+") and not raw.startswith("+++"):
-                offsets.setdefault(lineno, idx)
-                lineno += 1
-            elif not raw.startswith("-"):
-                lineno += 1
-
-        for hit in hits:
-            idx = offsets.get(hit.line) if hit.line is not None else None
-            if idx is None:
-                continue
-            for j in range(idx - HUNK_CONTEXT_LINES, idx + HUNK_CONTEXT_LINES + 1):
-                if 0 <= j < len(lines):
-                    wanted.add(j)
-
-        if not wanted:
-            # No line anchors (path-only findings). Show the head of the patch.
-            excerpt = "\n".join(lines[:20])
-        else:
-            excerpt_lines = []
-            previous = None
-            for j in sorted(wanted):
-                if previous is not None and j > previous + 1:
-                    excerpt_lines.append("    ...")
-                excerpt_lines.append(lines[j])
-                previous = j
-            excerpt = "\n".join(excerpt_lines)
-
-        blocks.append(f"--- {path} ({diff.change_type})\n{excerpt}")
-
-    return blocks
+    return "\n\n".join(blocks), truncated
 
 
 def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = False) -> str:
-    """Assemble the bounded Tier 2 prompt.
+    """Assemble the Tier 2 prompt: the full change, annotated with what Tier 0 flagged.
 
-    Deliberately excludes `change.ground_truth`: Tier 2 must not be told the answer it
-    is being measured against.
+    Deliberately excludes `change.ground_truth` and every `Finding.precedent`: Tier 2 is
+    measured against that label, and naming the incident a rule was derived from hands it
+    the answer.
 
     `anonymize` additionally withholds the repository and author names. Every incident in
     the ground-truth set is a famous, heavily-documented public attack, so a model can
     recognise `tukaani-project/xz` + `JiaT75` and answer from training data rather than
-    from the evidence — in the first Tier 2 run it explicitly cited CVE-2024-3094 by
-    number. Anonymising those two fields tests whether the verdict survives on evidence
-    alone.
+    from the evidence — in the first Tier 2 run it cited CVE-2024-3094 by number.
 
-    This is a *partial* control and must be reported as one. File paths and diff contents
-    stay, because they are the evidence; `tests/files/bad-3-corrupt_lzma2.xz` is itself
-    recognisable. Full de-identification would mean deleting what is being judged.
+    This is a *partial* control and must be reported as one: file paths and diff contents
+    stay, because they are the evidence. Full de-identification would mean deleting what
+    is being judged.
     """
     lines = [
         f"Repository: {'<redacted>' if anonymize else change.repo}",
@@ -249,25 +266,28 @@ def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = F
         lines.append(f"CI checks passed: {change.checks_passed}")
     lines.append(f"Files changed: {len(change.files)}")
 
-    lines.append("\nWhy this change was flagged:")
+    lines.append("\nWhat the pre-filter flagged, and why:")
     for finding in sorted({f.rule_id: f for f in findings}.values(), key=lambda f: f.rule_id):
         where = f" ({finding.file_path})" if finding.file_path else ""
         lines.append(f"- [{finding.severity}] {finding.rule_id}{where}: {finding.rationale}")
 
-    lines.append("\nFlagged code:")
-    body = "\n\n".join(_hunks_for(change, findings))
-    if len(body) > MAX_EVIDENCE_CHARS:
-        body = (
-            body[:MAX_EVIDENCE_CHARS]
-            + "\n\n[truncated — the flagged regions exceeded the size limit. Judge only "
-            "what is shown above, and prefer 'suspicious' over guessing if the truncation "
-            "removed something you would have needed.]"
+    body, truncated = _render_diff(change, findings)
+    lines.append(
+        "\nThe complete change follows. Lines the pre-filter objected to are marked "
+        "`>>>`; everything else is the surrounding change, included so you can judge the "
+        "flagged code in context and notice anything the pre-filter missed.\n"
+    )
+    lines.append(body if body.strip() else "<no diff content available>")
+    if truncated:
+        lines.append(
+            "\n[This change was too large to include whole. Flagged files were kept in "
+            "full and shown first. If the omitted portion is something you would have "
+            "needed, say suspicious rather than guessing.]"
         )
-    lines.append(body if body.strip() else "[no extractable diff content — judge on the metadata above]")
 
     lines.append(
-        "\nGive a verdict on this change, with a confidence and a short rationale naming "
-        "the specific evidence."
+        "\nReview this change. Give a verdict, a confidence, and a short rationale naming "
+        "the specific evidence — including anything the pre-filter did not flag."
     )
     return "\n".join(lines)
 

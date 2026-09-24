@@ -1,0 +1,126 @@
+{
+  "generated_at": "2026-09-24T18:57:39",
+  "tier2_ran": true,
+  "summary": {
+    "detection": {
+      "detected": 3,
+      "of": 4
+    },
+    "false_positives": {
+      "flagged": 0,
+      "of": 0
+    },
+    "escalated": 5,
+    "cost_usd": 0.122433,
+    "tier2_errors": 1
+  },
+  "incidents": [
+    {
+      "key": "xz-utils",
+      "repo": "tukaani-project/xz",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.binary_added"
+      ],
+      "verdict": "benign",
+      "confidence": 0.72,
+      "rationale": "All six files are test fixtures under tests/files/ plus a matching README update, and every added binary has a corresponding human-readable description of its structure and the decoder behavior it exercises (dictionary wrap-around, multi-stream concatenation, an invalid .lzma dictionary size, corrupt LZMA2 payload in the middle stream). Nothing in the change adds or modifies build scripts, CI, Makefile.am/configure logic, or any code that reads these blobs outside the test harness, so the binaries are inert data with no extractor. The filenames bad-3-corrupt_lzma2.xz and good-large_compressed.lzma are the same ones that carried the CVE-2024-3094 payload in xz-utils, which warrants a byte-level look at the blobs, but on the evidence shown \u2014 a long-tenured author, coherent documentation, and no build-time consumer \u2014 the ordinary explanation of a test-vector import fits.",
+      "tier2_error": null,
+      "input_tokens": 1288,
+      "output_tokens": 1247,
+      "cost_usd": 0.037615
+    },
+    {
+      "key": "event-stream",
+      "repo": "dominictarr/event-stream",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 9,
+      "total_score": 12,
+      "escalated": true,
+      "rule_ids": [
+        "combo.new_maintainer_adds_dependency",
+        "content.dependency_added",
+        "context.new_contributor",
+        "context.new_maintainer_direct_push"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.85,
+      "rationale": "This is the event-stream 3.3.5 commit from the November 2018 supply-chain compromise: a maintainer who received the handover days earlier pushes directly to master, adds a dependency on the then-brand-new single-purpose package flatmap-stream@0.1.0, re-exports it as es.flatmap in index.js, and bumps the lockfile version so the change ships to npm immediately. The payload was never in this diff \u2014 flatmap-stream's later 0.1.1 release carried encrypted code that targeted Copay wallet builds \u2014 and the trivial flatmap helper (18 lines of stream logic, shown by the test) had no need to come from an external, unvetted package. The combination of freshly-granted publish rights, review bypass, a version bump for immediate release, and outsourcing a few lines of logic to an unknown new package is the attack's exact shape.",
+      "tier2_error": null,
+      "input_tokens": 1647,
+      "output_tokens": 953,
+      "cost_usd": 0.0325395
+    },
+    {
+      "key": "reviewdog",
+      "repo": "reviewdog/action-setup",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 26,
+      "total_score": 29,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_in_build_script",
+        "content.decode_call",
+        "content.encoded_blob",
+        "context.build_script_touched"
+      ],
+      "verdict": null,
+      "confidence": null,
+      "rationale": null,
+      "tier2_error": "model declined to answer",
+      "input_tokens": 2858,
+      "output_tokens": 0,
+      "cost_usd": 0.014769500000000001
+    },
+    {
+      "key": "tj-actions",
+      "repo": "tj-actions/changed-files",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 51,
+      "total_score": 52,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_executed",
+        "combo.encoded_payload_in_artifact",
+        "content.decode_call",
+        "content.encoded_blob",
+        "content.shell_exec",
+        "context.artifact_modified"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "The added `updateFeatures()` in dist/index.js shells out to bash to decode a base64 blob into /tmp/run.sh and execute it; decoding the blob reveals it curls `gist.githubusercontent.com/nikitastupin/.../memdump.py`, pipes it to `sudo python3`, greps the Runner process memory for `\"isSecret\":true` values, and base64-encodes them \u2014 then prints the result to the workflow log (core.info(stdout)), where it is harvestable from public Actions logs. This is the tj-actions/changed-files style CI secret-exfiltration payload, injected only into the generated bundle (never in reviewed TypeScript source) and wired into run() before any other logic, with an innocuous name and a cosmetic sourceMappingURL line to make the diff look like a routine rebuild.",
+      "tier2_error": null,
+      "input_tokens": 2297,
+      "output_tokens": 354,
+      "cost_usd": 0.0208145
+    },
+    {
+      "key": "colors.js",
+      "repo": "Marak/colors.js",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.unbounded_loop"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.97,
+      "rationale": "lib/index.js adds, at module top level after the exports are set up, an unconditional `for (let i = 666; i < Infinity; i++)` loop that endlessly prints garbled 'zalgo' text \u2014 so merely requiring the package hangs the importing process and floods stdout. The accompanying lib/custom/american.js ASCII-flag banner, also invoked on import, plus the throwaway '/* remove this line after testing */' comment, show this is intentional protest sabotage rather than leftover debug code. This matches the known colors.js self-sabotage pattern: no data is stolen, but every downstream consumer is deliberately broken on import.",
+      "tier2_error": null,
+      "input_tokens": 1093,
+      "output_tokens": 430,
+      "cost_usd": 0.0166945
+    }
+  ],
+  "control": []
+}
