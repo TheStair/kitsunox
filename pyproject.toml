@@ -10,6 +10,9 @@ dependencies = [
     "pydantic>=2.13.5",
 ]
 
+[project.scripts]
+kitsunox = "kitsunox.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.2",

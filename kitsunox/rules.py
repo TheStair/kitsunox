@@ -607,9 +607,16 @@ def _dedup(findings: list[Finding]) -> list[Finding]:
 
 
 def score(findings: list[Finding]) -> int:
-    """Total weighted score — evidence plus circumstance. Used for *ranking* changes
-    against each other, which is what a whole-repo scan needs."""
-    return sum(SEVERITY_WEIGHT[f.severity] for f in _dedup(findings))
+    """Total weighted score — evidence plus circumstance, including the capability bonus.
+
+    Used for *ranking* changes against each other, which is what a whole-repo scan needs.
+    The bonus has to be included or this can come out *below* `evidence_score`, and a
+    change combining several capabilities — the shape we most want at the top of a
+    ranking — would sort below a noisier one that combines none.
+    """
+    deduped = _dedup(findings)
+    evidence = [f for f in deduped if not f.rule_id.startswith("context.")]
+    return sum(SEVERITY_WEIGHT[f.severity] for f in deduped) + _category_bonus(evidence)
 
 
 def evidence_score(findings: list[Finding]) -> int:

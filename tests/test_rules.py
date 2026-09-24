@@ -684,3 +684,31 @@ def test_context_findings_never_contribute_to_the_bonus():
         Finding(rule_id="context.self_merged", severity="medium", rationale="r"),
     ]
     assert rules._category_bonus(findings) == 0
+
+
+def test_total_score_is_never_below_the_evidence_score():
+    # score() omitted the capability bonus that evidence_score() adds, so a change
+    # combining several capabilities could rank BELOW a noisier one combining none --
+    # backwards for the whole-repo scan, whose only output is an ordering.
+    findings = rules.scan(
+        _change(
+            [
+                _file("a.js", _added(f'const b = "{B64}";', "execSync(b)",
+                                     "post('https://gist.githubusercontent.com/x')",
+                                     "process.env)")),
+                _file("blob.bin", change_type="added", is_binary=True),
+            ],
+            source="pr", author="alice", merged_by="alice",
+        )
+    )
+    assert rules.score(findings) >= rules.evidence_score(findings)
+
+
+def test_circumstance_still_adds_to_the_total_even_though_it_cannot_escalate():
+    files = [_file("a.js", _added(f'const b = "{B64}";'))]
+    plain = rules.scan(_change(files))
+    with_context = rules.scan(
+        _change(files, source="pr", author="alice", merged_by="alice", approving_review_count=0)
+    )
+    assert rules.score(with_context) > rules.score(plain)
+    assert rules.evidence_score(with_context) == rules.evidence_score(plain)
