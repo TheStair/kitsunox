@@ -314,3 +314,49 @@ def test_a_real_incident_produces_a_bounded_prompt():
     assert len(prompt) < full_diff, "Tier 2 must send less than the whole diff"
     assert len(prompt) <= llm.MAX_EVIDENCE_CHARS + 4000
     assert "dist/index.js" in prompt
+
+
+# ============================================================== recognition ablation
+
+# Every ground-truth incident is a famous public attack. The first Tier 2 run cited
+# CVE-2024-3094 by number, so verdicts were partly recall rather than reasoning.
+# Withholding the two identifier fields measures how much.
+
+
+def test_anonymize_withholds_repository_and_author():
+    change = _change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")], repo="tukaani-project/xz", author="JiaT75")
+    prompt = llm.build_prompt(change, [_finding(line=1)], anonymize=True)
+    assert "tukaani-project" not in prompt and "JiaT75" not in prompt
+    assert "<redacted>" in prompt
+
+
+def test_anonymize_withholds_the_merger_too():
+    change = _change([_file("a.js")], source="pr", pr_number=1, merged_by="someone", author="bob")
+    prompt = llm.build_prompt(change, [_finding(file_path=None)], anonymize=True)
+    assert "someone" not in prompt and "bob" not in prompt
+
+
+def test_anonymize_keeps_the_evidence_and_the_tenure_numbers():
+    # Redacting the evidence would not be a control, it would be a different experiment.
+    # Tenure is a measured signal, not an identifier, so it stays.
+    change = _change(
+        [_file("tests/files/bad-3-corrupt_lzma2.xz", change_type="added", is_binary=True)],
+        repo="tukaani-project/xz", author="JiaT75",
+        author_tenure_days=756, author_prior_commits=431,
+    )
+    prompt = llm.build_prompt(change, [_finding(file_path="tests/files/bad-3-corrupt_lzma2.xz")],
+                              anonymize=True)
+    assert "bad-3-corrupt_lzma2.xz" in prompt
+    assert "756 day(s)" in prompt and "431 prior commit" in prompt
+
+
+def test_identified_prompts_are_the_default():
+    change = _change([_file("a.js")], repo="o/r", author="alice")
+    assert "o/r" in llm.build_prompt(change, [_finding(file_path=None)])
+
+
+def test_review_passes_anonymize_through_to_the_prompt():
+    client = FakeClient()
+    llm.review(_change([_file("a.js")], repo="tukaani-project/xz"), [_finding(file_path=None)],
+               client=client, anonymize=True)
+    assert "tukaani-project" not in client.calls[0]["messages"][0]["content"]

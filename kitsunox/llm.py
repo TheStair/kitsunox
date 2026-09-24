@@ -29,9 +29,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 from kitsunox.model import Change, Finding
+
+# Loaded here rather than relying on fetch.py having been imported first — this module
+# must work standalone.
+load_dotenv()
 
 # Default model. The cost-accounting run in §7 is the right place to decide whether a
 # cheaper model holds up on this task — change it here and re-run, don't scatter model
@@ -204,20 +209,31 @@ def _hunks_for(change: Change, findings: list[Finding]) -> list[str]:
     return blocks
 
 
-def build_prompt(change: Change, findings: list[Finding]) -> str:
+def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = False) -> str:
     """Assemble the bounded Tier 2 prompt.
 
     Deliberately excludes `change.ground_truth`: Tier 2 must not be told the answer it
     is being measured against.
+
+    `anonymize` additionally withholds the repository and author names. Every incident in
+    the ground-truth set is a famous, heavily-documented public attack, so a model can
+    recognise `tukaani-project/xz` + `JiaT75` and answer from training data rather than
+    from the evidence — in the first Tier 2 run it explicitly cited CVE-2024-3094 by
+    number. Anonymising those two fields tests whether the verdict survives on evidence
+    alone.
+
+    This is a *partial* control and must be reported as one. File paths and diff contents
+    stay, because they are the evidence; `tests/files/bad-3-corrupt_lzma2.xz` is itself
+    recognisable. Full de-identification would mean deleting what is being judged.
     """
     lines = [
-        f"Repository: {change.repo}",
+        f"Repository: {'<redacted>' if anonymize else change.repo}",
         f"Change type: {'pull request' if change.source == 'pr' else 'direct push to default branch'}",
     ]
     if change.pr_number:
         lines.append(f"Pull request: #{change.pr_number}")
     if change.author:
-        lines.append(f"Author: {change.author}")
+        lines.append(f"Author: {'<redacted>' if anonymize else change.author}")
     if change.author_tenure_days is not None:
         lines.append(
             f"Author history in this repo: first commit {change.author_tenure_days} day(s) "
@@ -226,7 +242,9 @@ def build_prompt(change: Change, findings: list[Finding]) -> str:
     if change.source == "pr":
         lines.append(f"Approving reviews: {change.approving_review_count}")
         if change.merged_by:
-            lines.append(f"Merged by: {change.merged_by}")
+            lines.append(
+                "Merged by: <redacted>" if anonymize else f"Merged by: {change.merged_by}"
+            )
     if change.checks_passed is not None:
         lines.append(f"CI checks passed: {change.checks_passed}")
     lines.append(f"Files changed: {len(change.files)}")
@@ -254,7 +272,10 @@ def build_prompt(change: Change, findings: list[Finding]) -> str:
     return "\n".join(lines)
 
 
-def review(change: Change, findings: list[Finding], *, client=None, model: str = MODEL) -> Review:
+def review(
+    change: Change, findings: list[Finding], *, client=None, model: str = MODEL,
+    anonymize: bool = False,
+) -> Review:
     """Make one Claude call and return a structured verdict plus its cost.
 
     Never called for a change Tier 0 did not escalate — that decision belongs to
@@ -263,7 +284,7 @@ def review(change: Change, findings: list[Finding], *, client=None, model: str =
     """
     import anthropic
 
-    prompt = build_prompt(change, findings)
+    prompt = build_prompt(change, findings, anonymize=anonymize)
 
     if client is None:
         # Let the SDK resolve credentials rather than checking one env var: it also

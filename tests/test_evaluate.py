@@ -318,3 +318,20 @@ def test_cli_check_prints_findings(monkeypatch, capsys):
 def test_cli_scan_returns_an_error_when_nothing_found(monkeypatch):
     monkeypatch.setattr(fetch, "fetch_direct_pushes", lambda o, r, n: [])
     assert cli.main(["scan", "--repo", "o/r", "--quiet"]) == 1
+
+
+def test_anonymize_reaches_llm_review(monkeypatch):
+    seen = {}
+
+    def fake_review(change, findings, *, anonymize=False, **kw):
+        seen["anonymize"] = anonymize
+        return llm.Review(verdict=llm.Verdict(verdict="benign", confidence=0.5, rationale="r"))
+
+    monkeypatch.setattr(llm, "review", fake_review)
+    evaluate._run_one(_change(files=_malicious_files()), threshold=8, tier2=True, anonymize=True)
+    assert seen["anonymize"] is True
+
+
+def test_cli_anonymize_is_off_by_default():
+    assert cli.build_parser().parse_args(["evaluate"]).anonymize is False
+    assert cli.build_parser().parse_args(["evaluate", "--anonymize"]).anonymize is True

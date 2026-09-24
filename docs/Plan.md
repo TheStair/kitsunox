@@ -274,7 +274,43 @@ These belong in the write-up as findings, not as defects to engineer around:
    the distinction must not be blurred.
 3. **Sample size.** Five incidents is enough for a meaningful demonstration and too few
    for a confidence interval.
-4. **External benchmarking revealed a blind spot our own ground truth could not.**
+
+4. **Tier 2 verdicts are contaminated by recognition, and the ablation is mandatory.**
+   All five incidents are famous, heavily-documented public attacks that are certainly in
+   the model's training data. In the first Tier 2 run it cited **CVE-2024-3094 by number**
+   and named `right9ctrl` and the exfiltration gist unprompted. Re-running with the
+   repository and author fields withheld (`--anonymize`) moves detection from **5/5 to
+   4/5**:
+
+   | Incident | Identified | Anonymised |
+   |---|---|---|
+   | xz-utils | malicious (0.72) | **benign (0.80)** |
+   | event-stream | malicious (0.90) | malicious (0.85) |
+   | reviewdog | malicious (0.99) | malicious (0.99) |
+   | tj-actions | malicious (0.99) | malicious (0.99) |
+   | colors.js | malicious (0.97) | malicious (0.93) |
+
+   Four verdicts are robust — reviewdog and tj-actions hold at 0.99, because they turn on
+   decoded payload behaviour rather than on the name of the repository. **Any LLM-tier
+   result on publicly-known incidents must be reported alongside this ablation, or it is
+   a memory test rather than a measurement.** The control is partial and must be described
+   as such: file paths and diff contents remain, because they are the evidence.
+
+5. **A single change is the wrong unit of analysis for a staged attack — demonstrated,
+   not asserted.** The anonymised xz verdict did not fail through non-recognition; the
+   model still identified the fixtures and reasoned *against* the attack: "nothing in the
+   flagged set touches build scripts, CI configuration, or any code that would extract and
+   execute the fixture contents." That is **correct**. The commit adds opaque test
+   fixtures; the code that extracts and runs them lived in `m4/build-to-host.m4`, which
+   shipped only in the release tarball and never entered git. Tier 0 fires on a real
+   signal and Tier 2 correctly declines to infer intent from it. Both behave properly —
+   the unit of analysis is what fails.
+
+   Stated generally: **diff-scoped detection cannot establish intent when an attack's
+   payload and its trigger are separated across commits or artifacts.** Detecting xz
+   would require reasoning over a commit *series* plus the published tarball, which is a
+   different and much larger problem than the one scoped here.
+6. **External benchmarking revealed a blind spot our own ground truth could not.**
    Against the ASE 2026 npm benchmark (6,420 malicious / 7,288 benign, expert-reviewed),
    baseline detection of the content rules was 19.1%. The dominant miss was npm lifecycle
    install hooks: 67% of malicious packages declare one, and *none of the five git-level

@@ -1,0 +1,126 @@
+{
+  "generated_at": "2026-09-24T18:10:57",
+  "tier2_ran": true,
+  "summary": {
+    "detection": {
+      "detected": 5,
+      "of": 5
+    },
+    "false_positives": {
+      "flagged": 0,
+      "of": 0
+    },
+    "escalated": 5,
+    "cost_usd": 0.090748,
+    "tier2_errors": 0
+  },
+  "incidents": [
+    {
+      "key": "xz-utils",
+      "repo": "tukaani-project/xz",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.binary_added"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.72,
+      "rationale": "This is the tukaani-project/xz repository and the author is JiaT75 (Jia Tan), and the added fixtures include exactly tests/files/bad-3-corrupt_lzma2.xz and tests/files/good-large_compressed.lzma \u2014 the two opaque blobs that, in CVE-2024-3094, carried the encrypted stage-2/stage-3 backdoor payload later extracted and executed at build time via the m4 build-to-host script and the tainted release tarball. Standing alone the commit is innocuous-looking (binary test data is normal for a compressor, and it appears paired only with a build-file listing change), which is precisely the concealment: the payload is inert until a separate, unrelated-looking build script head/tail-slices and decompresses it. The combination of a known-compromised maintainer, direct push to the default branch, and these specific filenames outweighs the ordinary explanation.",
+      "tier2_error": null,
+      "input_tokens": 380,
+      "output_tokens": 1248,
+      "cost_usd": 0.0331
+    },
+    {
+      "key": "event-stream",
+      "repo": "dominictarr/event-stream",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 9,
+      "total_score": 12,
+      "escalated": true,
+      "rule_ids": [
+        "combo.new_maintainer_adds_dependency",
+        "content.dependency_added",
+        "context.new_contributor",
+        "context.new_maintainer_direct_push"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.9,
+      "rationale": "This is the event-stream compromise itself: author right9ctrl, four days after gaining commit access, pushed directly to the default branch adding 'flatmap-stream': '^0.1.0' to package.json. flatmap-stream was a newly-published package controlled by that same author, and the caret range let a later minor release ship the obfuscated Copay wallet-key stealer to every event-stream consumer. The diff contains no payload by design \u2014 the harm is delegated to an attacker-controlled dependency, which is why nothing in the visible change looks wrong.",
+      "tier2_error": null,
+      "input_tokens": 643,
+      "output_tokens": 478,
+      "cost_usd": 0.0156445
+    },
+    {
+      "key": "reviewdog",
+      "repo": "reviewdog/action-setup",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 26,
+      "total_score": 29,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_in_build_script",
+        "content.decode_call",
+        "content.encoded_blob",
+        "context.build_script_touched"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "install.sh gained a base64 blob (SCRIPT_RUNNER) that decodes to a Python script which locates the GitHub Actions Runner.Worker process via /proc and dumps its readable memory regions to stdout. The added shell code decodes it to $TEMP/runner_script.py, runs it under sudo on GitHub-hosted Linux runners, then greps the memory dump for '\"value\":...\"isSecret\":true' entries and double-base64-encodes them to the log \u2014 a deliberate, obfuscated runner-memory secret scraper executed on every consumer of this action.",
+      "tier2_error": null,
+      "input_tokens": 2388,
+      "output_tokens": 280,
+      "cost_usd": 0.0194195
+    },
+    {
+      "key": "tj-actions",
+      "repo": "tj-actions/changed-files",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 51,
+      "total_score": 52,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_executed",
+        "combo.encoded_payload_in_artifact",
+        "content.decode_call",
+        "content.encoded_blob",
+        "content.shell_exec",
+        "context.artifact_modified"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "dist/index.js gained an `updateFeatures(token)` function that shells out via exec.getExecOutput('bash', ['-c', ...]) to base64-decode a blob into /tmp/run.sh and run it. The decoded script curls https://gist.githubusercontent.com/nikitastupin/.../memdump.py, pipes it to `sudo python3`, and greps the runner process memory for `\"isSecret\":true` values, double-base64-encoding them to stdout so they land in CI logs. This is credential exfiltration hidden in a generated bundle under a routine renovate-authored push \u2014 the exact tj-actions/changed-files compromise.",
+      "tier2_error": null,
+      "input_tokens": 1061,
+      "output_tokens": 329,
+      "cost_usd": 0.0140095
+    },
+    {
+      "key": "colors.js",
+      "repo": "Marak/colors.js",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.unbounded_loop"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.97,
+      "rationale": "lib/index.js adds an unconditional `for (let i = 666; i < Infinity; i++)` loop at module load time, which hangs any process that requires the library, and it also invokes a newly-added `lib/custom/american` module immediately on import. The `/* remove this line after testing */` comment is a thin cover for code being pushed straight to the default branch of a widely-depended-on package; this is deliberate sabotage of downstream consumers rather than any plausible debugging leftover.",
+      "tier2_error": null,
+      "input_tokens": 289,
+      "output_tokens": 266,
+      "cost_usd": 0.0085745
+    }
+  ],
+  "control": []
+}

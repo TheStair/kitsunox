@@ -25,6 +25,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         incidents=not args.control_only,
         control=not args.incidents_only,
         tier2=args.tier2,
+        anonymize=args.anonymize,
         threshold=args.threshold,
         repos=args.repo or None,
         prs_per_repo=args.prs,
@@ -106,6 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
     scope.add_argument("--incidents-only", action="store_true", help="skip the control sample")
     scope.add_argument("--control-only", action="store_true", help="skip the ground truth")
     ev.add_argument("--tier2", action="store_true", help="also run Tier 2 (costs money)")
+    ev.add_argument("--anonymize", action="store_true",
+                    help="withhold repo and author names from Tier 2 (recognition ablation)")
     ev.add_argument("--threshold", type=int, default=None, help="override the escalation threshold")
     ev.add_argument("--repo", action="append", help="control repo (repeatable; default: the held-out set)")
     ev.add_argument("--prs", type=int, default=evaluate.DEFAULT_PRS_PER_REPO)

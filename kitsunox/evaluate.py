@@ -110,7 +110,7 @@ class Report:
         return [r for r in self.incidents + self.control if r.tier2_error]
 
 
-def _run_one(change: Change, *, threshold: int, tier2: bool) -> ChangeResult:
+def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = False) -> ChangeResult:
     findings = rules.scan(change)
     evidence = rules.evidence_score(findings)
     escalated = evidence >= threshold
@@ -128,7 +128,7 @@ def _run_one(change: Change, *, threshold: int, tier2: bool) -> ChangeResult:
     )
 
     if escalated and tier2:
-        review = llm.review(change, findings)
+        review = llm.review(change, findings, anonymize=anonymize)
         result.input_tokens = review.usage.input_tokens
         result.output_tokens = review.usage.output_tokens
         result.cost_usd = review.usage.cost_usd
@@ -182,6 +182,7 @@ def evaluate(
     incidents: bool = True,
     control: bool = True,
     tier2: bool = False,
+    anonymize: bool = False,
     threshold: int | None = None,
     repos: list[str] | None = None,
     prs_per_repo: int = DEFAULT_PRS_PER_REPO,
@@ -197,7 +198,7 @@ def evaluate(
             progress("Loading ground-truth incidents...")
         for incident in INCIDENTS:
             change = load_incident(incident)
-            result = _run_one(change, threshold=threshold, tier2=tier2)
+            result = _run_one(change, threshold=threshold, tier2=tier2, anonymize=anonymize)
             result.key = incident.key
             report.incidents.append(result)
             if progress:
@@ -209,7 +210,9 @@ def evaluate(
         for change in load_control(
             repos, prs_per_repo=prs_per_repo, pushes_per_repo=pushes_per_repo, progress=progress
         ):
-            report.control.append(_run_one(change, threshold=threshold, tier2=tier2))
+            report.control.append(
+                _run_one(change, threshold=threshold, tier2=tier2, anonymize=anonymize)
+            )
 
     return report
 

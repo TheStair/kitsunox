@@ -1,0 +1,126 @@
+{
+  "generated_at": "2026-09-24T18:35:02",
+  "tier2_ran": true,
+  "summary": {
+    "detection": {
+      "detected": 4,
+      "of": 5
+    },
+    "false_positives": {
+      "flagged": 0,
+      "of": 0
+    },
+    "escalated": 5,
+    "cost_usd": 0.082583,
+    "tier2_errors": 0
+  },
+  "incidents": [
+    {
+      "key": "xz-utils",
+      "repo": "tukaani-project/xz",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.binary_added"
+      ],
+      "verdict": "benign",
+      "confidence": 0.8,
+      "rationale": "The five added binaries are the canonical xz-utils test-suite fixtures (good-2cat.xz, bad-3-corrupt_lzma2.xz, bad-dict_size.lzma, good-small/large_compressed.lzma) \u2014 a compression/decompression library cannot be tested without opaque compressed blobs, including deliberately corrupt ones for error-path coverage. Unlike the xz incident, nothing in the flagged set touches build scripts, CI configuration, or any code that would extract and execute the fixture contents; the only other changed file is unflagged. The author is a long-tenured maintainer with 431 prior commits over two years, not a newly-trusted account.",
+      "tier2_error": null,
+      "input_tokens": 376,
+      "output_tokens": 643,
+      "cost_usd": 0.017955
+    },
+    {
+      "key": "event-stream",
+      "repo": "dominictarr/event-stream",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 9,
+      "total_score": 12,
+      "escalated": true,
+      "rule_ids": [
+        "combo.new_maintainer_adds_dependency",
+        "content.dependency_added",
+        "context.new_contributor",
+        "context.new_maintainer_direct_push"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.85,
+      "rationale": "The package.json diff adds `flatmap-stream: ^0.1.0` \u2014 the exact package used in the 2018 event-stream compromise, whose 0.1.1 release carried an encrypted payload that harvested cryptocurrency wallet credentials from downstream applications. The caret range explicitly permits resolution to that trojanized patch release. The delivery pattern matches as well: an author with only 9 commits over 4 days pushing the dependency straight to the default branch with no review, which is precisely how the event-stream handover was abused.",
+      "tier2_error": null,
+      "input_tokens": 637,
+      "output_tokens": 512,
+      "cost_usd": 0.0164645
+    },
+    {
+      "key": "reviewdog",
+      "repo": "reviewdog/action-setup",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 26,
+      "total_score": 29,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_in_build_script",
+        "content.decode_call",
+        "content.encoded_blob",
+        "context.build_script_touched"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "The base64 blob in install.sh decodes to a Python script that locates the GitHub Actions `Runner.Worker` process, walks /proc/<pid>/maps and dumps all readable memory regions to stdout. The surrounding shell code runs it under sudo on GitHub-hosted Linux runners, greps the memory dump for `\"value\":\"...\",\"isSecret\":true` entries, and double-base64-encodes them into the workflow log \u2014 a deliberate CI secret scraper concealed as an encoded string, matching the reviewdog/tj-actions compromise pattern.",
+      "tier2_error": null,
+      "input_tokens": 2384,
+      "output_tokens": 335,
+      "cost_usd": 0.0207745
+    },
+    {
+      "key": "tj-actions",
+      "repo": "tj-actions/changed-files",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 51,
+      "total_score": 52,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_executed",
+        "combo.encoded_payload_in_artifact",
+        "content.decode_call",
+        "content.encoded_blob",
+        "content.shell_exec",
+        "context.artifact_modified"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "dist/index.js gains an `updateFeatures` function that base64-decodes a blob into /tmp/run.sh and runs it via bash; the decoded script curls https://gist.githubusercontent.com/nikitastupin/.../memdump.py, pipes it into `sudo python3`, and greps the runner's process memory for `\"isSecret\":true` values, double-base64-encoding and echoing them into the build log. That is credential exfiltration from CI, injected only into the generated bundle where it could not have come from reviewed source \u2014 the exact tj-actions/changed-files compromise technique.",
+      "tier2_error": null,
+      "input_tokens": 1058,
+      "output_tokens": 294,
+      "cost_usd": 0.0131195
+    },
+    {
+      "key": "colors.js",
+      "repo": "Marak/colors.js",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.unbounded_loop"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.93,
+      "rationale": "lib/index.js gains top-level code that runs at require time: it invokes a newly-referenced '../lib/custom/american' module and then enters `for (let i = 666; i < Infinity; i++)`, a loop with no exit condition that will hang any process importing the library. The '/* remove this line after testing */' comment and the commented-out 'testing'.zalgo.rainbow line are pretext/cover rather than an explanation \u2014 this is a verbatim reproduction of the colors.js sabotage pattern, pushed directly to the default branch where it bypasses review.",
+      "tier2_error": null,
+      "input_tokens": 288,
+      "output_tokens": 494,
+      "cost_usd": 0.0142695
+    }
+  ],
+  "control": []
+}
