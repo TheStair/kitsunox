@@ -283,12 +283,51 @@ def test_author_tenure_is_none_when_the_lookup_fails():
 
 
 @responses.activate
-def test_author_tenure_never_goes_negative():
+def test_author_with_only_later_commits_reports_unknown_not_zero():
+    # Their history starts after this change, so they had none at the time. Reporting
+    # 0 days would read as "brand new" and could trip the new-maintainer rule; unknown
+    # is the only honest answer.
     responses.add(
         responses.GET, f"{BASE}/repos/o/r/commits", json=[_commit_entry("2025-01-01T00:00:00Z")]
     )
-    days, _ = fetch.author_tenure("o", "r", "x", datetime(2024, 1, 1))
-    assert days == 0
+    assert fetch.author_tenure("o", "r", "x", datetime(2024, 1, 1)) == (None, None)
+
+
+@responses.activate
+def test_an_authors_first_ever_commit_has_zero_tenure_and_counts_itself():
+    when = datetime(2024, 1, 1)
+    responses.add(
+        responses.GET, f"{BASE}/repos/o/r/commits", json=[_commit_entry("2024-01-01T00:00:00Z")]
+    )
+    assert fetch.author_tenure("o", "r", "x", when) == (0, 1)
+
+
+@responses.activate
+def test_tenure_counts_only_commits_at_or_before_the_change():
+    # An author's later commits say nothing about how established they were when *this*
+    # change landed, so history must be truncated at the change date.
+    responses.add(
+        responses.GET, f"{BASE}/repos/o/r/commits",
+        json=[
+            _commit_entry("2024-06-01T00:00:00Z"),  # after the change — must not count
+            _commit_entry("2024-01-10T00:00:00Z"),
+            _commit_entry("2024-01-01T00:00:00Z"),
+        ],
+    )
+    days, count = fetch.author_tenure("o", "r", "x", datetime(2024, 1, 20))
+    assert (days, count) == (19, 2)
+
+
+@responses.activate
+def test_author_history_is_fetched_once_per_author_not_per_commit():
+    # The whole point of the rewrite: repo-scale scanning must not refetch history for
+    # every commit by the same author.
+    responses.add(
+        responses.GET, f"{BASE}/repos/o/r/commits", json=[_commit_entry("2024-01-01T00:00:00Z")]
+    )
+    for day in range(2, 8):
+        fetch.author_tenure("o", "r", "x", datetime(2024, 1, day))
+    assert len(responses.calls) == 1, "history should come from cache after the first call"
 
 
 # ------------------------------------------------------------------ fetch_direct_pushes

@@ -184,50 +184,56 @@ def _fetch_checks_passed(owner: str, repo: str, sha: str) -> bool | None:
     return True
 
 
-def author_tenure(owner: str, repo: str, author: str, until: datetime) -> tuple[int | None, int | None]:
-    """(days since this author's first commit to this repo, commits they had made) as of
-    `until`.
+def author_history(owner: str, repo: str, author: str) -> list[datetime]:
+    """Every commit date this author has in this repo, oldest first.
 
-    GitHub exposes no record of when someone was granted commit rights, so the first
-    commit in the repo is the proxy for "how long have they been around here".
+    Fetched once per (repo, author) and cached on disk. This is what makes repo-scale
+    scanning affordable: `author_tenure` used to key its cache on the change's timestamp,
+    so a thousand commits by the same author meant a thousand multi-page refetches of the
+    same history. Now it is one fetch, and every tenure question is answered locally.
 
-    Pages must be walked to the end rather than stopping at the first 100: the oldest
-    commit on page 1 is only the author's 100th-most-recent, which understates a prolific
-    author's tenure enormously. Reading a single page put xz's attacker at 91 days
-    instead of ~2 years — one day the wrong side of the "new maintainer" threshold, and a
-    false positive that would have looked like a correct miss.
-
-    Capped at 10 pages: an author with 1000+ commits here is established under any
-    threshold worth having. Cached on disk and keyed per (repo, author), so a whole-repo
-    scan pays this once per author rather than once per commit.
+    Capped at 10 pages — an author with 1000+ commits here is established under any
+    threshold worth having.
     """
-    batch: list[dict] = []
-    count = 0
+    dates: list[datetime] = []
     page = 1
     while page <= 10:
         try:
             batch = _get_json(
                 f"{API_BASE}/repos/{owner}/{repo}/commits",
-                {"author": author, "until": until.isoformat() + "Z", "per_page": 100, "page": page},
+                {"author": author, "per_page": 100, "page": page},
             )
         except FetchError:
-            return None, None
+            break
         if not batch:
             break
-        count += len(batch)
+        for entry in batch:
+            stamp = _parse_ts(entry.get("commit", {}).get("author", {}).get("date"))
+            if stamp is not None:
+                dates.append(stamp)
         if len(batch) < 100:
-            break  # last page: its final entry is the author's earliest commit
+            break
         page += 1
+    return sorted(dates)
 
-    if not count:
+
+def author_tenure(owner: str, repo: str, author: str, until: datetime) -> tuple[int | None, int | None]:
+    """(days since this author's first commit to this repo, commits they had made) as of
+    `until`.
+
+    GitHub exposes no record of when someone was granted commit rights, so the first
+    commit in the repo is the proxy for "how long have they been around here". Both
+    figures are derived from `author_history`, which is fetched once per author and
+    cached, so asking this for every commit in a repo costs one request per author.
+
+    Counting must be done as-of `until`, not over the whole history: an author's later
+    commits say nothing about how established they were when *this* change landed.
+    """
+    history = author_history(owner, repo, author)
+    prior = [d for d in history if d <= until]
+    if not prior:
         return None, None
-    if not batch:
-        return None, count  # ran off the end on a page boundary; count is still sound
-
-    first = _parse_ts(batch[-1].get("commit", {}).get("author", {}).get("date"))
-    if first is None:
-        return None, count
-    return max(0, (until - first).days), count
+    return max(0, (until - prior[0]).days), len(prior)
 
 
 def _attach_tenure(change: Change, owner: str, repo: str) -> Change:
