@@ -393,8 +393,10 @@ def fetch_direct_pushes(
 
 
 # --------------------------------------------------------------------------- Tier 3
-# Read-only repository access, used only by the investigation tier. Everything here is
-# scoped to a single ref so an investigation cannot wander outside the change's context.
+# The only repository access Tier 3 gets. Deliberately just this: an earlier version also
+# offered a recursive tree listing and per-path history, and five investigations drained a
+# 5,000/hour GitHub budget. Reads are additionally restricted by the caller to paths the
+# change already touched, so an investigation cannot wander.
 
 
 def read_file_at(owner: str, repo: str, path: str, ref: str) -> str:
@@ -419,42 +421,3 @@ def read_file_at(owner: str, repo: str, path: str, ref: str) -> str:
     if len(raw) > 200_000:
         return raw[:200_000].decode("utf-8", errors="replace") + "\n<... file truncated>"
     return raw.decode("utf-8", errors="replace")
-
-
-def list_tree(owner: str, repo: str, ref: str, prefix: str = "") -> list[str]:
-    """Paths in the repository at a ref, optionally filtered by prefix."""
-    try:
-        data = _get_json(f"{API_BASE}/repos/{owner}/{repo}/git/trees/{ref}", {"recursive": "1"})
-    except FetchError:
-        return []
-    paths = [
-        entry["path"] for entry in data.get("tree", []) if entry.get("type") == "blob"
-    ]
-    return [p for p in paths if p.startswith(prefix)][:2000]
-
-
-def commits_touching(owner: str, repo: str, path: str, until: datetime | None = None,
-                     limit: int = 20) -> list[dict]:
-    """Recent commits touching a path: sha, date, author, first line of the message.
-
-    `until` keeps an investigation from reading the future — a later fix or revert would
-    tell the reviewer the answer rather than letting it judge the change on its own terms.
-    """
-    params: dict[str, Any] = {"path": path, "per_page": min(limit, 100)}
-    if until is not None:
-        params["until"] = until.isoformat() + "Z"
-    try:
-        data = _get_json(f"{API_BASE}/repos/{owner}/{repo}/commits", params)
-    except FetchError:
-        return []
-    out = []
-    for entry in data[:limit]:
-        commit = entry.get("commit", {}) or {}
-        out.append({
-            "sha": entry.get("sha", "")[:10],
-            "date": (commit.get("author") or {}).get("date", ""),
-            "author": (entry.get("author") or {}).get("login")
-                      or (commit.get("author") or {}).get("name", ""),
-            "message": (commit.get("message", "") or "").splitlines()[0][:120],
-        })
-    return out

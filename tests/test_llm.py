@@ -510,3 +510,46 @@ def test_investigation_needs_a_parseable_repo_name():
     review = _review("suspicious", 0.5)
     change = _change([_file("a.js")], repo="not-a-repo-name")
     assert llm.investigate(change, [_finding(file_path=None)], review).verdict is review.verdict
+
+
+def test_investigation_reads_only_files_the_change_touched(monkeypatch):
+    # An investigation must not wander the repository: that is what drained the API
+    # budget in the first version, and breadth was the wrong instinct anyway.
+    import anthropic
+
+    captured = {}
+
+    class Runner:
+        def __iter__(self):
+            return iter(())
+
+    class FakeBeta:
+        def __init__(self): self.messages = self
+        def tool_runner(self, **kw):
+            captured["tools"] = kw["tools"]
+            return Runner()
+
+    class Client:
+        def __init__(self):
+            self.beta = FakeBeta()
+            self.messages = self
+        def parse(self, **kw):
+            return FakeResponse(llm.Verdict(verdict="benign", confidence=0.9, rationale="r"))
+
+    change = _change([_file("dist/index.js", "@@ -1,0 +1,1 @@\n+x")], repo="o/r")
+    review = llm.Review(verdict=llm.Verdict(verdict="suspicious", confidence=0.5, rationale="r"))
+    llm.investigate(change, [_finding(file_path="dist/index.js", line=1)], review, client=Client())
+
+    tools = captured["tools"]
+    assert len(tools) == 1, "one tool: read a file this change touched"
+    assert tools[0].name == "read_changed_file"
+
+    # It refuses anything outside the change. Only the refusal path is exercised here:
+    # the allowed path would make a real API call, which no test may do.
+    refusal = tools[0].call({"path": "m4/build-to-host.m4"})
+    assert "not part of this change" in refusal
+    assert "dist/index.js" in refusal, "the refusal should say what IS readable"
+
+
+def test_a_narrowed_investigation_has_a_read_budget():
+    assert llm.MAX_FILE_READS <= 10 and llm.MAX_INVESTIGATION_TURNS <= 6

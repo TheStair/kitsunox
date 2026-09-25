@@ -391,7 +391,21 @@ def review(
 # own rationale conceded "the extraction machinery is not in this diff" and then convicted
 # on a filename fingerprint. Those are the cases that need someone to go and look.
 INVESTIGATE_BELOW_CONFIDENCE = 0.85
-MAX_INVESTIGATION_TURNS = 6
+
+# Tier 3 is depth, not breadth. It reads the *full current contents of the files this
+# change already touched* and nothing else in the repository.
+#
+# The first version browsed: a recursive tree listing, arbitrary file reads, per-path
+# history. Five investigations drained a 5,000/hour GitHub budget, largely because
+# `list_files` pulled an entire repository listing to answer "what is in m4/". Breadth is
+# also the wrong instinct. A diff shows twelve changed lines of a two-thousand-line
+# bundle; what decides the question is usually those lines *in their file*, not a tour of
+# the project.
+#
+# Restricting reads to changed paths bounds the cost at one request per file, all already
+# warm in the cache from fetching the change, and keeps an investigation from wandering.
+MAX_INVESTIGATION_TURNS = 4
+MAX_FILE_READS = 6
 
 
 def needs_investigation(review: Review) -> bool:
@@ -405,21 +419,21 @@ def needs_investigation(review: Review) -> bool:
 
 
 INVESTIGATOR_PROMPT = """\
-A first-pass reviewer looked at this change and could not decide on the diff alone. You \
-have read-only access to the repository as it stood at this change, so you can check the \
-things the diff cannot show.
+A first-pass reviewer looked at this change and could not decide from the diff alone. You \
+can read the full contents of the files this change touched, as they stand at this change. \
+You cannot read anything else in the repository.
 
-Useful questions, depending on the change:
+A diff shows altered lines out of context. Reading the whole file usually settles what the \
+diff could not:
 
-- Does anything in the repository actually read, extract or execute what this change \
-added? A payload with no consumer is inert; a payload with one is not.
-- Was the flagged content already present before this change, somewhere else in the \
-repository? Vendored code that merely moved is not an introduction.
-- What else has touched these files, and who? A payload and its trigger may arrive in \
-separate commits.
+- Is the added code reachable - called, exported, registered, run at import or install \
+time? Or is it dead weight that nothing invokes?
+- Does the surrounding file explain the addition, or contradict it?
+- Does the rest of the file already contain similar content, making the addition \
+consistent with what was there rather than foreign to it?
 
-Look before concluding, and look narrowly — you are answering one question, not auditing \
-the project. When you have what you need, stop and give your verdict.\
+Read only the files you actually need and stop as soon as you can decide. If the answer \
+genuinely lies outside these files, say so in your rationale and judge on what you have.\
 """
 
 
@@ -439,39 +453,29 @@ def investigate(change: Change, findings: list[Finding], review: Review, *, clie
     owner, name = change.repo.split("/", 1)
     ref = change.sha
 
+    changed = {f.path for f in change.files}
+    reads: list[str] = []
+
     @beta_tool
-    def read_file(path: str) -> str:
-        """Read a file from the repository as it stood at this change.
+    def read_changed_file(path: str) -> str:
+        """Read the full contents of a file this change touched, as of this change.
+
+        The diff shows only altered lines; this shows them in their file, which is
+        usually what settles whether an addition is reachable or inert.
 
         Args:
-            path: Repository-relative path, e.g. "m4/build-to-host.m4".
+            path: One of the paths listed in this change. Other paths are refused.
         """
+        if path not in changed:
+            return (
+                f"<{path} is not part of this change. Readable paths: "
+                + ", ".join(sorted(changed))
+                + ">"
+            )
+        if len(reads) >= MAX_FILE_READS:
+            return "<read budget exhausted; decide on what you have>"
+        reads.append(path)
         return fetch.read_file_at(owner, name, path, ref)
-
-    @beta_tool
-    def list_files(prefix: str = "") -> str:
-        """List repository file paths at this change, optionally under a prefix.
-
-        Args:
-            prefix: Restrict to paths starting with this, e.g. "m4/".
-        """
-        paths = fetch.list_tree(owner, name, ref, prefix)
-        return "\n".join(paths[:400]) if paths else "<no files found>"
-
-    @beta_tool
-    def history_of(path: str) -> str:
-        """Commits that touched a path, up to and including this change.
-
-        Args:
-            path: Repository-relative path.
-        """
-        rows = fetch.commits_touching(owner, name, path, until=change.committed_at)
-        if not rows:
-            return "<no history available>"
-        return "\n".join(
-            f"{r['sha']}  {r['date'][:10]}  {'<redacted>' if anonymize else r['author']}  {r['message']}"
-            for r in rows
-        )
 
     prior = review.verdict
     opening = (
@@ -495,7 +499,7 @@ def investigate(change: Change, findings: list[Finding], review: Review, *, clie
             max_iterations=MAX_INVESTIGATION_TURNS,
             system=[{"type": "text", "text": SYSTEM_PROMPT + "\n\n" + INVESTIGATOR_PROMPT,
                      "cache_control": {"type": "ephemeral"}}],
-            tools=[read_file, list_files, history_of],
+            tools=[read_changed_file],
             messages=[{"role": "user", "content": opening}],
         )
         transcript = []
