@@ -251,6 +251,33 @@ repository is excluded from the control sample entirely.
 
 ## 7. Evaluation & deliverable
 
+### Measured results
+
+Tier 0 only, `kitsunox evaluate` (reports under `reports/`):
+
+| | Result |
+|---|---|
+| Detection | **5/5** incidents |
+| False positives, held out | **8/695 = 1.15%** across 25 repos, 10 languages (449 PRs + 246 direct pushes) |
+| False positives, after fixing those 8 | 0/695 — **in-sample, not a claim**; see below |
+| Escalation rate | **5/700 = 0.71%** of changes reach Tier 2 |
+| Tier 2 cost | ~$0.02–0.03 per escalated change; ~**$0.13 to review 700 changes** |
+
+**The honest false-positive figure is 1.15%, not 0%.** Both fixes were derived from those
+eight failures, so the corpus stopped being held out the moment it was tuned against —
+the same circularity that invalidated the earlier 0/81. Asserting 0% requires a fresh
+sample from untouched repositories. What 0/695 does show is that the fixes remove their
+target classes without costing detection.
+
+Every one of the eight false positives appeared in a language **absent from the tuning
+set** — `while (true)` in nlohmann/json (C++), a zlib version string read as an IP in
+curl (C). A Python/JavaScript-only control would have reported a misleadingly clean
+number. That is the argument for a multi-language control sample, and it is evidence
+rather than assertion.
+
+The escalation rate is the tiered-funnel claim made concrete: Tier 0 disposes of 99.3% of
+changes for nothing, and the expensive tier runs on the rest.
+
 - **Detection rate** — of the 5 incidents, how many Tier 0 escalates and Tier 2 confirms.
 - **False-positive rate** — on the held-out corpus, reported separately for merged PRs
   and direct pushes, since the rule populations differ.
