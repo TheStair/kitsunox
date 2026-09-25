@@ -62,6 +62,7 @@ class ChangeResult:
     confidence: float | None = None
     rationale: str | None = None
     tier2_error: str | None = None
+    investigated: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
@@ -98,6 +99,10 @@ class Report:
         return sum(1 for r in judged if r.detected), len(judged)
 
     @property
+    def investigated_count(self) -> int:
+        return sum(1 for r in self.incidents + self.control if r.investigated)
+
+    @property
     def escalated_count(self) -> int:
         return sum(1 for r in self.incidents + self.control if r.escalated)
 
@@ -110,7 +115,8 @@ class Report:
         return [r for r in self.incidents + self.control if r.tier2_error]
 
 
-def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = False) -> ChangeResult:
+def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = False,
+             tier3: bool = False) -> ChangeResult:
     findings = rules.scan(change)
     evidence = rules.evidence_score(findings)
     escalated = evidence >= threshold
@@ -129,6 +135,17 @@ def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = F
 
     if escalated and tier2:
         review = llm.review(change, findings, anonymize=anonymize)
+
+        # Tier 3 only for a verdict Tier 2 could not stand behind. Escalating everything
+        # would collapse the funnel: several calls where one would do.
+        if tier3 and llm.needs_investigation(review):
+            deeper = llm.investigate(change, findings, review, anonymize=anonymize)
+            deeper.usage.input_tokens += review.usage.input_tokens
+            deeper.usage.output_tokens += review.usage.output_tokens
+            deeper.usage.cache_read_tokens += review.usage.cache_read_tokens
+            review = deeper
+            result.investigated = True
+
         result.input_tokens = review.usage.input_tokens
         result.output_tokens = review.usage.output_tokens
         result.cost_usd = review.usage.cost_usd
@@ -183,6 +200,7 @@ def evaluate(
     control: bool = True,
     tier2: bool = False,
     anonymize: bool = False,
+    tier3: bool = False,
     threshold: int | None = None,
     repos: list[str] | None = None,
     prs_per_repo: int = DEFAULT_PRS_PER_REPO,
@@ -198,7 +216,7 @@ def evaluate(
             progress("Loading ground-truth incidents...")
         for incident in INCIDENTS:
             change = load_incident(incident)
-            result = _run_one(change, threshold=threshold, tier2=tier2, anonymize=anonymize)
+            result = _run_one(change, threshold=threshold, tier2=tier2, anonymize=anonymize, tier3=tier3)
             result.key = incident.key
             report.incidents.append(result)
             if progress:
@@ -211,7 +229,8 @@ def evaluate(
             repos, prs_per_repo=prs_per_repo, pushes_per_repo=pushes_per_repo, progress=progress
         ):
             report.control.append(
-                _run_one(change, threshold=threshold, tier2=tier2, anonymize=anonymize)
+                _run_one(change, threshold=threshold, tier2=tier2, anonymize=anonymize,
+                         tier3=tier3)
             )
 
     return report
@@ -241,6 +260,9 @@ def format_summary(report: Report) -> str:
     seen = len(report.incidents) + len(report.control)
     lines.append(f"\nTier 2          {report.escalated_count}/{seen} changes escalated")
     if report.tier2_ran:
+        if report.investigated_count:
+            lines.append(f"Tier 3          {report.investigated_count} investigated "
+                         f"(ambiguous at Tier 2)")
         lines.append(f"                ${report.total_cost_usd:.4f} spent")
         if report.errors:
             lines.append(f"                {len(report.errors)} call(s) failed — excluded from rates")
@@ -262,6 +284,7 @@ def write_report(report: Report, path: Path) -> Path:
             "detection": {"detected": hit, "of": det_total},
             "false_positives": {"flagged": fp, "of": fp_total},
             "escalated": report.escalated_count,
+            "investigated": report.investigated_count,
             "cost_usd": round(report.total_cost_usd, 6),
             "tier2_errors": len(report.errors),
         },

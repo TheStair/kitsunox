@@ -390,3 +390,71 @@ def fetch_direct_pushes(
                 continue
         page += 1
     return changes
+
+
+# --------------------------------------------------------------------------- Tier 3
+# Read-only repository access, used only by the investigation tier. Everything here is
+# scoped to a single ref so an investigation cannot wander outside the change's context.
+
+
+def read_file_at(owner: str, repo: str, path: str, ref: str) -> str:
+    """File contents at a ref, or a short explanatory string if unavailable.
+
+    Returns a message rather than raising: an investigating model asking for a file that
+    does not exist has learned something useful, and an exception would end the loop.
+    """
+    import base64
+
+    try:
+        data = _get_json(f"{API_BASE}/repos/{owner}/{repo}/contents/{path}", {"ref": ref})
+    except FetchError as exc:
+        return f"<could not read {path} at {ref}: {exc}>"
+    if isinstance(data, list):
+        return f"<{path} is a directory; it contains: " + ", ".join(
+            entry.get("name", "?") for entry in data[:200]
+        ) + ">"
+    if data.get("encoding") != "base64" or "content" not in data:
+        return f"<{path} is not readable as text>"
+    raw = base64.b64decode(data["content"])
+    if len(raw) > 200_000:
+        return raw[:200_000].decode("utf-8", errors="replace") + "\n<... file truncated>"
+    return raw.decode("utf-8", errors="replace")
+
+
+def list_tree(owner: str, repo: str, ref: str, prefix: str = "") -> list[str]:
+    """Paths in the repository at a ref, optionally filtered by prefix."""
+    try:
+        data = _get_json(f"{API_BASE}/repos/{owner}/{repo}/git/trees/{ref}", {"recursive": "1"})
+    except FetchError:
+        return []
+    paths = [
+        entry["path"] for entry in data.get("tree", []) if entry.get("type") == "blob"
+    ]
+    return [p for p in paths if p.startswith(prefix)][:2000]
+
+
+def commits_touching(owner: str, repo: str, path: str, until: datetime | None = None,
+                     limit: int = 20) -> list[dict]:
+    """Recent commits touching a path: sha, date, author, first line of the message.
+
+    `until` keeps an investigation from reading the future — a later fix or revert would
+    tell the reviewer the answer rather than letting it judge the change on its own terms.
+    """
+    params: dict[str, Any] = {"path": path, "per_page": min(limit, 100)}
+    if until is not None:
+        params["until"] = until.isoformat() + "Z"
+    try:
+        data = _get_json(f"{API_BASE}/repos/{owner}/{repo}/commits", params)
+    except FetchError:
+        return []
+    out = []
+    for entry in data[:limit]:
+        commit = entry.get("commit", {}) or {}
+        out.append({
+            "sha": entry.get("sha", "")[:10],
+            "date": (commit.get("author") or {}).get("date", ""),
+            "author": (entry.get("author") or {}).get("login")
+                      or (commit.get("author") or {}).get("name", ""),
+            "message": (commit.get("message", "") or "").splitlines()[0][:120],
+        })
+    return out

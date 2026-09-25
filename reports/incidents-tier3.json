@@ -1,0 +1,132 @@
+{
+  "generated_at": "2026-09-24T19:13:11",
+  "tier2_ran": true,
+  "summary": {
+    "detection": {
+      "detected": 5,
+      "of": 5
+    },
+    "false_positives": {
+      "flagged": 0,
+      "of": 0
+    },
+    "escalated": 5,
+    "investigated": 0,
+    "cost_usd": 0.151418,
+    "tier2_errors": 0
+  },
+  "incidents": [
+    {
+      "key": "xz-utils",
+      "repo": "tukaani-project/xz",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.binary_added"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.72,
+      "rationale": "This is the xz-utils test-fixture commit whose filenames (tests/files/bad-3-corrupt_lzma2.xz, tests/files/good-large_compressed.lzma), commit message ('Tests: Add a few test files.'), and direct push by a long-trusted maintainer match the CVE-2024-3094 backdoor payload delivery exactly: the two blobs carry the encrypted stage of the liblzma sshd backdoor, decoded at build time by the doctored build-to-host.m4 shipped only in release tarballs. The README entries added here are written specifically to make unparseable, high-entropy content unremarkable \u2014 'Only the LZMA2 data is corrupt' and 'a mix of repeated characters and random data' \u2014 which is precisely the concealment that lets an opaque payload survive review. The extraction machinery is not in this diff (it lives in the m4/ build glue and the tarball-only autotools files), so the blobs alone are inert, but the filename/message fingerprint is decisive.",
+      "tier2_error": null,
+      "investigated": false,
+      "input_tokens": 1341,
+      "output_tokens": 1378,
+      "cost_usd": 0.041155000000000004
+    },
+    {
+      "key": "event-stream",
+      "repo": "dominictarr/event-stream",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 9,
+      "total_score": 12,
+      "escalated": true,
+      "rule_ids": [
+        "combo.new_maintainer_adds_dependency",
+        "content.dependency_added",
+        "context.new_contributor",
+        "context.new_maintainer_direct_push"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.72,
+      "rationale": "This is the event-stream 3.3.5 commit that introduced `flatmap-stream` \u2014 the package whose 0.1.1 release carried the Copay wallet-credential-stealing payload; the package name, version, and lockfile integrity hash match that known incident exactly. Even setting the historical identity aside, the shape is the attack: a maintainer of four days pushing straight to the default branch to take an external dependency on a brand-new, single-purpose package for functionality event-stream could implement in a few lines on top of its existing `through`/`map`, pinned with `^0.1.0` so any subsequent 0.1.x publish by that same author is pulled in automatically at install time. The diff itself is clean by design \u2014 the payload never had to appear here, only the caret range that would fetch it.",
+      "tier2_error": null,
+      "investigated": false,
+      "input_tokens": 1693,
+      "output_tokens": 1525,
+      "cost_usd": 0.0470695
+    },
+    {
+      "key": "reviewdog",
+      "repo": "reviewdog/action-setup",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 26,
+      "total_score": 29,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_in_build_script",
+        "content.decode_call",
+        "content.encoded_blob",
+        "context.build_script_touched"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "The base64 blob added to install.sh decodes to a Python script that locates the GitHub Actions `Runner.Worker` process and dumps its readable memory regions from /proc/<pid>/mem to stdout; the shell then runs it under sudo and greps the dump for `\"...\":{\"value\":\"...\",\"isSecret\":true}` patterns, double-base64-encodes the matches and echoes them into the workflow log for the attacker to harvest. This is masked behind an innocuous '::group::\ud83d\udc36 Preparing environment' banner and a commit message claiming to 'correctly handle different environments', and is gated to only fire on GitHub-hosted Linux runners to avoid tripping local testing. This is unambiguous CI secret exfiltration, not a false positive.",
+      "tier2_error": null,
+      "investigated": false,
+      "input_tokens": 2866,
+      "output_tokens": 391,
+      "cost_usd": 0.024584500000000002
+    },
+    {
+      "key": "tj-actions",
+      "repo": "tj-actions/changed-files",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 51,
+      "total_score": 52,
+      "escalated": true,
+      "rule_ids": [
+        "combo.encoded_payload_executed",
+        "combo.encoded_payload_in_artifact",
+        "content.decode_call",
+        "content.encoded_blob",
+        "content.shell_exec",
+        "context.artifact_modified"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.99,
+      "rationale": "The added `updateFeatures()` in dist/index.js does nothing related to 'features': it base64-decodes a blob into /tmp/run.sh and runs it via bash. The decoded script curls https://gist.githubusercontent.com/nikitastupin/.../memdump.py, pipes it to `sudo python3`, greps the Runner process memory for `\"...\":{\"value\":\"...\",\"isSecret\":true}` entries, and double-base64-encodes them to stdout where they land in the workflow log \u2014 the known tj-actions/changed-files secret-dumping payload. It was injected only into the built bundle (with a sourceMappingURL line appended to look like a normal rebuild), so it never appeared in reviewable source, and it is invoked unconditionally at the top of run() with the caller's token.",
+      "tier2_error": null,
+      "investigated": false,
+      "input_tokens": 2317,
+      "output_tokens": 377,
+      "cost_usd": 0.021489499999999998
+    },
+    {
+      "key": "colors.js",
+      "repo": "Marak/colors.js",
+      "source": "push",
+      "ground_truth": "malicious",
+      "evidence_score": 8,
+      "total_score": 8,
+      "escalated": true,
+      "rule_ids": [
+        "content.unbounded_loop"
+      ],
+      "verdict": "malicious",
+      "confidence": 0.96,
+      "rationale": "lib/index.js adds top-level code that runs on every require: it invokes the new `americanFlag()` banner and then enters `for (let i = 666; i < Infinity; i++)` printing zalgo-corrupted text forever, which hangs or floods the console of any consumer that imports the package. The commit message claims only to add a flag module, concealing the import-time infinite loop, and the 'remove this line after testing' comment is a fig leaf for code pushed straight to the default branch. This is deliberate sabotage of downstream consumers rather than any plausible test or feature.",
+      "tier2_error": null,
+      "investigated": false,
+      "input_tokens": 1143,
+      "output_tokens": 437,
+      "cost_usd": 0.017119500000000003
+    }
+  ],
+  "control": []
+}

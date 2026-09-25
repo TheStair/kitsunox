@@ -26,6 +26,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         control=not args.incidents_only,
         tier2=args.tier2,
         anonymize=args.anonymize,
+        tier3=args.tier3,
         threshold=args.threshold,
         repos=args.repo or None,
         prs_per_repo=args.prs,
@@ -109,6 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     scope.add_argument("--incidents-only", action="store_true", help="skip the control sample")
     scope.add_argument("--control-only", action="store_true", help="skip the ground truth")
     ev.add_argument("--tier2", action="store_true", help="also run Tier 2 (costs money)")
+    ev.add_argument("--tier3", action="store_true",
+                    help="investigate ambiguous Tier 2 verdicts with repo access (costs more)")
     ev.add_argument("--anonymize", action="store_true",
                     help="withhold repo and author names from Tier 2 (recognition ablation)")
     ev.add_argument("--threshold", type=int, default=None, help="override the escalation threshold")

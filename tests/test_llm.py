@@ -463,3 +463,50 @@ def test_a_runaway_message_is_truncated(monkeypatch):
     monkeypatch.setattr(llm, "MAX_MESSAGE_CHARS", 50)
     prompt = llm.build_prompt(_change([_file("a.js")], message="x" * 500), [_finding(file_path=None)])
     assert "truncated" in prompt
+
+
+# ============================================================== tier 3 escalation
+
+# Tier 2 sees the commit and its diff. Only a verdict it cannot stand behind goes to the
+# investigating tier, which costs several calls where Tier 2 costs one.
+
+
+def _review(verdict="benign", confidence=0.95):
+    return llm.Review(verdict=llm.Verdict(verdict=verdict, confidence=confidence, rationale="r"))
+
+
+def test_suspicious_always_escalates():
+    # "suspicious" is defined as ambiguous on the evidence shown, which is the signal.
+    assert llm.needs_investigation(_review("suspicious", 0.99)) is True
+
+
+@pytest.mark.parametrize("verdict", ["malicious", "benign"])
+def test_a_confident_verdict_does_not_escalate(verdict):
+    assert llm.needs_investigation(_review(verdict, 0.95)) is False
+
+
+@pytest.mark.parametrize("verdict", ["malicious", "benign"])
+def test_a_hesitant_verdict_escalates(verdict):
+    low = llm.INVESTIGATE_BELOW_CONFIDENCE - 0.01
+    assert llm.needs_investigation(_review(verdict, low)) is True
+
+
+def test_a_failed_tier2_call_does_not_escalate():
+    # Unknowable is not ambiguous; re-running it as an agent will not help.
+    assert llm.needs_investigation(llm.Review(verdict=None, error="503")) is False
+
+
+def test_investigation_keeps_the_tier2_verdict_when_it_cannot_run(monkeypatch):
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: (_ for _ in ()).throw(
+        anthropic.AnthropicError("no creds")))
+    review = _review("suspicious", 0.5)
+    out = llm.investigate(_change([_file("a.js")]), [_finding(file_path=None)], review)
+    assert out.verdict is review.verdict, "a failed investigation must not destroy a real answer"
+
+
+def test_investigation_needs_a_parseable_repo_name():
+    review = _review("suspicious", 0.5)
+    change = _change([_file("a.js")], repo="not-a-repo-name")
+    assert llm.investigate(change, [_finding(file_path=None)], review).verdict is review.verdict

@@ -7,10 +7,10 @@ this module makes is a call Tier 0 chose to pay for.
 
 Three constraints shape the design:
 
-**Bounded input.** Only the hunks that actually tripped a rule are sent, with a little
-surrounding context, never the whole diff and never the repository. A change can touch
-300 files; a Tier 2 prompt should be a few kilobytes. `build_prompt` enforces this and
-says plainly when it has truncated.
+**The whole change, annotated.** Tier 0 says *where to look*; Tier 2 reviews the change.
+It receives every file's full diff plus the commit message, with the flagged lines marked,
+because a hunk cannot be judged without the code around it — and because the pre-filter
+misses things. What it does *not* get is the repository: that is Tier 3's job.
 
 **Structured output.** The verdict comes back as a validated `Verdict` via
 `client.messages.parse`, not as free text to be regex'd. An unparseable verdict is a
@@ -18,7 +18,8 @@ failed measurement, not something to guess at.
 
 **Measured cost.** Every call returns its token counts and an estimated dollar figure so
 §7 can report what the tiered funnel actually cost, rather than asserting that it is
-cheap.
+cheap. Tier 2 is always exactly one call; only an ambiguous verdict escalates to the
+multi-call Tier 3 below.
 
 Nothing here runs unless called. Constructing the module makes no network request, and
 no API key is read until `review()` is first invoked.
@@ -33,6 +34,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+from kitsunox import fetch
 from kitsunox.model import Change, FileDiff, Finding
 
 # Loaded here rather than relying on fetch.py having been imported first — this module
@@ -368,3 +370,171 @@ def review(
             prompt=prompt,
         )
     return Review(verdict=parsed, usage=usage, prompt=prompt)
+
+
+# --------------------------------------------------------------------------- Tier 3
+
+# Tier 2 sees the commit and its diff, and nothing else. When that is genuinely not
+# enough to decide, the change goes to an investigating agent that can read the
+# repository — but only then. Escalating everything would collapse the funnel: Tier 3
+# costs several calls where Tier 2 costs one, and the whole claim of this design is that
+# the expensive tier stays rare.
+
+# A `suspicious` verdict means exactly "ambiguous on the evidence shown", which is the
+# escalation signal. A confident `malicious` or `benign` is an answer; a hesitant one is
+# not, hence the confidence floor.
+#
+# Calibrated against the observed distribution rather than guessed: on the ground-truth
+# set Tier 2 returns either ~0.96-0.99 (reviewdog, tj-actions, colors.js — verdicts driven
+# by decoded payload behaviour) or ~0.72 (xz, event-stream — verdicts it could not fully
+# justify). A floor of 0.70 let both 0.72 cases through, which was exactly backwards: xz's
+# own rationale conceded "the extraction machinery is not in this diff" and then convicted
+# on a filename fingerprint. Those are the cases that need someone to go and look.
+INVESTIGATE_BELOW_CONFIDENCE = 0.85
+MAX_INVESTIGATION_TURNS = 6
+
+
+def needs_investigation(review: Review) -> bool:
+    """Whether Tier 2's answer is too weak to stand on its own."""
+    if review.verdict is None:
+        return False  # a failed call is unknowable; retrying it as an agent won't help
+    return (
+        review.verdict.verdict == "suspicious"
+        or review.verdict.confidence < INVESTIGATE_BELOW_CONFIDENCE
+    )
+
+
+INVESTIGATOR_PROMPT = """\
+A first-pass reviewer looked at this change and could not decide on the diff alone. You \
+have read-only access to the repository as it stood at this change, so you can check the \
+things the diff cannot show.
+
+Useful questions, depending on the change:
+
+- Does anything in the repository actually read, extract or execute what this change \
+added? A payload with no consumer is inert; a payload with one is not.
+- Was the flagged content already present before this change, somewhere else in the \
+repository? Vendored code that merely moved is not an introduction.
+- What else has touched these files, and who? A payload and its trigger may arrive in \
+separate commits.
+
+Look before concluding, and look narrowly — you are answering one question, not auditing \
+the project. When you have what you need, stop and give your verdict.\
+"""
+
+
+def investigate(change: Change, findings: list[Finding], review: Review, *, client=None,
+                model: str = MODEL, anonymize: bool = False) -> Review:
+    """Tier 3: re-judge an ambiguous change with read-only repository access.
+
+    Returns a fresh `Review` whose `usage` covers the whole investigation, so §7's cost
+    accounting still adds up. On any failure the Tier 2 review is returned unchanged —
+    an investigation that could not run must not turn a real answer into an error.
+    """
+    import anthropic
+    from anthropic import beta_tool
+
+    if "/" not in change.repo:
+        return review
+    owner, name = change.repo.split("/", 1)
+    ref = change.sha
+
+    @beta_tool
+    def read_file(path: str) -> str:
+        """Read a file from the repository as it stood at this change.
+
+        Args:
+            path: Repository-relative path, e.g. "m4/build-to-host.m4".
+        """
+        return fetch.read_file_at(owner, name, path, ref)
+
+    @beta_tool
+    def list_files(prefix: str = "") -> str:
+        """List repository file paths at this change, optionally under a prefix.
+
+        Args:
+            prefix: Restrict to paths starting with this, e.g. "m4/".
+        """
+        paths = fetch.list_tree(owner, name, ref, prefix)
+        return "\n".join(paths[:400]) if paths else "<no files found>"
+
+    @beta_tool
+    def history_of(path: str) -> str:
+        """Commits that touched a path, up to and including this change.
+
+        Args:
+            path: Repository-relative path.
+        """
+        rows = fetch.commits_touching(owner, name, path, until=change.committed_at)
+        if not rows:
+            return "<no history available>"
+        return "\n".join(
+            f"{r['sha']}  {r['date'][:10]}  {'<redacted>' if anonymize else r['author']}  {r['message']}"
+            for r in rows
+        )
+
+    prior = review.verdict
+    opening = (
+        build_prompt(change, findings, anonymize=anonymize)
+        + "\n\nThe first-pass reviewer said:\n"
+        + f"  verdict: {prior.verdict} (confidence {prior.confidence})\n"
+        + f"  reasoning: {prior.rationale}\n"
+    )
+
+    if client is None:
+        try:
+            client = anthropic.Anthropic()
+        except Exception as exc:  # noqa: BLE001
+            return review
+
+    usage = Usage()
+    try:
+        runner = client.beta.messages.tool_runner(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            max_iterations=MAX_INVESTIGATION_TURNS,
+            system=[{"type": "text", "text": SYSTEM_PROMPT + "\n\n" + INVESTIGATOR_PROMPT,
+                     "cache_control": {"type": "ephemeral"}}],
+            tools=[read_file, list_files, history_of],
+            messages=[{"role": "user", "content": opening}],
+        )
+        transcript = []
+        for message in runner:
+            usage.input_tokens += getattr(message.usage, "input_tokens", 0) or 0
+            usage.output_tokens += getattr(message.usage, "output_tokens", 0) or 0
+            usage.cache_read_tokens += getattr(message.usage, "cache_read_input_tokens", 0) or 0
+            for block in message.content:
+                if block.type == "text" and block.text.strip():
+                    transcript.append(block.text)
+                elif block.type == "tool_use":
+                    transcript.append(f"[looked at: {block.name}({block.input})]")
+
+        final = client.messages.parse(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            messages=[{
+                "role": "user",
+                "content": opening
+                + "\n\nAn investigator then examined the repository and found:\n\n"
+                + "\n\n".join(transcript[-12:])
+                + "\n\nGive the final verdict on this change.",
+            }],
+            output_format=Verdict,
+        )
+        usage.input_tokens += getattr(final.usage, "input_tokens", 0) or 0
+        usage.output_tokens += getattr(final.usage, "output_tokens", 0) or 0
+    except anthropic.APIStatusError as exc:
+        return Review(verdict=review.verdict, usage=usage,
+                      error=f"investigation failed ({exc.status_code}); Tier 2 verdict kept",
+                      prompt=opening)
+    except anthropic.APIConnectionError as exc:
+        return Review(verdict=review.verdict, usage=usage,
+                      error=f"investigation failed ({exc}); Tier 2 verdict kept", prompt=opening)
+
+    parsed = getattr(final, "parsed_output", None)
+    if parsed is None:
+        return Review(verdict=review.verdict, usage=usage,
+                      error="investigation returned no parseable verdict; Tier 2 verdict kept",
+                      prompt=opening)
+    return Review(verdict=parsed, usage=usage, prompt=opening)
