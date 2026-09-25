@@ -758,3 +758,59 @@ def test_precedent_is_empty_where_there_is_no_named_example():
     findings = rules.scan(_change([_file("a.js", _added("process.env)"))]))
     secret = next(f for f in findings if f.rule_id == "content.secret_access")
     assert secret.precedent == ""
+
+
+# ============================================================== held-out corpus regressions
+
+# Each of these produced a false positive on the 695-change held-out corpus, in a
+# language that was never in the tuning set. They stay as tests so a future change that
+# reintroduces the noise fails here rather than in a re-measured rate.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- zlib         1.2.0.4",                 # curl/curl#16079 docs
+        'if(strcmp(v, "1.2.0.4") >= 0) {',        # curl/curl#16079 source
+        "libssh2 1.2.8",
+        '  "version": "==3.4.0.3"',               # psf/requests Pipfile.lock
+    ],
+)
+def test_version_numbers_are_not_addresses(text):
+    # A dotted quad is a valid IP by shape; only its use distinguishes it. Octet
+    # validation cannot help — 1.2.0.4 is a perfectly routable address.
+    assert rules._hits_suspicious_host(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "curl http://8.8.8.8/collect",
+        'post("https://203.0.113.9/steal")',
+        'conn = "45.33.32.156:4444"',
+        "wget 198.51.100.7",
+    ],
+)
+def test_an_address_actually_used_as_one_still_fires(text):
+    assert rules._hits_suspicious_host(text) is True
+
+
+def test_while_true_with_a_break_is_an_ordinary_loop():
+    # nlohmann/json#5546 and #5547: `while (true) { ... break; }` is the standard shape
+    # of a C++ parse loop and produced two of eight held-out false positives.
+    ids = _scan_ids([_file("hash.hpp", _added("while (true)", "{", "  if (done) break;", "}"))])
+    assert "content.unbounded_loop" not in ids
+
+
+def test_while_true_with_no_way_out_still_fires():
+    ids = _scan_ids([_file("a.js", _added("while (true) {", "  spin();", "}"))])
+    assert "content.unbounded_loop" in ids
+
+
+def test_infinity_bound_fires_regardless_of_breaks_elsewhere():
+    # colors.js: the loop is unbounded even though the file has other returns.
+    ids = _scan_ids([
+        _file("index.js", _added("function f() { return 1; }",
+                                 "for (let i = 666; i < Infinity; i++) {"))
+    ])
+    assert "content.unbounded_loop" in ids

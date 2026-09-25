@@ -111,8 +111,18 @@ NETWORK_FETCH = re.compile(
 SUSPICIOUS_HOST = re.compile(
     r"(gist\.githubusercontent\.com|pastebin\.com|transfer\.sh|ngrok\.io|"
     r"burpcollaborator\.net|canarytokens\.com|interact\.sh|oast\.(fun|pro|live|site|online)|"
-    r"dnslog\.cn|requestbin\.\w+|pipedream\.net|webhook\.site|\.onion\b|"
-    r"\b(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\b)",
+    r"dnslog\.cn|requestbin\.\w+|pipedream\.net|webhook\.site|\.onion\b)",
+    re.IGNORECASE,
+)
+
+# A bare dotted quad is only an address when it is *used* as one. `zlib 1.2.0.4` and
+# `strcmp(v, "1.2.0.4")` in curl are version numbers, and no amount of octet validation
+# separates them from an IP -- 1.2.0.4 is a perfectly valid address. Context does:
+# exfiltration writes a scheme, a port, or a fetch verb in front of the address.
+ROUTABLE_IP_IN_USE = re.compile(
+    r"(?:https?://|ftp://|@|\b(?:curl|wget|nc|telnet|ssh|ping|connect|dial|Dial)\s+"
+    r"[\"\']?)(?P<ip>\d{1,3}(?:\.\d{1,3}){3})"
+    r"|(?P<ip2>\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}\b",
     re.IGNORECASE,
 )
 
@@ -144,7 +154,13 @@ SECRET_ACCESS = re.compile(
     r"/proc/\S*/(mem|maps|environ)|process\.env\s*\)|os\.environ\s*\))"
 )
 
-UNBOUNDED_LOOP = re.compile(r"(<\s*Infinity|while\s*\(\s*(true|1)\s*\))")
+# `< Infinity` is the colors.js sabotage and has no legitimate use. `while (true)` is a
+# different matter: with a break inside it is the standard shape of a C, C++ and Go parse
+# loop, and it produced two of the eight false positives on the held-out corpus, both in
+# nlohmann/json. It only counts when nothing in the same file can leave the loop.
+UNBOUNDED_LOOP = re.compile(r"<\s*Infinity")
+WHILE_FOREVER = re.compile(r"while\s*\(\s*(true|1)\s*\)|\bloop\s*\{|for\s*\(\s*;\s*;\s*\)")
+LOOP_ESCAPE = re.compile(r"\b(break|return|goto|exit|panic|throw|yield)\b")
 
 DEPENDENCY_ADDED = re.compile(r"^\s*[\"']?[\w@./-]+[\"']?\s*[:=]\s*[\"'][\^~>=<\d]")
 
@@ -204,16 +220,14 @@ VERSION_CONTEXT = re.compile(r"(==|>=|<=|~=|\bv|version|release|tag)\s*[\"']?$",
 
 
 def _hits_suspicious_host(text: str) -> bool:
-    """True for a paste/tunnel host or a *routable* IP literal."""
-    match = SUSPICIOUS_HOST.search(text)
+    """True for a paste/tunnel host, or a routable IP being used as an address."""
+    if SUSPICIOUS_HOST.search(text):
+        return True  # a named paste/tunnel host, no ambiguity
+    match = ROUTABLE_IP_IN_USE.search(text)
     if not match:
         return False
-    ip = match.group("ip")
-    if ip is None:
-        return True  # a named paste/tunnel host, no ambiguity
-    if PRIVATE_IP.match(ip):
-        return False
-    return not VERSION_CONTEXT.search(text[: match.start("ip")])
+    ip = match.group("ip") or match.group("ip2")
+    return not PRIVATE_IP.match(ip)
 
 
 def _scannable(file: FileDiff) -> bool:
@@ -323,6 +337,9 @@ def _content_rules(change: Change) -> list[Finding]:
         is_ci_config = _is_ci(file.path)
         in_sensitive = is_ci_config or _is_build_script(file.path) or _is_artifact(file.path)
         is_manifest = _basename(file.path) in MANIFESTS
+        # Checked once per file: a `while (true)` with a break somewhere in the same
+        # added code is an ordinary loop, not a hang.
+        has_escape = any(LOOP_ESCAPE.search(t) for _, t in _added_lines(file))
 
         for lineno, text in _added_lines(file):
             def hit(rule_id: str, severity: Severity, rationale: str,
@@ -385,7 +402,7 @@ def _content_rules(change: Change) -> list[Finding]:
                     "Added code reaches for credentials, process memory, or the "
                     "environment — the target of a CI-secret theft.",
                 )
-            if UNBOUNDED_LOOP.search(text):
+            if UNBOUNDED_LOOP.search(text) or (WHILE_FOREVER.search(text) and not has_escape):
                 # `high` because it measured clean: zero hits across 45 benign PRs. A
                 # deliberately non-terminating loop is rare in reviewed code, and it is
                 # the *only* signal colors.js ever emits.
