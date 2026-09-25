@@ -70,6 +70,14 @@ class Change:
     sha: str  # head commit sha for a push; PR head/merge sha for a PR
     author: str | None
     committed_at: datetime | None
+
+    # The commit message, or a PR's title and body. Stated intent, which is evidence in
+    # its own right: what a change *says* it does, checked against what it does. Every
+    # live incident in the ground-truth set under-describes itself — colors.js announced
+    # "Adds new American flag module" while also editing an infinite loop into
+    # lib/index.js, and reviewdog's payload arrived as "fix(install): correctly handle
+    # different environments". Judging that alignment is Tier 2's job, not a regex's.
+    message: str = ""
     files: list[FileDiff] = field(default_factory=list)
 
     # Every commit sha in this change — a single-item list for a push, the full commit

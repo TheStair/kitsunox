@@ -65,6 +65,9 @@ MAX_DIFF_CHARS = 60_000
 # vendored bundle should not crowd out the rest of the change.
 PER_FILE_CHARS = 6_000
 
+# Commit messages are short; a runaway one is usually a squashed changelog.
+MAX_MESSAGE_CHARS = 4_000
+
 SYSTEM_PROMPT = """\
 You are reviewing a single change to a source repository for signs of a software supply \
 chain attack — malicious code introduced through repository access, CI/build tampering, \
@@ -266,6 +269,14 @@ def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = F
         lines.append(f"CI checks passed: {change.checks_passed}")
     lines.append(f"Files changed: {len(change.files)}")
 
+    if change.message.strip():
+        label = "Pull request title and body" if change.source == "pr" else "Commit message"
+        body = change.message.strip()
+        if len(body) > MAX_MESSAGE_CHARS:
+            body = body[:MAX_MESSAGE_CHARS] + " [...truncated]"
+        lines.append(f"\n{label} (stated intent — check it against what the diff does):")
+        lines.append("\n".join("    " + ln for ln in body.split("\n")))
+
     lines.append("\nWhat the pre-filter flagged, and why:")
     for finding in sorted({f.rule_id: f for f in findings}.values(), key=lambda f: f.rule_id):
         where = f" ({finding.file_path})" if finding.file_path else ""
@@ -287,7 +298,8 @@ def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = F
 
     lines.append(
         "\nReview this change. Give a verdict, a confidence, and a short rationale naming "
-        "the specific evidence — including anything the pre-filter did not flag."
+        "the specific evidence — including anything the pre-filter did not flag, and any "
+        "mismatch between what the change says it does and what it actually does."
     )
     return "\n".join(lines)
 

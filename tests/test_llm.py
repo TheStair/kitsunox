@@ -426,3 +426,40 @@ def test_precedent_never_reaches_the_prompt():
     prompt = llm.build_prompt(_change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")]), [finding])
     assert "CVE-2024-3094" not in prompt and "xz-utils" not in prompt
     assert "A pattern description." in prompt
+
+
+# ============================================================== stated intent
+
+# What a change says it does, checked against what it does. Every live incident in the
+# ground-truth set under-describes itself, and colors.js is the clean case: the message
+# names the new module and omits the infinite loop edited into an existing file.
+
+
+def test_commit_message_reaches_the_prompt():
+    change = _change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")], message="Adds new American flag module")
+    prompt = llm.build_prompt(change, [_finding(file_path="a.js", line=1)])
+    assert "Adds new American flag module" in prompt
+    assert "Commit message" in prompt
+
+
+def test_a_pr_labels_its_message_as_title_and_body():
+    change = _change([_file("a.js")], source="pr", pr_number=3, message="Fix thing\n\nDetails.")
+    prompt = llm.build_prompt(change, [_finding(file_path=None)])
+    assert "Pull request title and body" in prompt and "Details." in prompt
+
+
+def test_the_reviewer_is_asked_to_check_intent_against_the_diff():
+    prompt = llm.build_prompt(_change([_file("a.js")], message="m"), [_finding(file_path=None)])
+    assert "stated intent" in prompt
+    assert "says it does" in prompt
+
+
+def test_an_absent_message_adds_no_empty_section():
+    prompt = llm.build_prompt(_change([_file("a.js")], message="   "), [_finding(file_path=None)])
+    assert "Commit message" not in prompt
+
+
+def test_a_runaway_message_is_truncated(monkeypatch):
+    monkeypatch.setattr(llm, "MAX_MESSAGE_CHARS", 50)
+    prompt = llm.build_prompt(_change([_file("a.js")], message="x" * 500), [_finding(file_path=None)])
+    assert "truncated" in prompt

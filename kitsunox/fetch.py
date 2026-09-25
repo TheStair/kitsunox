@@ -271,6 +271,7 @@ def fetch_commit(owner: str, repo: str, sha: str) -> Change:
             sha=sha,
             shas=[sha],
             author=author,
+            message=(data.get("commit", {}) or {}).get("message", ""),
             committed_at=_parse_ts(data.get("commit", {}).get("author", {}).get("date")),
             files=_file_diffs(data.get("files", [])),
             checks_passed=_fetch_checks_passed(owner, repo, sha),
@@ -330,6 +331,10 @@ def fetch_merged_prs(owner: str, repo: str, limit: int) -> list[Change]:
                     sha=head_sha,
                     shas=shas or [head_sha],
                     author=(pr.get("user") or {}).get("login"),
+                    # A PR's stated intent is its title and body.
+                    message="\n\n".join(
+                        part for part in (pr.get("title"), pr.get("body")) if part
+                    ),
                     committed_at=_parse_ts(pr.get("merged_at")),
                     files=_file_diffs(files_raw),
                     checks_passed=_fetch_checks_passed(owner, repo, head_sha),

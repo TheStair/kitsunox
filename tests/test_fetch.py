@@ -442,3 +442,43 @@ def test_fetch_merged_prs_stops_when_the_repo_runs_out_of_closed_prs():
     changes = fetch.fetch_merged_prs("o", "r", limit=5)
     assert [c.pr_number for c in changes] == [7]
     assert changes[0].merged_by_author  # dave opened it and dave merged it
+
+
+@responses.activate
+def test_fetch_commit_captures_the_commit_message():
+    sha = "msg00001"
+    responses.add(
+        responses.GET, f"{BASE}/repos/o/r/commits/{sha}",
+        json={"sha": sha, "author": {"login": "marak"},
+              "commit": {"author": {"name": "marak", "date": "2022-01-08T00:00:00Z"},
+                         "message": "Adds new American flag module"},
+              "files": []},
+    )
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits", json=[])
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits/{sha}/pulls", json=[])
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits/{sha}/check-runs",
+                  json={"total_count": 0, "check_runs": []})
+
+    assert fetch.fetch_commit("o", "r", sha).message == "Adds new American flag module"
+
+
+@responses.activate
+def test_fetch_merged_prs_uses_title_and_body_as_the_message():
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits", json=[])
+    list_url = f"{BASE}/repos/o/r/pulls"
+    responses.add(responses.GET, list_url, json=[{"number": 9, "merged_at": "2024-01-01T00:00:00Z"}])
+    responses.add(responses.GET, list_url, json=[])
+    responses.add(
+        responses.GET, f"{BASE}/repos/o/r/pulls/9",
+        json={"number": 9, "merge_commit_sha": "s9", "head": {"sha": "h9"},
+              "merged_at": "2024-01-01T00:00:00Z", "user": {"login": "dave"},
+              "title": "Fix the thing", "body": "Because reasons.",
+              "author_association": "CONTRIBUTOR", "merged_by": {"login": "eve"}},
+    )
+    for suffix, payload in (("files", []), ("reviews", []), ("commits", [{"sha": "s9"}]), ("commits", [])):
+        responses.add(responses.GET, f"{BASE}/repos/o/r/pulls/9/{suffix}", json=payload)
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits/s9/check-runs",
+                  json={"total_count": 0, "check_runs": []})
+
+    change = fetch.fetch_merged_prs("o", "r", limit=1)[0]
+    assert change.message == "Fix the thing\n\nBecause reasons."
