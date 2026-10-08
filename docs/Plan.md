@@ -367,21 +367,39 @@ changes for nothing, and the expensive tier runs on the rest.
 
 ### In the wild
 
-`kitsunox scan --targets ... --queue triage` writes a ranked queue and appends to
-`triage/dispositions.csv`; the investigator records a disposition and minutes per alert;
+`kitsunox scan --targets ... --queue DIR` writes a ranked queue and appends to
+`DIR/dispositions.csv`; the investigator records a disposition and minutes per alert;
 `kitsunox tally` reports precision in the wild, the share worth a look, and median minutes
 per alert. That makes manual review a measurement rather than effort -- and it still
 yields a result if no attack is confirmed, which is the likeliest real outcome.
 
-Two cautions for reading it:
+**Calibrate, then measure.** The held-out 1.15% was measured on zero Actions repositories,
+so the first hunts in the new scope were run as calibration, and every rule change they
+prompted is traced to its evidence. Two calibration hunts, 40 repositories each:
 
-- The held-out 1.15% was measured on **zero** Actions repositories. The first hunt is the
-  first false-positive measurement for that population.
-- The first Actions false-positive class observed is **installer actions that pipe a
-  remote script to `sh`** -- downloading and running a tool is a `setup-*` action's whole
-  purpose, and also exactly the shape of a supply-chain attack. It belongs with a human
-  who checks where the script URL points. (It was predicted to be committed `dist/`
-  bundles; it was not.)
+| Hunt | Alerts | What it exposed | Change |
+|---|---|---|---|
+| Actions | 40 | `GITHUB_TOKEN` named in docs, tests and `${{ secrets.* }}`: sole cause of 14 | naming a token is low weight; reading a credential store or process memory still escalates |
+| | | tags on `releases/*` branches: sole cause of 10 | `tag.on_no_branch` -- a commit on *no* branch, which is what reviewdog's was |
+| | | path assembly evaded the `/proc` match | `/proc` plus `mem|maps|environ` anywhere on the line |
+| | | two commits from one PR shared a key | keys follow source, not PR association |
+| npm | 25 | squash merges mislabelled as direct pushes: 9 | the newcomer rule excludes PR-associated commits |
+| | | repo founders on day 0 of their own project: 11 | the author must arrive in an *established* repo (180 days) |
+| | | arrival measured from `created_at` put xz's attacker on day 0 | arrival from the earliest commit: 0 becomes 5,164 days |
+
+The Actions calibration set fell from 40 alerts to 11 after its changes. That is
+**in-sample** -- it says the changes remove what they target, not how the tool performs.
+
+**The measurement** is a hunt over holdout targets drawn from the same population (same
+queries and filters) but sharing no repository and no owner with the calibration lists:
+`targets/holdout-actions.txt` and `targets/holdout-npm.txt`, reviewed in
+`triage/measurement/`. Its precision, from `kitsunox tally`, is the reportable
+in-the-wild result.
+
+The first Actions false-positive class observed was **installer actions that pipe a
+remote script to `sh`** -- downloading and running a tool is a `setup-*` action's whole
+purpose, and also exactly the shape of a supply-chain attack. It was predicted to be
+committed `dist/` bundles; it was not.
 
 ### Stated limitations
 
