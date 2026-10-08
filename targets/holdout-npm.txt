@@ -1,0 +1,56 @@
+# Kitsunox hunting targets: npm packages -- HOLDOUT, disjoint from npm.txt.
+# Generated 2026-10-08 from GitHub repository search; edit freely.
+#
+# Source repositories of npm packages. An attack here usually lands as an ordinary
+# commit -- an install hook, an encoded payload, an unexpected binary -- so a
+# default-branch scan fits and --tags is unnecessary.
+#
+# Queries: topic:npm-package stars:100..15000 language:JavaScript | topic:npm-package stars:100..15000 language:TypeScript
+# Each entry verified to have a root package.json; archived repos and forks
+# excluded; at most 2 per owner so no single maintainer dominates.
+# Star counts at generation time are shown after each entry.
+#
+# HOLDOUT: shares no repository and no owner with npm.txt, which calibrated
+# the rules. Same population (same queries and filters), never seen by tuning.
+# Results from hunting these are the measurement.
+
+mkreiser/ESPN-Fantasy-Football-API                      # 353 stars
+vinitshahdeo/inspirational-quotes                       # 339 stars
+jkrup/meteor-now                                        # 334 stars
+jochen-schweizer/express-prom-bundle                    # 324 stars
+ertugrulakben/cashclaw                                  # 303 stars
+kessler/node-regedit                                    # 297 stars
+xxczaki/cash-cli                                        # 268 stars
+kabirvirji/singlespotify                                # 268 stars
+cuth/unsplash-wallpaper                                 # 266 stars
+bensonruan/webcam-easy                                  # 263 stars
+shelfio/aws-lambda-libreoffice                          # 258 stars
+Hotell/typescript-lib-starter                           # 258 stars
+Node-Virtualization/node-virtualbox                     # 258 stars
+iuccio/csvToJson                                        # 257 stars
+GIScience/openrouteservice-js                           # 249 stars
+kaue/jsonexport                                         # 248 stars
+breezewish/pinyinlite                                   # 238 stars
+TurboDocx/html-to-docx                                  # 233 stars
+Midtrans/midtrans-nodejs-client                         # 219 stars
+SplittyDev/evee.js                                      # 195 stars
+ansulagrawal/react-big-schedule                         # 194 stars
+mgks/GitHubTree                                         # 192 stars
+deanilvincent/check-password-strength                   # 191 stars
+harikrishna8121999/antigravity-workflows                # 188 stars
+Anemy/svgurt                                            # 188 stars
+oslabs-beta/Horus                                       # 186 stars
+catdad/electronmon                                      # 183 stars
+ig-imanish/mx-icons                                     # 182 stars
+Azard/egg-oauth2-server                                 # 178 stars
+jaebradley/example-rollup-react-component-npm-package   # 177 stars
+Gyumeijie/github-files-fetcher                          # 168 stars
+snaerth/create-react-component-folder                   # 164 stars
+sagold/handlebars-webpack-plugin                        # 159 stars
+anonyco/FastestSmallestTextEncoderDecoder               # 159 stars
+valeriansaliou/node-sonic-channel                       # 151 stars
+gloriajs/gloria                                         # 150 stars
+whatthefoo/ohshitgit                                    # 147 stars
+aza-ali/webdownloader                                   # 141 stars
+cg-zhou/holiday-calendar                                # 135 stars
+Avijit07x/create-vrtw                                   # 134 stars

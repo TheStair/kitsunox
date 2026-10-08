@@ -1,0 +1,58 @@
+# Kitsunox hunting targets: GitHub Actions -- HOLDOUT, disjoint from actions.txt.
+# Generated 2026-10-08 from GitHub repository search; edit freely.
+#
+# Third-party Actions run with CI secrets and are pinned by tag, which makes them the
+# target of the 2025 attack wave (reviewdog, tj-actions). GitHub's own `actions` and
+# `github` orgs are excluded as the most heavily reviewed. The star ceiling skips the
+# very largest, best-guarded projects; tj-actions had about 2k stars when attacked.
+# Scan these with --tags: tag rewrites are how Actions are attacked.
+#
+# Queries: topic:github-action stars:100..15000 | topic:github-actions stars:100..15000
+# Each entry verified to have a root action.yml or action.yaml; archived repos and forks
+# excluded; at most 2 per owner so no single maintainer dominates.
+# Star counts at generation time are shown after each entry.
+#
+# HOLDOUT: shares no repository and no owner with actions.txt, which calibrated
+# the rules. Same population (same queries and filters), never seen by tuning.
+# Results from hunting these are the measurement.
+
+DeLaGuardo/setup-clojure                                # 224 stars
+chinthakagodawita/autoupdate                            # 220 stars
+graalvm/setup-graalvm                                   # 218 stars
+posener/goaction                                        # 212 stars
+dkamm/pr-quiz                                           # 210 stars
+ammaraskar/sphinx-action                                # 209 stars
+wpengine/github-action-wpe-site-deploy                  # 205 stars
+github-community-projects/stale-repos                   # 205 stars
+mislav/bump-homebrew-formula-action                     # 205 stars
+dokku/github-action                                     # 194 stars
+FranzDiebold/github-env-vars-action                     # 189 stars
+ravsamhq/notify-slack-action                            # 185 stars
+srggrs/assign-one-project-github-action                 # 178 stars
+danielroe/uppt                                          # 178 stars
+Flow-Scanner/lightning-flow-scanner                     # 176 stars
+vsoch/pull-request-action                               # 175 stars
+qoomon/starlines                                        # 170 stars
+rhysd/action-setup-vim                                  # 167 stars
+hashgraph-online/skill-publish                          # 166 stars
+goto-bus-stop/setup-zig                                 # 157 stars
+wearerequired/git-mirror-action                         # 156 stars
+actions-hub/kubectl                                     # 154 stars
+sobolevn/misspell-fixer-action                          # 154 stars
+gensecaihq/Shai-Hulud-2.0-Detector                      # 151 stars
+DoozyX/clang-format-lint-action                         # 146 stars
+Readme-Workflows/recent-activity                        # 146 stars
+yeslayla/butler-publish-itchio-action                   # 145 stars
+federicocarboni/setup-ffmpeg                            # 143 stars
+upsidr/merge-gatekeeper                                 # 142 stars
+jidicula/clang-format-action                            # 139 stars
+Akimiya-z/codex-guard                                   # 138 stars
+apisec-inc/AI-Surface                                   # 135 stars
+miloserdow/capistrano-deploy                            # 132 stars
+Harmon758/postgresql-action                             # 129 stars
+pgrimaud/action-shopify                                 # 129 stars
+8BitJonny/gh-get-current-pr                             # 128 stars
+axel-op/googlejavaformat-action                         # 120 stars
+Juror-AI/juror                                          # 120 stars
+korthout/backport-action                                # 120 stars
+mheap/github-action-required-labels                     # 116 stars
