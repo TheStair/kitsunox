@@ -1,0 +1,54 @@
+# Kitsunox hunting targets: GitHub Actions.
+# Generated 2026-10-08 from GitHub repository search; edit freely.
+#
+# Third-party Actions run with CI secrets and are pinned by tag, which makes them the
+# target of the 2025 attack wave (reviewdog, tj-actions). GitHub's own `actions` and
+# `github` orgs are excluded as the most heavily reviewed. The star ceiling skips the
+# very largest, best-guarded projects; tj-actions had about 2k stars when attacked.
+# Scan these with --tags: tag rewrites are how Actions are attacked.
+#
+# Queries: topic:github-action stars:100..15000 | topic:github-actions stars:100..15000
+# Each entry verified to have a root action.yml or action.yaml; archived repos and forks
+# excluded; at most 2 per owner so no single maintainer dominates.
+# Star counts at generation time are shown after each entry.
+
+kucherenko/jscpd                                        # 6358 stars
+JamesIves/github-pages-deploy-action                    # 4611 stars
+vn7n24fzkq/github-profile-summary-cards                 # 3688 stars
+mxschmitt/action-tmate                                  # 3588 stars
+peter-evans/create-pull-request                         # 2857 stars
+stefanzweifel/git-auto-commit-action                    # 2578 stars
+yoshi389111/github-profile-3d-contrib                   # 1767 stars
+appleboy/scp-action                                     # 1580 stars
+calibreapp/image-actions                                # 1575 stars
+amannn/action-semantic-pull-request                     # 1397 stars
+benchmark-action/github-action-benchmark                # 1264 stars
+peter-evans/repository-dispatch                         # 1212 stars
+pypa/gh-action-pypi-publish                             # 1184 stars
+jamesgeorge007/github-activity-readme                   # 956 stars
+pascalgn/automerge-action                               # 931 stars
+luckyPipewrench/pipelock                                # 921 stars
+peakoss/anti-slop                                       # 841 stars
+JS-DevTools/npm-publish                                 # 667 stars
+jianruntech/geo-score                                   # 621 stars
+renovatebot/github-action                               # 550 stars
+wangyoucao577/go-release-action                         # 547 stars
+ArtiomTr/jest-coverage-report-action                    # 544 stars
+tgymnich/fork-sync                                      # 473 stars
+Ilshidur/action-discord                                 # 461 stars
+Burnett01/rsync-deployments                             # 447 stars
+CodelyTV/pr-size-labeler                                # 397 stars
+TryGhost/action-deploy-theme                            # 390 stars
+robvanderleek/create-issue-branch                       # 351 stars
+amirisback/automated-build-android-app-with-github-action # 345 stars
+AndreasAugustin/actions-template-sync                   # 327 stars
+creyD/prettier_action                                   # 319 stars
+wlixcc/SFTP-Deploy-Action                               # 289 stars
+Azure/k8s-deploy                                        # 288 stars
+wei/git-sync                                            # 263 stars
+bcanseco/github-contribution-graph-action               # 254 stars
+mszostok/codeowners-validator                           # 248 stars
+crowdin/github-action                                   # 242 stars
+lukka/run-vcpkg                                         # 237 stars
+techpivot/terraform-module-releaser                     # 234 stars
+MansaGroup/nrwl-nx-action                               # 226 stars

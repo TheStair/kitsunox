@@ -1,0 +1,52 @@
+# Kitsunox hunting targets: npm packages.
+# Generated 2026-10-08 from GitHub repository search; edit freely.
+#
+# Source repositories of npm packages. An attack here usually lands as an ordinary
+# commit -- an install hook, an encoded payload, an unexpected binary -- so a
+# default-branch scan fits and --tags is unnecessary.
+#
+# Queries: topic:npm-package stars:100..15000 language:JavaScript | topic:npm-package stars:100..15000 language:TypeScript
+# Each entry verified to have a root package.json; archived repos and forks
+# excluded; at most 2 per owner so no single maintainer dominates.
+# Star counts at generation time are shown after each entry.
+
+jnMetaCode/superpowers-zh                               # 8275 stars
+sindresorhus/np                                         # 7710 stars
+sindresorhus/query-string                               # 6909 stars
+mysticatea/npm-run-all                                  # 5833 stars
+tulios/kafkajs                                          # 4002 stars
+sandoche/Darkmode.js                                    # 2769 stars
+ocombe/ocLazyLoad                                       # 2604 stars
+susam/texme                                             # 2438 stars
+bokub/chalk-animation                                   # 2184 stars
+reactopt/reactopt                                       # 1971 stars
+lawnstarter/react-native-picker-select                  # 1843 stars
+Annihil/github-spray                                    # 1471 stars
+airtap/airtap                                           # 1381 stars
+devxprite/infoooze                                      # 1094 stars
+tidev/alloy                                             # 956 stars
+mysticatea/eslint-plugin-node                           # 955 stars
+Klemen1337/node-thermal-printer                         # 915 stars
+madlabsinc/mevn-cli                                     # 832 stars
+imsnif/synp                                             # 788 stars
+75lb/command-line-args                                  # 719 stars
+cloudinary/cloudinary_npm                               # 668 stars
+bugthesystem/scientist.js                               # 608 stars
+virtualvivek/react-windows-ui                           # 597 stars
+z2586300277/three-editor                                # 594 stars
+nikhilk/node-tensorflow                                 # 587 stars
+yauhenipakala/highlightjs-line-numbers.js               # 584 stars
+susam/muboard                                           # 562 stars
+ModelDepot/tfjs-yolo-tiny                               # 534 stars
+IgniteUI/ignite-ui                                      # 475 stars
+lucagrulla/node-tail                                    # 468 stars
+node-oauth/node-oauth2-server                           # 447 stars
+alohe/quicky                                            # 438 stars
+flexdinesh/npm-module-boilerplate                       # 391 stars
+thesephist/libsearch                                    # 388 stars
+shuiRong/vue-drag-tree                                  # 383 stars
+aravindnc/A-to-Z-List-of-Useful-Node.js-Modules         # 382 stars
+kenshinji/yddict                                        # 377 stars
+whoiskatrin/npm-copilot                                 # 374 stars
+nobrainr/typescript-webpack-starter                     # 374 stars
+atharva9167j/dom-to-pptx                                # 374 stars
