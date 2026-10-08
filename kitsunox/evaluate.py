@@ -83,6 +83,7 @@ class ChangeResult:
 
     # Carried for the triage queue so the report needs no second fetch.
     url: str = ""
+    pr_number: int | None = None
     message: str = ""
     author: str | None = None
     tenure_days: int | None = None
@@ -135,10 +136,28 @@ class Report:
         return [r for r in self.incidents + self.control if r.tier2_error]
 
 
+def _is_pr(change: Change) -> bool:
+    """A change *is* a pull request only when it came from the PR listing.
+
+    `fetch_commit` also sets `pr_number` when a pushed commit is merely associated with a
+    PR, and keying on that collided: a tag-target commit and a squash commit that both
+    traced back to PR #431 got the same key, and the disposition log -- which de-duplicates
+    by key -- would have merged two escalated commits into one row. A commit is identified
+    by its SHA, a pull request by its number.
+    """
+    return change.source == "pr" and change.pr_number is not None
+
+
+def _key_for(change: Change) -> str:
+    if _is_pr(change):
+        return f"{change.repo}#{change.pr_number}"
+    return f"{change.repo}@{change.sha[:10]}"
+
+
 def _url_for(change: Change) -> str:
     if "/" not in change.repo:
         return ""
-    if change.pr_number:
+    if _is_pr(change):
         return f"https://github.com/{change.repo}/pull/{change.pr_number}"
     return f"https://github.com/{change.repo}/commit/{change.sha}"
 
@@ -166,8 +185,7 @@ def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = F
     escalated = evidence >= threshold
 
     result = ChangeResult(
-        key=f"{change.repo}@{change.sha[:10]}" if change.pr_number is None
-        else f"{change.repo}#{change.pr_number}",
+        key=_key_for(change),
         repo=change.repo,
         source=change.source,
         ground_truth=change.ground_truth,
@@ -176,6 +194,7 @@ def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = F
         escalated=escalated,
         rule_ids=sorted({f.rule_id for f in findings}),
         url=_url_for(change),
+        pr_number=change.pr_number,
         message=change.message,
         author=change.author,
         tenure_days=change.author_tenure_days,
@@ -500,6 +519,9 @@ def write_triage(results: list[ChangeResult], path: Path, *, scanned: int,
         if r.refused:
             out += ["**The model declined to analyse this change. Review it first.**", ""]
         out += [f"<{r.url}>" if r.url else "(no link)", ""]
+        if r.pr_number and "/pull/" not in r.url:
+            out += [f"Landed via pull request "
+                    f"<https://github.com/{r.repo}/pull/{r.pr_number}>.", ""]
         tenure = (f", {r.tenure_days} days in repo, {r.prior_commits} prior commits"
                   if r.tenure_days is not None else "")
         out += [f"Author: {_inline(r.author or 'unknown')}{tenure}. Source: {r.source}.", ""]

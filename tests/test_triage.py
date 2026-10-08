@@ -407,3 +407,32 @@ def test_cli_tally_reports_on_the_log(tmp_path, capsys):
 
 def test_cli_tally_without_a_log_fails_clearly(tmp_path):
     assert cli.main(["tally", "--queue", str(tmp_path / "missing")]) == 1
+
+
+# ============================================================== identity
+
+
+def test_two_commits_from_one_pr_get_distinct_keys(pushes):
+    # Both traced back to PR #431 and once shared the key "repo#431"; the disposition log
+    # de-duplicates by key and would have merged two escalated commits into one row.
+    pushes["changes"] = [
+        _change(sha="1111111111aaaa", files=_bad(), pr_number=431),
+        _change(sha="2222222222bbbb", files=_bad(), pr_number=431),
+    ]
+    keys = [r.key for r in evaluate.hunt(["o/r"])]
+    assert len(set(keys)) == 2
+
+
+def test_a_pushed_commit_links_to_the_commit_and_names_its_pr(pushes, tmp_path):
+    pushes["changes"] = [_change(sha="1111111111aaaa", files=_bad(), pr_number=431)]
+    r = evaluate.hunt(["o/r"])[0]
+    assert r.key == "o/r@1111111111" and "/commit/1111111111aaaa" in r.url
+    text = evaluate.write_triage([r], tmp_path / "q.md", scanned=1).read_text(encoding="utf-8")
+    assert "https://github.com/o/r/pull/431" in text
+
+
+def test_a_pull_request_is_keyed_and_linked_by_its_number():
+    from kitsunox.model import Change
+    r = evaluate._run_one(Change(repo="o/r", source="pr", sha="abc", author="a", committed_at=None,
+                                 pr_number=7, files=_bad()), threshold=8, tier2=False)
+    assert r.key == "o/r#7" and r.url == "https://github.com/o/r/pull/7"
