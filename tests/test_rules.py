@@ -260,8 +260,48 @@ def test_binary_added_is_content_and_elevated_under_fixture_paths():
     assert _sev(fixture, "content.binary_added") == "high"
     assert rules.should_escalate(fixture)
 
-    elsewhere = rules.scan(_change([_file("assets/logo.png", change_type="added", is_binary=True)]))
+
+@pytest.mark.parametrize(
+    "path",
+    ["dist/helper", "lib/native.node", "bin/tool.exe", "vendor/payload.wasm",
+     "release.tgz", "data/blob.bin", "tests/files/good-large_compressed.lzma"],
+)
+def test_an_opaque_binary_escalates_on_its_own_anywhere(path):
+    # In a JS, TS or Actions repository an executable, native module or archive has no
+    # reason to arrive unexplained, so it escalates without needing a second signal.
+    findings = rules.scan(_change([_file(path, change_type="added", is_binary=True)]))
+    assert _sev(findings, "content.binary_added") == "high"
+    assert rules.should_escalate(findings)
+
+
+@pytest.mark.parametrize(
+    "path", ["assets/logo.png", "test/__snapshots__/button.png", "fonts/inter.woff2", "docs/guide.pdf"],
+)
+def test_media_assets_are_reported_but_never_escalate(path):
+    findings = rules.scan(_change([_file(path, change_type="added", is_binary=True)]))
+    assert _sev(findings, "content.asset_added") == "low"
+    assert "content.binary_added" not in _ids(findings)
+    assert not rules.should_escalate(findings)
+
+
+def test_a_media_asset_cannot_feed_the_capability_bonus():
+    # As binary_added, a logo would count as "concealment": logo + new dependency + one
+    # subprocess call scored 1+1+1 plus a three-category bonus of 6 = 9, and escalated an
+    # ordinary CLI-tool change. A distinct rule id outside RULE_CATEGORY prevents that.
+    assert "content.asset_added" not in rules.RULE_CATEGORY
+    findings = rules.scan(_change([
+        _file("assets/logo.png", change_type="added", is_binary=True),
+        _file("package.json", _added('  "chalk": "^5.0.0",')),
+        _file("src/cli.js", _added("require('child_process').execSync('git status')")),
+    ]))
+    assert not rules.should_escalate(findings)
+
+
+def test_an_unrecognised_binary_keeps_the_older_severity():
+    elsewhere = rules.scan(_change([_file("data/x.weird", change_type="added", is_binary=True)]))
     assert _sev(elsewhere, "content.binary_added") == "medium"
+    in_tests = rules.scan(_change([_file("tests/x.weird", change_type="added", is_binary=True)]))
+    assert _sev(in_tests, "content.binary_added") == "high"
 
 
 def test_binary_that_was_modified_not_added_does_not_fire():

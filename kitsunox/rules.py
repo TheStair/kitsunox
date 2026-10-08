@@ -71,6 +71,24 @@ ARTIFACT_SUFFIXES = (".min.js", ".bundle.js")
 
 TEST_FIXTURE_DIRS = ("test/", "tests/", "testdata/", "fixtures/", "__fixtures__/", "spec/")
 
+# Binary files that can carry a payload: executables, native modules, archives and raw
+# or compressed data. In a JavaScript, TypeScript or Actions repository nothing in this
+# list has a reason to arrive without explanation, and none of it can be reviewed as a
+# diff. Compressed formats are included because that is exactly what xz's fixtures were.
+OPAQUE_BINARY_SUFFIXES = {
+    ".exe", ".dll", ".so", ".dylib", ".node", ".wasm", ".o", ".a", ".elf", ".jar", ".class",
+    ".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".lzma", ".zst", ".7z", ".rar",
+    ".bin", ".dat",
+}
+
+# Images, fonts, documents and media. Routine in any repository -- logos, icons, visual
+# snapshot tests -- so they are reported for context but never treated as a capability.
+MEDIA_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".avif", ".icns",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".pdf", ".mp3", ".mp4", ".webm", ".ogg", ".wav", ".mov",
+}
+
 MANIFESTS = {"package.json", "requirements.txt", "pyproject.toml", "gemfile", "cargo.toml", "go.mod"}
 
 # Base64 `integrity` hashes make lockfiles a guaranteed false positive for the
@@ -209,6 +227,23 @@ def _is_artifact(path: str) -> bool:
     return low.startswith(ARTIFACT_DIRS) or low.endswith(ARTIFACT_SUFFIXES)
 
 
+def _binary_kind(path: str) -> str:
+    """'opaque', 'media' or 'other' for a binary file, by name alone.
+
+    A file with no extension at all is opaque: a dropped executable is usually named
+    `run`, `helper` or `payload`, not `payload.exe`.
+    """
+    name = _basename(path)
+    if "." not in name.lstrip("."):
+        return "opaque"
+    suffix = "." + name.rsplit(".", 1)[-1]
+    if suffix in OPAQUE_BINARY_SUFFIXES:
+        return "opaque"
+    if suffix in MEDIA_SUFFIXES:
+        return "media"
+    return "other"
+
+
 def _is_test_fixture(path: str) -> bool:
     return any(seg in path.lower() for seg in TEST_FIXTURE_DIRS)
 
@@ -316,22 +351,52 @@ def _content_rules(change: Change) -> list[Finding]:
     findings: list[Finding] = []
     for file in change.files:
         if file.is_binary and file.change_type == "added":
+            kind = _binary_kind(file.path)
             in_fixtures = _is_test_fixture(file.path)
-            findings.append(
-                Finding(
-                    rule_id="content.binary_added",
-                    severity="high" if in_fixtures else "medium",
-                    rationale=(
-                        "An opaque binary file was added under a test-fixture path, where "
-                        "a corrupt-looking blob is unremarkable and review least likely."
-                        if in_fixtures else
-                        "An opaque binary file was added. Binary content cannot be reviewed "
-                        "as a diff."
-                    ),
-                    precedent="xz-utils (CVE-2024-3094), 2024" if in_fixtures else "",
-                    file_path=file.path,
+            if kind == "media":
+                # Reported so the investigator sees it, but a distinct rule id keeps it out
+                # of the capability model: as `binary_added` it would count as concealment,
+                # and a logo + a new dependency + one subprocess call would score
+                # 1 + 1 + 1 + a three-category bonus of 6 = 9 and escalate.
+                findings.append(
+                    Finding(
+                        rule_id="content.asset_added",
+                        severity="low",
+                        rationale="An image, font or media asset was added. Routine, and "
+                        "listed only so the full set of binary additions is visible.",
+                        file_path=file.path,
+                    )
                 )
-            )
+            else:
+                # Opaque binaries escalate on their own anywhere: in a JS, TS or Actions
+                # repository an executable, native module or archive has no reason to
+                # appear unexplained. Unrecognised binary types keep the older behaviour.
+                severity: Severity = "high" if (kind == "opaque" or in_fixtures) else "medium"
+                if kind == "opaque" and in_fixtures:
+                    rationale = (
+                        "An opaque binary was added under a test-fixture path, where a "
+                        "corrupt-looking blob is unremarkable and review least likely."
+                    )
+                elif kind == "opaque":
+                    rationale = (
+                        "An executable, native module, archive or raw data file was added. "
+                        "It cannot be reviewed as a diff, and source repositories rarely "
+                        "need one."
+                    )
+                else:
+                    rationale = (
+                        "A binary file was added. Binary content cannot be reviewed as a "
+                        "diff."
+                    )
+                findings.append(
+                    Finding(
+                        rule_id="content.binary_added",
+                        severity=severity,
+                        rationale=rationale,
+                        precedent="xz-utils (CVE-2024-3094), 2024" if in_fixtures else "",
+                        file_path=file.path,
+                    )
+                )
         if not _scannable(file):
             continue
         is_ci_config = _is_ci(file.path)
