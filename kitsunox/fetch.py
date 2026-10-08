@@ -282,7 +282,7 @@ def fetch_commit(owner: str, repo: str, sha: str) -> Change:
     )
 
 
-def fetch_merged_prs(owner: str, repo: str, limit: int) -> list[Change]:
+def fetch_merged_prs(owner: str, repo: str, limit: int, *, fresh: bool = False) -> list[Change]:
     """Fetch up to `limit` recently-merged PRs for a repo, each with its diff and
     review-approval count. Used for the control sample; none of the current 5 incidents
     are PR-based (all turned out to be direct pushes — see incidents.py), but keep this
@@ -295,6 +295,11 @@ def fetch_merged_prs(owner: str, repo: str, limit: int) -> list[Change]:
     closures), so pages are walked until enough merged PRs are found rather than
     guessing a fixed over-fetch size; capped at 20 pages (2000 closed PRs) so a repo
     with very few actual merges can't spin forever.
+
+    `fresh` re-reads the PR *listing* instead of serving it from cache. Evaluation leaves
+    it off so the control corpus stays reproducible; hunting turns it on, or a second hunt
+    would replay the first one's listing and never see a new PR. Per-PR details are
+    immutable once merged and stay cached either way.
     """
     merged_numbers: list[int] = []
     page = 1
@@ -302,6 +307,7 @@ def fetch_merged_prs(owner: str, repo: str, limit: int) -> list[Change]:
         batch = _get_json(
             f"{API_BASE}/repos/{owner}/{repo}/pulls",
             {"state": "closed", "sort": "updated", "direction": "desc", "per_page": 100, "page": page},
+            use_cache=not fresh,
         )
         if not batch:
             break
@@ -351,7 +357,8 @@ def fetch_merged_prs(owner: str, repo: str, limit: int) -> list[Change]:
 
 
 def fetch_direct_pushes(
-    owner: str, repo: str, limit: int, *, exclude: set[str] | None = None
+    owner: str, repo: str, limit: int, *, exclude: set[str] | None = None,
+    fresh: bool = False,
 ) -> list[Change]:
     """Up to `limit` recent commits pushed straight to the default branch, newest first.
 
@@ -366,13 +373,17 @@ def fetch_direct_pushes(
     `exclude` drops known-malicious SHAs, so an incident's own repo can safely be used as
     a source of benign commits — which makes the hardest possible control set: the
     attacker's other commits, in the same repo, in the same style.
+
+    `fresh` re-reads the commit *listing* rather than serving it from cache, for the same
+    reason as in `fetch_merged_prs`: hunting has to see commits made since the last run.
     """
     exclude = exclude or set()
     changes: list[Change] = []
     page = 1
     while len(changes) < limit and page <= 10:
         batch = _get_json(
-            f"{API_BASE}/repos/{owner}/{repo}/commits", {"per_page": 100, "page": page}
+            f"{API_BASE}/repos/{owner}/{repo}/commits", {"per_page": 100, "page": page},
+            use_cache=not fresh,
         )
         if not batch:
             break
@@ -390,3 +401,73 @@ def fetch_direct_pushes(
                 continue
         page += 1
     return changes
+
+
+# --------------------------------------------------------------------------- tags
+# GitHub Actions consumers pin a *tag* (`uses: owner/action@v4`), so what runs in their
+# CI is whatever that tag points at -- not what is on the default branch. Both Actions
+# incidents in the ground truth exploited that: reviewdog's malicious commit was never on
+# any branch, and tj-actions rewrote every version tag to point at one commit (Ladisa
+# AV-303, Tamper with Version Control System). Scanning the default branch alone cannot
+# see either.
+#
+# Everything here bypasses the cache. Tags move -- that is the attack -- and a cached tag
+# list would make a moved tag undetectable by construction.
+
+
+def default_branch(owner: str, repo: str) -> str | None:
+    """The repository's default branch name. Stable, so cached."""
+    try:
+        return _get_json(f"{API_BASE}/repos/{owner}/{repo}").get("default_branch")
+    except FetchError:
+        return None
+
+
+def list_tags(owner: str, repo: str, *, limit: int = 500) -> list[tuple[str, str]]:
+    """(tag name, commit sha) for every tag, freshly read. Annotated tags arrive already
+    dereferenced to their commit."""
+    tags: list[tuple[str, str]] = []
+    page = 1
+    while len(tags) < limit:
+        try:
+            batch = _get_json(
+                f"{API_BASE}/repos/{owner}/{repo}/tags", {"per_page": 100, "page": page},
+                use_cache=False,
+            )
+        except FetchError:
+            break
+        if not batch:
+            break
+        tags += [
+            (entry["name"], entry["commit"]["sha"])
+            for entry in batch
+            if entry.get("name") and (entry.get("commit") or {}).get("sha")
+        ]
+        if len(batch) < 100:
+            break
+        page += 1
+    return tags[:limit]
+
+
+def on_default_branch(owner: str, repo: str, sha: str) -> bool | None:
+    """Whether `sha` is reachable from the default branch; None if it cannot be told.
+
+    Uses `compare/{default}...{sha}`: `behind` or `identical` means the commit is an
+    ancestor of the default branch, `ahead` or `diverged` means it is not. Not cached,
+    because the default branch moves and a commit can be merged after a first check.
+    """
+    branch = default_branch(owner, repo)
+    if not branch:
+        return None
+    try:
+        data = _get_json(
+            f"{API_BASE}/repos/{owner}/{repo}/compare/{branch}...{sha}", use_cache=False
+        )
+    except FetchError:
+        return None
+    status = data.get("status")
+    if status in ("behind", "identical"):
+        return True
+    if status in ("ahead", "diverged"):
+        return False
+    return None

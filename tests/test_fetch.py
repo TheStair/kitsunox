@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
 import responses
 
 from kitsunox import fetch
@@ -482,3 +483,79 @@ def test_fetch_merged_prs_uses_title_and_body_as_the_message():
 
     change = fetch.fetch_merged_prs("o", "r", limit=1)[0]
     assert change.message == "Fix the thing\n\nBecause reasons."
+
+
+# ------------------------------------------------------------------ tags + fresh listings
+
+
+@responses.activate
+def test_list_tags_is_never_served_from_cache():
+    # Tags move -- that is the attack. A cached tag list would make a moved tag invisible.
+    url = f"{BASE}/repos/o/r/tags"
+    responses.add(responses.GET, url, json=[{"name": "v1.0.0", "commit": {"sha": "a" * 40}}])
+    responses.add(responses.GET, url, json=[{"name": "v1.0.0", "commit": {"sha": "b" * 40}}])
+    assert fetch.list_tags("o", "r") == [("v1.0.0", "a" * 40)]
+    assert fetch.list_tags("o", "r") == [("v1.0.0", "b" * 40)], "second read must hit the API"
+
+
+@responses.activate
+def test_list_tags_paginates():
+    url = f"{BASE}/repos/o/r/tags"
+    responses.add(responses.GET, url, json=[{"name": f"v{i}.0.0", "commit": {"sha": f"{i:040d}"}} for i in range(100)])
+    responses.add(responses.GET, url, json=[{"name": "v999.0.0", "commit": {"sha": "f" * 40}}])
+    assert len(fetch.list_tags("o", "r")) == 101
+
+
+@responses.activate
+def test_list_tags_returns_empty_on_failure():
+    responses.add(responses.GET, f"{BASE}/repos/o/r/tags", json={}, status=404)
+    assert fetch.list_tags("o", "r") == []
+
+
+def _default_branch_mock():
+    responses.add(responses.GET, f"{BASE}/repos/o/r", json={"default_branch": "main"})
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [("behind", True), ("identical", True), ("ahead", False), ("diverged", False), ("weird", None)],
+)
+@responses.activate
+def test_on_default_branch_reads_the_compare_status(status, expected):
+    _default_branch_mock()
+    responses.add(responses.GET, f"{BASE}/repos/o/r/compare/main...{'a' * 40}", json={"status": status})
+    assert fetch.on_default_branch("o", "r", "a" * 40) is expected
+
+
+@responses.activate
+def test_on_default_branch_is_unknown_when_compare_fails():
+    _default_branch_mock()
+    responses.add(responses.GET, f"{BASE}/repos/o/r/compare/main...{'a' * 40}", json={}, status=404)
+    assert fetch.on_default_branch("o", "r", "a" * 40) is None
+
+
+@responses.activate
+def test_on_default_branch_is_unknown_without_a_default_branch():
+    responses.add(responses.GET, f"{BASE}/repos/o/r", json={}, status=404)
+    assert fetch.on_default_branch("o", "r", "a" * 40) is None
+
+
+@responses.activate
+def test_fresh_listing_rereads_the_commit_list():
+    # Without `fresh`, a second hunt replays the first hunt's cached listing and never
+    # sees a new commit.
+    url = f"{BASE}/repos/o/r/commits"
+    responses.add(responses.GET, url, json=[])
+    responses.add(responses.GET, url, json=[])
+    fetch.fetch_direct_pushes("o", "r", 5, fresh=True)
+    fetch.fetch_direct_pushes("o", "r", 5, fresh=True)
+    assert len([c for c in responses.calls if c.request.url.startswith(url + "?")]) == 2
+
+
+@responses.activate
+def test_unfresh_listing_stays_cached_for_reproducible_evaluation():
+    url = f"{BASE}/repos/o/r/commits"
+    responses.add(responses.GET, url, json=[])
+    fetch.fetch_direct_pushes("o", "r", 5)
+    fetch.fetch_direct_pushes("o", "r", 5)
+    assert len([c for c in responses.calls if c.request.url.startswith(url + "?")]) == 1

@@ -728,3 +728,114 @@ def evidence_score(findings: list[Finding]) -> int:
 def should_escalate(findings: list[Finding]) -> bool:
     """Whether this change warrants a Tier 2 LLM call."""
     return evidence_score(findings) >= ESCALATION_THRESHOLD
+
+
+# --------------------------------------------------------------------------- tags
+
+# Tag integrity for GitHub Actions. A consumer's workflow runs whatever its pinned tag
+# points at, so an attacker who can move a tag never needs to touch the default branch.
+# These checks are pure: the caller asks `tags_to_check` which commits need a
+# reachability lookup, performs it, and passes the answers to `tag_findings`.
+#
+# Rule ids use the `tag.` prefix rather than `context.`. `evidence_score` ignores
+# `context.` findings because circumstances like a missing approval are true of a third
+# of ordinary changes. A rewritten release tag is not a circumstance; it is direct
+# evidence of tampering, and it must be able to escalate on its own.
+
+# A full release tag: v1.2.3, 1.2.3, or v35.7.7-sec. These are immutable by convention.
+SEMVER_FULL = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$")
+# A floating tag: v4 or v4.2. These are moved deliberately to track the latest release.
+FLOATING_TAG = re.compile(r"^v?(\d+)(?:\.(\d+))?$")
+# Floating tags are what consumers actually pin, but an old action can carry dozens.
+# Checking the newest few bounds the compare calls to a handful per repository.
+MAX_FLOATING_CHECKED = 5
+
+
+def _floating_tags(tags: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    floating = [(name, sha) for name, sha in tags if FLOATING_TAG.match(name)]
+    floating.sort(
+        key=lambda t: tuple(int(g or 0) for g in FLOATING_TAG.match(t[0]).groups()),
+        reverse=True,
+    )
+    return floating[:MAX_FLOATING_CHECKED]
+
+
+def _moved_tags(tags: list[tuple[str, str]], snapshot: dict[str, str] | None) -> list[tuple[str, str, str]]:
+    """(name, old sha, new sha) for full release tags that changed since the snapshot."""
+    if not snapshot:
+        return []
+    return [
+        (name, snapshot[name], sha)
+        for name, sha in tags
+        if SEMVER_FULL.match(name) and name in snapshot and snapshot[name] != sha
+    ]
+
+
+def tags_to_check(tags: list[tuple[str, str]], snapshot: dict[str, str] | None) -> set[str]:
+    """Commits whose default-branch reachability `tag_findings` will need."""
+    return {sha for _, sha in _floating_tags(tags)} | {new for _, _, new in _moved_tags(tags, snapshot)}
+
+
+def tag_findings(
+    tags: list[tuple[str, str]],
+    snapshot: dict[str, str] | None,
+    reachable: dict[str, bool | None],
+) -> dict[str, list[Finding]]:
+    """Tag-integrity findings, keyed by the commit they point at."""
+    out: dict[str, list[Finding]] = {}
+
+    def add(sha: str, finding: Finding) -> None:
+        out.setdefault(sha, []).append(finding)
+
+    # Version collapse: release tags from different major.minor lines on one commit. v1,
+    # v1.2 and v1.2.3 sharing a commit is ordinary, so floating tags are ignored; two
+    # patch releases sharing one is a plausible republish, so only differing major.minor
+    # counts.
+    by_sha: dict[str, list[str]] = {}
+    for name, sha in tags:
+        if SEMVER_FULL.match(name):
+            by_sha.setdefault(sha, []).append(name)
+    for sha, names in by_sha.items():
+        lines = {SEMVER_FULL.match(n).groups()[:2] for n in names}
+        if len(lines) >= 2:
+            shown = ", ".join(sorted(names)[:8]) + (" ..." if len(names) > 8 else "")
+            add(sha, Finding(
+                rule_id="tag.version_collapse",
+                severity="critical",
+                rationale=f"{len(names)} release tags from {len(lines)} different version "
+                "lines all point at this one commit. Distinct releases cannot share code "
+                "this way; the tags were rewritten to deliver it.",
+                precedent="tj-actions/changed-files, 2025",
+                evidence=_evidence(shown),
+            ))
+
+    moved = _moved_tags(tags, snapshot)
+    for name, old, new in moved:
+        add(new, Finding(
+            rule_id="tag.moved",
+            severity="critical",
+            rationale=f"Release tag {name} pointed at {old[:10]} at the last hunt and now "
+            f"points at {new[:10]}. Release tags are immutable by convention; anyone "
+            "pinning it now runs different code without changing a line of their own.",
+            precedent="tj-actions/changed-files, 2025",
+            evidence=_evidence(f"{name}: {old[:10]} -> {new[:10]}"),
+        ))
+
+    candidates = [(name, sha) for name, sha in _floating_tags(tags)]
+    candidates += [(name, new) for name, _, new in moved]
+    names_by_sha: dict[str, list[str]] = {}
+    for name, sha in candidates:
+        if reachable.get(sha) is False:
+            names_by_sha.setdefault(sha, []).append(name)
+    for sha, names in names_by_sha.items():
+        add(sha, Finding(
+            rule_id="tag.off_default_branch",
+            severity="high",
+            rationale=f"Tag {', '.join(sorted(set(names)))} points at a commit that is not on "
+            "the default branch, so what consumers run was never merged where reviewers "
+            "look. Some projects legitimately release from a release branch; check which.",
+            precedent="reviewdog/action-setup, 2025",
+            evidence=_evidence(f"{', '.join(sorted(set(names)))} -> {sha[:10]}"),
+        ))
+
+    return out

@@ -854,3 +854,99 @@ def test_infinity_bound_fires_regardless_of_breaks_elsewhere():
                                  "for (let i = 666; i < Infinity; i++) {"))
     ])
     assert "content.unbounded_loop" in ids
+
+
+# ============================================================== tag integrity (AV-303)
+
+# Actions consumers run whatever their pinned tag points at. Both Actions incidents in
+# the ground truth moved tags rather than (or as well as) committing to the default
+# branch, so a default-branch-only hunt could not see either.
+
+TJ_SHA = "0e58ed8671d6b60d0890c21b07f8835ace038e67"
+
+# Reconstructed from the version tags the incident write-ups name (v1.0.0, v35.7.7-sec,
+# v44.5.1) -- all rewritten to one commit. Not a full historical capture; the live tags
+# were restored afterwards and cannot be read back.
+TJ_TAGS = [("v1.0.0", TJ_SHA), ("v35.7.7-sec", TJ_SHA), ("v44.5.1", TJ_SHA),
+           ("v44", TJ_SHA), ("v35", TJ_SHA)]
+
+
+def _tag_ids(found: dict, sha: str) -> set[str]:
+    return {f.rule_id for f in found.get(sha, [])}
+
+
+def test_tj_actions_tag_rewrite_is_a_version_collapse():
+    found = rules.tag_findings(TJ_TAGS, None, {})
+    assert "tag.version_collapse" in _tag_ids(found, TJ_SHA)
+    assert next(f for f in found[TJ_SHA] if f.rule_id == "tag.version_collapse").severity == "critical"
+
+
+def test_floating_tags_sharing_a_commit_with_their_release_is_normal():
+    # v1, v1.2 and v1.2.3 on one commit is standard Actions practice.
+    tags = [("v1", "a" * 40), ("v1.2", "a" * 40), ("v1.2.3", "a" * 40)]
+    assert rules.tag_findings(tags, None, {}) == {}
+
+
+def test_two_patch_releases_on_one_commit_is_a_republish_not_a_collapse():
+    tags = [("v1.2.3", "a" * 40), ("v1.2.4", "a" * 40)]
+    assert rules.tag_findings(tags, None, {}) == {}
+
+
+def test_a_moved_release_tag_is_flagged_on_its_new_target():
+    old, new = "a" * 40, "b" * 40
+    found = rules.tag_findings([("v2.0.1", new)], {"v2.0.1": old}, {})
+    assert "tag.moved" in _tag_ids(found, new)
+
+
+def test_a_moved_floating_tag_is_expected():
+    # v4 is moved to every new v4.x.y release; that is its purpose.
+    found = rules.tag_findings([("v4", "b" * 40)], {"v4": "a" * 40}, {"b" * 40: True})
+    assert "tag.moved" not in _tag_ids(found, "b" * 40)
+
+
+def test_no_snapshot_means_nothing_can_have_moved():
+    assert "tag.moved" not in _tag_ids(rules.tag_findings([("v1.0.0", "a" * 40)], None, {}), "a" * 40)
+
+
+def test_a_floating_tag_off_the_default_branch_is_flagged():
+    # reviewdog: v1 pointed at f0d342, a commit on no branch at all.
+    sha = "f0d342d24037bb11d26b9bd8496e0808ba32e9ec"
+    found = rules.tag_findings([("v1", sha)], None, {sha: False})
+    assert "tag.off_default_branch" in _tag_ids(found, sha)
+
+
+def test_unknown_reachability_is_never_reported_as_off_branch():
+    sha = "c" * 40
+    assert rules.tag_findings([("v1", sha)], None, {sha: None}) == {}
+    assert rules.tag_findings([("v1", sha)], None, {}) == {}
+
+
+def test_tags_to_check_covers_floating_and_moved_tags_only():
+    tags = [("v3", "f" * 40), ("v3.1.0", "r" * 40), ("v2.0.0", "m" * 40)]
+    to_check = rules.tags_to_check(tags, {"v2.0.0": "o" * 40, "v3.1.0": "r" * 40})
+    assert to_check == {"f" * 40, "m" * 40}
+
+
+def test_floating_checks_are_bounded_to_the_newest_few():
+    tags = [(f"v{n}", f"{n:040d}") for n in range(1, 30)]
+    checked = rules.tags_to_check(tags, None)
+    assert len(checked) == rules.MAX_FLOATING_CHECKED
+    assert f"{29:040d}" in checked, "the newest major must be among those checked"
+
+
+def test_tag_findings_escalate_on_their_own():
+    # They use the tag. prefix, not context., so evidence_score counts them.
+    for finding in rules.tag_findings(TJ_TAGS, None, {})[TJ_SHA]:
+        assert not finding.rule_id.startswith("context.")
+    assert rules.should_escalate(rules.tag_findings(TJ_TAGS, None, {})[TJ_SHA])
+    off = rules.tag_findings([("v1", "d" * 40)], None, {"d" * 40: False})["d" * 40]
+    assert rules.should_escalate(off)
+
+
+def test_tag_rationales_do_not_name_incidents():
+    # Rationales reach the Tier 2 prompt; precedents never do.
+    import re
+    found = rules.tag_findings(TJ_TAGS, {"v44.5.1": "a" * 40}, {TJ_SHA: False})
+    for finding in (f for fs in found.values() for f in fs):
+        assert not re.search(r"tj-actions|reviewdog", finding.rationale, re.IGNORECASE)
+        assert finding.precedent
