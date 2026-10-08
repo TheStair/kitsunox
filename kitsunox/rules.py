@@ -167,9 +167,27 @@ PRIVATE_IP = re.compile(
     r"^(0\.|127\.|10\.|192\.168\.|169\.254\.|255\.|172\.(1[6-9]|2\d|3[01])\.)"
 )
 
+# Reaching into a credential store or a process's memory, or dumping the whole
+# environment. That is theft-shaped in any repository: no ordinary change reads ~/.npmrc
+# or /proc/<pid>/mem. Both Actions incidents stole secrets by scraping runner memory.
+# The /proc match spans the line rather than requiring a contiguous path, because
+# '/proc/' + pid + '/mem' and os.path.join('/proc', pid, 'mem') are trivial evasions of
+# a contiguous pattern; word boundaries keep /proc/meminfo and "memory" out.
 SECRET_ACCESS = re.compile(
-    r"(NPM_TOKEN|GITHUB_TOKEN|AWS_SECRET|AWS_ACCESS_KEY|\.npmrc|~/\.aws|id_rsa|"
-    r"/proc/\S*/(mem|maps|environ)|process\.env\s*\)|os\.environ\s*\))"
+    r"(\.npmrc|~/\.aws|\.aws/credentials|id_rsa|id_ed25519|\.git-credentials|\.netrc\b|"
+    r"\.docker/config\.json|/proc\b.*\b(mem|maps|environ)\b|process\.env\s*\)|os\.environ\s*\))"
+)
+
+# Naming a token. In an Action, GITHUB_TOKEN is the credential the action is supposed to
+# use; in an npm repo, NPM_TOKEN is how publishing works. As `secret_access` these matched
+# doc comments, test fixtures and `${{ secrets.GITHUB_TOKEN }}`, and were the sole
+# evidence for 14 of the 40 alerts in the first Actions hunt. Using a token is not the
+# attack -- sending it somewhere is -- so this only counts as one half of the
+# credential-exfiltration combo, and sits outside the capability model.
+TOKEN_REFERENCE = re.compile(
+    r"\b(GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN|AWS_SECRET_ACCESS_KEY|"
+    r"AWS_ACCESS_KEY_ID|AWS_SECRET|AWS_ACCESS_KEY|ACTIONS_RUNTIME_TOKEN|"
+    r"ACTIONS_ID_TOKEN_REQUEST_TOKEN)\b"
 )
 
 # `< Infinity` is the colors.js sabotage and has no legitimate use. `while (true)` is a
@@ -464,8 +482,17 @@ def _content_rules(change: Change) -> list[Finding]:
                 hit(
                     "content.secret_access",
                     "high",
-                    "Added code reaches for credentials, process memory, or the "
-                    "environment — the target of a CI-secret theft.",
+                    "Added code reads a credential store, another process's memory, or "
+                    "the whole environment -- the collection step of a secret theft.",
+                    "reviewdog/action-setup and tj-actions/changed-files, 2025",
+                )
+            elif TOKEN_REFERENCE.search(text):
+                hit(
+                    "content.token_reference",
+                    "low",
+                    "Added code names a CI or registry token. Ordinary on its own -- it is "
+                    "how actions and publishing authenticate -- and recorded so that a token "
+                    "sent to an attacker-controlled host is caught as exfiltration.",
                 )
             if UNBOUNDED_LOOP.search(text) or (WHILE_FOREVER.search(text) and not has_escape):
                 # `high` because it measured clean: zero hits across 45 benign PRs. A
@@ -610,6 +637,11 @@ COMBOS: dict[tuple[str, str], tuple[str, Severity, str]] = {
         "combo.credential_exfiltration", "critical",
         "Code that reads credentials was added alongside a paste/tunnel endpoint: "
         "collection and exfiltration in the same change.",
+    ),
+    ("content.token_reference", "content.suspicious_host"): (
+        "combo.credential_exfiltration", "critical",
+        "Code that handles a CI or registry token was added alongside a paste/tunnel "
+        "endpoint: the token may be leaving.",
     ),
     ("content.dependency_added", "context.new_maintainer_direct_push"): (
         "combo.new_maintainer_adds_dependency", "high",
