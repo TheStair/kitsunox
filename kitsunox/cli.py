@@ -2,15 +2,18 @@
 
     kitsunox evaluate [--incidents-only|--control-only] [--tier2] [--out report.json]
     kitsunox check --repo owner/name (--sha SHA | --pr N)
-    kitsunox scan --repo owner/name [--limit N]
+    kitsunox scan (--repo owner/name ... | --targets FILE ...) [--tags] [--brief] [--queue DIR]
+    kitsunox tally [--queue DIR]
 
-Tier 2 costs money, so it never runs unless `--tier2` is passed explicitly.
+Tier 2 costs money, so it never runs unless `--tier2` (evaluate) or `--brief` (scan) is
+passed explicitly, and `scan` briefs at most `--max-briefs` changes per hunt.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from kitsunox import evaluate, fetch, rules
@@ -80,23 +83,68 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    """Rank a repository's direct pushes. Needs the caller's own GITHUB_TOKEN."""
-    owner, name = args.repo.split("/", 1)
-    results = evaluate.scan_repo(owner, name, args.limit, progress=None if args.quiet else _progress)
+    """Hunt target repositories and rank what they turn up. Needs the caller's own
+    GITHUB_TOKEN; `--brief` also needs Anthropic credentials."""
+    repos: list[str] = list(args.repo or [])
+    for target_file in args.targets or []:
+        try:
+            repos += evaluate.load_targets(Path(target_file))
+        except (OSError, ValueError) as exc:
+            print(f"cannot read targets: {exc}", file=sys.stderr)
+            return 2
+    repos = list(dict.fromkeys(repos))  # de-duplicate, keep order
+    if not repos:
+        print("give at least one --repo or --targets file", file=sys.stderr)
+        return 2
+
+    queue = Path(args.queue) if args.queue else None
+    results = evaluate.hunt(
+        repos,
+        limit=args.limit,
+        prs=args.prs,
+        tags=args.tags,
+        brief=args.brief,
+        max_briefs=args.max_briefs,
+        snapshot_path=(queue / "tags.json") if (queue and args.tags) else None,
+        progress=None if args.quiet else _progress,
+    )
     if not results:
-        print("no direct pushes found", file=sys.stderr)
+        print("no changes found", file=sys.stderr)
         return 1
 
-    print(f"\n{args.repo} — {len(results)} direct pushes, ranked by score\n")
-    print(f"  {'rank':>4}  {'score':>5}  {'ev':>3}  commit      rules")
-    for rank, r in enumerate(results[: args.top], start=1):
+    alerts = [r for r in results if r.escalated]
+    print(f"\n{len(results)} changes across {len(repos)} repositories -- "
+          f"{len(alerts)} escalated\n")
+    print(f"  {'rank':>4}  {'score':>5}  {'ev':>3}  {'change':44}  evidence")
+    for rank_no, r in enumerate(results[: args.top], start=1):
         evidence_rules = [x for x in r.rule_ids if not x.startswith("context.")]
-        flag = "*" if r.escalated else " "
-        print(f"  {rank:>4}{flag} {r.total_score:>5}  {r.evidence_score:>3}  "
-              f"{r.key.split('@')[-1]:10}  {','.join(evidence_rules) or '-'}")
+        flag = "!" if r.refused else ("*" if r.escalated else " ")
+        print(f"  {rank_no:>4}{flag} {r.total_score:>5}  {r.evidence_score:>3}  "
+              f"{r.key[:44]:44}  {','.join(evidence_rules) or '-'}")
     if len(results) > args.top:
         print(f"\n  ...{len(results) - args.top} more (raise --top to see them)")
-    print("\n  * = above the Tier 2 escalation threshold")
+    print("\n  * escalated   ! the model declined to analyse it -- review first")
+
+    if queue:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        path = evaluate.write_triage(results, queue / f"queue-{stamp}.md",
+                                     scanned=len(results), repos=repos)
+        added = evaluate.merge_dispositions(results, queue / "dispositions.csv")
+        cost = sum(r.cost_usd for r in results)
+        print(f"\nQueue        {path}")
+        print(f"Dispositions {queue / 'dispositions.csv'}  (+{added} new)")
+        if args.brief:
+            print(f"Brief cost   ${cost:.4f}")
+    return 0
+
+
+def _cmd_tally(args: argparse.Namespace) -> int:
+    path = Path(args.queue) / "dispositions.csv"
+    if not path.exists():
+        print(f"no disposition log at {path} -- run `kitsunox scan --queue {args.queue}` first",
+              file=sys.stderr)
+        return 1
+    print(evaluate.format_tally(evaluate.tally(path)))
     return 0
 
 
@@ -126,12 +174,28 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--pr", type=int)
     ck.set_defaults(func=_cmd_check)
 
-    sc = sub.add_parser("scan", help="rank a repository's direct pushes by score")
-    sc.add_argument("--repo", required=True, metavar="owner/name")
-    sc.add_argument("--limit", type=int, default=200, help="commits to examine")
+    sc = sub.add_parser("scan", help="hunt repositories and queue what escalates for review")
+    sc.add_argument("--repo", action="append", metavar="owner/name", help="repeatable")
+    sc.add_argument("--targets", action="append", metavar="FILE",
+                    help="file of owner/name lines, # comments allowed; repeatable")
+    sc.add_argument("--limit", type=int, default=evaluate.DEFAULT_HUNT_LIMIT,
+                    help="direct pushes to examine per repository")
+    sc.add_argument("--prs", type=int, default=0, help="also examine this many merged PRs per repo")
+    sc.add_argument("--tags", action="store_true",
+                    help="check release-tag integrity (GitHub Actions: tag rewrites, off-branch tags)")
+    sc.add_argument("--brief", action="store_true",
+                    help="Tier 2 analyst brief for the top escalated changes (costs money)")
+    sc.add_argument("--max-briefs", type=int, default=evaluate.DEFAULT_MAX_BRIEFS,
+                    help="cap on briefs per hunt")
+    sc.add_argument("--queue", metavar="DIR",
+                    help="write a triage queue and append to DIR/dispositions.csv")
     sc.add_argument("--top", type=int, default=25, help="rows to print")
     sc.add_argument("--quiet", action="store_true")
     sc.set_defaults(func=_cmd_scan)
+
+    ta = sub.add_parser("tally", help="summarise reviewed dispositions: results in the wild")
+    ta.add_argument("--queue", default="triage", metavar="DIR")
+    ta.set_defaults(func=_cmd_tally)
 
     return parser
 

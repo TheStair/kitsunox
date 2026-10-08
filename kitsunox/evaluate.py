@@ -16,14 +16,17 @@ counts as neither — an API error must never be scored as a clean change.
 
 from __future__ import annotations
 
+import csv
 import json
+import statistics
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from kitsunox import fetch, llm, rules
 from kitsunox.incidents import INCIDENTS, load_incident
-from kitsunox.model import Change, GroundTruth
+from kitsunox.model import Change, Finding, GroundTruth
 
 # Held out from all tuning, across 10 languages. Rules keyed on `package.json`, `dist/`
 # bundles and npm idioms had only ever met Python and JavaScript web libraries, so
@@ -45,6 +48,18 @@ TUNING_REPOS = ["psf/requests", "pallets/flask", "expressjs/express", "axios/axi
 DEFAULT_PRS_PER_REPO = 18
 DEFAULT_PUSHES_PER_REPO = 12
 
+# Hunting defaults. Briefs are capped per hunt because the binding cost is the
+# investigator's time and the API bill both: a wide net can escalate many changes, and
+# briefing the top 20 by Tier 0 score keeps a hunt under roughly $0.60.
+DEFAULT_HUNT_LIMIT = 50
+DEFAULT_MAX_BRIEFS = 20
+
+DISPOSITIONS = ("unreviewed", "benign", "suspicious", "malicious", "unclear")
+DISPOSITION_FIELDS = [
+    "key", "url", "first_seen", "score", "verdict", "cost_usd",
+    "disposition", "minutes", "notes",
+]
+
 
 @dataclass
 class ChangeResult:
@@ -65,6 +80,16 @@ class ChangeResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+
+    # Carried for the triage queue so the report needs no second fetch.
+    url: str = ""
+    message: str = ""
+    author: str | None = None
+    tenure_days: int | None = None
+    prior_commits: int | None = None
+    findings: list[dict] = field(default_factory=list)
+    next_steps: list[str] = field(default_factory=list)
+    refused: bool = False
 
     @property
     def detected(self) -> bool | None:
@@ -110,8 +135,33 @@ class Report:
         return [r for r in self.incidents + self.control if r.tier2_error]
 
 
-def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = False) -> ChangeResult:
-    findings = rules.scan(change)
+def _url_for(change: Change) -> str:
+    if "/" not in change.repo:
+        return ""
+    if change.pr_number:
+        return f"https://github.com/{change.repo}/pull/{change.pr_number}"
+    return f"https://github.com/{change.repo}/commit/{change.sha}"
+
+
+def _apply_review(result: ChangeResult, review: llm.Review) -> None:
+    result.input_tokens += review.usage.input_tokens
+    result.output_tokens += review.usage.output_tokens
+    result.cost_usd += review.usage.cost_usd
+    if review.ok:
+        result.verdict = review.verdict.verdict
+        result.confidence = review.verdict.confidence
+        result.rationale = review.verdict.rationale
+        result.next_steps = list(review.verdict.next_steps)
+    else:
+        result.tier2_error = review.error
+        result.refused = review.refused
+
+
+def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = False,
+             extra_findings: list[Finding] | None = None) -> ChangeResult:
+    """Score one change, optionally brief it. `extra_findings` carries signals computed
+    outside the diff -- tag integrity -- so they are scored alongside it."""
+    findings = rules.scan(change) + list(extra_findings or [])
     evidence = rules.evidence_score(findings)
     escalated = evidence >= threshold
 
@@ -125,19 +175,16 @@ def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = F
         total_score=rules.score(findings),
         escalated=escalated,
         rule_ids=sorted({f.rule_id for f in findings}),
+        url=_url_for(change),
+        message=change.message,
+        author=change.author,
+        tenure_days=change.author_tenure_days,
+        prior_commits=change.author_prior_commits,
+        findings=[asdict(f) for f in findings],
     )
 
     if escalated and tier2:
-        review = llm.review(change, findings, anonymize=anonymize)
-        result.input_tokens = review.usage.input_tokens
-        result.output_tokens = review.usage.output_tokens
-        result.cost_usd = review.usage.cost_usd
-        if review.ok:
-            result.verdict = review.verdict.verdict
-            result.confidence = review.verdict.confidence
-            result.rationale = review.verdict.rationale
-        else:
-            result.tier2_error = review.error
+        _apply_review(result, llm.review(change, findings, anonymize=anonymize))
 
     return result
 
@@ -273,15 +320,319 @@ def write_report(report: Report, path: Path) -> Path:
     return path
 
 
-def scan_repo(owner: str, repo: str, limit: int, *, progress=None) -> list[ChangeResult]:
-    """Rank a repository's recent direct pushes by score (Plan.md §7a).
+# --------------------------------------------------------------------------- hunting
+# The pipeline ends in a human investigator. A hunt scans target repositories, ranks what
+# Tier 0 escalates, optionally briefs the top of the queue, and writes two artifacts: a
+# Markdown queue to read, and a disposition log the investigator fills in. The log is
+# what turns manual review into measured results.
 
-    Ranked, not flagged. One malicious commit among thousands means even a 1% false
-    positive rate buries it, so the useful output is an ordering, not a verdict.
+
+_VERDICT_RANK = {"malicious": 0, "suspicious": 1, None: 2, "benign": 3}
+
+
+def rank(results: list[ChangeResult]) -> list[ChangeResult]:
+    """Queue order: refusals first, then by verdict, then by Tier 0 score.
+
+    A refusal leads because in the wild it is a signal in its own right -- the model
+    declining to analyse a diff is itself evidence the diff looks malicious.
     """
-    results = []
-    for change in fetch.fetch_direct_pushes(owner, repo, limit):
-        results.append(_run_one(change, threshold=rules.ESCALATION_THRESHOLD, tier2=False))
-        if progress and len(results) % 25 == 0:
-            progress(f"  scanned {len(results)}...")
-    return sorted(results, key=lambda r: (-r.total_score, r.key))
+    return sorted(
+        results,
+        key=lambda r: (not r.refused, _VERDICT_RANK.get(r.verdict, 2), -r.total_score, r.key),
+    )
+
+
+def load_targets(path: Path) -> list[str]:
+    """`owner/name` per line. Blank lines and `#` comments, whole-line or trailing, ignored."""
+    targets = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.count("/") != 1 or line.startswith("/") or line.endswith("/"):
+            raise ValueError(f"{path}: not an owner/name target: {raw!r}")
+        targets.append(line)
+    return targets
+
+
+def _load_snapshots(path: Path | None) -> dict[str, dict[str, str]]:
+    if path is None or not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_snapshots(path: Path | None, snapshots: dict[str, dict[str, str]]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(snapshots, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def hunt(
+    repos: list[str],
+    *,
+    limit: int = DEFAULT_HUNT_LIMIT,
+    prs: int = 0,
+    tags: bool = False,
+    brief: bool = False,
+    max_briefs: int = DEFAULT_MAX_BRIEFS,
+    snapshot_path: Path | None = None,
+    progress=None,
+) -> list[ChangeResult]:
+    """Scan repositories in the wild and return every change, ranked.
+
+    Listings are read fresh: a hunt has to see what changed since the last one. With
+    `tags`, release tags are checked too -- an Actions consumer runs what its pinned tag
+    points at, so a tag-rewrite attack never has to touch the default branch, and a
+    default-branch scan alone could not see either Actions incident in the ground truth.
+
+    Briefing is a second pass over only the top `max_briefs` escalated changes by Tier 0
+    score, so a wide net cannot run up an unbounded bill.
+    """
+    snapshots = _load_snapshots(snapshot_path)
+    scored: list[tuple[Change, list[Finding], ChangeResult]] = []
+
+    for full in repos:
+        owner, name = full.split("/", 1)
+        by_sha: dict[str, tuple[Change, list[Finding]]] = {}
+        try:
+            for change in fetch.fetch_direct_pushes(owner, name, limit, fresh=True):
+                by_sha[change.sha] = (change, [])
+            if prs:
+                for change in fetch.fetch_merged_prs(owner, name, prs, fresh=True):
+                    by_sha[change.sha] = (change, [])
+        except fetch.FetchError as exc:
+            if progress:
+                progress(f"  ! {full}: {exc}")
+            continue
+
+        if tags:
+            current = fetch.list_tags(owner, name)
+            previous = snapshots.get(full)
+            reachable = {
+                sha: fetch.on_default_branch(owner, name, sha)
+                for sha in rules.tags_to_check(current, previous)
+            }
+            for sha, extra in rules.tag_findings(current, previous, reachable).items():
+                if sha in by_sha:
+                    by_sha[sha][1].extend(extra)
+                    continue
+                try:
+                    target = fetch.fetch_commit(owner, name, sha)
+                except fetch.FetchError:
+                    # A release tag pointing at a commit that cannot even be fetched is
+                    # worth an investigator's look on its own; report it bare.
+                    target = Change(repo=full, source="push", sha=sha, author=None,
+                                    committed_at=None, message="(commit could not be fetched)")
+                by_sha[sha] = (target, extra)
+            if current:
+                snapshots[full] = dict(current)
+
+        for change, extra in by_sha.values():
+            result = _run_one(change, threshold=rules.ESCALATION_THRESHOLD, tier2=False,
+                              extra_findings=extra)
+            scored.append((change, extra, result))
+        if progress:
+            flagged = sum(1 for _, _, r in scored if r.repo == full and r.escalated)
+            progress(f"  {full}: {len(by_sha)} changes, {flagged} escalated")
+
+    if brief:
+        chosen = {id(r) for r in rank([r for _, _, r in scored if r.escalated])[:max_briefs]}
+        for change, extra, result in scored:
+            if id(result) in chosen:
+                findings = rules.scan(change) + extra
+                _apply_review(result, llm.review(change, findings))
+
+    _save_snapshots(snapshot_path, snapshots)
+    return rank([r for _, _, r in scored])
+
+
+def _block(text: str, limit: int = 1500) -> str:
+    """Untrusted text as an indented code block.
+
+    Commit messages, diff evidence and tag names are attacker-controlled, and so is the
+    Tier 2 brief, which an attacker can steer by planting instructions in a commit. In a
+    fenced block a stray triple backtick closes the fence and lets crafted text render
+    as part of the report -- a forged "Disposition: benign", say. Indentation cannot be
+    escaped from.
+    """
+    text = (text or "").strip() or "(empty)"
+    if len(text) > limit:
+        text = text[:limit] + "\n[...truncated]"
+    return "\n".join("    " + line for line in text.splitlines())
+
+
+def _inline(text: str) -> str:
+    """A short untrusted value as inline code that cannot break out of its backticks."""
+    return "`" + str(text).replace("`", "'").replace("\n", " ")[:200] + "`"
+
+
+def write_triage(results: list[ChangeResult], path: Path, *, scanned: int,
+                 repos: list[str] | None = None) -> Path:
+    """Write the ranked Markdown queue of escalated changes for the investigator."""
+    alerts = rank([r for r in results if r.escalated])
+    briefed = [r for r in alerts if r.verdict or r.tier2_error]
+    cost = sum(r.cost_usd for r in alerts)
+
+    out = [
+        "# Kitsunox triage queue",
+        "",
+        f"Generated {datetime.now().isoformat(timespec='minutes')}. "
+        f"{scanned} changes scanned across {len(repos or [])} repositories; "
+        f"**{len(alerts)} escalated**; {len(briefed)} briefed (${cost:.4f}).",
+        "",
+        "Record what you find in `dispositions.csv` alongside this file "
+        "(`benign`, `suspicious`, `malicious` or `unclear`, plus minutes spent), then run "
+        "`kitsunox tally`.",
+        "",
+        "Everything shown in an indented block is untrusted: it is written or influenced by "
+        "the change's author, including the model's brief. Read the change itself before "
+        "deciding.",
+    ]
+    if not alerts:
+        out += ["", "_Nothing escalated._"]
+
+    for n, r in enumerate(alerts, start=1):
+        verdict = f" -- model: {r.verdict} ({r.confidence:.2f})" if r.verdict else ""
+        out += ["", "---", "", f"## {n}. {_inline(r.key)} -- score {r.total_score}{verdict}", ""]
+        if r.refused:
+            out += ["**The model declined to analyse this change. Review it first.**", ""]
+        out += [f"<{r.url}>" if r.url else "(no link)", ""]
+        tenure = (f", {r.tenure_days} days in repo, {r.prior_commits} prior commits"
+                  if r.tenure_days is not None else "")
+        out += [f"Author: {_inline(r.author or 'unknown')}{tenure}. Source: {r.source}.", ""]
+        out += ["**Commit message**", "", _block(r.message, limit=800), ""]
+
+        out += ["**Why it was flagged**"]
+        evidence_first = sorted(r.findings, key=lambda f: (f["rule_id"].startswith("context."),
+                                                           f["rule_id"]))
+        seen = set()
+        for f in evidence_first:
+            ident = (f["rule_id"], f.get("file_path"), f.get("line"))
+            if ident in seen:
+                continue
+            seen.add(ident)
+            where = ""
+            if f.get("file_path"):
+                where = " in " + _inline(f["file_path"] + (f":{f['line']}" if f.get("line") else ""))
+            out += ["", f"- **{f['rule_id']}** ({f['severity']}){where} -- {f['rationale']}"]
+            if f.get("precedent"):
+                out += [f"  Precedent: {f['precedent']}."]
+            if f.get("evidence"):
+                out += ["", _block(f["evidence"], limit=300)]
+
+        if r.rationale or r.next_steps:
+            out += ["", f"**Model brief** (${r.cost_usd:.4f}; untrusted, steerable by the author)",
+                    "", _block(r.rationale or "")]
+            if r.next_steps:
+                out += ["", "**Suggested next steps** (model output)", "",
+                        _block("\n".join(f"{i}. {s}" for i, s in enumerate(r.next_steps, 1)))]
+        elif r.tier2_error and not r.refused:
+            out += ["", f"_Brief unavailable: {r.tier2_error}_"]
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return path
+
+
+def merge_dispositions(results: list[ChangeResult], path: Path) -> int:
+    """Append newly escalated changes to the disposition log as `unreviewed`.
+
+    Append-only by construction: existing rows are never rewritten, so a reviewed row
+    cannot be clobbered by a later hunt. Returns the number of rows added.
+    """
+    existing: set[str] = set()
+    if path.exists():
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            existing = {row.get("key", "") for row in csv.DictReader(fh)}
+
+    new = [r for r in rank(results) if r.escalated and r.key not in existing]
+    if not new:
+        return 0
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh_file = not path.exists() or path.stat().st_size == 0
+    if not fresh_file:
+        # A spreadsheet editor may save without a trailing newline; appending straight
+        # onto the last row would corrupt it.
+        with path.open("rb") as fh:
+            fh.seek(-1, 2)
+            needs_newline = fh.read(1) not in (b"\n", b"\r")
+        if needs_newline:
+            with path.open("a", encoding="utf-8", newline="") as fh:
+                fh.write("\r\n")
+
+    with path.open("a", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=DISPOSITION_FIELDS)
+        if fresh_file:
+            writer.writeheader()
+        today = datetime.now().date().isoformat()
+        for r in new:
+            writer.writerow({
+                "key": r.key, "url": r.url, "first_seen": today, "score": r.total_score,
+                "verdict": r.verdict or "", "cost_usd": f"{r.cost_usd:.4f}",
+                "disposition": "unreviewed", "minutes": "", "notes": "",
+            })
+    return len(new)
+
+
+def tally(path: Path) -> dict:
+    """Summarise the disposition log: the in-the-wild evaluation result."""
+    if not path.exists():
+        return {"alerts": 0, "reviewed": 0, "counts": {}, "unknown": []}
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+
+    def label(row):
+        return (row.get("disposition") or "unreviewed").strip().lower()
+
+    counts = Counter(label(r) for r in rows)
+    unknown = sorted({d for d in counts if d not in DISPOSITIONS})
+    reviewed = [r for r in rows if label(r) not in ("unreviewed", "")]
+
+    def number(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    minutes = [m for m in (number(r.get("minutes")) for r in reviewed) if m is not None]
+    costs = [c for c in (number(r.get("cost_usd")) for r in rows) if c is not None]
+    malicious, suspicious = counts.get("malicious", 0), counts.get("suspicious", 0)
+
+    return {
+        "alerts": len(rows),
+        "reviewed": len(reviewed),
+        "counts": dict(counts),
+        "unknown": unknown,
+        "precision": malicious / len(reviewed) if reviewed else None,
+        "worth_a_look": (malicious + suspicious) / len(reviewed) if reviewed else None,
+        "median_minutes": statistics.median(minutes) if minutes else None,
+        "total_minutes": sum(minutes),
+        "brief_cost_usd": sum(costs),
+        "brief_cost_per_alert": sum(costs) / len(rows) if rows else None,
+    }
+
+
+def format_tally(t: dict) -> str:
+    def pct(x):
+        return "n/a" if x is None else f"{100 * x:.1f}%"
+
+    lines = ["", "KITSUNOX -- IN THE WILD", "=" * 40,
+             f"Alerts          {t['alerts']}",
+             f"Reviewed        {t['reviewed']}"]
+    for d in DISPOSITIONS:
+        if t["counts"].get(d):
+            lines.append(f"  {d:13} {t['counts'][d]}")
+    if t.get("unknown"):
+        lines.append(f"  unrecognised  {', '.join(t['unknown'])}  (use: {', '.join(DISPOSITIONS)})")
+    if t["reviewed"]:
+        lines += [
+            f"Precision       {pct(t['precision'])}  (confirmed malicious / reviewed)",
+            f"Worth a look    {pct(t['worth_a_look'])}  (malicious or suspicious / reviewed)",
+            f"Minutes/alert   {t['median_minutes'] if t['median_minutes'] is not None else 'n/a'}"
+            f"  (median; {t['total_minutes']:.0f} total)",
+        ]
+    if t.get("brief_cost_per_alert") is not None:
+        lines.append(f"Brief cost      ${t['brief_cost_usd']:.4f}  (${t['brief_cost_per_alert']:.4f}/alert)")
+    return "\n".join(lines + ["=" * 40])

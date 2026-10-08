@@ -165,6 +165,12 @@ class Review:
     error: str | None = None
     prompt: str = ""
 
+    # The model declined. Kept apart from `error` because in the wild a refusal is a
+    # signal, not just a failure: every change there is effectively anonymous, and the
+    # one refusal measured on the ground truth came on the anonymised reviewdog
+    # payload. Refused alerts go to the top of the triage queue.
+    refused: bool = False
+
     @property
     def ok(self) -> bool:
         return self.verdict is not None
@@ -381,7 +387,8 @@ def review(
     )
 
     if response.stop_reason == "refusal":
-        return Review(verdict=None, usage=usage, error="model declined to answer", prompt=prompt)
+        return Review(verdict=None, usage=usage, error="model declined to answer",
+                      prompt=prompt, refused=True)
 
     parsed = getattr(response, "parsed_output", None)
     if parsed is None:
