@@ -48,7 +48,7 @@ def _result(key="o/r@abc", escalated=True, score=20, **kw) -> evaluate.ChangeRes
 def pushes(monkeypatch):
     """Stub the commit listing; returns a setter for the changes to serve."""
     served = {"changes": []}
-    monkeypatch.setattr(fetch, "fetch_direct_pushes",
+    monkeypatch.setattr(fetch, "fetch_recent_commits",
                         lambda o, r, n, **kw: list(served["changes"]))
     monkeypatch.setattr(fetch, "fetch_merged_prs", lambda o, r, n, **kw: [])
     return served
@@ -107,7 +107,7 @@ def test_hunt_reads_listings_fresh(monkeypatch):
         seen.update(kw)
         return []
 
-    monkeypatch.setattr(fetch, "fetch_direct_pushes", pushes)
+    monkeypatch.setattr(fetch, "fetch_recent_commits", pushes)
     evaluate.hunt(["o/r"])
     assert seen.get("fresh") is True
 
@@ -118,7 +118,7 @@ def test_a_failing_repo_does_not_abort_the_hunt(monkeypatch):
             raise fetch.FetchError("404")
         return [_change(repo=f"{o}/{r}", files=_bad())]
 
-    monkeypatch.setattr(fetch, "fetch_direct_pushes", pushes)
+    monkeypatch.setattr(fetch, "fetch_recent_commits", pushes)
     results = evaluate.hunt(["o/gone", "o/here"])
     assert [r.repo for r in results] == ["o/here"]
 

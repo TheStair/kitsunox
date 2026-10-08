@@ -229,7 +229,7 @@ def test_cost_totals_across_every_change():
 
 def test_hunt_ranks_by_total_score(monkeypatch):
     monkeypatch.setattr(
-        fetch, "fetch_direct_pushes",
+        fetch, "fetch_recent_commits",
         lambda o, r, n, **kw: [_change(sha="quiet00001", files=_benign_files()),
                                _change(sha="loud000001", files=_malicious_files())],
     )
@@ -239,7 +239,7 @@ def test_hunt_ranks_by_total_score(monkeypatch):
 
 
 def test_hunt_never_calls_tier2_without_brief(monkeypatch):
-    monkeypatch.setattr(fetch, "fetch_direct_pushes",
+    monkeypatch.setattr(fetch, "fetch_recent_commits",
                         lambda o, r, n, **kw: [_change(files=_malicious_files())])
     monkeypatch.setattr(llm, "review", lambda *a, **k: pytest.fail("a hunt must not spend unasked"))
     assert evaluate.hunt(["o/r"], limit=10)
@@ -316,7 +316,7 @@ def test_cli_check_prints_findings(monkeypatch, capsys):
 
 
 def test_cli_scan_returns_an_error_when_nothing_found(monkeypatch):
-    monkeypatch.setattr(fetch, "fetch_direct_pushes", lambda o, r, n, **kw: [])
+    monkeypatch.setattr(fetch, "fetch_recent_commits", lambda o, r, n, **kw: [])
     assert cli.main(["scan", "--repo", "o/r", "--quiet"]) == 1
 
 

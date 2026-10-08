@@ -559,3 +559,61 @@ def test_unfresh_listing_stays_cached_for_reproducible_evaluation():
     fetch.fetch_direct_pushes("o", "r", 5)
     fetch.fetch_direct_pushes("o", "r", 5)
     assert len([c for c in responses.calls if c.request.url.startswith(url + "?")]) == 1
+
+
+# ------------------------------------------------------------------ hunting listing
+
+
+def _commit_list(*specs):
+    """List entries: (sha, number_of_parents)."""
+    return [{"sha": sha, "parents": [{"sha": "p"}] * n} for sha, n in specs]
+
+
+@responses.activate
+def test_recent_commits_keeps_pr_merged_commits(monkeypatch):
+    # The hunting view: anything on the default branch counts, however it landed. No
+    # per-commit PR association lookup, which is what made a hunt over PR-driven Action
+    # repos cost up to a thousand calls per repository.
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits", json=_commit_list(("a", 1), ("b", 1)))
+    monkeypatch.setattr(fetch, "fetch_commit", lambda o, r, sha: sha)
+    assert fetch.fetch_recent_commits("o", "r", 5) == ["a", "b"]
+    assert not [c for c in responses.calls if "/pulls" in c.request.url]
+
+
+@responses.activate
+def test_recent_commits_skips_merge_commits(monkeypatch):
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits",
+                  json=_commit_list(("merge", 2), ("real", 1)))
+    monkeypatch.setattr(fetch, "fetch_commit", lambda o, r, sha: sha)
+    assert fetch.fetch_recent_commits("o", "r", 5) == ["real"]
+
+
+@responses.activate
+def test_recent_commits_respects_its_limit(monkeypatch):
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits",
+                  json=_commit_list(*[(f"c{i}", 1) for i in range(10)]))
+    monkeypatch.setattr(fetch, "fetch_commit", lambda o, r, sha: sha)
+    assert len(fetch.fetch_recent_commits("o", "r", 3)) == 3
+
+
+@responses.activate
+def test_recent_commits_is_fresh_by_default(monkeypatch):
+    url = f"{BASE}/repos/o/r/commits"
+    responses.add(responses.GET, url, json=[])
+    responses.add(responses.GET, url, json=[])
+    fetch.fetch_recent_commits("o", "r", 5)
+    fetch.fetch_recent_commits("o", "r", 5)
+    assert len([c for c in responses.calls if c.request.url.startswith(url + "?")]) == 2
+
+
+@responses.activate
+def test_recent_commits_survives_an_unfetchable_commit(monkeypatch):
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits", json=_commit_list(("bad", 1), ("ok", 1)))
+
+    def fetch_one(o, r, sha):
+        if sha == "bad":
+            raise fetch.FetchError("422")
+        return sha
+
+    monkeypatch.setattr(fetch, "fetch_commit", fetch_one)
+    assert fetch.fetch_recent_commits("o", "r", 5) == ["ok"]

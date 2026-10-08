@@ -396,9 +396,11 @@ def hunt(
         owner, name = full.split("/", 1)
         by_sha: dict[str, tuple[Change, list[Finding]]] = {}
         try:
-            for change in fetch.fetch_direct_pushes(owner, name, limit, fresh=True):
+            for change in fetch.fetch_recent_commits(owner, name, limit, fresh=True):
                 by_sha[change.sha] = (change, [])
             if prs:
+                # Listed second so a PR's richer metadata -- reviews, approvals, who
+                # merged it -- replaces the bare commit view of the same squash commit.
                 for change in fetch.fetch_merged_prs(owner, name, prs, fresh=True):
                     by_sha[change.sha] = (change, [])
         except fetch.FetchError as exc:

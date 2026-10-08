@@ -471,3 +471,38 @@ def on_default_branch(owner: str, repo: str, sha: str) -> bool | None:
     if status in ("ahead", "diverged"):
         return False
     return None
+
+
+def fetch_recent_commits(owner: str, repo: str, limit: int, *, fresh: bool = True) -> list[Change]:
+    """The newest `limit` non-merge commits on the default branch, however they landed.
+
+    This is the hunting view, distinct from `fetch_direct_pushes`. That function splits
+    commits into populations for the evaluation's control sample, skipping anything that
+    arrived through a pull request -- which in a repository that merges almost everything
+    through PRs means walking up to a thousand commits, one association lookup each, to
+    find a handful of direct pushes. A hunt asks a simpler question: what recently landed
+    where consumers will run it? Every commit on the default branch qualifies.
+
+    Merge commits are still skipped: they carry no diff of their own.
+    """
+    changes: list[Change] = []
+    page = 1
+    while len(changes) < limit and page <= 3:
+        batch = _get_json(
+            f"{API_BASE}/repos/{owner}/{repo}/commits",
+            {"per_page": min(100, max(limit, 10)), "page": page},
+            use_cache=not fresh,
+        )
+        if not batch:
+            break
+        for entry in batch:
+            if len(changes) >= limit:
+                break
+            if len(entry.get("parents", [])) > 1:
+                continue
+            try:
+                changes.append(fetch_commit(owner, repo, entry["sha"]))
+            except FetchError:
+                continue
+        page += 1
+    return changes
