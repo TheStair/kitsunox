@@ -486,15 +486,17 @@ def fetch_recent_commits(owner: str, repo: str, limit: int, *, fresh: bool = Tru
     Merge commits are still skipped: they carry no diff of their own.
     """
     changes: list[Change] = []
+    per_page = min(100, max(limit, 10))
     page = 1
     while len(changes) < limit and page <= 3:
         batch = _get_json(
             f"{API_BASE}/repos/{owner}/{repo}/commits",
-            {"per_page": min(100, max(limit, 10)), "page": page},
+            {"per_page": per_page, "page": page},
             use_cache=not fresh,
         )
         if not batch:
             break
+        last_page = len(batch) < per_page  # a short page is the final one; don't ask again
         for entry in batch:
             if len(changes) >= limit:
                 break
@@ -504,5 +506,7 @@ def fetch_recent_commits(owner: str, repo: str, limit: int, *, fresh: bool = Tru
                 changes.append(fetch_commit(owner, repo, entry["sha"]))
             except FetchError:
                 continue
+        if last_page:
+            break
         page += 1
     return changes
