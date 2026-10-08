@@ -390,34 +390,3 @@ def fetch_direct_pushes(
                 continue
         page += 1
     return changes
-
-
-# --------------------------------------------------------------------------- Tier 3
-# The only repository access Tier 3 gets. Deliberately just this: an earlier version also
-# offered a recursive tree listing and per-path history, and five investigations drained a
-# 5,000/hour GitHub budget. Reads are additionally restricted by the caller to paths the
-# change already touched, so an investigation cannot wander.
-
-
-def read_file_at(owner: str, repo: str, path: str, ref: str) -> str:
-    """File contents at a ref, or a short explanatory string if unavailable.
-
-    Returns a message rather than raising: an investigating model asking for a file that
-    does not exist has learned something useful, and an exception would end the loop.
-    """
-    import base64
-
-    try:
-        data = _get_json(f"{API_BASE}/repos/{owner}/{repo}/contents/{path}", {"ref": ref})
-    except FetchError as exc:
-        return f"<could not read {path} at {ref}: {exc}>"
-    if isinstance(data, list):
-        return f"<{path} is a directory; it contains: " + ", ".join(
-            entry.get("name", "?") for entry in data[:200]
-        ) + ">"
-    if data.get("encoding") != "base64" or "content" not in data:
-        return f"<{path} is not readable as text>"
-    raw = base64.b64decode(data["content"])
-    if len(raw) > 200_000:
-        return raw[:200_000].decode("utf-8", errors="replace") + "\n<... file truncated>"
-    return raw.decode("utf-8", errors="replace")
