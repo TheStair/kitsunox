@@ -19,6 +19,9 @@ and are comparatively under-tooled. `xz-utils` (CVE-2024-3094) is the canonical 
 
 ## 2. Non-goals (explicit, to keep scope bounded)
 
+- **No automated verdict and no investigating agent.** The pipeline ends in a human
+  investigator. An agentic Tier 3 was built, measured and removed -- see §4.
+
 - No continuous/ecosystem-wide monitoring, no long-running feed consumer.
 - No live GitHub Action / webhook front-end **this pass** (stretch goal only if weeks
   remain — see §7).
@@ -38,34 +41,38 @@ approval metadata) or a direct push to the default branch (commit + diff, no PR)
 matter: `colors.js`'s infinite-loop sabotage and most of the `xz-utils` backdoor were
 committed directly by a trusted maintainer, no PR involved.
 
+**Scope:** GitHub Actions and npm source repositories. Both are human-readable
+(JavaScript, TypeScript, shell, YAML), which is where the measurements say an LLM brief
+is most trustworthy, and where an added binary is unusual enough to escalate alone.
+
 ```mermaid
 flowchart LR
-    subgraph Ground["ground truth — fixed list, ~5 incidents"]
-        INC["known malicious commits/PRs"]
-    end
-    subgraph Control["control sample — held out from tuning"]
-        CTL["~750 changes across 25 repos,<br/>10 languages: merged PRs + direct pushes"]
-    end
-
-    INC & CTL --> FETCH["fetch.py<br/>GitHub REST API: diff + author +<br/>reviews + checks + files touched"]
-    FETCH --> T0["rules.py — Tier 0<br/>evidence: diff patterns, install hooks<br/>circumstance: review, CI, author tenure<br/>(no LLM, runs on everything)"]
-    T0 -->|evidence score above threshold| T2["llm.py — Tier 2<br/>one Claude call, bounded diff hunks,<br/>structured verdict + rationale"]
-    T0 -->|below threshold| SKIP["skip Tier 2"]
-    T2 & SKIP --> REPORT["evaluate.py<br/>detection rate + FP rate + cost accounting"]
+    TGT["targets/actions.txt<br/>targets/npm.txt"] --> HUNT
+    HUNT["kitsunox scan<br/>recent commits on the default branch<br/>+ release-tag integrity (--tags)"] --> T0
+    T0["rules.py -- Tier 0<br/>evidence: diff patterns, install hooks,<br/>opaque binaries, tag rewrites<br/>circumstance: review, CI, author tenure"]
+    T0 -->|escalated, top N| T2["llm.py -- Tier 2 brief (optional)<br/>one Claude call on the full change:<br/>rationale + next steps"]
+    T0 -->|escalated| Q
+    T2 --> Q["queue-*.md<br/>ranked, untrusted text inert"]
+    Q --> HUMAN(["human investigator"])
+    HUMAN --> D["dispositions.csv<br/>benign / suspicious / malicious + minutes"]
+    D --> TALLY["kitsunox tally<br/>precision in the wild,<br/>minutes per alert"]
 ```
+
+The ground-truth incidents and the held-out control corpus (§5, §6) evaluate Tier 0
+offline with `kitsunox evaluate`; the hunt is how the tool is used in the wild.
 
 ### Module layout
 
 ```
 kitsunox/
-  fetch.py       # GitHub REST API client: fetch_commit(), fetch_merged_prs(),
-                 #   fetch_direct_pushes(), author_history()/author_tenure()
+  fetch.py       # GitHub REST API client: commits, PRs, author tenure, release tags,
+                 #   default-branch reachability; fresh listings for hunting
   model.py       # Change, FileDiff, Finding dataclasses
-  rules.py       # Tier 0: evidence rules + circumstance rules + capability scoring
-  llm.py         # Tier 2: one Claude call -> structured verdict
-  incidents.py   # the ~5 ground-truth incidents, hardcoded
-  evaluate.py    # runs the pipeline over incidents + control sample -> report
-  cli.py
+  rules.py       # Tier 0: evidence + circumstance rules, capability scoring, tag integrity
+  llm.py         # Tier 2: one Claude call -> analyst brief with next steps
+  incidents.py   # the 5 ground-truth incidents
+  evaluate.py    # offline evaluation; hunting, triage queue, disposition log, tally
+  cli.py         # evaluate | check | scan | tally
 ```
 
 Deliberately ~7 files. No ORM, no CLI subcommand sprawl. If it needs more structure later, add it when the need is concrete, not in advance.
@@ -176,22 +183,88 @@ indicator in the same file), rather than an invention.
 
 `delivery` alone scores zero, for the reason in the table above.
 
-### Tier 2 — minimal LLM escalation
+### Opaque binaries
 
-When Tier 0's **evidence** score crosses the threshold, make **one** Claude call with
-only the flagged diff hunks plus three lines of context and the rule rationales — never
-the whole diff, never the repository. tj-actions produces a ~2KB prompt from a far larger
-file. Output is a structured, schema-validated verdict (`malicious`/`suspicious`/
-`benign`), a confidence, a rationale, and the files the verdict turned on.
+In a JavaScript, TypeScript or Actions repository an executable, native module or archive
+has no reason to appear unexplained, and none of it can be reviewed as a diff. Opaque
+binaries -- no extension, `.node`, `.wasm`, `.so/.dll/.dylib`, archives and compressed
+data including `.xz` and `.lzma` -- escalate on their own anywhere. Images, fonts and media
+get a separate `content.asset_added` rule outside the capability model: as `binary_added`
+a logo counted as concealment, so a logo, a new dependency and one subprocess call scored
+1 + 1 + 1 plus a three-category bonus of 6 and escalated an ordinary CLI change.
 
-Three properties the implementation holds to, each pinned by a test:
+### Release-tag integrity -- the Actions attack surface
 
-- **The prompt never contains `ground_truth`.** Tier 2 is measured against that label.
-- **A failed call is distinguishable from a benign verdict.** If an API error read as
-  "benign", §7's detection rate would silently count failures as clean changes.
-- **Cost is measured, not asserted.** Token counts and an estimated dollar figure come
-  back with every verdict. The system prompt is byte-identical across a run and carries a
-  cache breakpoint, so escalation 2..N bills that portion at a tenth.
+Actions consumers pin a tag (`uses: owner/action@v4`), so their CI runs whatever the tag
+points at, not what is on the default branch. Both Actions incidents exploited this:
+reviewdog's malicious commit was on no branch at all, and tj-actions rewrote every version
+tag to one commit (Ladisa **AV-303**, Tamper with Version Control System). A
+default-branch scan could see neither. The 5/5 evaluation never exposed the gap because
+`incidents.py` hands the pipeline the malicious SHAs directly.
+
+| Rule | Severity | Signal |
+|---|---|---|
+| `tag.version_collapse` | critical | release tags from different `major.minor` lines on one commit |
+| `tag.moved` | critical | a full release tag changed target since the last hunt's snapshot |
+| `tag.off_default_branch` | high | a floating or moved tag points at a commit off the default branch |
+
+They use a `tag.` prefix, not `context.`: a rewritten release tag is direct evidence, not a
+circumstance, and must escalate alone. Floating tags (`v1`, `v1.2`) sharing a commit with
+their release is normal and excluded; patch-only collisions count as republishes.
+Verified on live data: `on_default_branch` returns False for reviewdog's `f0d342` and True
+for that repository's branch head, and a tag hunt raises nothing on its restored tags.
+
+`tag.moved` only works across repeated hunts (it needs a snapshot), and these attacks were
+live for hours to a day -- a stated limitation.
+
+### Tier 2 -- an analyst brief, not a verdict
+
+When an escalated change is briefed (`scan --brief`), Tier 2 makes **one** Claude call
+with the complete change -- every file, the commit message, the flagged lines marked --
+and returns a rationale plus **next steps** for the investigator. Verdict and confidence
+only rank the queue; the human decides.
+
+The model's explanations were consistently strong: it decoded reviewdog's base64 and named
+xz's missing m4 extractor unprompted. Its verdicts were the least reliable part of the
+system (§7). So it is used for what it is good at: cutting the investigator's minutes per
+alert. Briefs are capped per hunt (`--max-briefs`, default 20) so a wide net cannot run up
+an unbounded bill -- roughly $0.60 at most.
+
+Two properties are tested adversarially, with mutation checks confirming the tests fail
+when the protection is removed:
+
+- **The queue cannot be forged.** Commit messages, evidence and tag names are
+  attacker-controlled; so is the brief, which an attacker can steer by planting
+  instructions in a commit. Untrusted text renders as indented code blocks, which cannot
+  be escaped -- a fenced block can be closed by a stray triple backtick and let a forged
+  "Disposition: benign" render as report content.
+- **A reviewed disposition is never rewritten.** The log is append-only by construction.
+
+A model refusal ranks to the **top** of the queue. In the wild every change is
+effectively anonymous, and the one refusal measured on the ground truth came on the
+anonymised reviewdog payload: declining to analyse a diff is evidence in its own right.
+
+### Considered and rejected: an investigating agent (Tier 3)
+
+A third tier was built: an agent that re-examined ambiguous Tier 2 verdicts with read-only
+repository access. It was removed, for measured reasons:
+
+- **It never completed an investigation.** Its first version browsed the repository and
+  five investigations exhausted a 5,000/hour GitHub budget; narrowed to reading changed
+  files, it was never observed running.
+- **It sat on the least reliable layer.** Tier 2 verdicts recalled CVE-2024-3094 with the
+  repository redacted, were talked into `benign` by xz's own attacker-authored README, and
+  refused reviewdog outright. An autonomous agent on top compounds that rather than fixing
+  it.
+- **General agents struggle at reverse engineering**, and 4 of 5 incidents are text, not
+  binaries. Purpose-built RE environments exist (Ghidra, Binary Ninja, capa and YARA behind
+  MCP) but fit compiled binaries, not this scope.
+- **The binding constraint is the investigator's time, not tokens.** At 1.15% false
+  positives, 10,000 commits produce about 115 alerts -- around 19 hours at 10 minutes each.
+  A brief that saves minutes per alert is worth more than an agent that renders verdicts.
+
+It also spends a second currency: every other tier spends tokens, but it spent GitHub
+requests, which for anyone running this with their own PAT may be the binding constraint.
 
 ## 5. Ground truth: the incident set
 
@@ -287,6 +360,24 @@ changes for nothing, and the expensive tier runs on the rest.
 - **Walkthroughs** — a handful of "here is the exact commit and here is what fired",
   with xz-utils as the headline.
 
+### In the wild
+
+`kitsunox scan --targets ... --queue triage` writes a ranked queue and appends to
+`triage/dispositions.csv`; the investigator records a disposition and minutes per alert;
+`kitsunox tally` reports precision in the wild, the share worth a look, and median minutes
+per alert. That makes manual review a measurement rather than effort -- and it still
+yields a result if no attack is confirmed, which is the likeliest real outcome.
+
+Two cautions for reading it:
+
+- The held-out 1.15% was measured on **zero** Actions repositories. The first hunt is the
+  first false-positive measurement for that population.
+- The first Actions false-positive class observed is **installer actions that pipe a
+  remote script to `sh`** -- downloading and running a tool is a `setup-*` action's whole
+  purpose, and also exactly the shape of a supply-chain attack. It belongs with a human
+  who checks where the script URL points. (It was predicted to be committed `dist/`
+  bundles; it was not.)
+
 ### Stated limitations
 
 These belong in the write-up as findings, not as defects to engineer around:
@@ -354,10 +445,11 @@ These belong in the write-up as findings, not as defects to engineer around:
 |---|---|---|---|---|
 | 1-2 | 10 | `fetch.py` + `model.py` + `incidents.py`; verify each incident against the live API before assuming it needs a fixture | correct diffs/metadata for all 5 incidents | **done** |
 | 3-4 | 10 | `rules.py` (Tier 0) | fires on ≥3 of the 5 incidents | **done** — 5/5 |
-| 5 | 5 | Held-out control corpus; inspect false positives, tune thresholds | FP rate measured on data not used for tuning | in progress |
-| 6-7 | 10 | `llm.py` (Tier 2), wired to Tier 0's escalation | escalated cases get a structured verdict | module written; unrun |
-| 8 | 5 | `evaluate.py` + `cli.py`; full run across incidents + control | detection + FP + cost numbers in hand | |
-| 9-10 | 10 | Buffer, write-up, slides; stretch goal (§7a) if ahead | presentation-ready | |
+| 5 | 5 | Held-out control corpus; inspect false positives, tune thresholds | FP rate measured on data not used for tuning | **done** -- 1.15% (8/695) |
+| 6-7 | 10 | `llm.py` (Tier 2), wired to Tier 0's escalation; recognition ablation | escalated cases get a brief | **done** -- analyst brief; ablation 5/5 to 4/5; Tier 3 built and rejected |
+| 8 | 5 | `evaluate.py` + `cli.py`; tag integrity; hunting, triage queue, disposition log | detection + FP + cost numbers in hand; a hunt produces a queue | **done** |
+| 9 | 5 | **Hunt in the wild** over `targets/`; review the queue; record dispositions | `kitsunox tally` gives precision in the wild and minutes per alert | in progress |
+| 10 | 5 | Write-up and slides | presentation-ready | |
 
 ### §7a — Whole-repository scan (stretch)
 
