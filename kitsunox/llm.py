@@ -1,4 +1,4 @@
-"""Tier 2 — minimal LLM escalation (docs/Plan.md §4).
+"""Tier 2 — an analyst brief for the human investigator (docs/Plan.md §4).
 
 Called only for changes whose Tier 0 evidence score crosses the threshold. This module
 decides *what to send and how to read the answer*; `evaluate.py` decides *whether to
@@ -10,7 +10,7 @@ Three constraints shape the design:
 **The whole change, annotated.** Tier 0 says *where to look*; Tier 2 reviews the change.
 It receives every file's full diff plus the commit message, with the flagged lines marked,
 because a hunk cannot be judged without the code around it — and because the pre-filter
-misses things. What it does *not* get is the repository: that is Tier 3's job.
+misses things. It does not get the rest of the repository.
 
 **Structured output.** The verdict comes back as a validated `Verdict` via
 `client.messages.parse`, not as free text to be regex'd. An unparseable verdict is a
@@ -18,8 +18,14 @@ failed measurement, not something to guess at.
 
 **Measured cost.** Every call returns its token counts and an estimated dollar figure so
 §7 can report what the tiered funnel actually cost, rather than asserting that it is
-cheap. Tier 2 is always exactly one call; only an ambiguous verdict escalates to the
-multi-call Tier 3 below.
+cheap. Tier 2 is always exactly one call.
+
+**Written for a human, not a scoreboard.** The pipeline ends in an investigator, not
+an automated verdict. The model's explanations have been consistently strong -- it
+decoded reviewdog's base64 and named xz's missing m4 extractor unprompted -- while its
+verdicts were the least reliable part of the system. So the verdict and confidence
+only *rank* the triage queue; the brief exists to cut the investigator's minutes per
+alert, and `next_steps` tells them what to check first.
 
 Nothing here runs unless called. Constructing the module makes no network request, and
 no API key is read until `review()` is first invoked.
@@ -70,30 +76,38 @@ PER_FILE_CHARS = 6_000
 MAX_MESSAGE_CHARS = 4_000
 
 SYSTEM_PROMPT = """\
-You are reviewing a single change to a source repository for signs of a software supply \
-chain attack — malicious code introduced through repository access, CI/build tampering, \
-or a compromised or newly-trusted maintainer.
+You are briefing a human security investigator on a single change to a source \
+repository. A deterministic pre-filter flagged it as a possible software supply chain \
+attack: malicious code introduced through repository access, CI or build tampering, or a \
+compromised or newly-trusted maintainer. The investigator will read your brief, then the \
+change, and decide. Your job is to make that decision faster and better informed.
 
-You are given only the parts of the change that a deterministic pre-filter flagged, plus \
-why each was flagged. You are not given the rest of the diff or the repository.
+You are given the complete change: every file it touches, its commit message, and the \
+lines the pre-filter objected to, marked and explained. You are not given the rest of the \
+repository.
 
-Judge the change on the evidence shown. Two failure modes to avoid:
+Three things to get right:
 
 - The pre-filter is pattern-based and fires on plenty of legitimate code. Minified \
 bundles, test fixtures, build tooling and vendored dependencies all look alarming to a \
 regex. If the flagged code has an ordinary explanation, say benign and say why.
-- Absence of evidence in what you were shown is not evidence of absence. If the flagged \
-excerpt is genuinely ambiguous without the surrounding code, say suspicious rather than \
-guessing either way.
+- The pre-filter is not the boundary of the review. It flags patterns and misses intent. \
+Read the whole change, including what it did not flag, and weigh what the commit message \
+claims against what the diff actually does.
+- Do the investigator's legwork where you can. If something is encoded, say what it \
+decodes to. If code is reachable only in a certain context, say which. If deciding would \
+need something outside this change, say exactly what, and make it a next step.
 
 Reserve "malicious" for evidence of intent to harm: exfiltration of secrets or \
 credentials, code fetched and executed from an attacker-controlled endpoint, deliberate \
-sabotage, or a payload concealed to survive review. Judge the change, not the author.\
+sabotage, or a payload concealed to survive review. Use "suspicious" when the evidence \
+shown genuinely cannot decide it. Judge the change, not the author.\
 """
 
 
 class Verdict(BaseModel):
-    """The structured response Tier 2 must return."""
+    """The structured brief Tier 2 returns. `verdict` and `confidence` rank the triage
+    queue; `rationale` and `next_steps` are for the investigator."""
 
     verdict: Literal["malicious", "suspicious", "benign"] = Field(
         description="malicious: evidence of intent to harm. suspicious: genuinely "
@@ -110,6 +124,12 @@ class Verdict(BaseModel):
         default_factory=list,
         description="Paths of the files the verdict actually turned on. Empty if none "
         "were decisive.",
+    )
+    next_steps: list[str] = Field(
+        default_factory=list,
+        description="Concrete checks for the human investigator, most decisive first -- "
+        "e.g. 'decode the SCRIPT_RUNNER blob in install.sh and read it', 'check whether "
+        "the v1 tag was moved'. Name the file or artifact each one concerns. At most five.",
     )
 
 
@@ -298,9 +318,10 @@ def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = F
         )
 
     lines.append(
-        "\nReview this change. Give a verdict, a confidence, and a short rationale naming "
-        "the specific evidence — including anything the pre-filter did not flag, and any "
-        "mismatch between what the change says it does and what it actually does."
+        "\nBrief the investigator on this change: a verdict, a confidence, a short "
+        "rationale naming the specific evidence -- including anything the pre-filter did "
+        "not flag, and any mismatch between what the change says it does and what it "
+        "does -- and the next steps they should take, most decisive first."
     )
     return "\n".join(lines)
 

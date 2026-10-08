@@ -463,3 +463,45 @@ def test_a_runaway_message_is_truncated(monkeypatch):
     monkeypatch.setattr(llm, "MAX_MESSAGE_CHARS", 50)
     prompt = llm.build_prompt(_change([_file("a.js")], message="x" * 500), [_finding(file_path=None)])
     assert "truncated" in prompt
+
+
+# ============================================================== analyst brief
+
+# The pipeline ends in a human investigator. The verdict ranks the queue; the brief and
+# its next steps are what save the investigator time.
+
+
+def test_brief_carries_next_steps():
+    brief = llm.Verdict(verdict="suspicious", confidence=0.6, rationale="r",
+                        next_steps=["decode the blob in install.sh", "check the v1 tag"])
+    assert brief.next_steps[0] == "decode the blob in install.sh"
+
+
+def test_next_steps_default_to_empty():
+    assert llm.Verdict(verdict="benign", confidence=0.9, rationale="r").next_steps == []
+
+
+def test_the_prompt_asks_for_next_steps():
+    prompt = llm.build_prompt(_change([_file("a.js", "@@ -1,0 +1,1 @@\n+x")]),
+                              [_finding(file_path="a.js", line=1)])
+    assert "next steps" in prompt
+
+
+def test_system_prompt_describes_the_input_build_prompt_actually_sends():
+    # A regression test for a real failure: the prompt kept claiming the model saw "only
+    # the parts the pre-filter flagged" for three commits after build_prompt started
+    # sending the whole change. An unasserted str.replace failed silently and reported
+    # success. If build_prompt and the system prompt disagree about the input, this fails.
+    prompt = llm.build_prompt(
+        _change([_file("flagged.js", "@@ -1,0 +1,1 @@\n+x"),
+                 _file("quiet.js", "@@ -1,0 +1,1 @@\n+y")], message="m"),
+        [_finding(file_path="flagged.js", line=1)],
+    )
+    assert "quiet.js" in prompt, "build_prompt sends unflagged files"
+    assert "only the parts" not in llm.SYSTEM_PROMPT
+    assert "complete change" in llm.SYSTEM_PROMPT
+    assert "commit message" in llm.SYSTEM_PROMPT
+
+
+def test_system_prompt_is_written_for_a_human_investigator():
+    assert "investigator" in llm.SYSTEM_PROMPT
