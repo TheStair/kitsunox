@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -449,28 +450,71 @@ def list_tags(owner: str, repo: str, *, limit: int = 500) -> list[tuple[str, str
     return tags[:limit]
 
 
-def on_default_branch(owner: str, repo: str, sha: str) -> bool | None:
-    """Whether `sha` is reachable from the default branch; None if it cannot be told.
+def list_branches(owner: str, repo: str, *, limit: int = 300) -> list[str]:
+    """Branch names, freshly read."""
+    names: list[str] = []
+    page = 1
+    while len(names) < limit:
+        try:
+            batch = _get_json(
+                f"{API_BASE}/repos/{owner}/{repo}/branches", {"per_page": 100, "page": page},
+                use_cache=False,
+            )
+        except FetchError:
+            break
+        if not batch:
+            break
+        names += [b["name"] for b in batch if b.get("name")]
+        if len(batch) < 100:
+            break
+        page += 1
+    return names[:limit]
 
-    Uses `compare/{default}...{sha}`: `behind` or `identical` means the commit is an
-    ancestor of the default branch, `ahead` or `diverged` means it is not. Not cached,
-    because the default branch moves and a commit can be merged after a first check.
+
+# Release branches are where a legitimately tagged commit is most likely to live when it is
+# not on the default branch, so they are checked first and most commits resolve in one or
+# two calls. Measured on the first Actions hunt: tgymnich/fork-sync tags commits on
+# releases/v1.7.1 and Azure/k8s-deploy on releases/v4.
+_RELEASE_BRANCH = re.compile(r"^(releases?|rel|stable|dist|v\d)", re.IGNORECASE)
+_BOT_BRANCH = re.compile(r"^(dependabot|renovate|snyk|greenkeeper)/", re.IGNORECASE)
+
+
+def on_any_branch(owner: str, repo: str, sha: str, *, max_compares: int = 60) -> bool | None:
+    """Whether `sha` is reachable from any branch; None if it cannot be told.
+
+    The signal that matters for a tag target is a commit on no branch at all -- reviewdog's
+    f0d342 was exactly that. A commit on a release branch is ordinary practice, which is
+    why the first version, checking only the default branch, raised 18 alerts on the first
+    Actions hunt and 10 with no other evidence.
+
+    Branches are tried default first, then release-like names, then the rest, with bot
+    branches last. A False answer requires every branch to have been checked; hitting
+    `max_compares` first returns None rather than a guess. Not cached: branches move, and
+    a commit can land on one after a first check.
+
+    Known evasion, stated rather than hidden: an attacker who can push a tag can usually
+    push a branch too, and parking the commit on one defeats this check.
     """
-    branch = default_branch(owner, repo)
-    if not branch:
+    branches = list_branches(owner, repo)
+    if not branches:
         return None
-    try:
-        data = _get_json(
-            f"{API_BASE}/repos/{owner}/{repo}/compare/{branch}...{sha}", use_cache=False
-        )
-    except FetchError:
-        return None
-    status = data.get("status")
-    if status in ("behind", "identical"):
-        return True
-    if status in ("ahead", "diverged"):
-        return False
-    return None
+    default = default_branch(owner, repo)
+    order = sorted(
+        branches,
+        key=lambda b: (b != default, not _RELEASE_BRANCH.match(b), bool(_BOT_BRANCH.match(b)), b),
+    )
+    for checked, branch in enumerate(order):
+        if checked >= max_compares:
+            return None
+        try:
+            data = _get_json(
+                f"{API_BASE}/repos/{owner}/{repo}/compare/{branch}...{sha}", use_cache=False
+            )
+        except FetchError:
+            continue  # e.g. "no common ancestor": not on this branch
+        if data.get("status") in ("behind", "identical"):
+            return True
+    return False
 
 
 def fetch_recent_commits(owner: str, repo: str, limit: int, *, fresh: bool = True) -> list[Change]:

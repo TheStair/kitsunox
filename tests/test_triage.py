@@ -165,7 +165,7 @@ TJ_SHA = "0e58ed8671d6b60d0890c21b07f8835ace038e67"
 
 def _tags(monkeypatch, tags, reachable=None):
     monkeypatch.setattr(fetch, "list_tags", lambda o, r, **kw: list(tags))
-    monkeypatch.setattr(fetch, "on_default_branch",
+    monkeypatch.setattr(fetch, "on_any_branch",
                         lambda o, r, sha: (reachable or {}).get(sha))
 
 
@@ -179,7 +179,7 @@ def test_a_tag_target_off_the_default_branch_becomes_an_alert(pushes, monkeypatc
     results = evaluate.hunt(["reviewdog/action-setup"], tags=True)
     alert = next(r for r in results if r.key.endswith(bad[:10]))
     assert alert.escalated
-    assert "tag.off_default_branch" in alert.rule_ids
+    assert "tag.on_no_branch" in alert.rule_ids
 
 
 def test_tag_findings_merge_into_a_change_already_listed(pushes, monkeypatch):
@@ -188,7 +188,7 @@ def test_tag_findings_merge_into_a_change_already_listed(pushes, monkeypatch):
     _tags(monkeypatch, [("v1", sha)], {sha: False})
     monkeypatch.setattr(fetch, "fetch_commit", lambda *a: pytest.fail("already listed"))
     results = evaluate.hunt(["o/r"], tags=True)
-    assert len(results) == 1 and "tag.off_default_branch" in results[0].rule_ids
+    assert len(results) == 1 and "tag.on_no_branch" in results[0].rule_ids
 
 
 def test_an_unfetchable_tag_target_is_still_reported(pushes, monkeypatch):

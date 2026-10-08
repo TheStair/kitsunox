@@ -912,7 +912,7 @@ def test_a_floating_tag_off_the_default_branch_is_flagged():
     # reviewdog: v1 pointed at f0d342, a commit on no branch at all.
     sha = "f0d342d24037bb11d26b9bd8496e0808ba32e9ec"
     found = rules.tag_findings([("v1", sha)], None, {sha: False})
-    assert "tag.off_default_branch" in _tag_ids(found, sha)
+    assert "tag.on_no_branch" in _tag_ids(found, sha)
 
 
 def test_unknown_reachability_is_never_reported_as_off_branch():

@@ -206,13 +206,18 @@ default-branch scan could see neither. The 5/5 evaluation never exposed the gap 
 |---|---|---|
 | `tag.version_collapse` | critical | release tags from different `major.minor` lines on one commit |
 | `tag.moved` | critical | a full release tag changed target since the last hunt's snapshot |
-| `tag.off_default_branch` | high | a floating or moved tag points at a commit off the default branch |
+| `tag.on_no_branch` | high | a floating or moved tag points at a commit on no branch at all |
 
 They use a `tag.` prefix, not `context.`: a rewritten release tag is direct evidence, not a
 circumstance, and must escalate alone. Floating tags (`v1`, `v1.2`) sharing a commit with
 their release is normal and excluded; patch-only collisions count as republishes.
-Verified on live data: `on_default_branch` returns False for reviewdog's `f0d342` and True
-for that repository's branch head, and a tag hunt raises nothing on its restored tags.
+Verified on live data: `on_any_branch` returns False for reviewdog's `f0d342` (on none
+of its 10 branches) and True for its branch head, and a tag hunt raises nothing on its
+restored tags. The first version checked only the default branch and raised 18 alerts on
+the first Actions hunt -- 10 with no other evidence -- because projects such as
+Azure/k8s-deploy and tgymnich/fork-sync tag commits on `releases/*` branches; that
+Azure commit now correctly reads as on a branch. Known evasion: an attacker who can
+push a tag can usually push a branch, and parking the commit on one defeats the check.
 
 `tag.moved` only works across repeated hunts (it needs a snapshot), and these attacks were
 live for hours to a day -- a stated limitation.

@@ -512,32 +512,75 @@ def test_list_tags_returns_empty_on_failure():
     assert fetch.list_tags("o", "r") == []
 
 
-def _default_branch_mock():
-    responses.add(responses.GET, f"{BASE}/repos/o/r", json={"default_branch": "main"})
+def _repo(default="main"):
+    responses.add(responses.GET, f"{BASE}/repos/o/r", json={"default_branch": default})
 
 
-@pytest.mark.parametrize(
-    "status,expected",
-    [("behind", True), ("identical", True), ("ahead", False), ("diverged", False), ("weird", None)],
-)
-@responses.activate
-def test_on_default_branch_reads_the_compare_status(status, expected):
-    _default_branch_mock()
-    responses.add(responses.GET, f"{BASE}/repos/o/r/compare/main...{'a' * 40}", json={"status": status})
-    assert fetch.on_default_branch("o", "r", "a" * 40) is expected
+def _branches(*names):
+    responses.add(responses.GET, f"{BASE}/repos/o/r/branches", json=[{"name": n} for n in names])
 
 
-@responses.activate
-def test_on_default_branch_is_unknown_when_compare_fails():
-    _default_branch_mock()
-    responses.add(responses.GET, f"{BASE}/repos/o/r/compare/main...{'a' * 40}", json={}, status=404)
-    assert fetch.on_default_branch("o", "r", "a" * 40) is None
+def _compare(branch, sha, status=None, http=200):
+    url = f"{BASE}/repos/o/r/compare/{branch}...{sha}"
+    responses.add(responses.GET, url, json={"status": status} if status else {}, status=http)
+
+
+SHA = "a" * 40
 
 
 @responses.activate
-def test_on_default_branch_is_unknown_without_a_default_branch():
-    responses.add(responses.GET, f"{BASE}/repos/o/r", json={}, status=404)
-    assert fetch.on_default_branch("o", "r", "a" * 40) is None
+def test_a_commit_on_the_default_branch_is_on_a_branch():
+    _branches("main", "dev")
+    _repo()
+    _compare("main", SHA, "behind")
+    assert fetch.on_any_branch("o", "r", SHA) is True
+
+
+@responses.activate
+def test_a_commit_on_a_release_branch_is_on_a_branch():
+    # tgymnich/fork-sync and Azure/k8s-deploy tag commits on releases/* branches.
+    _branches("main", "releases/v4")
+    _repo()
+    _compare("main", SHA, "diverged")
+    _compare("releases/v4", SHA, "identical")
+    assert fetch.on_any_branch("o", "r", SHA) is True
+
+
+@responses.activate
+def test_a_commit_on_no_branch_is_reported_as_such():
+    # reviewdog's f0d342: reachable by SHA, on no branch.
+    _branches("main", "releases/v1")
+    _repo()
+    _compare("main", SHA, "diverged")
+    _compare("releases/v1", SHA, http=404)  # "no common ancestor"
+    assert fetch.on_any_branch("o", "r", SHA) is False
+
+
+@responses.activate
+def test_release_branches_are_checked_before_others():
+    _branches("feature-x", "zzz", "releases/v2", "main")
+    _repo()
+    _compare("main", SHA, "diverged")
+    _compare("releases/v2", SHA, "identical")
+    assert fetch.on_any_branch("o", "r", SHA) is True
+    compared = [c.request.url for c in responses.calls if "/compare/" in c.request.url]
+    assert len(compared) == 2, "should resolve on the release branch before trying the rest"
+
+
+@responses.activate
+def test_hitting_the_compare_cap_is_unknown_not_off_branch():
+    # False must mean every branch was checked; a partial search proves nothing.
+    _branches(*[f"b{i}" for i in range(5)])
+    _repo("b0")
+    for i in range(5):
+        _compare(f"b{i}", SHA, "diverged")
+    assert fetch.on_any_branch("o", "r", SHA, max_compares=2) is None
+
+
+@responses.activate
+def test_no_branch_list_is_unknown():
+    responses.add(responses.GET, f"{BASE}/repos/o/r/branches", json={}, status=404)
+    assert fetch.on_any_branch("o", "r", SHA) is None
 
 
 @responses.activate

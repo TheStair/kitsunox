@@ -767,7 +767,8 @@ def should_escalate(findings: list[Finding]) -> bool:
 # Tag integrity for GitHub Actions. A consumer's workflow runs whatever its pinned tag
 # points at, so an attacker who can move a tag never needs to touch the default branch.
 # These checks are pure: the caller asks `tags_to_check` which commits need a
-# reachability lookup, performs it, and passes the answers to `tag_findings`.
+# reachability lookup (`fetch.on_any_branch`), performs it, and passes the answers to
+# `tag_findings`. A False answer means the commit is on no branch at all.
 #
 # Rule ids use the `tag.` prefix rather than `context.`. `evidence_score` ignores
 # `context.` findings because circumstances like a missing approval are true of a third
@@ -861,11 +862,11 @@ def tag_findings(
             names_by_sha.setdefault(sha, []).append(name)
     for sha, names in names_by_sha.items():
         add(sha, Finding(
-            rule_id="tag.off_default_branch",
+            rule_id="tag.on_no_branch",
             severity="high",
-            rationale=f"Tag {', '.join(sorted(set(names)))} points at a commit that is not on "
-            "the default branch, so what consumers run was never merged where reviewers "
-            "look. Some projects legitimately release from a release branch; check which.",
+            rationale=f"Tag {', '.join(sorted(set(names)))} points at a commit that is on no "
+            "branch at all -- not the default branch, not a release branch. What consumers "
+            "run was never merged anywhere a reviewer would look.",
             precedent="reviewdog/action-setup, 2025",
             evidence=_evidence(f"{', '.join(sorted(set(names)))} -> {sha[:10]}"),
         ))

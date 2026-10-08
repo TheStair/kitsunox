@@ -412,7 +412,7 @@ def hunt(
             current = fetch.list_tags(owner, name)
             previous = snapshots.get(full)
             reachable = {
-                sha: fetch.on_default_branch(owner, name, sha)
+                sha: fetch.on_any_branch(owner, name, sha)
                 for sha in rules.tags_to_check(current, previous)
             }
             for sha, extra in rules.tag_findings(current, previous, reachable).items():
