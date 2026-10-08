@@ -532,7 +532,7 @@ def test_new_contributor_is_recorded_but_carries_no_weight():
 
 
 def test_new_maintainer_direct_push_needs_both_push_and_short_tenure():
-    kw = dict(author_tenure_days=4, author_prior_commits=9)
+    kw = dict(author_tenure_days=4, author_prior_commits=9, author_arrival_days=2500)
     assert "context.new_maintainer_direct_push" in _scan_ids(
         [_file("a.js", _added("x"))], source="push", **kw
     )
@@ -575,7 +575,7 @@ def test_event_stream_combo_escalates_where_neither_half_would():
     # dependency, pushed by someone who arrived days earlier.
     files = [_file("package.json", _added('  "flatmap-stream": "^0.1.0",'))]
     findings = rules.scan(
-        _change(files, source="push", author_tenure_days=4, author_prior_commits=9)
+        _change(files, source="push", author_tenure_days=4, author_prior_commits=9, author_arrival_days=2500)
     )
     assert "combo.new_maintainer_adds_dependency" in _ids(findings)
     assert rules.should_escalate(findings)
@@ -1017,3 +1017,45 @@ def test_a_token_reference_cannot_feed_the_capability_bonus():
 )
 def test_process_memory_access_survives_path_assembly(line, expected):
     assert bool(rules.SECRET_ACCESS.search(line)) is expected
+
+
+# ============================================================== AV-800: newcomer to an established repo
+
+# Calibrated on the first npm hunt, where the combo drove 20 of 25 alerts and every one
+# had one of two explanations.
+
+_DEP = '  "flatmap-stream": "^0.1.0",'
+
+
+def _newcomer(**kw):
+    defaults = dict(source="push", author_tenure_days=4, author_prior_commits=9,
+                    author_arrival_days=2500)
+    defaults.update(kw)
+    return rules.scan(_change([_file("package.json", _added(_DEP))], **defaults))
+
+
+def test_a_newcomer_to_an_established_repo_still_escalates():
+    # event-stream: arrived about seven years into the project.
+    findings = _newcomer()
+    assert "combo.new_maintainer_adds_dependency" in _ids(findings)
+    assert rules.should_escalate(findings)
+
+
+def test_a_founder_is_not_a_newcomer():
+    # 11 of the npm hunt's alerts: the repo's own creator, on day 0 of their own project.
+    assert "context.new_maintainer_direct_push" not in _ids(_newcomer(author_arrival_days=0))
+
+
+def test_an_early_contributor_to_a_young_repo_is_not_a_newcomer():
+    below = rules.ESTABLISHED_REPO_DAYS - 1
+    assert "context.new_maintainer_direct_push" not in _ids(_newcomer(author_arrival_days=below))
+
+
+def test_a_commit_that_landed_through_a_pr_was_not_a_direct_push():
+    # 9 of the npm hunt's alerts: squash merges, reviewed, mislabelled as pushes.
+    assert "context.new_maintainer_direct_push" not in _ids(_newcomer(pr_number=431))
+
+
+def test_unknown_arrival_does_not_fire():
+    # Unknown must never be read as "established newcomer".
+    assert "context.new_maintainer_direct_push" not in _ids(_newcomer(author_arrival_days=None))

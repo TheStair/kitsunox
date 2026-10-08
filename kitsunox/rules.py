@@ -54,6 +54,11 @@ NEW_CONTRIBUTOR_DAYS = 30
 NEW_PUSHER_DAYS = 90
 NEW_PUSHER_COMMITS = 25
 
+# How established a repository must be when the author arrives for them to count as a
+# newcomer to it. Not fitted to data: founders arrive on day 0, event-stream's attacker
+# on day ~2,500, and six months is a plain reading of "an established project".
+ESTABLISHED_REPO_DAYS = 180
+
 # --------------------------------------------------------------------------- paths
 
 CI_PATHS = (".github/workflows/", ".github/actions/", ".gitlab-ci", "azure-pipelines")
@@ -592,10 +597,18 @@ def _context_rules(change: Change) -> list[Finding]:
         # Tenure matters differently depending on privilege. A brand-new contributor
         # opening a PR gets reviewed; a brand-new maintainer pushing straight to the
         # default branch does not. That second shape is AV-800, "Become a Maintainer".
+        # Three conditions beyond short tenure. It must be a real direct push: a commit
+        # that landed through a pull request was reviewed -- 9 of the first npm hunt's 25
+        # alerts were squash merges mislabelled as pushes. And the repository must already
+        # have been established when the author arrived, or every founder qualifies.
+        arrival = change.author_arrival_days
         if (
             change.source == "push"
+            and change.pr_number is None
             and tenure < NEW_PUSHER_DAYS
             and (prior is None or prior < NEW_PUSHER_COMMITS)
+            and arrival is not None
+            and arrival >= ESTABLISHED_REPO_DAYS
         ):
             add(
                 "context.new_maintainer_direct_push", "medium",

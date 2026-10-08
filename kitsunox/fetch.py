@@ -10,13 +10,14 @@ normalizes into `model.Change`/`model.FileDiff`.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -237,11 +238,46 @@ def author_tenure(owner: str, repo: str, author: str, until: datetime) -> tuple[
     return max(0, (until - prior[0]).days), len(prior)
 
 
+@functools.lru_cache(maxsize=512)
+def repo_started_at(owner: str, repo: str) -> datetime | None:
+    """When the project began: the date of the repository's earliest commit.
+
+    Not GitHub's `created_at`. A project migrated to GitHub carries years of history from
+    before that date -- tukaani-project/xz's GitHub repository is younger than the project,
+    so measured from `created_at` its 2022 contributors looked like founders. Migrated
+    repositories are exactly the long-established projects a newcomer attack targets.
+
+    The earliest commit is the last page of the commit listing. Finding that page needs
+    the Link header, which the JSON cache does not keep, so this costs one uncached call
+    per repository per run (memoised in-process) plus one cached page. Falls back to
+    `created_at` if the listing cannot be read.
+    """
+    url = f"{API_BASE}/repos/{owner}/{repo}/commits"
+    try:
+        resp = _session.get(url, params={"per_page": 1}, timeout=30)
+        last = re.search(r'[?&]page=(\d+)>;\s*rel="last"', resp.headers.get("Link", ""))
+        page = int(last.group(1)) if last else 1
+        oldest = _get_json(url, {"per_page": 1, "page": page})
+        if oldest:
+            return _parse_ts(oldest[-1].get("commit", {}).get("author", {}).get("date"))
+    except (FetchError, requests.RequestException, ValueError):
+        pass
+    try:
+        return _parse_ts(_get_json(f"{API_BASE}/repos/{owner}/{repo}").get("created_at"))
+    except FetchError:
+        return None
+
+
 def _attach_tenure(change: Change, owner: str, repo: str) -> Change:
     if change.author and change.committed_at:
         change.author_tenure_days, change.author_prior_commits = author_tenure(
             owner, repo, change.author, change.committed_at
         )
+        created = repo_started_at(owner, repo) if change.author_tenure_days is not None else None
+        if created is not None:
+            first_seen = change.committed_at - timedelta(days=change.author_tenure_days)
+            # Clamped at zero for the fallback case, where only created_at was available.
+            change.author_arrival_days = max(0, (first_seen - created).days)
     return change
 
 

@@ -505,3 +505,18 @@ def test_system_prompt_describes_the_input_build_prompt_actually_sends():
 
 def test_system_prompt_is_written_for_a_human_investigator():
     assert "investigator" in llm.SYSTEM_PROMPT
+
+
+def test_a_squash_merged_commit_is_not_described_as_a_direct_push():
+    # Telling the model a reviewed change bypassed review would skew every brief on it.
+    prompt = llm.build_prompt(_change([_file("a.js")], source="push", pr_number=431),
+                              [_finding(file_path=None)])
+    assert "landed via pull request #431" in prompt
+    assert "direct push" not in prompt
+
+
+def test_arrival_is_reported_to_the_model_when_known():
+    prompt = llm.build_prompt(
+        _change([_file("a.js")], author_tenure_days=4, author_prior_commits=9, author_arrival_days=2500),
+        [_finding(file_path=None)])
+    assert "2500 day(s) into the repository's life" in prompt

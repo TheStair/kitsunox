@@ -109,6 +109,13 @@ class Change:
     author_tenure_days: int | None = None
     author_prior_commits: int | None = None
 
+    # How far into the repository's life the author first appeared, in days. AV-800 is a
+    # newcomer to an *established* project -- event-stream's attacker arrived seven years
+    # in. Without this, tenure alone made every repository's founder look "new": in a
+    # young repo the newest commits reach back to its creation, and 11 of the first npm
+    # hunt's 25 alerts were founders on day 0 of their own project.
+    author_arrival_days: int | None = None
+
     # Set only by incidents.py (labels the 5 known-malicious changes) and by
     # evaluate.py (labels the control sample "benign"). fetch.py and rules.py must
     # never read or set this — Tier 0/Tier 2 have to work without knowing the answer.

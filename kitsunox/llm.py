@@ -257,6 +257,16 @@ def _render_diff(change: Change, findings: list[Finding]) -> tuple[str, bool]:
     return "\n\n".join(blocks), truncated
 
 
+def _change_type(change: Change) -> str:
+    """Describe how a change landed. A hunt sees squash-merged commits on the default
+    branch; calling those direct pushes told the model a reviewed change bypassed review."""
+    if change.source == "pr":
+        return "pull request"
+    if change.pr_number:
+        return f"commit on the default branch, landed via pull request #{change.pr_number}"
+    return "direct push to default branch"
+
+
 def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = False) -> str:
     """Assemble the Tier 2 prompt: the full change, annotated with what Tier 0 flagged.
 
@@ -275,7 +285,7 @@ def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = F
     """
     lines = [
         f"Repository: {'<redacted>' if anonymize else change.repo}",
-        f"Change type: {'pull request' if change.source == 'pr' else 'direct push to default branch'}",
+        f"Change type: {_change_type(change)}",
     ]
     if change.pr_number:
         lines.append(f"Pull request: #{change.pr_number}")
@@ -285,6 +295,8 @@ def build_prompt(change: Change, findings: list[Finding], *, anonymize: bool = F
         lines.append(
             f"Author history in this repo: first commit {change.author_tenure_days} day(s) "
             f"before this change, {change.author_prior_commits} prior commit(s)"
+            + (f"; arrived {change.author_arrival_days} day(s) into the repository's life"
+               if change.author_arrival_days is not None else "")
         )
     if change.source == "pr":
         lines.append(f"Approving reviews: {change.approving_review_count}")

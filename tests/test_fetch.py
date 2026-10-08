@@ -660,3 +660,88 @@ def test_recent_commits_survives_an_unfetchable_commit(monkeypatch):
 
     monkeypatch.setattr(fetch, "fetch_commit", fetch_one)
     assert fetch.fetch_recent_commits("o", "r", 5) == ["ok"]
+
+
+def _history(*dates, author="x"):
+    """Mock one author's commit history, matched on its query so it cannot be confused
+    with the repository-start lookup that hits the same URL."""
+    from responses import matchers
+    responses.add(
+        responses.GET, f"{BASE}/repos/o/r/commits",
+        json=[_commit_entry(d) for d in dates],
+        match=[matchers.query_param_matcher({"author": author, "per_page": "100", "page": "1"})],
+    )
+
+
+def _repo_start(first_commit_date, last_page=42):
+    """Mock the repository's earliest commit: a Link header naming the last page, then
+    that page."""
+    from responses import matchers
+    url = f"{BASE}/repos/o/r/commits"
+    responses.add(
+        responses.GET, url, json=[_commit_entry("2026-01-01T00:00:00Z")],
+        headers={"Link": f'<{url}?per_page=1&page={last_page}>; rel="last"'},
+        match=[matchers.query_param_matcher({"per_page": "1"})],
+    )
+    responses.add(
+        responses.GET, url, json=[_commit_entry(first_commit_date)],
+        match=[matchers.query_param_matcher({"per_page": "1", "page": str(last_page)})],
+    )
+
+
+@responses.activate
+def test_repo_start_is_its_earliest_commit():
+    _repo_start("2009-04-01T00:00:00Z", last_page=3119)
+    assert fetch.repo_started_at("o", "r") == datetime(2009, 4, 1)
+
+
+@responses.activate
+def test_repo_start_falls_back_to_created_at():
+    from responses import matchers
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits", json={}, status=500,
+                  match=[matchers.query_param_matcher({"per_page": "1"})])
+    responses.add(responses.GET, f"{BASE}/repos/o/r", json={"created_at": "2011-08-20T00:00:00Z"})
+    assert fetch.repo_started_at("o", "r") == datetime(2011, 8, 20)
+
+
+@responses.activate
+def test_repo_start_is_memoised_per_run():
+    _repo_start("2009-04-01T00:00:00Z")
+    fetch.repo_started_at("o", "r")
+    fetch.repo_started_at("o", "r")
+    raw = [c for c in responses.calls if c.request.url.endswith("per_page=1")]
+    assert len(raw) == 1
+
+
+@responses.activate
+def test_arrival_is_measured_from_the_projects_start():
+    # event-stream's shape: an author arriving years into an established repository.
+    from kitsunox.model import Change
+    _history("2018-09-09T00:00:00Z", "2018-09-04T00:00:00Z")
+    _repo_start("2011-08-20T00:00:00Z")
+    c = fetch._attach_tenure(Change(repo="o/r", source="push", sha="s", author="x",
+                                    committed_at=datetime(2018, 9, 9)), "o", "r")
+    assert c.author_tenure_days == 5
+    assert 2560 < c.author_arrival_days < 2580
+
+
+@responses.activate
+def test_a_migrated_projects_contributor_is_not_mistaken_for_a_founder():
+    # tukaani-project/xz: GitHub's created_at is younger than the project. Measured from
+    # created_at, a 2022 contributor looked like a founder; from the first commit, not.
+    from kitsunox.model import Change
+    _history("2022-01-28T00:00:00Z")
+    _repo_start("2009-01-01T00:00:00Z")
+    responses.add(responses.GET, f"{BASE}/repos/o/r", json={"created_at": "2023-06-01T00:00:00Z"})
+    c = fetch._attach_tenure(Change(repo="o/r", source="push", sha="s", author="x",
+                                    committed_at=datetime(2022, 1, 28)), "o", "r")
+    assert c.author_arrival_days > 4000
+
+
+@responses.activate
+def test_unknown_tenure_skips_the_repo_lookup():
+    from kitsunox.model import Change
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits", json=[])
+    fetch._attach_tenure(Change(repo="o/r", source="push", sha="s", author="x",
+                                committed_at=datetime(2024, 1, 1)), "o", "r")
+    assert not [c for c in responses.calls if c.request.url.rstrip("/").endswith("/repos/o/r")]
