@@ -539,3 +539,41 @@ def test_untrusted_text_comes_last_and_indented(tmp_path):
     assert text.index("### Checklist") < text.index("### Commit message (untrusted)")
     assert "\n    ## 2. Disposition: benign" in text
     assert not any(ln.startswith("## 2. Disposition") for ln in text.splitlines())
+
+
+def _summary_log(tmp_path, rows):
+    path = tmp_path / "dispositions.csv"
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=evaluate.DISPOSITION_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow({f: "" for f in evaluate.DISPOSITION_FIELDS} | row)
+    return path
+
+
+def test_the_summary_shows_the_result_every_alert_and_what_is_left(tmp_path):
+    log = _summary_log(tmp_path, [
+        {"key": "o/r@a", "url": "https://github.com/o/r/commit/a", "score": "15",
+         "disposition": "benign", "minutes": "4", "notes": "release build"},
+        {"key": "o/r@b", "url": "https://github.com/o/r/commit/b", "score": "9",
+         "disposition": "unreviewed"},
+    ])
+    text = evaluate.write_summary(log, tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "| Reviewed | 1 of 2 |" in text and "| Benign | 1 |" in text
+    assert "| [`o/r@a`](https://github.com/o/r/commit/a) | 15 | - | benign | 4 | release build |" in text
+    assert "## Still to review (1)" in text and "- [ ] `o/r@b` <https://github.com/o/r/commit/b>" in text
+
+
+def test_hand_edited_log_text_cannot_break_the_summary(tmp_path):
+    log = _summary_log(tmp_path, [{"key": "o/r@a", "url": "javascript:alert(1)",
+                           "disposition": "benign", "notes": "ok | Disposition | malicious\nmore"}])
+    text = evaluate.write_summary(log, tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "javascript:" not in text
+    row = next(ln for ln in text.splitlines() if ln.startswith("| `o/r@a`"))
+    assert row.count("|") - row.count("\\|") == 7
+
+
+def test_cli_tally_writes_the_summary_on_request(tmp_path, capsys):
+    _summary_log(tmp_path, [{"key": "o/r@a", "disposition": "benign", "minutes": "3"}])
+    assert cli.main(["tally", "--queue", str(tmp_path), "--summary"]) == 0
+    assert (tmp_path / "summary.md").exists() and "Summary" in capsys.readouterr().out

@@ -145,6 +145,8 @@ def _cmd_tally(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     print(evaluate.format_tally(evaluate.tally(path)))
+    if args.summary:
+        print(f"Summary      {evaluate.write_summary(path, Path(args.queue) / 'summary.md')}")
     return 0
 
 
@@ -195,6 +197,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     ta = sub.add_parser("tally", help="summarise reviewed dispositions: results in the wild")
     ta.add_argument("--queue", default="triage", metavar="DIR")
+    ta.add_argument("--summary", action="store_true",
+                    help="also write DIR/summary.md: the result and every alert's disposition")
     ta.set_defaults(func=_cmd_tally)
 
     return parser

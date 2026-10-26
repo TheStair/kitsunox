@@ -916,3 +916,81 @@ def format_tally(t: dict) -> str:
     if t.get("brief_cost_per_alert") is not None:
         lines.append(f"Brief cost      ${t['brief_cost_usd']:.4f}  (${t['brief_cost_per_alert']:.4f}/alert)")
     return "\n".join(lines + ["=" * 40])
+
+
+def _text_cell(text: str, limit: int = 120) -> str:
+    """Reviewer-written text (a note) as a table cell: one line, no pipes."""
+    text = " ".join(str(text or "").split())
+    text = text[:limit] + ("..." if len(text) > limit else "")
+    return text.replace("|", "\\|") or "-"
+
+
+def write_summary(log: Path, out: Path) -> Path:
+    """Write the disposition log as a Markdown review summary: the result, every alert
+    with what the reviewer decided, and what is still waiting -- the page to open when
+    picking up a review, and the one to cite."""
+    t = tally(log)
+    rows = []
+    if log.exists():
+        with log.open(encoding="utf-8-sig", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+
+    def pct(x):
+        return "n/a" if x is None else f"{100 * x:.1f}%"
+
+    counts = t["counts"]
+    lines = [
+        f"# Review summary -- {_inline(log.parent.as_posix())}",
+        "",
+        f"Generated {datetime.now().isoformat(timespec='minutes')} from "
+        f"`{log.name}`. Re-run `kitsunox tally --queue {log.parent.as_posix()} --summary` "
+        "after recording dispositions.",
+        "",
+        "## Result",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| Alerts | {t['alerts']} |",
+        f"| Reviewed | {t['reviewed']} of {t['alerts']} |",
+    ]
+    lines += [f"| {d.capitalize()} | {counts[d]} |" for d in DISPOSITIONS
+              if d != "unreviewed" and counts.get(d)]
+    if t["reviewed"]:
+        lines += [
+            f"| Precision (malicious / reviewed) | {pct(t['precision'])} |",
+            f"| Worth a look (malicious or suspicious / reviewed) | {pct(t['worth_a_look'])} |",
+            f"| Median minutes per alert | {t['median_minutes']} |",
+            f"| Total review time | {t['total_minutes']:.0f} minutes |",
+        ]
+    if t.get("brief_cost_per_alert") is not None:
+        lines.append(f"| Brief cost | ${t['brief_cost_usd']:.2f} "
+                     f"(${t['brief_cost_per_alert']:.3f} per alert) |")
+    if t.get("unknown"):
+        lines.append(f"| Unrecognised dispositions | {', '.join(_inline(u) for u in t['unknown'])} |")
+
+    def disposition(row):
+        return (row.get("disposition") or "unreviewed").strip().lower()
+
+    lines += ["", "## Alerts", "",
+              "| Change | Score | Model | Disposition | Minutes | Notes |",
+              "|---|---|---|---|---|---|"]
+    def url(row) -> str | None:
+        # The log is edited by hand; only a plain github.com URL is rendered as a link.
+        value = (row.get("url") or "").strip()
+        return value if re.fullmatch(r"https://github\.com/[\w./#@%+-]+", value) else None
+
+    for row in rows:
+        link = (f"[{_inline(row.get('key', ''))}]({url(row)})" if url(row)
+                else _inline(row.get("key", "")))
+        lines.append(f"| {link} | {row.get('score') or '-'} | {row.get('verdict') or '-'} | "
+                     f"{_text_cell(disposition(row))} | {row.get('minutes') or '-'} | "
+                     f"{_text_cell(row.get('notes'))} |")
+
+    waiting = [r for r in rows if disposition(r) in ("unreviewed", "")]
+    lines += ["", f"## Still to review ({len(waiting)})", ""]
+    lines += [f"- [ ] {_inline(r.get('key', ''))}" + (f" <{url(r)}>" if url(r) else "")
+              for r in waiting] or ["_Nothing -- all reviewed._"]
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
