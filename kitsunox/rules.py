@@ -380,7 +380,11 @@ def _hits_suspicious_host(text: str) -> bool:
 
 
 def _scannable(file: FileDiff) -> bool:
+    # Source maps are derived like lockfiles and never executed, but embed copies of every
+    # bundled dependency's source: one map was a single line holding a `for (... <
+    # Infinity ...)` from a library, and escalated an initial release as sabotage.
     return (not file.is_binary and _basename(file.path) not in LOCKFILES
+            and not file.path.lower().endswith(".map")
             and not _is_vendored(file.path) and bool(file.patch))
 
 

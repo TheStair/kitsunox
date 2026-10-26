@@ -166,7 +166,8 @@ def _file_diffs(raw_files: list[dict]) -> list[FileDiff]:
 
 
 # Rebuilding an omitted diff costs two file reads, so it is bounded per change. Third-party
-# code and lockfiles are skipped: Tier 0 does not scan them, so reading them buys nothing.
+# code, lockfiles and source maps are skipped: Tier 0 does not scan them, so reading them
+# buys nothing.
 MAX_RECOVERED_FILES = 15
 MAX_RECOVERED_BYTES = 5_000_000
 _NOT_RECOVERED = ("node_modules/", "vendor/", "third_party/", "bower_components/")
@@ -205,7 +206,7 @@ def _recover_omitted(owner: str, repo: str, sha: str, parent: str | None,
             continue
         low = diff.path.lower()
         if any("/" + s in "/" + low for s in _NOT_RECOVERED) or \
-                low.endswith(("lock.json", ".lock", "lock.yaml")):
+                low.endswith(("lock.json", ".lock", "lock.yaml", ".map")):
             continue
         budget -= 1
         new = _get_raw(owner, repo, diff.path, sha)

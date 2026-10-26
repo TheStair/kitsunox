@@ -1315,3 +1315,10 @@ def test_file_scoped_combos_need_both_halves_in_the_same_file():
     assert "combo.encoded_payload_in_artifact" in apart
     together = _scan_ids([_file(".github/workflows/ci.yml", _added(f"run: echo {B64} | base64 -d"))])
     assert "combo.encoded_payload_in_ci" in together
+
+
+def test_a_source_map_is_derived_and_not_scanned():
+    # dkamm/pr-quiz: dist/index.cjs.map embeds a library's `for (...; i < Infinity; ...)`.
+    line = '{"version":3,"sourcesContent":["for (let i = 0; i < Infinity; i++) {}"]}'
+    found = rules.scan(_change([_file("dist/index.cjs.map", _added(line), change_type="added")]))
+    assert "content.unbounded_loop" not in _ids(found)
