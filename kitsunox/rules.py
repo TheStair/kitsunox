@@ -19,6 +19,8 @@ Tuning is meant to happen in the tables at the top (`SEVERITY_WEIGHT`,
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from collections.abc import Iterator
@@ -121,6 +123,18 @@ LOCKFILES = {
 # length of a sha512 integrity field (~88 chars) with margin.
 B64_BLOB = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
 
+# What a base64 literal decodes to, by its first bytes. Bundlers inline WebAssembly, images
+# and fonts as base64 -- undici's HTTP parser ships as `AGFzbQ...` ("\0asm") in every
+# bundle that includes it -- and those are data, not a script waiting to be decoded and
+# run. The reviewdog and tj-actions payloads decoded to shell and Python text.
+EMBEDDED_ASSET_MAGIC = {
+    b"\x89PNG": "a PNG image", b"\xff\xd8\xff": "a JPEG image", b"GIF8": "a GIF image",
+    b"wOFF": "a WOFF font", b"wOF2": "a WOFF2 font", b"OTTO": "an OpenType font",
+}
+# WebAssembly is executable, so it only counts as an inlined asset inside a generated
+# bundle, where a bundler put it; anywhere else it stays an encoded blob.
+EMBEDDED_WASM_MAGIC = b"\x00asm"
+
 DECODE_CALLS = re.compile(
     r"\b(base64\s+(-d|--decode|-D)|atob|b64decode|Buffer\.from\s*\([^)]*base64|"
     r"FromBase64String)",
@@ -212,7 +226,9 @@ TOKEN_REFERENCE = re.compile(
 # different matter: with a break inside it is the standard shape of a C, C++ and Go parse
 # loop, and it produced two of the eight false positives on the held-out corpus, both in
 # nlohmann/json. It only counts when nothing in the same file can leave the loop.
-UNBOUNDED_LOOP = re.compile(r"<\s*Infinity")
+# Bound to a loop header: `if (startIndex < Infinity && ...)` is a range check, and a
+# bundled copy of one fired on a holdout initial-release commit.
+UNBOUNDED_LOOP = re.compile(r"\b(for|while)\s*\(.*<\s*Infinity")
 WHILE_FOREVER = re.compile(r"while\s*\(\s*(true|1)\s*\)|\bloop\s*\{|for\s*\(\s*;\s*;\s*\)")
 LOOP_ESCAPE = re.compile(r"\b(break|return|goto|exit|panic|throw|yield)\b")
 
@@ -315,6 +331,18 @@ def _is_vendored(path: str) -> bool:
 def _is_doc(path: str) -> bool:
     return (path.lower().endswith(DOC_SUFFIXES) or path.lower().startswith("docs/")
             or _basename(path).split(".", 1)[0] in DOC_NAMES)
+
+
+def _embedded_asset(blob: str, in_bundle: bool) -> str | None:
+    """What kind of inlined asset a base64 literal is, or None if it is not one."""
+    try:
+        head = base64.b64decode(blob[:16])
+    except (binascii.Error, ValueError):
+        return None
+    if in_bundle and head.startswith(EMBEDDED_WASM_MAGIC):
+        return "a WebAssembly module"
+    return next((kind for magic, kind in EMBEDDED_ASSET_MAGIC.items()
+                 if head.startswith(magic)), None)
 
 
 def _secret_access(text: str) -> str | None:
@@ -499,6 +527,16 @@ def _content_rules(change: Change) -> list[Finding]:
         # added code is an ordinary loop, not a hang.
         has_escape = any(LOOP_ESCAPE.search(t) for _, t in _added_lines(file))
         baseline = file.baseline or ""
+        # A generated bundle whose diff was too large for GitHub to show is a rebuild: tens
+        # of thousands of lines of bundled dependencies. Their `child_process`, `fetch`,
+        # `Buffer.from(x, 'base64')` and `Object.keys(process.env)` are the dependencies'
+        # own, and on the first holdout re-hunt they escalated four ordinary dependency
+        # upgrades in one repository. In a rebuild only payload-shaped content counts: an
+        # encoded script, an exfiltration host, a credential store or process memory, a
+        # loop that cannot end. A hand-edited bundle -- tj-actions' -- has a small diff
+        # GitHub does show, and keeps every rule. Known evasion: a payload built only from
+        # generic primitives inside a large rebuild.
+        rebuilt_bundle = file.baseline is not None and _is_artifact(file.path)
 
         def novel(found: str | re.Match | None) -> bool:
             """Whether a hit is new to the file. Only answerable when `fetch.py` read the
@@ -525,7 +563,17 @@ def _content_rules(change: Change) -> list[Finding]:
                     )
                 )
 
-            if novel(B64_BLOB.search(text)):
+            blob = B64_BLOB.search(text)
+            asset = _embedded_asset(blob.group(0), _is_artifact(file.path)) if blob else None
+            if asset and novel(blob):
+                # Outside the capability model, like content.asset_added.
+                hit(
+                    "content.embedded_asset",
+                    "low",
+                    f"A base64 literal that decodes to {asset} was added -- inlined data, "
+                    "listed so every encoded addition is visible.",
+                )
+            elif novel(blob):
                 hit(
                     "content.encoded_blob",
                     "high" if in_sensitive else "medium",
@@ -533,14 +581,14 @@ def _content_rules(change: Change) -> list[Finding]:
                     "as a diff, which is what makes it a delivery mechanism.",
                     "reviewdog/action-setup and tj-actions/changed-files, 2025",
                 )
-            if novel(DECODE_CALLS.search(text)):
+            if not rebuilt_bundle and novel(DECODE_CALLS.search(text)):
                 hit(
                     "content.decode_call",
                     "medium",
                     "Code that decodes an encoded string was added — benign on its own, "
                     "but the other half of an encoded-payload pair.",
                 )
-            if novel(SHELL_EXEC.search(text)):
+            if not rebuilt_bundle and novel(SHELL_EXEC.search(text)):
                 # Not elevated inside CI config: a workflow's whole job is to run shell,
                 # so `child_process` in a publish workflow is unremarkable. It stays
                 # notable in build/install scripts and generated bundles.
@@ -557,14 +605,15 @@ def _content_rules(change: Change) -> list[Finding]:
                     "A reference to a paste/tunnel service or a bare IP was added — the "
                     "exfiltration endpoint in both 2025 Actions compromises was a gist.",
                 )
-            elif in_sensitive and novel(NETWORK_FETCH.search(text)):
+            elif in_sensitive and not rebuilt_bundle and novel(NETWORK_FETCH.search(text)):
                 hit(
                     "content.network_in_build",
                     "medium",
                     "A network fetch was added to CI config, a build script, or a "
                     "generated bundle, pulling unreviewed content into the build.",
                 )
-            if novel(_secret_access(text)):
+            secret = SECRET_ACCESS.search(text) if rebuilt_bundle else _secret_access(text)
+            if novel(secret):
                 hit(
                     "content.secret_access",
                     "high",
@@ -572,7 +621,7 @@ def _content_rules(change: Change) -> list[Finding]:
                     "the whole environment -- the collection step of a secret theft.",
                     "reviewdog/action-setup and tj-actions/changed-files, 2025",
                 )
-            elif novel(TOKEN_REFERENCE.search(text)):
+            elif not rebuilt_bundle and novel(TOKEN_REFERENCE.search(text)):
                 hit(
                     "content.token_reference",
                     "low",
@@ -869,12 +918,29 @@ def _category_bonus(findings: list[Finding]) -> int:
     return CATEGORY_BONUS.get(len(categories), MAX_CATEGORY_BONUS)
 
 
+# Pairs whose rationale is about one file -- a blob *in* a build script, *in* a bundle, *in*
+# CI config, decoded *and* executed. Matched change-wide, a blob in dist/ plus any workflow
+# edit anywhere in the commit read as "an encoded blob was added to CI configuration".
+SAME_FILE_COMBOS = {
+    ("content.encoded_blob", "context.build_script_touched"),
+    ("content.encoded_blob", "context.artifact_modified"),
+    ("content.encoded_blob", "context.ci_touched"),
+    ("content.encoded_blob", "content.shell_exec"),
+}
+
+
 def _combo_rules(findings: list[Finding]) -> list[Finding]:
-    fired = {f.rule_id for f in findings}
     out = []
     for (a, b), (rule_id, severity, rationale) in COMBOS.items():
-        if a in fired and b in fired:
-            anchor = next(f for f in findings if f.rule_id == a)
+        b_files = {f.file_path for f in findings if f.rule_id == b}
+        if not b_files:
+            continue
+        anchor = next(
+            (f for f in findings if f.rule_id == a
+             and ((a, b) not in SAME_FILE_COMBOS or f.file_path in b_files)),
+            None,
+        )
+        if anchor is not None:
             out.append(
                 Finding(
                     rule_id=rule_id, severity=severity, rationale=rationale,

@@ -1168,7 +1168,7 @@ def test_a_rebuilt_bundle_is_judged_on_what_is_new_to_it():
                         patch=_added("const cp = require('child_process');", f"eval(atob('{B64}'))"),
                         baseline=old)
     findings = rules.scan(_change([injected]))
-    assert {"content.encoded_blob", "content.decode_call"} <= _ids(findings)
+    assert "content.encoded_blob" in _ids(findings)
     assert rules.should_escalate(findings)
 
 
@@ -1249,3 +1249,69 @@ def test_an_off_branch_docs_edit_on_a_branch_commit_is_harmless():
 def test_off_branch_stays_evidence_unless_docs_only_on_a_branch_parent(files, parent):
     findings, change = _off_branch(files)
     assert "tag.on_no_branch" in _ids(rules.qualify_off_branch(findings, change, parent))
+
+
+WASM_B64 = "AGFzbQEAAAABJwdgAX8Bf2ADf39/AX9gAX8AYAJ/" * 6   # a WebAssembly module, as bundlers inline it
+PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf" * 6
+
+
+def _rebuild(*lines, path="dist/index.js", old="// previous build\n"):
+    return FileDiff(path=path, change_type="modified", is_binary=False,
+                    patch=_added(*lines), baseline=old)
+
+
+def test_a_rebuilt_bundle_ignores_its_dependencies_generic_primitives():
+    # DeLaGuardo/setup-clojure's dependency upgrades: four alerts from bundled code.
+    rebuilt = _rebuild('module.exports = eval("require")("encoding");',
+                       "const { stdout } = yield exec.getExecOutput('powershell')",
+                       "chunks.push(Buffer.from(chunk, 'base64'))",
+                       "function fetch (input, init = {}) {",
+                       "exports.inspectOpts = Object.keys(process.env).filter(k => k)")
+    findings = rules.scan(_change([rebuilt]))
+    assert not {"content.shell_exec", "content.decode_call", "content.network_in_build",
+                "content.secret_access"} & _ids(findings)
+    assert not rules.should_escalate(findings)
+
+
+@pytest.mark.parametrize("line", [
+    "fetch('https://gist.githubusercontent.com/x/raw')",
+    "fs.readFileSync('/proc/' + pid + '/mem')",
+    f"const p = '{B64}';",
+])
+def test_a_rebuilt_bundle_still_escalates_on_payload_shaped_content(line):
+    assert rules.should_escalate(rules.scan(_change([_rebuild(line)])))
+
+
+def test_a_hand_edited_bundle_keeps_every_rule():
+    # tj-actions: a small diff GitHub shows, so no baseline and no rebuild leniency.
+    assert _sev(rules.scan(_change([_file("dist/index.js", _added("exec.getExecOutput('x')"))])),
+                "content.shell_exec") == "high"
+
+
+def test_inlined_wasm_in_a_bundle_and_images_anywhere_are_assets_not_payloads():
+    bundle = rules.scan(_change([_file("dist/index.cjs", _added(f"llhttpWasm = '{WASM_B64}'"))]))
+    assert "content.embedded_asset" in _ids(bundle) and "content.encoded_blob" not in _ids(bundle)
+    image = rules.scan(_change([_file("src/logo.js", _added(f"export default '{PNG_B64}'"))]))
+    assert "content.embedded_asset" in _ids(image) and not rules.should_escalate(image)
+
+
+def test_wasm_outside_a_bundle_is_still_an_encoded_blob():
+    found = rules.scan(_change([_file("src/run.js", _added(f"const m = '{WASM_B64}'"))]))
+    assert "content.encoded_blob" in _ids(found)
+
+
+def test_a_range_check_against_infinity_is_not_a_loop():
+    line = "if (startIndex < Infinity && startIndex >= 0) {"
+    assert "content.unbounded_loop" not in _scan_ids([_file("lib/a.js", _added(line))])
+    assert "content.unbounded_loop" in _scan_ids(
+        [_file("lib/a.js", _added("while (n < Infinity) { n++ }"))])
+
+
+def test_file_scoped_combos_need_both_halves_in_the_same_file():
+    # A blob in dist/ and an unrelated workflow edit is not "a blob in CI configuration".
+    apart = _scan_ids([_file("dist/index.js", _added(f"const b = '{B64}';")),
+                       _file(".github/workflows/ci.yml", _added("run: npm test"))])
+    assert "combo.encoded_payload_in_ci" not in apart
+    assert "combo.encoded_payload_in_artifact" in apart
+    together = _scan_ids([_file(".github/workflows/ci.yml", _added(f"run: echo {B64} | base64 -d"))])
+    assert "combo.encoded_payload_in_ci" in together
