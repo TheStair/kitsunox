@@ -436,3 +436,16 @@ def test_a_pull_request_is_keyed_and_linked_by_its_number():
     r = evaluate._run_one(Change(repo="o/r", source="pr", sha="abc", author="a", committed_at=None,
                                  pr_number=7, files=_bad()), threshold=8, tier2=False)
     assert r.key == "o/r#7" and r.url == "https://github.com/o/r/pull/7"
+
+
+def test_an_off_branch_docs_commit_is_cleared_only_once_its_parent_is_on_a_branch(pushes, monkeypatch):
+    tip, parent = "d" * 40, "p" * 40
+    monkeypatch.setattr(fetch, "fetch_commit",
+                        lambda o, r, sha: _change(sha=sha, files=_good(), parent_sha=parent))
+    _tags(monkeypatch, [("v1", tip)], {tip: False, parent: True})
+    cleared = evaluate.hunt(["o/r"], tags=True)[0]
+    assert "context.off_branch_docs_only" in cleared.rule_ids and not cleared.escalated
+
+    _tags(monkeypatch, [("v1", tip)], {tip: False, parent: False})
+    stacked = evaluate.hunt(["o/r"], tags=True)[0]
+    assert "tag.on_no_branch" in stacked.rule_ids and stacked.escalated

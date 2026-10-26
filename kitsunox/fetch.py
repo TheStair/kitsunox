@@ -411,6 +411,7 @@ def fetch_commit(owner: str, repo: str, sha: str) -> Change:
             committed_at=_parse_ts(data.get("commit", {}).get("author", {}).get("date")),
             files=files,
             checks_passed=_fetch_checks_passed(owner, repo, sha),
+            parent_sha=parent,
             pr_number=pr_number,
         ),
         owner,

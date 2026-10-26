@@ -451,6 +451,12 @@ def hunt(
                     target = Change(repo=full, source="push", sha=sha, author=None,
                                     committed_at=None, message="(commit could not be fetched)")
                 by_sha[sha] = (target, extra)
+            for change, extra in by_sha.values():
+                # An off-branch tag on a docs-only commit is harmless only if the commit
+                # it was built on is on a branch; that costs one more reachability check.
+                if any(f.rule_id == "tag.on_no_branch" for f in extra)                         and rules.only_docs(change) and change.parent_sha:
+                    parent_ok = fetch.on_any_branch(owner, name, change.parent_sha)
+                    extra[:] = rules.qualify_off_branch(extra, change, parent_ok)
             if current:
                 snapshots[full] = dict(current)
 

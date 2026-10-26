@@ -1175,3 +1175,77 @@ def test_a_rebuilt_bundle_is_judged_on_what_is_new_to_it():
 def test_without_a_baseline_every_hit_counts_as_before():
     plain = _file("dist/index.js", _added("require('child_process')"))
     assert _sev(rules.scan(_change([plain])), "content.shell_exec") == "high"
+
+
+# ---------------------------------------------------------------- tags, round 2
+# Tag layouts copied from triage/calibration/round2/actions/tags.json.
+
+
+def test_one_release_under_parallel_version_schemes_is_not_a_collapse():
+    # DeLaGuardo/setup-clojure tags each release twice: 3.7.0 and 13.7.0.
+    sha = "6d46099eae24853c33c0482f2bb54edf4f1a4c74"
+    tags = [("13", sha), ("13.7.0", sha), ("3", sha), ("3.7.0", sha)]
+    assert "tag.version_collapse" not in _tag_ids(rules.tag_findings(tags, None, {}), sha)
+
+
+def test_rewriting_older_minor_lines_onto_one_commit_is_still_a_collapse():
+    # DoozyX/clang-format-lint-action re-pointed v0.16.1 .. v0.18.2 at a revert: a real
+    # rewrite, whatever its intent, and the investigator should see it.
+    sha = "c71d0bf4e21876ebec3e5647491186f8797fde31"
+    names = ["v0.16.1", "v0.16.2", "v0.17.1", "v0.18.0", "v0.18.1", "v0.18.2"]
+    found = rules.tag_findings([(n, sha) for n in names], None, {})
+    assert "tag.version_collapse" in _tag_ids(found, sha)
+
+
+def _mheap_tags():
+    # mheap/github-action-required-labels: every release is an "Automatic compilation"
+    # commit on no branch.
+    shas = {n: f"{i:040d}" for i, n in enumerate(["v5.6", "v5.5", "v5.4", "v5.3", "v5.2"], 1)}
+    return list(shas.items()), {sha: False for sha in shas.values()}
+
+
+def test_a_repository_that_always_releases_off_branch_is_not_flagged_for_it():
+    tags, reachable = _mheap_tags()
+    found = rules.tag_findings(tags, None, reachable)
+    ids = {f.rule_id for fs in found.values() for f in fs}
+    assert ids == {"context.off_branch_release"}
+    assert not any(rules.should_escalate(fs) for fs in found.values())
+
+
+def test_one_off_branch_release_among_on_branch_ones_is_still_flagged():
+    tags = [("v2", "a" * 40), ("v1", "b" * 40)]
+    found = rules.tag_findings(tags, None, {"a" * 40: False, "b" * 40: True})
+    assert "tag.on_no_branch" in _tag_ids(found, "a" * 40)
+
+
+def test_a_tag_moved_off_branch_is_flagged_even_where_off_branch_is_the_convention():
+    tags, reachable = _mheap_tags()
+    moved = "f" * 40
+    tags.append(("v5.6.1", moved))
+    reachable[moved] = False
+    found = rules.tag_findings(tags, {"v5.6.1": "e" * 40}, reachable)
+    assert {"tag.moved", "tag.on_no_branch"} <= _tag_ids(found, moved)
+
+
+def _off_branch(files):
+    sha = "432904b59421e87f5bf2b7dcf14c0f3f471212da"
+    findings = rules.tag_findings([("v1.0", sha)], None, {sha: False})[sha]
+    return findings, _change(files, sha=sha, parent_sha="p" * 40)
+
+
+def test_an_off_branch_docs_edit_on_a_branch_commit_is_harmless():
+    # jidicula/clang-format-action v1.0: a 2020 README edit.
+    findings, change = _off_branch([_file("README.md", _added("usage"))])
+    qualified = rules.qualify_off_branch(findings, change, parent_on_branch=True)
+    assert _ids(qualified) == {"context.off_branch_docs_only"}
+    assert not rules.should_escalate(qualified)
+
+
+@pytest.mark.parametrize("files, parent", [
+    ([_file("README.md", _added("usage"))], False),     # docs on top of an off-branch payload
+    ([_file("README.md", _added("usage"))], None),      # parent reachability unknown
+    ([_file("README.md", _added("x")), _file("action.yml", _added("x"))], True),
+])
+def test_off_branch_stays_evidence_unless_docs_only_on_a_branch_parent(files, parent):
+    findings, change = _off_branch(files)
+    assert "tag.on_no_branch" in _ids(rules.qualify_off_branch(findings, change, parent))

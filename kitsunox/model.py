@@ -106,6 +106,10 @@ class Change:
     # not used — it reports empty/pending on repos that run CI through GitHub Actions.
     checks_passed: bool | None = None
 
+    # The first parent of `sha`, for a pushed commit. A tag target on no branch is only
+    # harmless if what it was built on is on one.
+    parent_sha: str | None = None
+
     pr_number: int | None = None
     author_association: str | None = None  # e.g. "OWNER", "FIRST_TIME_CONTRIBUTOR"
     merged_by: str | None = None

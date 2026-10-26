@@ -956,6 +956,10 @@ FLOATING_TAG = re.compile(r"^v?(\d+)(?:\.(\d+))?$")
 # Floating tags are what consumers actually pin, but an old action can carry dozens.
 # Checking the newest few bounds the compare calls to a handful per repository.
 MAX_FLOATING_CHECKED = 5
+# Distinct off-branch release commits among those checked that make it a repository's
+# convention rather than an anomaly. Two, not one: a single off-branch tag is the shape
+# being hunted.
+OFF_BRANCH_CONVENTION = 2
 
 
 def _floating_tags(tags: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -1003,8 +1007,13 @@ def tag_findings(
         if SEMVER_FULL.match(name):
             by_sha.setdefault(sha, []).append(name)
     for sha, names in by_sha.items():
-        lines = {SEMVER_FULL.match(n).groups()[:2] for n in names}
-        if len(lines) >= 2:
+        versions = {SEMVER_FULL.match(n).groups() for n in names}
+        lines = {v[:2] for v in versions}
+        # One release published under parallel names -- DeLaGuardo/setup-clojure tags
+        # every release as both 3.7.0 and 13.7.0 -- shares minor and patch across every
+        # major. A rewrite drags in tags whose minor and patch differ.
+        alias_scheme = len({v[1:] for v in versions}) == 1
+        if len(lines) >= 2 and not alias_scheme:
             shown = ", ".join(sorted(names)[:8]) + (" ..." if len(names) > 8 else "")
             add(sha, Finding(
                 rule_id="tag.version_collapse",
@@ -1028,21 +1037,72 @@ def tag_findings(
             evidence=_evidence(f"{name}: {old[:10]} -> {new[:10]}"),
         ))
 
-    candidates = [(name, sha) for name, sha in _floating_tags(tags)]
+    floating = _floating_tags(tags)
+    candidates = list(floating)
     candidates += [(name, new) for name, _, new in moved]
     names_by_sha: dict[str, list[str]] = {}
     for name, sha in candidates:
         if reachable.get(sha) is False:
             names_by_sha.setdefault(sha, []).append(name)
+
+    # Some projects publish every release from a build commit on no branch -- a release
+    # workflow compiles dist/, commits it on top of main and tags that. Five of the first
+    # holdout hunt's alerts were one such repository's last five releases. Off-branch is
+    # then the convention, not a deviation, and the commit's own content has to speak for
+    # it. One off-branch commit among on-branch releases is still flagged, and a tag that
+    # *moved* there always is.
+    off_branch_releases = {sha for _, sha in floating if reachable.get(sha) is False}
+    convention = len(off_branch_releases) >= OFF_BRANCH_CONVENTION
+    moved_to = {new for _, _, new in moved}
     for sha, names in names_by_sha.items():
+        shown = ", ".join(sorted(set(names)))
+        if convention and sha not in moved_to:
+            add(sha, Finding(
+                rule_id="context.off_branch_release",
+                severity="low",
+                rationale=f"Tag {shown} points at a commit on no branch, as do "
+                f"{len(off_branch_releases)} of the {len(floating)} recent releases checked: "
+                "this repository publishes from off-branch build commits by convention. Not "
+                "evidence on its own; what the commit contains is scanned as usual.",
+                evidence=_evidence(f"{shown} -> {sha[:10]}"),
+            ))
+            continue
         add(sha, Finding(
             rule_id="tag.on_no_branch",
             severity="high",
-            rationale=f"Tag {', '.join(sorted(set(names)))} points at a commit that is on no "
+            rationale=f"Tag {shown} points at a commit that is on no "
             "branch at all -- not the default branch, not a release branch. What consumers "
             "run was never merged anywhere a reviewer would look.",
             precedent="reviewdog/action-setup, 2025",
-            evidence=_evidence(f"{', '.join(sorted(set(names)))} -> {sha[:10]}"),
+            evidence=_evidence(f"{shown} -> {sha[:10]}"),
         ))
 
     return out
+
+
+def only_docs(change: Change) -> bool:
+    """Whether every file the change touches is documentation."""
+    return bool(change.files) and all(_is_doc(f.path) for f in change.files)
+
+
+def qualify_off_branch(findings: list[Finding], change: Change,
+                       parent_on_branch: bool | None) -> list[Finding]:
+    """Downgrade `tag.on_no_branch` when the tagged commit cannot change what runs.
+
+    An off-branch commit whose parent is on a branch, and which itself changes nothing
+    but documentation, ships reviewed code with a different README. jidicula's v1.0, a
+    2020 README edit, was such a commit. The parent's reachability is required: without
+    it, an attacker could stack a docs-only commit on top of an off-branch payload.
+    """
+    if parent_on_branch is not True or not only_docs(change):
+        return findings
+    return [
+        Finding(
+            rule_id="context.off_branch_docs_only", severity="low",
+            rationale="A tag points at a commit on no branch, but that commit only changes "
+            "documentation on top of a commit that is on a branch, so consumers run "
+            "reviewed code.",
+            evidence=f.evidence,
+        ) if f.rule_id == "tag.on_no_branch" else f
+        for f in findings
+    ]
