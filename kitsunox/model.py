@@ -36,6 +36,19 @@ class FileDiff:
     deletions: int = 0
     patch: str = ""
 
+    # GitHub omits `patch` for a text file whose diff is too large -- a rebuilt bundle, a
+    # regenerated lockfile. True while that diff is still unread: Tier 0 cannot scan it,
+    # and must say so rather than pretend the file was clean (or, as it once did, call it
+    # a binary).
+    patch_omitted: bool = False
+
+    # The file's previous content, when `fetch.py` read both versions to rebuild an
+    # omitted patch ("" for a file the change added). None when only the patch is known.
+    # Lets Tier 0 ask whether a pattern is *new* to the file, which is the only useful
+    # question to put to a regenerated bundle: its dependencies' `child_process` was
+    # already there.
+    baseline: str | None = None
+
 
 @dataclass
 class Finding:

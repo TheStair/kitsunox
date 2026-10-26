@@ -10,6 +10,7 @@ normalizes into `model.Change`/`model.FileDiff`.
 
 from __future__ import annotations
 
+import difflib
 import functools
 import hashlib
 import json
@@ -20,6 +21,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -111,6 +113,28 @@ def _paginated(url: str, params: dict, *, max_items: int) -> list[dict]:
     return items[:max_items]
 
 
+# GitHub omits `patch` for three different reasons, and only one of them is a binary file.
+# Treating every missing patch as binary was the largest single source of false alerts in
+# the first holdout hunt: an empty `.gitkeep` read as an opaque executable, a 13,000-line
+# `dist/index.js` and `package-lock.json` as unreviewable binaries. Worse, a *modified*
+# bundle with an omitted patch was never scanned at all -- exactly where tj-actions hid
+# its payload.
+EMPTY_BLOB_SHA = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"  # git's hash of a 0-byte file
+
+# GitHub reports 0/0 line counts both for binaries and for text files past its per-commit
+# diff budget. A source extension is enough to try reading the file before calling it
+# binary; the content sniff in `_recover_omitted` settles it.
+TEXT_SUFFIXES = {
+    ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".json", ".map", ".md", ".txt",
+    ".yml", ".yaml", ".toml", ".py", ".sh", ".css", ".html", ".xml", ".svg",
+}
+
+
+def _suffix(path: str) -> str:
+    name = path.rsplit("/", 1)[-1].lower()
+    return "." + name.rsplit(".", 1)[-1] if "." in name.lstrip(".") else ""
+
+
 def _file_diffs(raw_files: list[dict]) -> list[FileDiff]:
     status_map: dict[str, ChangeType] = {
         "added": "added",
@@ -120,17 +144,88 @@ def _file_diffs(raw_files: list[dict]) -> list[FileDiff]:
     }
     diffs = []
     for f in raw_files:
+        added, deleted = f.get("additions", 0), f.get("deletions", 0)
+        if "patch" in f or f.get("sha") == EMPTY_BLOB_SHA:
+            binary, omitted = False, False
+        elif added or deleted or _suffix(f["filename"]) in TEXT_SUFFIXES:
+            binary, omitted = False, True  # text: line counts exist, the diff was withheld
+        else:
+            binary, omitted = True, False
         diffs.append(
             FileDiff(
                 path=f["filename"],
                 change_type=status_map.get(f.get("status", "modified"), "modified"),
-                is_binary="patch" not in f,
-                additions=f.get("additions", 0),
-                deletions=f.get("deletions", 0),
+                is_binary=binary,
+                additions=added,
+                deletions=deleted,
                 patch=f.get("patch", ""),
+                patch_omitted=omitted,
             )
         )
     return diffs
+
+
+# Rebuilding an omitted diff costs two file reads, so it is bounded per change. Third-party
+# code and lockfiles are skipped: Tier 0 does not scan them, so reading them buys nothing.
+MAX_RECOVERED_FILES = 15
+MAX_RECOVERED_BYTES = 5_000_000
+_NOT_RECOVERED = ("node_modules/", "vendor/", "third_party/", "bower_components/")
+
+
+def _get_raw(owner: str, repo: str, path: str, ref: str) -> bytes | None:
+    """A file's bytes at `ref`, cached like any other response (content at a commit sha
+    never changes). None if it cannot be read or is too large to diff."""
+    url = f"{API_BASE}/repos/{owner}/{repo}/contents/{quote(path)}"
+    cache_file = _cache_path(url, {"ref": ref, "raw": True}).with_suffix(".bin")
+    if cache_file.exists():
+        return cache_file.read_bytes()
+    try:
+        resp = _session.get(url, params={"ref": ref}, timeout=60,
+                            headers={"Accept": "application/vnd.github.raw"})
+    except requests.RequestException:
+        return None
+    if resp.status_code >= 400 or len(resp.content) > MAX_RECOVERED_BYTES:
+        return None
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file.write_bytes(resp.content)
+    return resp.content
+
+
+def _recover_omitted(owner: str, repo: str, sha: str, parent: str | None,
+                     raw_files: list[dict], diffs: list[FileDiff]) -> None:
+    """Rebuild the patches GitHub withheld, in place, by reading both versions of each file.
+
+    A file whose content turns out to contain NUL bytes is a binary after all, whatever
+    its name. Anything that cannot be read stays `patch_omitted`, for Tier 0 to report as
+    unscanned.
+    """
+    budget = MAX_RECOVERED_FILES
+    for raw, diff in zip(raw_files, diffs):
+        if not diff.patch_omitted or diff.change_type == "removed" or budget <= 0:
+            continue
+        low = diff.path.lower()
+        if any("/" + s in "/" + low for s in _NOT_RECOVERED) or \
+                low.endswith(("lock.json", ".lock", "lock.yaml")):
+            continue
+        budget -= 1
+        new = _get_raw(owner, repo, diff.path, sha)
+        old_path = raw.get("previous_filename") or diff.path
+        if diff.change_type == "added":
+            old: bytes | None = b""
+        else:
+            old = _get_raw(owner, repo, old_path, parent) if parent else None
+        if new is None or old is None:
+            continue
+        if b"\x00" in new[:8000]:
+            diff.is_binary, diff.patch_omitted = True, False
+            continue
+        before = old.decode("utf-8", errors="replace")
+        after = new.decode("utf-8", errors="replace")
+        lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(),
+                                          lineterm="", n=3))
+        diff.patch = "\n".join(lines[2:])  # drop the ---/+++ file header, keep the hunks
+        diff.baseline = before
+        diff.patch_omitted = False
 
 
 def _fetch_commit_all_files(owner: str, repo: str, sha: str) -> dict:
@@ -300,6 +395,10 @@ def fetch_commit(owner: str, repo: str, sha: str) -> Change:
         pass  # association lookup is best-effort; absence isn't an error
 
     author = (data.get("author") or {}).get("login") or (data.get("commit", {}).get("author") or {}).get("name")
+    raw_files = data.get("files", [])
+    files = _file_diffs(raw_files)
+    parent = ((data.get("parents") or [{}])[0] or {}).get("sha")
+    _recover_omitted(owner, repo, sha, parent, raw_files, files)
 
     return _attach_tenure(
         Change(
@@ -310,7 +409,7 @@ def fetch_commit(owner: str, repo: str, sha: str) -> Change:
             author=author,
             message=(data.get("commit", {}) or {}).get("message", ""),
             committed_at=_parse_ts(data.get("commit", {}).get("author", {}).get("date")),
-            files=_file_diffs(data.get("files", [])),
+            files=files,
             checks_passed=_fetch_checks_passed(owner, repo, sha),
             pr_number=pr_number,
         ),

@@ -42,6 +42,79 @@ def test_file_diffs_status_mapping_and_binary_detection():
     assert not by_path["new.js"].is_binary
 
 
+def test_a_missing_patch_is_not_proof_of_a_binary():
+    # Measured on the first holdout hunt: GitHub withholds `patch` from empty files and
+    # from text diffs too large to render, and both were being reported as binaries.
+    raw = [
+        {"filename": "w/.gitkeep", "status": "added", "additions": 0, "deletions": 0,
+         "sha": fetch.EMPTY_BLOB_SHA},
+        {"filename": "dist/index.js", "status": "added", "additions": 13690, "deletions": 0},
+        {"filename": "vendor/x.js", "status": "added", "additions": 0, "deletions": 0},
+        {"filename": "clang-format19", "status": "added", "additions": 0, "deletions": 0},
+    ]
+    by_path = {d.path: d for d in fetch._file_diffs(raw)}
+    assert not by_path["w/.gitkeep"].is_binary and not by_path["w/.gitkeep"].patch_omitted
+    assert not by_path["dist/index.js"].is_binary and by_path["dist/index.js"].patch_omitted
+    assert not by_path["vendor/x.js"].is_binary and by_path["vendor/x.js"].patch_omitted
+    assert by_path["clang-format19"].is_binary and not by_path["clang-format19"].patch_omitted
+
+
+def _commit_with(files, sha="c0ffee00", parent="pa7e2700"):
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits/{sha}",
+                  json={"sha": sha, "author": {"login": "a"}, "parents": [{"sha": parent}],
+                        "commit": {"author": {"name": "a", "date": None}}, "files": files})
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits/{sha}/pulls", json=[])
+    responses.add(responses.GET, f"{BASE}/repos/o/r/commits/{sha}/check-runs",
+                  json={"total_count": 0, "check_runs": []})
+
+
+def _raw(path, ref, body: bytes):
+    from responses import matchers
+    responses.add(responses.GET, f"{BASE}/repos/o/r/contents/{path}", body=body,
+                  match=[matchers.query_param_matcher({"ref": ref})])
+
+
+@responses.activate
+def test_an_omitted_diff_is_rebuilt_from_both_versions_of_the_file():
+    _commit_with([{"filename": "dist/index.js", "status": "modified",
+                   "additions": 1, "deletions": 0}])
+    _raw("dist/index.js", "pa7e2700", b"a()\nb()\n")
+    _raw("dist/index.js", "c0ffee00", b"a()\nb()\neval(atob(x))\n")
+    diff = fetch.fetch_commit("o", "r", "c0ffee00").files[0]
+    assert not diff.patch_omitted and not diff.is_binary
+    assert "+eval(atob(x))" in diff.patch.splitlines()
+    assert not any(ln.startswith(("---", "+++")) for ln in diff.patch.splitlines())
+    assert diff.baseline == "a()\nb()\n"
+
+
+@responses.activate
+def test_a_rebuilt_file_with_nul_bytes_is_a_binary_after_all():
+    _commit_with([{"filename": "lib/x.js", "status": "added", "additions": 0, "deletions": 0}])
+    _raw("lib/x.js", "c0ffee00", b"\x7fELF\x00\x00")
+    diff = fetch.fetch_commit("o", "r", "c0ffee00").files[0]
+    assert diff.is_binary and not diff.patch_omitted
+
+
+@responses.activate
+def test_an_unreadable_omitted_diff_stays_marked_unscanned():
+    _commit_with([{"filename": "dist/index.js", "status": "modified",
+                   "additions": 5, "deletions": 5}])
+    responses.add(responses.GET, f"{BASE}/repos/o/r/contents/dist/index.js", status=404)
+    diff = fetch.fetch_commit("o", "r", "c0ffee00").files[0]
+    assert diff.patch_omitted and diff.patch == "" and diff.baseline is None
+
+
+@responses.activate
+def test_vendored_code_and_lockfiles_are_not_rebuilt():
+    _commit_with([
+        {"filename": "test/node_modules/x/index.js", "status": "added", "additions": 9},
+        {"filename": "package-lock.json", "status": "modified", "additions": 900, "deletions": 3},
+    ])
+    files = fetch.fetch_commit("o", "r", "c0ffee00").files
+    assert all(f.patch_omitted for f in files)
+    assert not any("/contents/" in c.request.url for c in responses.calls)
+
+
 # ------------------------------------------------------------------------ _get_json
 @responses.activate
 def test_get_json_caches_after_first_call():
