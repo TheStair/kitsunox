@@ -11,6 +11,7 @@ No network and no API spend: `fetch` and `llm` are stubbed throughout.
 from __future__ import annotations
 
 import csv
+from dataclasses import asdict
 
 import pytest
 
@@ -449,3 +450,18 @@ def test_an_off_branch_docs_commit_is_cleared_only_once_its_parent_is_on_a_branc
     _tags(monkeypatch, [("v1", tip)], {tip: False, parent: False})
     stacked = evaluate.hunt(["o/r"], tags=True)[0]
     assert "tag.on_no_branch" in stacked.rule_ids and stacked.escalated
+
+
+def test_the_queue_shows_each_rule_once_with_its_strongest_hit_first(tmp_path):
+    findings = [asdict(Finding(rule_id="content.asset_added", severity="low", rationale="asset",
+                               file_path=f"public/icon{i}.png")) for i in range(13)]
+    findings += [asdict(Finding(rule_id="content.shell_exec", severity=sev, rationale="exec",
+                                file_path=f"{p}.js", line=1, evidence=f"ev-{p}"))
+                 for p, sev in (("a", "low"), ("b", "high"))]
+    r = _result(findings=findings)
+    text = evaluate.write_triage([r], tmp_path / "q.md", scanned=1).read_text(encoding="utf-8")
+    bullets = [ln for ln in text.splitlines() if ln.startswith("- **")]
+    assert len(bullets) == 2
+    assert bullets[0].startswith("- **content.shell_exec** (high) x2 in `b.js:1`")
+    assert "x13" in bullets[1] and "and 10 more" in bullets[1]
+    assert text.index("ev-b") < text.index("ev-a")

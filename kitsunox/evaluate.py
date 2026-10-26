@@ -59,6 +59,11 @@ DEFAULT_PUSHES_PER_REPO = 12
 DEFAULT_HUNT_LIMIT = 50
 DEFAULT_MAX_BRIEFS = 20
 
+# How much of each rule's hits the queue shows: enough to locate the pattern, not every
+# repetition of it.
+MAX_PLACES_SHOWN = 3
+MAX_EVIDENCE_SHOWN = 2
+
 DISPOSITIONS = ("unreviewed", "benign", "suspicious", "malicious", "unclear")
 DISPOSITION_FIELDS = [
     "key", "url", "first_seen", "score", "verdict", "cost_usd",
@@ -539,22 +544,34 @@ def write_triage(results: list[ChangeResult], path: Path, *, scanned: int,
         out += ["**Commit message**", "", _block(r.message, limit=800), ""]
 
         out += ["**Why it was flagged**"]
-        evidence_first = sorted(r.findings, key=lambda f: (f["rule_id"].startswith("context."),
-                                                           f["rule_id"]))
-        seen = set()
-        for f in evidence_first:
-            ident = (f["rule_id"], f.get("file_path"), f.get("line"))
-            if ident in seen:
-                continue
-            seen.add(ident)
+        # One bullet per rule, strongest first, with a few locations. Listing every hit
+        # gave one initial-release commit some seventy bullets -- thirteen favicons, thirty
+        # dependencies -- and buried the two lines that mattered.
+        by_rule: dict[str, list[dict]] = {}
+        for f in r.findings:
+            hits = by_rule.setdefault(f["rule_id"], [])
+            if (f.get("file_path"), f.get("line")) not in {(h.get("file_path"), h.get("line"))
+                                                           for h in hits}:
+                hits.append(f)
+        weight = rules.SEVERITY_WEIGHT
+        order = sorted(by_rule, key=lambda rid: (rid.startswith("context."),
+                                                 -max(weight[h["severity"]] for h in by_rule[rid]),
+                                                 rid))
+        for rule_id in order:
+            hits = sorted(by_rule[rule_id], key=lambda h: -weight[h["severity"]])
+            top = hits[0]
+            places = [h["file_path"] + (f":{h['line']}" if h.get("line") else "")
+                      for h in hits if h.get("file_path")]
             where = ""
-            if f.get("file_path"):
-                where = " in " + _inline(f["file_path"] + (f":{f['line']}" if f.get("line") else ""))
-            out += ["", f"- **{f['rule_id']}** ({f['severity']}){where} -- {f['rationale']}"]
-            if f.get("precedent"):
-                out += [f"  Precedent: {f['precedent']}."]
-            if f.get("evidence"):
-                out += ["", _block(f["evidence"], limit=300)]
+            if places:
+                more = f" and {len(places) - MAX_PLACES_SHOWN} more" if len(places) > MAX_PLACES_SHOWN else ""
+                where = " in " + ", ".join(_inline(p) for p in places[:MAX_PLACES_SHOWN]) + more
+            count = f" x{len(hits)}" if len(hits) > 1 else ""
+            out += ["", f"- **{rule_id}** ({top['severity']}){count}{where} -- {top['rationale']}"]
+            if top.get("precedent"):
+                out += [f"  Precedent: {top['precedent']}."]
+            for h in [h for h in hits if h.get("evidence")][:MAX_EVIDENCE_SHOWN]:
+                out += ["", _block(h["evidence"], limit=300)]
 
         if r.rationale or r.next_steps:
             out += ["", f"**Model brief** (${r.cost_usd:.4f}; untrusted, steerable by the author)",
