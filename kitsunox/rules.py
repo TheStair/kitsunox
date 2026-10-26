@@ -76,6 +76,17 @@ ARTIFACT_SUFFIXES = (".min.js", ".bundle.js")
 
 TEST_FIXTURE_DIRS = ("test/", "tests/", "testdata/", "fixtures/", "__fixtures__/", "spec/")
 
+# Third-party code committed into the repository. Its patterns are its upstream author's,
+# not this change's: one vendored `node_modules/` tree scored 40 on the first holdout hunt
+# from es-abstract and yargs alone. It is reported once per change, not scanned line by
+# line. Known evasion, stated: a payload hidden under one of these paths is not scanned.
+VENDORED_DIRS = ("node_modules/", "vendor/", "third_party/", "bower_components/")
+
+# Documentation. A commit that changes nothing else cannot change what a consumer runs.
+DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+DOC_NAMES = ("readme", "license", "licence", "changelog", "contributing", "authors",
+             "notice", "code_of_conduct", "security")
+
 # Binary files that can carry a payload: executables, native modules, archives and raw
 # or compressed data. In a JavaScript, TypeScript or Actions repository nothing in this
 # list has a reason to arrive without explanation, and none of it can be reviewed as a
@@ -180,8 +191,10 @@ PRIVATE_IP = re.compile(
 # a contiguous pattern; word boundaries keep /proc/meminfo and "memory" out.
 SECRET_ACCESS = re.compile(
     r"(\.npmrc|~/\.aws|\.aws/credentials|id_rsa|id_ed25519|\.git-credentials|\.netrc\b|"
-    r"\.docker/config\.json|/proc\b.*\b(mem|maps|environ)\b|process\.env\s*\)|os\.environ\s*\))"
+    r"\.docker/config\.json|/proc\b.*\b(mem|maps|environ)\b)"
 )
+# The whole environment as an argument: `JSON.stringify(process.env)`, `post(os.environ)`.
+ENV_DUMP = re.compile(r"(process\.env|os\.environ)\s*\)")
 
 # Naming a token. In an Action, GITHUB_TOKEN is the credential the action is supposed to
 # use; in an npm repo, NPM_TOKEN is how publishing works. As `secret_access` these matched
@@ -203,7 +216,30 @@ UNBOUNDED_LOOP = re.compile(r"<\s*Infinity")
 WHILE_FOREVER = re.compile(r"while\s*\(\s*(true|1)\s*\)|\bloop\s*\{|for\s*\(\s*;\s*;\s*\)")
 LOOP_ESCAPE = re.compile(r"\b(break|return|goto|exit|panic|throw|yield)\b")
 
-DEPENDENCY_ADDED = re.compile(r"^\s*[\"']?[\w@./-]+[\"']?\s*[:=]\s*[\"'][\^~>=<\d]")
+DEPENDENCY_ADDED = re.compile(r"^\s*[\"']?(?P<name>[\w@./-]+)[\"']?\s*[:=]\s*[\"'][\^~>=<\d]")
+
+# Sections of package.json whose entries are packages. The line pattern alone matched any
+# key with a version-shaped value -- `"version": "13.7.0"`, `"node": ">=20"` -- and was the
+# only evidence for one holdout alert and thirty bullets of another.
+DEPENDENCY_SECTIONS = {
+    "dependencies", "devdependencies", "peerdependencies", "optionaldependencies",
+    "bundleddependencies", "bundledependencies", "overrides", "resolutions",
+}
+# Keys that take a version-shaped value and are not packages. Used where a hunk does not
+# show which section a line sits in.
+NOT_DEPENDENCIES = {
+    "version", "name", "node", "npm", "yarn", "pnpm", "bun", "deno", "vscode", "python",
+    "requires-python", "edition", "rust-version", "go", "packagemanager",
+}
+JSON_SECTION_OPEN = re.compile(r'^\s*"(?P<key>[^"]+)"\s*:\s*[{\[]\s*$')
+JSON_SECTION_CLOSE = re.compile(r"^\s*[}\]],?\s*$")
+
+# The whole environment handed to a child process -- `env=dict(os.environ)`,
+# `{env: process.env}` -- is how a subprocess inherits PATH. It is not collection, and it
+# was the sole high finding of one holdout alert. The environment *sent* somewhere still is.
+ENV_PASS_THROUGH = re.compile(
+    r"\benv\s*[=:]\s*(dict\s*\(\s*|\{\s*\*\*\s*|\{\s*\.\.\.\s*)?(os\.environ|process\.env)\b"
+)
 
 # --------------------------------------------------------------------------- helpers
 
@@ -271,25 +307,53 @@ def _is_test_fixture(path: str) -> bool:
     return any(seg in path.lower() for seg in TEST_FIXTURE_DIRS)
 
 
+def _is_vendored(path: str) -> bool:
+    low = "/" + path.lower()
+    return any("/" + seg in low for seg in VENDORED_DIRS)
+
+
+def _is_doc(path: str) -> bool:
+    return (path.lower().endswith(DOC_SUFFIXES) or path.lower().startswith("docs/")
+            or _basename(path).split(".", 1)[0] in DOC_NAMES)
+
+
+def _secret_access(text: str) -> str | None:
+    """The credential-store or environment-dump text on this line, if any."""
+    match = SECRET_ACCESS.search(text)
+    if match:
+        return match.group(0)
+    match = ENV_DUMP.search(text)
+    if match and not ENV_PASS_THROUGH.search(text):
+        return match.group(0)
+    return None
+
+
 # A four-part version number is indistinguishable from an IP address by shape alone:
 # `"version": "==3.4.0.3"` in psf/requests' Pipfile.lock was the only false positive in
 # the whole direct-push control sample. Context is what separates them.
 VERSION_CONTEXT = re.compile(r"(==|>=|<=|~=|\bv|version|release|tag)\s*[\"']?$", re.IGNORECASE)
 
 
-def _hits_suspicious_host(text: str) -> bool:
-    """True for a paste/tunnel host, or a routable IP being used as an address."""
-    if SUSPICIOUS_HOST.search(text):
-        return True  # a named paste/tunnel host, no ambiguity
+def _suspicious_host(text: str) -> str | None:
+    """The paste/tunnel host, or routable IP used as an address, on this line."""
+    named = SUSPICIOUS_HOST.search(text)
+    if named:
+        return named.group(0)  # a named paste/tunnel host, no ambiguity
     match = ROUTABLE_IP_IN_USE.search(text)
     if not match:
-        return False
+        return None
     ip = match.group("ip") or match.group("ip2")
-    return not PRIVATE_IP.match(ip)
+    return None if PRIVATE_IP.match(ip) else ip
+
+
+def _hits_suspicious_host(text: str) -> bool:
+    """True for a paste/tunnel host, or a routable IP being used as an address."""
+    return _suspicious_host(text) is not None
 
 
 def _scannable(file: FileDiff) -> bool:
-    return not file.is_binary and _basename(file.path) not in LOCKFILES and bool(file.patch)
+    return (not file.is_binary and _basename(file.path) not in LOCKFILES
+            and not _is_vendored(file.path) and bool(file.patch))
 
 
 # --------------------------------------------------------------------------- content rules
@@ -306,7 +370,8 @@ def _install_hook_rules(change: Change) -> list[Finding]:
     """
     findings: list[Finding] = []
     for file in change.files:
-        if _basename(file.path) != "package.json" or file.is_binary:
+        # A vendored package's own hooks do not run when this repository is installed.
+        if _basename(file.path) != "package.json" or file.is_binary or _is_vendored(file.path):
             continue
         body = "".join(
             ln[1:] + "\n" for ln in file.patch.split("\n")
@@ -373,6 +438,12 @@ def _install_hook_rules(change: Change) -> list[Finding]:
 def _content_rules(change: Change) -> list[Finding]:
     findings: list[Finding] = []
     for file in change.files:
+        # Vendored source is reported once, by _context_rules. An opaque binary is not
+        # explained by being vendored -- nobody reviews a .wasm wherever it sits.
+        if _is_vendored(file.path) and not (
+            file.is_binary and _binary_kind(file.path) == "opaque"
+        ):
+            continue
         if file.is_binary and file.change_type == "added":
             kind = _binary_kind(file.path)
             in_fixtures = _is_test_fixture(file.path)
@@ -424,10 +495,20 @@ def _content_rules(change: Change) -> list[Finding]:
             continue
         is_ci_config = _is_ci(file.path)
         in_sensitive = is_ci_config or _is_build_script(file.path) or _is_artifact(file.path)
-        is_manifest = _basename(file.path) in MANIFESTS
         # Checked once per file: a `while (true)` with a break somewhere in the same
         # added code is an ordinary loop, not a hang.
         has_escape = any(LOOP_ESCAPE.search(t) for _, t in _added_lines(file))
+        baseline = file.baseline or ""
+
+        def novel(found: str | re.Match | None) -> bool:
+            """Whether a hit is new to the file. Only answerable when `fetch.py` read the
+            previous version to rebuild an omitted diff -- a regenerated bundle -- and
+            that is where it matters: rebuilding moves every line of a bundle, and the
+            `child_process` its dependencies always contained is not news."""
+            if found is None:
+                return False
+            text = found if isinstance(found, str) else found.group(0)
+            return not baseline or text not in baseline
 
         for lineno, text in _added_lines(file):
             def hit(rule_id: str, severity: Severity, rationale: str,
@@ -444,7 +525,7 @@ def _content_rules(change: Change) -> list[Finding]:
                     )
                 )
 
-            if B64_BLOB.search(text):
+            if novel(B64_BLOB.search(text)):
                 hit(
                     "content.encoded_blob",
                     "high" if in_sensitive else "medium",
@@ -452,14 +533,14 @@ def _content_rules(change: Change) -> list[Finding]:
                     "as a diff, which is what makes it a delivery mechanism.",
                     "reviewdog/action-setup and tj-actions/changed-files, 2025",
                 )
-            if DECODE_CALLS.search(text):
+            if novel(DECODE_CALLS.search(text)):
                 hit(
                     "content.decode_call",
                     "medium",
                     "Code that decodes an encoded string was added — benign on its own, "
                     "but the other half of an encoded-payload pair.",
                 )
-            if SHELL_EXEC.search(text):
+            if novel(SHELL_EXEC.search(text)):
                 # Not elevated inside CI config: a workflow's whole job is to run shell,
                 # so `child_process` in a publish workflow is unremarkable. It stays
                 # notable in build/install scripts and generated bundles.
@@ -469,21 +550,21 @@ def _content_rules(change: Change) -> list[Finding]:
                     "A shell/eval execution primitive was added. Ordinary in application "
                     "code and in CI, hard to justify inside a build script or a bundle.",
                 )
-            if _hits_suspicious_host(text):
+            if novel(_suspicious_host(text)):
                 hit(
                     "content.suspicious_host",
                     "high",
                     "A reference to a paste/tunnel service or a bare IP was added — the "
                     "exfiltration endpoint in both 2025 Actions compromises was a gist.",
                 )
-            elif NETWORK_FETCH.search(text) and in_sensitive:
+            elif in_sensitive and novel(NETWORK_FETCH.search(text)):
                 hit(
                     "content.network_in_build",
                     "medium",
                     "A network fetch was added to CI config, a build script, or a "
                     "generated bundle, pulling unreviewed content into the build.",
                 )
-            if SECRET_ACCESS.search(text):
+            if novel(_secret_access(text)):
                 hit(
                     "content.secret_access",
                     "high",
@@ -491,7 +572,7 @@ def _content_rules(change: Change) -> list[Finding]:
                     "the whole environment -- the collection step of a secret theft.",
                     "reviewdog/action-setup and tj-actions/changed-files, 2025",
                 )
-            elif TOKEN_REFERENCE.search(text):
+            elif novel(TOKEN_REFERENCE.search(text)):
                 hit(
                     "content.token_reference",
                     "low",
@@ -499,7 +580,9 @@ def _content_rules(change: Change) -> list[Finding]:
                     "how actions and publishing authenticate -- and recorded so that a token "
                     "sent to an attacker-controlled host is caught as exfiltration.",
                 )
-            if UNBOUNDED_LOOP.search(text) or (WHILE_FOREVER.search(text) and not has_escape):
+            if novel(UNBOUNDED_LOOP.search(text)) or (
+                novel(WHILE_FOREVER.search(text)) and not has_escape
+            ):
                 # `high` because it measured clean: zero hits across 45 benign PRs. A
                 # deliberately non-terminating loop is rare in reviewed code, and it is
                 # the *only* signal colors.js ever emits.
@@ -510,15 +593,71 @@ def _content_rules(change: Change) -> list[Finding]:
                     "payload — hanging every consumer on import is sufficient.",
                     "colors.js, 2022",
                 )
-            if is_manifest and DEPENDENCY_ADDED.match(text):
-                hit(
-                    "content.dependency_added",
-                    "low",
-                    "A dependency was added. Extremely common and benign by itself, but "
-                    "when malicious code lives in the dependency this is the only "
-                    "git-visible trace an attack leaves.",
-                    "event-stream / flatmap-stream, 2018",
-                )
+    return findings
+
+
+def _added_dependencies(file: FileDiff) -> list[tuple[int, str]]:
+    """(line, name) for each package a manifest's diff adds.
+
+    In package.json a line counts only inside a dependency section -- tracked through the
+    hunk's own context lines -- or, where the hunk does not show its section, when its key
+    is not one of the known version-valued settings. A name the same diff removes is a
+    version bump, not an addition.
+    """
+    removed: set[str] = set()
+    added: list[tuple[int, str]] = []
+    is_json = _basename(file.path) == "package.json"
+    lineno, section = 0, None
+    for raw in file.patch.split("\n"):
+        header = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", raw)
+        if header:
+            lineno, section = int(header.group(1)), None
+            continue
+        text = raw[1:]
+        if raw.startswith("-"):
+            match = DEPENDENCY_ADDED.match(text)
+            if match:
+                removed.add(match.group("name"))
+            continue
+        if is_json:
+            opened = JSON_SECTION_OPEN.match(text)
+            if opened:
+                section = opened.group("key").lower()
+            elif JSON_SECTION_CLOSE.match(text):
+                section = ""  # left a section; which one we are back in is not shown
+        if raw.startswith("+"):
+            match = DEPENDENCY_ADDED.match(text)
+            if match:
+                name = match.group("name")
+                if section:
+                    counts = section in DEPENDENCY_SECTIONS
+                else:
+                    counts = name.lower() not in NOT_DEPENDENCIES
+                if counts:
+                    added.append((lineno, name))
+        lineno += 1
+    return [(n, name) for n, name in added if name not in removed]
+
+
+def _dependency_rules(change: Change) -> list[Finding]:
+    """One finding per manifest, naming every package it adds."""
+    findings = []
+    for file in change.files:
+        if _basename(file.path) not in MANIFESTS or not _scannable(file):
+            continue
+        added = _added_dependencies(file)
+        if added:
+            findings.append(Finding(
+                rule_id="content.dependency_added",
+                severity="low",
+                rationale="A dependency was added. Extremely common and benign by itself, "
+                "but when malicious code lives in the dependency this is the only "
+                "git-visible trace an attack leaves.",
+                precedent="event-stream / flatmap-stream, 2018",
+                file_path=file.path,
+                line=added[0][0],
+                evidence=_evidence(", ".join(name for _, name in added)),
+            ))
     return findings
 
 
@@ -557,6 +696,27 @@ def _context_rules(change: Change) -> list[Finding]:
                 "line by line, so an edit here survives review by default.",
                 file.path, "tj-actions/changed-files, 2025",
             )
+        if (file.patch_omitted and file.change_type != "removed"
+                and not _is_vendored(file.path) and _basename(file.path) not in LOCKFILES):
+            add(
+                "context.diff_unavailable", "low",
+                f"GitHub withheld this file's diff ({file.additions} lines added) and it "
+                "could not be rebuilt, so Tier 0 never read it. Absence of findings here "
+                "is not evidence of absence.",
+                file.path,
+            )
+
+    vendored = [f for f in change.files
+                if _is_vendored(f.path) and f.change_type != "removed"]
+    if vendored:
+        add(
+            "context.vendored_code", "low",
+            f"{len(vendored)} third-party file(s) committed under a vendored path. Their "
+            "contents are upstream code and are not scanned; what they contain is only as "
+            "trustworthy as where they were copied from.",
+            vendored[0].path,
+        )
+
     if change.source == "pr":
         if change.merged_by_author:
             add(
@@ -730,7 +890,8 @@ def _combo_rules(findings: list[Finding]) -> list[Finding]:
 def scan(change: Change) -> list[Finding]:
     """Run every Tier 0 rule over a change. Order is content, context, then combinations
     (which are derived from the first two)."""
-    findings = _content_rules(change) + _install_hook_rules(change) + _context_rules(change)
+    findings = (_content_rules(change) + _dependency_rules(change)
+                + _install_hook_rules(change) + _context_rules(change))
     return findings + _combo_rules(findings)
 
 

