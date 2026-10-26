@@ -105,6 +105,9 @@ MEDIA_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".avif", ".icns",
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
     ".pdf", ".mp3", ".mp4", ".webm", ".ogg", ".wav", ".mov",
+    # Office documents: test inputs for a converter (shelfio/aws-lambda-libreoffice) and
+    # specs in a docs folder. A consumer of the package never opens them.
+    ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".odt", ".ods", ".odp", ".rtf",
 }
 
 MANIFESTS = {"package.json", "requirements.txt", "pyproject.toml", "gemfile", "cargo.toml", "go.mod"}
@@ -130,6 +133,9 @@ B64_BLOB = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
 EMBEDDED_ASSET_MAGIC = {
     b"\x89PNG": "a PNG image", b"\xff\xd8\xff": "a JPEG image", b"GIF8": "a GIF image",
     b"wOFF": "a WOFF font", b"wOF2": "a WOFF2 font", b"OTTO": "an OpenType font",
+    # `//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjoz...`: an inline
+    # source map, JSON that no runtime executes.
+    b'{"version":3': "an inline source map",
 }
 # WebAssembly is executable, so it only counts as an inlined asset inside a generated
 # bundle, where a bundler put it; anywhere else it stays an encoded blob.
@@ -141,9 +147,13 @@ DECODE_CALLS = re.compile(
     re.IGNORECASE,
 )
 
+# `eval("require")` -- the idiom bundlers use to hide a require from static analysis --
+# evaluates a fixed name, not code; it alone escalated a hand-built dist/ commit. An eval
+# whose argument is anything other than a bare identifier in quotes still counts.
 SHELL_EXEC = re.compile(
     r"(\bchild_process\b|\bexec\.getExecOutput\b|\bexecSync\b|\bspawnSync\b|"
-    r"\bsubprocess\.(run|Popen|call)\b|\bos\.system\b|\beval\s*\(|\bnew\s+Function\s*\(|"
+    r"\bsubprocess\.(run|Popen|call)\b|\bos\.system\b|"
+    r"\beval\s*\((?!\s*(?P<q>[\"'])[A-Za-z_$][\w$]*(?P=q)\s*\))|\bnew\s+Function\s*\(|"
     r"\|\s*(bash|sh|python3?)\b)"
 )
 
@@ -207,8 +217,15 @@ SECRET_ACCESS = re.compile(
     r"(\.npmrc|~/\.aws|\.aws/credentials|id_rsa|id_ed25519|\.git-credentials|\.netrc\b|"
     r"\.docker/config\.json|/proc\b.*\b(mem|maps|environ)\b)"
 )
-# The whole environment as an argument: `JSON.stringify(process.env)`, `post(os.environ)`.
-ENV_DUMP = re.compile(r"(process\.env|os\.environ)\s*\)")
+# The whole environment serialised or sent: `JSON.stringify(process.env)`,
+# `requests.post(url, json=dict(os.environ))`. Handing it to an ordinary function --
+# `normalizeEnv(process.env)` -- is how CI detection works and escalated a 2019 commit;
+# collection needs a sink in the same statement. One variable (`process.env.TOKEN`) is
+# not the whole environment.
+ENV_DUMP = re.compile(
+    r"\b(stringify|dumps?|btoa|b64encode|fetch|post|put|send|write\w*|request|urlopen|emit)"
+    r"\s*\([^;]*?\b(process\.env|os\.environ)\b(?!\s*[.\[])"
+)
 
 # Naming a token. In an Action, GITHUB_TOKEN is the credential the action is supposed to
 # use; in an npm repo, NPM_TOKEN is how publishing works. As `secret_access` these matched
