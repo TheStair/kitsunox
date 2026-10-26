@@ -376,6 +376,11 @@ changes for nothing, and the expensive tier runs on the rest.
 per alert. That makes manual review a measurement rather than effort -- and it still
 yields a result if no attack is confirmed, which is the likeliest real outcome.
 
+The queue is laid out for review: an at-a-glance table, then one card per alert with a
+plain-words headline, a fact table, evidence and circumstance in separate sections, a
+deterministic checklist linking straight to the flagged line, and the untrusted text last.
+`tally --summary` writes the result and every disposition as `summary.md`.
+
 **Calibrate, then measure.** The held-out 1.15% was measured on zero Actions repositories,
 so the first hunts in the new scope were run as calibration, and every rule change they
 prompted is traced to its evidence. Two calibration hunts, 40 repositories each:
@@ -393,11 +398,25 @@ prompted is traced to its evidence. Two calibration hunts, 40 repositories each:
 The Actions calibration set fell from 40 alerts to 11 after its changes. That is
 **in-sample** -- it says the changes remove what they target, not how the tool performs.
 
-**The measurement** is a hunt over holdout targets drawn from the same population (same
-queries and filters) but sharing no repository and no owner with the calibration lists:
-`targets/holdout-actions.txt` and `targets/holdout-npm.txt`, reviewed in
-`triage/measurement/`. Its precision, from `kitsunox tally`, is the reportable
-in-the-wild result.
+**Calibration round 2.** The first holdout (`targets/holdout-*.txt`) raised 17 alerts, all
+briefed benign, none an attack. Reading them traced every one to a deterministic defect,
+so that holdout became calibration (`triage/calibration/round2/`):
+
+| Exposed | Alerts | Change |
+|---|---|---|
+| GitHub's missing `patch` read as "binary" (empty files, large text diffs, vendored JS) | 8 | classify from line counts and the empty-blob hash; rebuild withheld diffs from both versions; vendored code reported once |
+| dependency rule matched `"version"`, `"node"` | 1 | package.json sections; bumps are not additions; one finding per manifest |
+| `env=dict(os.environ)` read as collection | 1 | passing the environment to a subprocess is not sending it |
+| tag rules blind to repository conventions | 9 | alias-scheme collapse; off-branch release convention; docs-only commits on a branch parent |
+| rebuilt bundles, once readable, full of dependency code | (re-hunt) | in a rebuilt bundle only payload-shaped content counts; inlined wasm/images/fonts are assets; loop rule needs a loop header; file-scoped combos; source maps unscanned |
+
+Counts overlap: mheap's five alerts had both a binary and a tag cause. Ground truth held at 5/5 with identical evidence scores through every change.
+
+**The measurement** is a hunt over `targets/holdout2-actions.txt` and
+`targets/holdout2-npm.txt`: the same queries and filters, drawn as a seeded random sample
+(the star-ordered slices had reached the 100-star floor), sharing no repository and no owner
+with any earlier list, and reviewed in `triage/measurement/`. Its precision, from
+`kitsunox tally`, is the reportable in-the-wild result.
 
 The first Actions false-positive class observed was **installer actions that pipe a
 remote script to `sh`** -- downloading and running a tool is a `setup-*` action's whole
