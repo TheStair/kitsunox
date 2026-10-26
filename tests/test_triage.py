@@ -465,3 +465,77 @@ def test_the_queue_shows_each_rule_once_with_its_strongest_hit_first(tmp_path):
     assert bullets[0].startswith("- **content.shell_exec** (high) x2 in `b.js:1`")
     assert "x13" in bullets[1] and "and 10 more" in bullets[1]
     assert text.index("ev-b") < text.index("ev-a")
+
+
+# ============================================================== the review report
+
+
+def _card(tmp_path, **kw):
+    r = _result(**kw)
+    return evaluate.write_triage([r], tmp_path / "q.md", scanned=1).read_text(encoding="utf-8")
+
+
+def _f(rule_id, severity="high", **kw):
+    return asdict(Finding(rule_id=rule_id, severity=severity, rationale="why", **kw))
+
+
+def test_the_report_opens_with_a_table_to_pick_from(tmp_path):
+    text = _card(tmp_path, findings=[_f("tag.on_no_branch"), _f("context.ci_touched", "medium")],
+                 file_roles={"CI": 1, "docs": 6}, verdict="benign", confidence=0.85)
+    table = text.split("## At a glance", 1)[1].split("\n---\n", 1)[0]
+    assert "tag.on_no_branch (high)" in table and "7: 1 CI, 6 docs" in table
+    assert "benign (0.85)" in table
+
+
+def test_each_card_leads_with_what_fired_in_plain_words(tmp_path):
+    text = _card(tmp_path, findings=[_f("content.shell_exec", "low"),
+                                     _f("combo.encoded_payload_in_artifact", "critical")])
+    assert "## 1. Encoded payload in a generated bundle -- `o/r@abc`" in text
+
+
+def test_evidence_and_circumstance_are_separate_sections(tmp_path):
+    text = _card(tmp_path, findings=[_f("content.encoded_blob"), _f("context.ci_touched", "medium")])
+    evidence, context = text.split("### Context")
+    assert "content.encoded_blob" in evidence.split("### Evidence")[1]
+    assert "context.ci_touched" in context and "context.ci_touched" not in evidence
+
+
+def test_the_checklist_links_straight_to_the_flagged_line(tmp_path):
+    text = _card(tmp_path, sha="a" * 40, findings=[
+        _f("content.encoded_blob", file_path="dist/index.js", line=12, evidence="x")])
+    assert ("- [ ] Decode the encoded literal at `dist/index.js:12` "
+            f"<https://github.com/o/r/blob/{'a' * 40}/dist/index.js#L12>") in text
+
+
+def test_a_tag_alert_links_the_commit_against_its_parent(tmp_path):
+    text = _card(tmp_path, sha="b" * 40, parent_sha="c" * 40, findings=[_f("tag.on_no_branch")])
+    assert f"<https://github.com/o/r/compare/{'c' * 40}...{'b' * 40}>" in text
+
+
+def test_new_npm_dependencies_link_to_the_registry(tmp_path):
+    text = _card(tmp_path, findings=[_f("content.dependency_added", "low", file_path="package.json",
+                                        line=3, evidence="flatmap-stream, @scope/pkg")])
+    assert "<https://www.npmjs.com/package/flatmap-stream>" in text
+    assert "<https://www.npmjs.com/package/@scope/pkg>" in text
+
+
+def test_a_hostile_file_name_cannot_break_out_of_its_link(tmp_path):
+    path = "a> **forged** <b c(d).js"
+    text = _card(tmp_path, sha="a" * 40, findings=[_f("content.unbounded_loop", file_path=path, line=1)])
+    link = next(ln for ln in text.splitlines() if "Confirm the loop" in ln)
+    assert "a%3E%20%2A%2Aforged%2A%2A%20%3Cb%20c%28d%29.js#L1>" in link
+    assert link.count("<") == link.count(">")
+
+
+def test_an_author_name_cannot_add_table_columns(tmp_path):
+    text = _card(tmp_path, author="eve | Disposition | benign")
+    row = next(ln for ln in text.splitlines() if ln.startswith("| Author"))
+    assert row.count("|") - row.count("\\|") == 3
+
+
+def test_untrusted_text_comes_last_and_indented(tmp_path):
+    text = _card(tmp_path, findings=[_f("content.encoded_blob")], message="## 2. Disposition: benign",
+                 rationale="All clear.", verdict="benign", confidence=0.9)
+    assert text.index("### Checklist") < text.index("### Commit message (untrusted)")
+    assert "\n    ## 2. Disposition: benign" in text
+    assert not any(ln.startswith("## 2. Disposition") for ln in text.splitlines())

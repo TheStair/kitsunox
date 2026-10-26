@@ -1151,6 +1151,31 @@ def only_docs(change: Change) -> bool:
     return bool(change.files) and all(_is_doc(f.path) for f in change.files)
 
 
+def file_role(file: FileDiff) -> str:
+    """The one role a file plays, by the same classification the rules use -- so a report
+    can say "7 files: 1 CI, 6 docs" in the rules' own terms. First match wins, in order
+    of how much the role matters to a reviewer."""
+    if _is_vendored(file.path):
+        return "vendored"
+    if file.is_binary:
+        return "binary"
+    if _is_ci(file.path):
+        return "CI"
+    if _basename(file.path) in ("action.yml", "action.yaml"):
+        return "action"  # what a consumer's `uses:` runs
+    if _is_build_script(file.path):
+        return "build"
+    if _is_artifact(file.path):
+        return "bundle"
+    if _basename(file.path) in MANIFESTS or _basename(file.path) in LOCKFILES:
+        return "manifest"
+    if _is_doc(file.path):
+        return "docs"
+    if _is_test_fixture(file.path):
+        return "tests"
+    return "source"
+
+
 def qualify_off_branch(findings: list[Finding], change: Change,
                        parent_on_branch: bool | None) -> list[Finding]:
     """Downgrade `tag.on_no_branch` when the tagged commit cannot change what runs.

@@ -17,12 +17,14 @@ counts as neither — an API error must never be scored as a clean change.
 from __future__ import annotations
 
 import csv
+import re
 import json
 import statistics
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from kitsunox import fetch, llm, rules
 from kitsunox.incidents import INCIDENTS, load_incident
@@ -58,11 +60,6 @@ DEFAULT_PUSHES_PER_REPO = 12
 # full of large diffs can cost several dollars. The cap bounds the count, not the price.
 DEFAULT_HUNT_LIMIT = 50
 DEFAULT_MAX_BRIEFS = 20
-
-# How much of each rule's hits the queue shows: enough to locate the pattern, not every
-# repetition of it.
-MAX_PLACES_SHOWN = 3
-MAX_EVIDENCE_SHOWN = 2
 
 DISPOSITIONS = ("unreviewed", "benign", "suspicious", "malicious", "unclear")
 DISPOSITION_FIELDS = [
@@ -101,6 +98,14 @@ class ChangeResult:
     findings: list[dict] = field(default_factory=list)
     next_steps: list[str] = field(default_factory=list)
     refused: bool = False
+
+    # What the reviewer's links and fact table need.
+    sha: str = ""
+    parent_sha: str | None = None
+    committed_at: str | None = None
+    file_roles: dict[str, int] = field(default_factory=dict)
+    additions: int = 0
+    deletions: int = 0
 
     @property
     def detected(self) -> bool | None:
@@ -210,6 +215,12 @@ def _run_one(change: Change, *, threshold: int, tier2: bool, anonymize: bool = F
         tenure_days=change.author_tenure_days,
         prior_commits=change.author_prior_commits,
         findings=[asdict(f) for f in findings],
+        sha=change.sha,
+        parent_sha=change.parent_sha,
+        committed_at=change.committed_at.date().isoformat() if change.committed_at else None,
+        file_roles=dict(Counter(rules.file_role(f) for f in change.files)),
+        additions=sum(f.additions for f in change.files),
+        deletions=sum(f.deletions for f in change.files),
     )
 
     if escalated and tier2:
@@ -499,14 +510,230 @@ def _block(text: str, limit: int = 1500) -> str:
     return "\n".join("    " + line for line in text.splitlines())
 
 
+def _cell(text: str) -> str:
+    """An untrusted value inside a table cell. A pipe ends a cell even inside backticks,
+    so a commit author named `a | Disposition | benign` could otherwise add columns."""
+    return _inline(text).replace("|", "\\|")
+
+
 def _inline(text: str) -> str:
     """A short untrusted value as inline code that cannot break out of its backticks."""
     return "`" + str(text).replace("`", "'").replace("\n", " ")[:200] + "`"
 
 
+# What each rule means to a reviewer, in a few words: the alert's headline. Kept apart from
+# the rules' rationales, which are written for the Tier 2 prompt.
+RULE_TITLES = {
+    "combo.encoded_payload_in_build_script": "Encoded payload in a build or install script",
+    "combo.encoded_payload_in_artifact": "Encoded payload in a generated bundle",
+    "combo.encoded_payload_in_ci": "Encoded payload in CI configuration",
+    "combo.encoded_payload_executed": "Encoded payload next to code that executes it",
+    "combo.credential_exfiltration": "Credentials read next to an exfiltration endpoint",
+    "combo.new_maintainer_adds_dependency": "New maintainer pushed a new dependency",
+    "tag.version_collapse": "Release tags from different versions share one commit",
+    "tag.moved": "A release tag was moved",
+    "tag.on_no_branch": "Release tag points at a commit on no branch",
+    "content.install_hook_obfuscated": "Install hook carries an encoded payload",
+    "content.install_hook_network": "Install hook reaches the network",
+    "content.install_hook_exec": "Install hook executes code",
+    "content.install_hook_silenced": "Install hook hides its output",
+    "content.install_hook_recon": "Install hook collects host identity",
+    "content.install_hook": "Install hook declared",
+    "content.encoded_blob": "Long base64 literal added",
+    "content.decode_call": "Decoding call added",
+    "content.shell_exec": "Shell or eval added",
+    "content.suspicious_host": "Paste, tunnel or bare-IP endpoint added",
+    "content.network_in_build": "Network fetch added to build or CI",
+    "content.secret_access": "Credential store, process memory or environment read",
+    "content.unbounded_loop": "Loop that cannot terminate",
+    "content.binary_added": "Binary file added",
+    "content.dependency_added": "Dependency added",
+}
+
+# How much of each rule's hits a card shows: enough to locate the pattern, not every
+# repetition of it.
+MAX_PLACES_SHOWN = 3
+MAX_EVIDENCE_SHOWN = 2
+
+# Order of the file-role summary, most consequential first.
+ROLE_ORDER = ("action", "CI", "build", "bundle", "binary", "manifest", "source", "tests",
+              "docs", "vendored")
+
+
+ENCODED_RULES = {
+    "content.encoded_blob", "content.install_hook_obfuscated",
+    "combo.encoded_payload_in_build_script", "combo.encoded_payload_in_artifact",
+    "combo.encoded_payload_in_ci", "combo.encoded_payload_executed",
+}
+
+
+def _gh(repo: str, *parts: str) -> str:
+    """A github.com URL. `repo` comes from the target list; every other part is quoted, so
+    an attacker-chosen file name cannot break out of the link."""
+    return f"https://github.com/{repo}/" + "/".join(quote(p, safe="/") for p in parts)
+
+
+def _file_link(r: "ChangeResult", path: str, line: int | None = None) -> str:
+    if not r.sha or "/" not in r.repo:
+        return ""
+    return _gh(r.repo, "blob", r.sha, path) + (f"#L{line}" if line else "")
+
+
+def _group_findings(findings: list[dict]) -> dict[str, list[dict]]:
+    """Findings by rule, each rule's hits strongest first, duplicates of one location
+    dropped."""
+    weight = rules.SEVERITY_WEIGHT
+    by_rule: dict[str, list[dict]] = {}
+    for f in findings:
+        hits = by_rule.setdefault(f["rule_id"], [])
+        if (f.get("file_path"), f.get("line")) not in {(h.get("file_path"), h.get("line"))
+                                                       for h in hits}:
+            hits.append(f)
+    for hits in by_rule.values():
+        hits.sort(key=lambda h: -weight[h["severity"]])
+    return dict(sorted(by_rule.items(), key=lambda kv: (
+        kv[0].startswith("context."), -weight[kv[1][0]["severity"]], kv[0])))
+
+
+def _is_evidence(rule_id: str) -> bool:
+    return not rule_id.startswith("context.")
+
+
+def _headline(r: "ChangeResult") -> str:
+    """The strongest evidence, in a reviewer's words."""
+    grouped = [rid for rid in _group_findings(r.findings) if _is_evidence(rid)]
+    combos = [rid for rid in grouped if rid.startswith(("combo.", "tag."))]
+    lead = (combos or grouped or ["(no evidence)"])[0]
+    return RULE_TITLES.get(lead, lead)
+
+
+def _strongest(r: "ChangeResult") -> str:
+    grouped = _group_findings(r.findings)
+    for rid, hits in grouped.items():
+        if _is_evidence(rid):
+            return f"{rid} ({hits[0]['severity']})"
+    return "-"
+
+
+def _roles(r: "ChangeResult") -> str:
+    total = sum(r.file_roles.values())
+    if not total:
+        return "-"
+    parts = [f"{r.file_roles[role]} {role}" for role in ROLE_ORDER if r.file_roles.get(role)]
+    return f"{total}: " + ", ".join(parts)
+
+
+def _model(r: "ChangeResult") -> str:
+    if r.refused:
+        return "**declined**"
+    if r.verdict:
+        return f"{r.verdict} ({r.confidence:.2f})"
+    if r.tier2_error:
+        return "error"
+    return "not briefed"
+
+
+def _checklist(r: "ChangeResult", grouped: dict[str, list[dict]]) -> list[str]:
+    """Deterministic first checks for the reviewer, one per kind of signal, with the
+    links that answer them. Unlike the model's next steps these cannot be steered by the
+    change's author: they are chosen by which rules fired."""
+    items: list[str] = []
+
+    def at(hit: dict | None) -> str:
+        path = (hit or {}).get("file_path")
+        if not path:
+            return ""
+        label = _inline(path + (f":{hit['line']}" if hit.get("line") else ""))
+        link = _file_link(r, path, hit.get("line"))
+        return f"{label} <{link}>" if link else label
+
+    ids = set(grouped)
+    first = {rid: hits[0] for rid, hits in grouped.items()}
+    if ids & ENCODED_RULES:
+        hit = next(first[rid] for rid in grouped if rid in ENCODED_RULES)
+        items.append(f"Decode the encoded literal at {at(hit)} offline (`base64 -d`) and read "
+                     "what it is. Do not execute it.")
+    if "content.suspicious_host" in ids:
+        items.append(f"Identify what is fetched from or sent to the endpoint at "
+                     f"{at(first['content.suspicious_host'])}.")
+    if ids & {"content.secret_access", "combo.credential_exfiltration"}:
+        items.append(f"Trace where the credential or environment read at "
+                     f"{at(first.get('content.secret_access') or first['combo.credential_exfiltration'])} "
+                     "ends up.")
+    if "content.unbounded_loop" in ids:
+        items.append(f"Confirm the loop at {at(first['content.unbounded_loop'])} can terminate.")
+    if "content.shell_exec" in ids and first["content.shell_exec"]["severity"] != "low":
+        items.append(f"Read the command run at {at(first['content.shell_exec'])}: is its input "
+                     "fixed, or can a caller influence it?")
+    if "content.network_in_build" in ids:
+        items.append(f"Check what the build step at {at(first['content.network_in_build'])} "
+                     "downloads, and whether it is pinned or verified.")
+    if ids & {"content.install_hook_network", "content.install_hook_exec",
+              "content.install_hook_silenced", "content.install_hook_recon"}:
+        hook = next(first[rid] for rid in grouped if rid.startswith("content.install_hook_"))
+        items.append(f"Read the install hook in {at(hook)} -- it runs on every `npm install`.")
+    if "content.binary_added" in ids:
+        items.append(f"Identify the binary {at(first['content.binary_added'])}: what produces "
+                     "it, and does the repository have a build step that would?")
+    if "content.dependency_added" in ids and r.repo:
+        hit = first["content.dependency_added"]
+        names = [n.strip() for n in hit.get("evidence", "").rstrip(".").split(",") if n.strip()]
+        npm = [f"<https://www.npmjs.com/package/{quote(n, safe='@/')}>" for n in names[:5]
+               if re.fullmatch(r"[\w@./-]+", n)]
+        if hit.get("file_path", "").endswith("package.json") and npm:
+            items.append("Check each new package's age, maintainers and install scripts: "
+                         + ", ".join(npm) + (" ..." if len(names) > 5 else ""))
+        else:
+            items.append(f"Check the added dependencies at {at(hit)}.")
+    if ids & {"context.new_maintainer_direct_push", "combo.new_maintainer_adds_dependency"} \
+            and r.author and "/" in r.repo:
+        items.append("Review the author's other commits here: "
+                     f"<https://github.com/{r.repo}/commits?author={quote(r.author)}>")
+    if ids & {"tag.on_no_branch", "tag.moved", "tag.version_collapse"} and "/" in r.repo:
+        if r.parent_sha and r.sha:
+            items.append("Compare the tagged commit with its parent -- this is what consumers "
+                         f"of the tag run that no branch contains: "
+                         f"<{_gh(r.repo, 'compare', r.parent_sha + '...' + r.sha)}>")
+        items.append(f"Check the repository's tags and releases: <{_gh(r.repo, 'tags')}>")
+    if "context.diff_unavailable" in ids:
+        items.append(f"Tier 0 could not read {at(first['context.diff_unavailable'])}; read "
+                     "that diff on GitHub.")
+    if r.message and items:
+        items.append("Check that the commit message describes what the change actually does.")
+    return [f"- [ ] {item}" for item in items]
+
+
+def _findings_section(r: "ChangeResult", grouped: dict[str, list[dict]], evidence: bool) -> list[str]:
+    out: list[str] = []
+    for rule_id, hits in grouped.items():
+        if _is_evidence(rule_id) != evidence:
+            continue
+        top = hits[0]
+        places = [h["file_path"] + (f":{h['line']}" if h.get("line") else "")
+                  for h in hits if h.get("file_path")]
+        where = ""
+        if places:
+            more = (f" and {len(places) - MAX_PLACES_SHOWN} more"
+                    if len(places) > MAX_PLACES_SHOWN else "")
+            where = " in " + ", ".join(_inline(p) for p in places[:MAX_PLACES_SHOWN]) + more
+        count = f" x{len(hits)}" if len(hits) > 1 else ""
+        out += ["", f"- **{rule_id}** ({top['severity']}){count}{where} -- {top['rationale']}"]
+        if top.get("precedent"):
+            out += [f"  Precedent: {top['precedent']}."]
+        for h in [h for h in hits if h.get("evidence")][:MAX_EVIDENCE_SHOWN]:
+            out += ["", _block(h["evidence"], limit=300)]
+    return out or ["", "_None._"]
+
+
 def write_triage(results: list[ChangeResult], path: Path, *, scanned: int,
                  repos: list[str] | None = None) -> Path:
-    """Write the ranked Markdown queue of escalated changes for the investigator."""
+    """Write the ranked Markdown queue of escalated changes for the investigator.
+
+    Laid out for review rather than for the record: a table to pick from, then one card
+    per alert -- what fired and why, a checklist of first checks with the links that
+    answer them, and only then the untrusted text. Everything an author controls renders
+    through `_inline` or `_block`, which cannot be escaped from.
+    """
     alerts = rank([r for r in results if r.escalated])
     briefed = [r for r in alerts if r.verdict or r.tier2_error]
     cost = sum(r.cost_usd for r in alerts)
@@ -514,73 +741,74 @@ def write_triage(results: list[ChangeResult], path: Path, *, scanned: int,
     out = [
         "# Kitsunox triage queue",
         "",
-        f"Generated {datetime.now().isoformat(timespec='minutes')}. "
-        f"{scanned} changes scanned across {len(repos or [])} repositories; "
-        f"**{len(alerts)} escalated**; {len(briefed)} briefed (${cost:.4f}).",
+        f"Generated {datetime.now().isoformat(timespec='minutes')} -- "
+        f"{scanned} changes scanned across {len(repos or [])} repositories -- "
+        f"**{len(alerts)} to review** -- {len(briefed)} briefed (${cost:.4f}).",
         "",
-        "Record what you find in `dispositions.csv` alongside this file "
-        "(`benign`, `suspicious`, `malicious` or `unclear`, plus minutes spent), then run "
-        "`kitsunox tally`.",
+        "**How to review.** Work down the table. For each alert, read the evidence, run the "
+        "checklist, then record a disposition (`benign`, `suspicious`, `malicious` or "
+        "`unclear`) and the minutes spent against its key in `dispositions.csv` next to "
+        "this file. `kitsunox tally` turns those into the result.",
         "",
-        "Everything shown in an indented block is untrusted: it is written or influenced by "
-        "the change's author, including the model's brief. Read the change itself before "
-        "deciding.",
+        "**Trust.** Headings, tables, rule text and checklists are generated by Kitsunox. "
+        "Everything in an indented block -- commit messages, code evidence, the model's "
+        "brief -- is written or steerable by the change's author. Read the change itself "
+        "before deciding.",
     ]
     if not alerts:
         out += ["", "_Nothing escalated._"]
+    else:
+        out += ["", "## At a glance", "",
+                "| # | Change | Score | Strongest signal | Files | Model |",
+                "|---|---|---|---|---|---|"]
+        for n, r in enumerate(alerts, start=1):
+            out.append(f"| {n} | [{_inline(r.key)}](#{n}) | {r.total_score} | "
+                       f"{_strongest(r)} | {_roles(r)} | {_model(r)} |")
 
     for n, r in enumerate(alerts, start=1):
-        verdict = f" -- model: {r.verdict} ({r.confidence:.2f})" if r.verdict else ""
-        out += ["", "---", "", f"## {n}. {_inline(r.key)} -- score {r.total_score}{verdict}", ""]
+        grouped = _group_findings(r.findings)
+        out += ["", "---", "", f'<a id="{n}"></a>', "",
+                f"## {n}. {_headline(r)} -- {_inline(r.key)}", ""]
         if r.refused:
             out += ["**The model declined to analyse this change. Review it first.**", ""]
-        out += [f"<{r.url}>" if r.url else "(no link)", ""]
+
+        landed = f"{r.source}" + (f", {r.committed_at}" if r.committed_at else "")
         if r.pr_number and "/pull/" not in r.url:
-            out += [f"Landed via pull request "
-                    f"<https://github.com/{r.repo}/pull/{r.pr_number}>.", ""]
-        tenure = (f", {r.tenure_days} days in repo, {r.prior_commits} prior commits"
+            landed += f", via PR <https://github.com/{r.repo}/pull/{r.pr_number}>"
+        tenure = (f" -- {r.tenure_days} days in this repo, {r.prior_commits} prior commits"
                   if r.tenure_days is not None else "")
-        out += [f"Author: {_inline(r.author or 'unknown')}{tenure}. Source: {r.source}.", ""]
-        out += ["**Commit message**", "", _block(r.message, limit=800), ""]
+        out += [
+            "| | |",
+            "|---|---|",
+            f"| Change | <{r.url}> |" if r.url else "| Change | (no link) |",
+            f"| Landed | {landed} |",
+            f"| Author | {_cell(r.author or 'unknown')}{tenure} |",
+            f"| Files | {_roles(r)} -- +{r.additions} / -{r.deletions} lines |",
+            f"| Score | {r.total_score} total, {r.evidence_score} from evidence "
+            f"(escalates at {rules.ESCALATION_THRESHOLD}) |",
+            f"| Model | {_model(r)}" + (f", ${r.cost_usd:.4f}" if r.cost_usd else "") + " |",
+        ]
 
-        out += ["**Why it was flagged**"]
-        # One bullet per rule, strongest first, with a few locations. Listing every hit
-        # gave one initial-release commit some seventy bullets -- thirteen favicons, thirty
-        # dependencies -- and buried the two lines that mattered.
-        by_rule: dict[str, list[dict]] = {}
-        for f in r.findings:
-            hits = by_rule.setdefault(f["rule_id"], [])
-            if (f.get("file_path"), f.get("line")) not in {(h.get("file_path"), h.get("line"))
-                                                           for h in hits}:
-                hits.append(f)
-        weight = rules.SEVERITY_WEIGHT
-        order = sorted(by_rule, key=lambda rid: (rid.startswith("context."),
-                                                 -max(weight[h["severity"]] for h in by_rule[rid]),
-                                                 rid))
-        for rule_id in order:
-            hits = sorted(by_rule[rule_id], key=lambda h: -weight[h["severity"]])
-            top = hits[0]
-            places = [h["file_path"] + (f":{h['line']}" if h.get("line") else "")
-                      for h in hits if h.get("file_path")]
-            where = ""
-            if places:
-                more = f" and {len(places) - MAX_PLACES_SHOWN} more" if len(places) > MAX_PLACES_SHOWN else ""
-                where = " in " + ", ".join(_inline(p) for p in places[:MAX_PLACES_SHOWN]) + more
-            count = f" x{len(hits)}" if len(hits) > 1 else ""
-            out += ["", f"- **{rule_id}** ({top['severity']}){count}{where} -- {top['rationale']}"]
-            if top.get("precedent"):
-                out += [f"  Precedent: {top['precedent']}."]
-            for h in [h for h in hits if h.get("evidence")][:MAX_EVIDENCE_SHOWN]:
-                out += ["", _block(h["evidence"], limit=300)]
+        out += ["", "### Evidence -- why it escalated"]
+        out += _findings_section(r, grouped, evidence=True)
+        context = _findings_section(r, grouped, evidence=False)
+        if context != ["", "_None._"]:
+            out += ["", "### Context -- ranks the alert, cannot escalate it"] + context
 
+        checks = _checklist(r, grouped)
+        if checks:
+            out += ["", "### Checklist", ""] + checks
+
+        out += ["", "### Commit message (untrusted)", "", _block(r.message, limit=800)]
         if r.rationale or r.next_steps:
-            out += ["", f"**Model brief** (${r.cost_usd:.4f}; untrusted, steerable by the author)",
-                    "", _block(r.rationale or "")]
+            out += ["", f"### Model brief (untrusted, steerable by the author)", "",
+                    _block(r.rationale or "")]
             if r.next_steps:
-                out += ["", "**Suggested next steps** (model output)", "",
+                out += ["", "**Model's suggested next steps** (untrusted)", "",
                         _block("\n".join(f"{i}. {s}" for i, s in enumerate(r.next_steps, 1)))]
         elif r.tier2_error and not r.refused:
             out += ["", f"_Brief unavailable: {r.tier2_error}_"]
+        out += ["", f"**Record:** {_inline(r.key)} in `dispositions.csv`."]
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
