@@ -1,0 +1,57 @@
+# Kitsunox hunting targets: npm packages -- HOLDOUT-2.
+#
+# Source repositories of npm packages. A default-branch scan fits; --tags is unnecessary.
+#
+# Queries: topic:npm-package stars:100..15000 language:JavaScript | topic:npm-package stars:100..15000 language:TypeScript
+# Each entry verified to have a root package.json.
+# Drawn 2026-10-26 with the same queries and filters as the earlier lists, but as a
+# seeded random sample (seed 20261026) of every eligible result rather than the next slice
+# by stars: calibration took the top 40 by stars and the first holdout the next 40, which
+# had already reached the 100-star floor. Eligible: not archived, not a fork, sharing no
+# repository and no owner with npm.txt and holdout-npm.txt; at most 2 per owner. 124 were eligible.
+#
+# HOLDOUT-2. The first holdout was read and tuned against (calibration round 2), so it can
+# no longer measure anything. Nothing in this list has been hunted or looked at. Results
+# from hunting it are the measurement; do not tune rules against them.
+# Star counts at generation time are shown after each entry.
+
+vuejs/eslint-plugin-vue                                 # 4590 stars
+bradymholt/cRonstrue                                    # 1641 stars
+jakobhoeg/shadcn-chat                                   # 1621 stars
+TechStark/opencv-js                                     # 787 stars
+Clariity/react-chessboard                               # 551 stars
+prevalentWare/opencode-goal-plugin                      # 516 stars
+dalenguyen/firestore-backup-restore                     # 498 stars
+Dksie09/RetroUI                                         # 489 stars
+tinify/tinify-nodejs                                    # 459 stars
+DerYeger/yeger                                          # 380 stars
+afsar-dev/Nurui                                         # 364 stars
+TomerAberbach/lfi                                       # 351 stars
+AlexGustafsson/homebridge-wol                           # 326 stars
+maximelafarie/ngx-smart-modal                           # 325 stars
+arunbandari/mongo-gui                                   # 317 stars
+nivandres/intl-t                                        # 294 stars
+appvision-gmbh/json2typescript                          # 280 stars
+once-ui-system/core                                     # 269 stars
+tclindner/npm-package-json-lint                         # 257 stars
+ryu1kn/csv-writer                                       # 256 stars
+Pustur/whatsapp-chat-parser                             # 216 stars
+terasum/js-mdict                                        # 209 stars
+arendruni/homebridge-pihole                             # 178 stars
+rafgraph/rollpkg                                        # 176 stars
+mordv/mnswpr                                            # 172 stars
+dance2die/react-use-localstorage                        # 169 stars
+tomchen/example-typescript-package                      # 166 stars
+LuisEnMarroquin/json-as-xlsx                            # 164 stars
+Manavarya09/public-apis-live                            # 156 stars
+canonical/react-components                              # 154 stars
+DRincs-Productions/pixi-vn                              # 154 stars
+fulls1z3/ngx-cache                                      # 152 stars
+rubenmarcus/aeo.js                                      # 144 stars
+kumarabhirup/bulk-mail-cli                              # 132 stars
+codeslayer1/react-ckeditor                              # 129 stars
+xpadev-net/niconicomments                               # 120 stars
+Steve0929/tiktok-tts                                    # 120 stars
+imagemin/imagemin-gifsicle                              # 117 stars
+AskTheWay/dsh-auto-memory                               # 109 stars
+dulajkavinda/minimal-feedback                           # 108 stars

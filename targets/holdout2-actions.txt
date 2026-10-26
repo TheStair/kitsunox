@@ -1,0 +1,59 @@
+# Kitsunox hunting targets: GitHub Actions -- HOLDOUT-2.
+#
+# Third-party Actions run with CI secrets and are pinned by tag, which makes them the
+# target of the 2025 attack wave (reviewdog, tj-actions). Scan these with --tags.
+#
+# Queries: topic:github-action stars:100..15000 | topic:github-actions stars:100..15000
+# Each entry verified to have a root action.yml or action.yaml. GitHub's own `actions` and
+# `github` orgs are excluded (checked: none were drawn).
+# Drawn 2026-10-26 with the same queries and filters as the earlier lists, but as a
+# seeded random sample (seed 20261026) of every eligible result rather than the next slice
+# by stars: calibration took the top 40 by stars and the first holdout the next 40, which
+# had already reached the 100-star floor. Eligible: not archived, not a fork, sharing no
+# repository and no owner with actions.txt and holdout-actions.txt; at most 2 per owner. 744 were eligible.
+#
+# HOLDOUT-2. The first holdout was read and tuned against (calibration round 2), so it can
+# no longer measure anything. Nothing in this list has been hunted or looked at. Results
+# from hunting it are the measurement; do not tune rules against them.
+# Star counts at generation time are shown after each entry.
+
+docker/build-push-action                                # 5421 stars
+cypress-io/github-action                                # 1465 stars
+google-github-actions/auth                              # 1408 stars
+EndBug/add-and-commit                                   # 1293 stars
+dorny/test-reporter                                     # 1183 stars
+expo/expo-github-action                                 # 1032 stars
+EnricoMi/publish-unit-test-result-action                # 753 stars
+docker/setup-qemu-action                                # 596 stars
+easimon/maximize-build-space                            # 526 stars
+nwtgck/actions-comment-run                              # 445 stars
+ossf/scorecard-action                                   # 426 stars
+kentaro-m/auto-assign-action                            # 406 stars
+softprops/turnstyle                                     # 387 stars
+vmactions/freebsd-vm                                    # 365 stars
+kerlenton/mcpsnoop                                      # 364 stars
+danielyaa5/puml-for-markdown                            # 343 stars
+dessant/lock-threads                                    # 334 stars
+vedantmgoyal9/winget-releaser                           # 318 stars
+autofix-ci/action                                       # 242 stars
+orhun/git-cliff-action                                  # 217 stars
+AbsaOSS/k3d-action                                      # 204 stars
+pullpreview/action                                      # 203 stars
+naver/pr-stats                                          # 203 stars
+swinton/screenshot-website                              # 200 stars
+google-github-actions/get-secretmanager-secrets         # 198 stars
+PyO3/maturin-action                                     # 190 stars
+HariSekhon/Templates                                    # 188 stars
+saml-to/assume-aws-role-action                          # 182 stars
+typst-community/setup-typst                             # 181 stars
+re-actors/alls-green                                    # 176 stars
+zizmorcore/zizmor-action                                # 171 stars
+mirromutth/mysql-action                                 # 147 stars
+cpp-linter/cpp-linter-action                            # 147 stars
+winnin/farol                                            # 136 stars
+haythem/public-ip                                       # 129 stars
+Actions-R-Us/actions-tagger                             # 126 stars
+danharrin/monorepo-split-github-action                  # 121 stars
+balazsorban44/nissuer                                   # 117 stars
+szenius/set-timezone                                    # 112 stars
+julia-actions/setup-julia                               # 107 stars
