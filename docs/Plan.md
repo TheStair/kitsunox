@@ -232,8 +232,11 @@ only rank the queue; the human decides.
 The model's explanations were consistently strong: it decoded reviewdog's base64 and named
 xz's missing m4 extractor unprompted. Its verdicts were the least reliable part of the
 system (§7). So it is used for what it is good at: cutting the investigator's minutes per
-alert. Briefs are capped per hunt (`--max-briefs`, default 20) so a wide net cannot run up
-an unbounded bill -- roughly $0.60 at most.
+alert. Briefs are capped per hunt (`--max-briefs`, default 20) so a wide net cannot brief
+without bound. Measured on the 17 holdout alerts: $1.50 in total, $0.016-$0.238 per brief,
+about $0.09 on average -- three times what the ground-truth incidents ($0.017-0.030) had
+suggested, because commits in the wild carry much larger diffs. A 20-brief hunt is about
+$1.75 at that average; the cap bounds the number of briefs, not their price.
 
 Two properties are tested adversarially, with mutation checks confirming the tests fail
 when the protection is removed:

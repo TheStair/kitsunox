@@ -49,8 +49,13 @@ DEFAULT_PRS_PER_REPO = 18
 DEFAULT_PUSHES_PER_REPO = 12
 
 # Hunting defaults. Briefs are capped per hunt because the binding cost is the
-# investigator's time and the API bill both: a wide net can escalate many changes, and
-# briefing the top 20 by Tier 0 score keeps a hunt under roughly $0.60.
+# investigator's time and the API bill both: a wide net can escalate many changes.
+#
+# Measured, not estimated: briefing the 17 holdout alerts cost $1.50 -- $0.016 to $0.238
+# per brief, about $0.09 on average -- because commits in the wild carry far larger diffs
+# than the ground-truth incidents ($0.017-0.030 each), which an earlier figure here was
+# wrongly extrapolated from. At the measured average a 20-brief hunt is about $1.75; one
+# full of large diffs can cost several dollars. The cap bounds the count, not the price.
 DEFAULT_HUNT_LIMIT = 50
 DEFAULT_MAX_BRIEFS = 20
 
