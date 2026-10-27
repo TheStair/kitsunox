@@ -1,0 +1,52 @@
+[project]
+name = "kitsunox"
+version = "0.1.0"
+description = "Deterministic pipeline that flags likely software supply chain attacks in recent npm releases."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "TheStair", email = "marshall4au@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "pydantic>=2.14.1",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+kitsunox = "kitsunox.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# S (bandit) is on deliberately: this is a security tool and should hold itself to that bar.
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests that hit live APIs are opt-in (`-m network`) so default runs stay deterministic.
+addopts = "-ra --strict-markers --import-mode=importlib -m 'not network'"
+markers = [
+    "network: test makes live network calls; deselected by default",
+]

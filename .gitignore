@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.claude/
+
+# Kitsunox caches, raw downloads, results, and malicious samples (never commit)
+data/
