@@ -13,6 +13,7 @@ import typer
 from kitsunox import __version__
 from kitsunox.collect import DEFAULT_KEEP_DAYS, collect
 from kitsunox.core.retention import prune
+from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import (
     DataDir,
     DataDirBusyError,
@@ -28,8 +29,15 @@ from kitsunox.core.run import (
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
-from kitsunox.evaluation.harness import label_store, make_dataset, run_eval, sync_labels
+from kitsunox.evaluation.harness import (
+    label_store,
+    make_dataset,
+    run_eval,
+    sync_datadog,
+    sync_labels,
+)
 from kitsunox.evaluation.metrics import PREDICTORS, render_markdown
+from kitsunox.stages.triage import triage_run
 
 app = typer.Typer(help="Flag likely software supply chain attacks in recent npm releases.")
 ingest_app = typer.Typer(help="Stage 0: collect recent releases into Change records.")
@@ -40,6 +48,8 @@ labels_app = typer.Typer(help="Ground-truth malware labels (OSV MAL- records).")
 app.add_typer(labels_app, name="labels")
 eval_app = typer.Typer(help="Evaluation: build datasets from runs and score predictors.")
 app.add_typer(eval_app, name="eval")
+samples_app = typer.Typer(help="Known-malicious samples from third-party datasets.")
+app.add_typer(samples_app, name="samples")
 data_app = typer.Typer(help="Data directory maintenance.")
 app.add_typer(data_app, name="data")
 schedule_app = typer.Typer(help="Run `kitsunox collect` on a schedule (macOS launchd).")
@@ -172,6 +182,52 @@ def labels_sync(data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
     typer.echo(
         f"label set {labels.id}: {labels.record_count} malware records "
         f"for {len(labels.labels)} packages"
+    )
+    typer.echo(f"saved to {path} (sha256 {sha})")
+
+
+@app.command("triage")
+def triage_cmd(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
+    """Stage 1: run the metadata rules on a recorded run and write runs/<run_id>/triage.jsonl."""
+    data = DataDir(data_dir)
+    manifest = RunManifest.load_json((data.run_dir(run_id) / "manifest.json").read_bytes())
+    candidates = triage_run(data.run_dir(run_id), RuleContext(as_of=manifest.as_of))
+    reasons: dict[str, int] = {}
+    for candidate in candidates:
+        decision = candidate.history[-1]
+        if decision.forwarded:
+            key = "watched" if decision.reason == "watched package" else "rules"
+            reasons[key] = reasons.get(key, 0) + 1
+    forwarded = sum(reasons.values())
+    typer.echo(
+        f"{len(candidates)} changes, {forwarded} forwarded ({dict(sorted(reasons.items()))})"
+    )
+    typer.echo(f"saved to {data.run_dir(run_id) / 'triage.jsonl'}")
+
+
+@samples_app.command("datadog")
+def samples_datadog(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    compromised: Annotated[
+        int | None, typer.Option(help="Max compromised_lib samples (shape A). Default: all.")
+    ] = None,
+    intent: Annotated[
+        int, typer.Option(help="Max malicious_intent samples (shape B), deterministic subset.")
+    ] = 2000,
+) -> None:
+    """Import npm samples from the DataDog malicious-software-packages dataset. Zips stay
+    encrypted on disk; only their registry metadata is read, in memory. Nothing is executed."""
+    sample_set, path, sha = sync_datadog(
+        DataDir(data_dir),
+        fetched_at=datetime.now(UTC),
+        limits={"compromised_lib": compromised, "malicious_intent": intent},
+    )
+    by_shape: dict[str, int] = {}
+    for sample in sample_set.samples:
+        by_shape[sample.shape] = by_shape.get(sample.shape, 0) + 1
+    typer.echo(
+        f"sample set {sample_set.id}: {len(sample_set.samples)} samples "
+        f"{dict(sorted(by_shape.items()))}, {len(sample_set.failures)} failed"
     )
     typer.echo(f"saved to {path} (sha256 {sha})")
 

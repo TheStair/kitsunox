@@ -7,13 +7,16 @@ show what the pipeline's policy does with no detection at all.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Protocol
 
 from pydantic import Field
 
 from kitsunox.core.models import Change, Persisted, Record
-from kitsunox.evaluation.dataset import EvalDataset, Label
+from kitsunox.core.rules import RuleContext
+from kitsunox.evaluation.dataset import EvalDataset, Label, cell_key
+from kitsunox.stages.triage import triage
 
 
 class Predictor(Protocol):
@@ -41,9 +44,35 @@ class PopularityOnly:
         return bool(change.popularity and change.popularity.watched)
 
 
-PREDICTORS: dict[str, type[ForwardAll] | type[PopularityOnly]] = {
-    ForwardAll.name: ForwardAll,
-    PopularityOnly.name: PopularityOnly,
+class Triage:
+    """Stage 1 with its forward policy: rules at MEDIUM or above, or a watched package. Rules
+    only see the change, so the `as_of` they get is the release's own publish time."""
+
+    name = "stage1"
+    forward_watched = True
+
+    def forward(self, change: Change) -> bool:
+        return (
+            triage(change, _context(change), forward_watched=self.forward_watched)
+            .history[-1]
+            .forwarded
+        )
+
+
+class TriageRulesOnly(Triage):
+    """Stage 1 rules without the popularity half: what the rules catch on their own."""
+
+    name = "stage1-rules"
+    forward_watched = False
+
+
+def _context(change: Change) -> RuleContext:
+    published = change.new.publish.published_at
+    return RuleContext(as_of=published or datetime(1970, 1, 1, tzinfo=UTC))
+
+
+PREDICTORS: dict[str, Callable[[], Predictor]] = {
+    p.name: p for p in (ForwardAll, PopularityOnly, Triage, TriageRulesOnly)
 }
 
 
@@ -77,8 +106,9 @@ def evaluate(
     changes: Mapping[str, Change],
     predictor: Predictor,
 ) -> EvalReport:
-    """Cells are keyed `<label>/<shape>[/provisional]`, plus `<label>/all` rollups (settled
-    samples only for benign, since provisional benign labels may still flip)."""
+    """Cells are keyed `<label>/<shape>[/<source>][/provisional]` (see `cell_key`), plus
+    `<label>/all[/<source>]` rollups over settled samples (provisional benign labels may still
+    flip)."""
     tallies: dict[str, list[int]] = {}
     strata: dict[str, list[int]] = {}
     forwarded: list[str] = []
@@ -92,10 +122,9 @@ def evaluate(
         hit = predictor.forward(changes[sample.key])
         if hit:
             forwarded.append(sample.key)
-        suffix = "" if sample.settled else "/provisional"
-        add(f"{sample.label}/{sample.shape}{suffix}", hit)
+        add(cell_key(sample), hit)
         if sample.settled:
-            add(f"{sample.label}/all", hit)
+            add(cell_key(sample, shape="all"), hit)
         if sample.label is Label.BENIGN:
             tally = strata.setdefault(sample.stratum, [0, 0])
             tally[0] += 1

@@ -1,6 +1,6 @@
 [project]
 name = "kitsunox"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic pipeline that flags likely software supply chain attacks in recent npm releases."
 readme = "README.md"
 license = "Apache-2.0"

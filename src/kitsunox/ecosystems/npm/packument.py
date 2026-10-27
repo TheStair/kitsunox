@@ -87,14 +87,22 @@ class Packument:
         Among versions published before `version`, take the highest semver below it, which keeps
         backports on their own release line (a 1.4.1 published after 2.0.0 diffs against 1.4.0).
         If none qualifies (unparsable versions, or a release lower than everything before it),
-        fall back to the most recently published earlier version."""
+        fall back to the most recently published earlier version.
+
+        Stub versions are never a diff base. npm's staged publishing creates a `0.0.0-stage`
+        placeholder (`"stub": true`, no code) before a package's first real release; diffing
+        against it would make every first release look like an existing package that suddenly
+        gained all its scripts and dependencies (98% of "new packages" in the 2026-10-27 run
+        were such stubs). `stub` is publisher-controlled, so it only changes the diff base: a
+        release marked as a stub is still emitted and analysed. Hiding earlier versions this
+        way only makes the diff larger."""
         published = self.publish_times.get(version)
         if published is None:
             return None
         earlier = [
             v
             for v, t in self.publish_times.items()
-            if (t, v) < (published, version) and v != version
+            if (t, v) < (published, version) and v != version and not self.is_stub(v)
         ]
         if not earlier:
             return None
@@ -106,6 +114,9 @@ class Packument:
             if lower:
                 return max(lower, key=lambda pair: (pair[0], self.publish_times[pair[1]]))[1]
         return max(earlier, key=lambda v: (self.publish_times[v], v))
+
+    def is_stub(self, version: str) -> bool:
+        return self.versions.get(version, {}).get("stub") is True
 
     def snapshot(self, version: str) -> VersionSnapshot:
         manifest = self.versions[version]
@@ -137,14 +148,23 @@ class Packument:
         return changes
 
 
-def is_security_placeholder(snapshot: VersionSnapshot) -> bool:
-    """npm's stand-in for a removed malicious package: a stub version (`0.0.1-security`, and in
-    the 2026-10-27 run also `0.0.0-stage`) published by npm's own account. It holds the name, so
-    it shows up in the change feed like any release, but contains none of the removed code."""
+def is_registry_placeholder(snapshot: VersionSnapshot) -> bool:
+    """A version the registry created rather than the package's author. Two kinds:
+
+    - **Security holding package**: npm's stand-in for a removed malicious package
+      (`0.0.1-security`, or a stub), published by npm's own `npm` account.
+    - **Staged-publishing placeholder**: `0.0.0-stage` with `"stub": true`, created before a
+      new package's first real release.
+
+    Only evaluation uses this, to keep placeholders out of both label sets. Because `stub` and
+    the version string can be set by anyone, a staged placeholder only counts if it also has no
+    install scripts and no dependencies, i.e. nothing a rule could flag."""
     publish, manifest = snapshot.publish, snapshot.manifest
-    return publish.publisher == "npm" and (
-        manifest.get("stub") is True or snapshot.ref.version == "0.0.1-security"
-    )
+    stub = manifest.get("stub") is True
+    if publish.publisher == "npm" and (stub or snapshot.ref.version == "0.0.1-security"):
+        return True
+    inert = not any(manifest.get(k) for k in ("scripts", "dependencies", "optionalDependencies"))
+    return stub and snapshot.ref.version == "0.0.0-stage" and inert
 
 
 def publish_info(manifest: Mapping[str, Any], published_at: datetime | None) -> PublishInfo:

@@ -1,6 +1,9 @@
 """Glue between the evaluation pieces and the data directory.
 
 labels/<ecosystem>/<id>.json        LabelSet, one per `labels sync`
+eval/external/<ecosystem>/<id>.json ExternalSampleSet (e.g. datadog-<commit>); its HTTP
+                                    snapshot is in snapshots/<id>.json beside it
+eval/malware/                       encrypted sample zips as distributed (own blob store)
 eval/datasets/<ecosystem>/<name>.json
 eval/reports/<ecosystem>/<dataset>--<predictor>.json
 """
@@ -16,8 +19,11 @@ import httpx
 
 from kitsunox.core.run import DataDir
 from kitsunox.core.store import RecordStore
+from kitsunox.core.watchlist import Watchlist
+from kitsunox.evaluation.datadog import fetch_datadog
 from kitsunox.evaluation.dataset import (
     EvalDataset,
+    ExternalSampleSet,
     build_dataset,
     iter_run_changes,
     load_sample_changes,
@@ -40,6 +46,54 @@ def dataset_store(data: DataDir) -> RecordStore[EvalDataset]:
 
 def report_store(data: DataDir) -> RecordStore[EvalReport]:
     return RecordStore(data.root / "eval" / "reports", EvalReport)
+
+
+def external_store(data: DataDir) -> RecordStore[ExternalSampleSet]:
+    return RecordStore(data.root / "eval" / "external", ExternalSampleSet)
+
+
+def sync_datadog(
+    data: DataDir,
+    *,
+    fetched_at: datetime,
+    limits: dict[str, int | None],
+    client: httpx.Client | None = None,
+) -> tuple[ExternalSampleSet, Path, str]:
+    """Import DataDog npm samples. Zips go to `eval/malware/` (still encrypted); the snapshot is
+    saved next to the set so it can be rebuilt offline."""
+    malware = data.root / "eval" / "malware"
+    snapshot = Snapshot()
+    fetcher = HttpFetcher(
+        store=BlobStore(malware / "blobs"),
+        snapshot=snapshot,
+        mode=FetchMode.RECORD,
+        immutable_index=malware / "http-immutable",
+        client=client,
+    )
+    watchlist = _latest_watchlist(data, "npm")
+    try:
+        sample_set = fetch_datadog(
+            fetcher, fetched_at=fetched_at, limits=limits, watchlist=watchlist
+        )
+    finally:
+        fetcher.close()
+    store = external_store(data)
+    path, sha = store.save(sample_set.ecosystem, sample_set.id, sample_set)
+    snapshot.save(path.parent / "snapshots" / f"{sample_set.id}.json")
+    return sample_set, path, sha
+
+
+def _latest_watchlist(data: DataDir, ecosystem: str) -> Watchlist | None:
+    watchlist_id = data.watchlists.latest_id(ecosystem)
+    return data.watchlists.load(ecosystem, watchlist_id) if watchlist_id else None
+
+
+def _external_sets(data: DataDir, ecosystem: str) -> list[ExternalSampleSet]:
+    directory = external_store(data).root / ecosystem
+    if not directory.exists():
+        return []
+    ids = sorted(p.stem for p in directory.glob("*.json"))
+    return [external_store(data).load(ecosystem, i) for i in ids]
 
 
 def sync_labels(
@@ -92,6 +146,7 @@ def make_dataset(
         built_at=built_at,
         benign_per_stratum=benign_per_stratum,
         min_benign_age_days=min_benign_age_days,
+        external=_external_sets(data, ecosystem),
     )
     path, sha = dataset_store(data).save(ecosystem, name, dataset)
     return dataset, path, sha
@@ -103,7 +158,7 @@ def run_eval(
     store = dataset_store(data)
     sha = store.sha256(ecosystem, dataset_name)
     dataset = store.load(ecosystem, dataset_name, sha256=sha)
-    changes = load_sample_changes(data.root / "runs", dataset)
+    changes = load_sample_changes(data.root / "runs", dataset, _external_sets(data, ecosystem))
     report = evaluate(dataset, sha, changes, predictor)
     report_store(data).save(ecosystem, f"{dataset_name}--{predictor.name}", report)
     return report

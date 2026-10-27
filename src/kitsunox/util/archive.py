@@ -20,7 +20,7 @@ import posixpath
 import tarfile
 import zipfile
 import zlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 
 
@@ -137,9 +137,19 @@ def _strict_member_count(raw: bytes) -> int:
     return count
 
 
-def extract_zip(data: bytes, *, limits: ExtractLimits = DEFAULT_LIMITS) -> ArtifactTree:
+def extract_zip(
+    data: bytes,
+    *,
+    limits: ExtractLimits = DEFAULT_LIMITS,
+    password: bytes | None = None,
+    include: Callable[[str], bool] | None = None,
+) -> ArtifactTree:
     """Extract a zip archive into memory with the same path rules and size limits as tarballs.
-    Declared sizes are checked before reading, and reads are capped in case a header lies."""
+    Declared sizes are checked before reading, and reads are capped in case a header lies.
+
+    `password` decrypts legacy ZipCrypto entries, e.g. malware datasets that ship as
+    `infected`-encrypted zips. `include` selects members by their safe path, so that only the
+    files needed are ever decrypted."""
     if len(data) > limits.max_compressed_bytes:
         raise ArchiveError(f"compressed size {len(data)} exceeds limit")
     files: dict[str, bytes] = {}
@@ -158,11 +168,13 @@ def extract_zip(data: bytes, *, limits: ExtractLimits = DEFAULT_LIMITS) -> Artif
                 if path is None:
                     skipped.append(SkippedEntry(info.filename, "unsafe path"))
                     continue
+                if include is not None and not include(path):
+                    continue
                 if info.file_size > limits.max_file_bytes:
                     raise ArchiveError(f"{path}: {info.file_size} bytes exceeds per-file limit")
                 if info.compress_size and info.file_size / info.compress_size > limits.max_ratio:
                     raise ArchiveError(f"{path}: compression ratio exceeds limit")
-                with archive.open(info) as handle:
+                with archive.open(info, pwd=password) as handle:
                     content = handle.read(limits.max_file_bytes + 1)
                 if len(content) > limits.max_file_bytes:
                     raise ArchiveError(f"{path}: exceeds per-file limit")
@@ -174,6 +186,8 @@ def extract_zip(data: bytes, *, limits: ExtractLimits = DEFAULT_LIMITS) -> Artif
                 files[path] = content
     except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, zlib.error) as exc:
         raise ArchiveError(f"malformed zip: {exc}") from exc
+    except (RuntimeError, NotImplementedError) as exc:  # missing/wrong password, unsupported crypto
+        raise ArchiveError(f"cannot decrypt zip: {exc}") from exc
     return ArtifactTree(files=files, skipped=tuple(skipped), duplicates=tuple(duplicates))
 
 

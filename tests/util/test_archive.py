@@ -1,6 +1,7 @@
 import gzip
 import io
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -182,3 +183,22 @@ def test_zip_bomb_rejected() -> None:
 def test_malformed_zip_rejected() -> None:
     with pytest.raises(ArchiveError, match="malformed zip"):
         extract_zip(b"PK\x03\x04 not really a zip")
+
+
+ENCRYPTED = Path(__file__).parents[1] / "fixtures" / "encrypted_infected.zip"  # zip -P infected
+
+
+def test_encrypted_zip_reads_selected_members_only() -> None:
+    tree = extract_zip(
+        ENCRYPTED.read_bytes(),
+        password=b"infected",
+        include=lambda path: path.endswith("package.json"),
+    )
+    assert list(tree) == ["pkg/package/package.json"]
+    assert b'"kx-enc"' in tree["pkg/package/package.json"]
+
+
+@pytest.mark.parametrize("password", [None, b"wrong"])
+def test_encrypted_zip_without_the_password_is_rejected(password: bytes | None) -> None:
+    with pytest.raises(ArchiveError, match="decrypt"):
+        extract_zip(ENCRYPTED.read_bytes(), password=password)

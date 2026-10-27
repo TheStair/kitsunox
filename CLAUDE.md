@@ -113,7 +113,9 @@ uv run kitsunox ingest replay <run_id>             # offline replay; must print 
 uv run kitsunox labels sync                        # OSV malware labels (~220 MB)
 uv run kitsunox collect                            # hourly tick: refresh lists, chained ingest, prune
 uv run kitsunox data prune --keep-days 7           # retention (takes the data-dir lock)
-uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor popularity-only
+uv run kitsunox samples datadog --intent 2000      # DataDog malware samples (encrypted, metadata only)
+uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor stage1-rules
+uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -258,14 +260,17 @@ updating it.
 
 ---
 
-## Current focus: Phase 4, Stage 1 metadata triage
+## Current focus: after Stage 1 (next: Stage 2 static heuristics)
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
 `util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor),
 `ecosystems/npm/`, and the popularity watchlist (`core/watchlist.py`). See
 `docs/stages/ingest.md`. The light evaluation harness (Phase 3) is in `evaluation/`: see
-`docs/evaluation.md`. Stage 1 rules plug in as an `evaluation.metrics.Predictor`. The `Rule` and
-`Stage` contracts in `docs/architecture.md` are still proposals; finalize them with Stage 1.
+`docs/evaluation.md`. Stage 1 (metadata triage) is in `stages/triage.py` with npm rules in
+`ecosystems/npm/rules/metadata.py`. See `docs/stages/triage.md`. The `Rule` contract is
+`core/rules.py`. Recall comes from DataDog samples (`kitsunox samples datadog`, kept encrypted
+under `data/eval/malware/`, never executed) and, over time, from prospective collection.
+Report follow-on releases separately (decision 0007).
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.

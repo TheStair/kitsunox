@@ -94,15 +94,15 @@ class Ecosystem(Protocol):  # implemented: core/interfaces.py
     def fetch_artifact(self, artifact: ArtifactRef) -> ArtifactTree: ...  # verify + safe extract
 
 
-class Rule(Protocol):  # proposed: rules/, ecosystems/<eco>/rules/
-    id: str  # e.g. "npm.install-hook.added"
-    version: int  # bump when behavior changes; recorded in RunManifest
-    stage: StageId
+class Rule(Protocol):  # implemented: core/rules.py; rules in rules/, ecosystems/<eco>/rules/
+    id: str  # e.g. "npm.install-hook"
+    version: int  # bump when behavior changes; recorded on every Finding
 
-    def evaluate(self, candidate: Candidate, ctx: RuleContext) -> list[Finding]: ...
+    # RuleContext = {as_of}; rules never read the clock, network or environment
+    def evaluate(self, change: Change, ctx: RuleContext) -> Sequence[Finding]: ...
 
 
-class Stage(Protocol):  # proposed: stages/
+class Stage(Protocol):  # proposed: stages/ (Stage 1 is a function, stages/triage.py)
     id: StageId
 
     def run(self, candidates: Sequence[Candidate], ctx: StageContext) -> StageResult: ...

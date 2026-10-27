@@ -134,3 +134,16 @@ Run `20261027T210847Z-npm`: 24h window, feed `(139752494, 140152494]`, 63,143 pa
 
 Lesson: OSV "all versions" ranges are not release-level ground truth. Any future label source
 gets the same manual audit of its first matches before its numbers are trusted.
+
+## 2026-10-27 (evening): Stage 1 and the staged-publishing stub bug
+
+| Check | Result |
+|---|---|
+| Rule firing profile on 109k real changes | `npm.install-hook` fired on **0** of 4,124 "new packages". Implausible, and the cause was a Stage 0 bug |
+| Stub bug | 4,060 of the 4,124 new packages (98%) were npm staged-publishing placeholders (`0.0.0-stage`, `stub: true`). A package's first real release then diffed against the stub and was counted as shape A. Fixed in tool 0.2.0 (`Packument.previous_version` skips stubs; stubs are still emitted, because the flag is publisher-controlled). Test: `test_stub_is_never_a_diff_base` |
+| DataDog import | 3,444 samples (1,446 A, 1,998 B), 4 failures (2 without `package_info`, 2 registry placeholders), all recorded with reasons |
+| Follow-on releases | 481 of 1,446 A samples diffed against an also-malicious previous version. Recall on them is 2.7% vs 81% on first releases, so they're reported separately |
+| Rule precision | `npm.publisher.unfamiliar` fired on 2.57% of benign releases for 10 unique catches → downgraded to LOW |
+
+Replays of runs recorded with tool 0.1.0 will no longer match under 0.2.0. This is expected:
+Stage 0's output changed. Their `manifest.tool_version` records which code produced them.

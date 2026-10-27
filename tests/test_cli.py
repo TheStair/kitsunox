@@ -72,3 +72,11 @@ def test_collect_skips_when_locked(tmp_path: Path) -> None:
         result = runner.invoke(app, ["collect", "--data-dir", str(tmp_path)])
     assert result.exit_code == 0
     assert "skipped" in result.stdout
+
+
+def test_triage_writes_candidates(tmp_path: Path, router: Router) -> None:
+    run_id = recorded_run(tmp_path, router)
+    result = runner.invoke(app, ["triage", run_id, "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("0 changes, 0 forwarded")
+    assert (DataDir(tmp_path).run_dir(run_id) / "triage.jsonl").exists()

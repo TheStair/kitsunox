@@ -7,7 +7,7 @@ from kitsunox.core.models import PackageVersionRef, PublishInfo, VersionSnapshot
 from kitsunox.ecosystems.npm.packument import (
     Packument,
     PackumentError,
-    is_security_placeholder,
+    is_registry_placeholder,
     normalize_repository_url,
 )
 
@@ -127,9 +127,12 @@ def test_non_list_maintainers_are_ignored(maintainers: object) -> None:
         ("npm", "1.2.3", {}, False),  # npm's account publishing a real release
         ("mallory", "0.0.1-security", {"stub": True}, False),  # anyone can pick the version
         (None, "0.0.1-security", {}, False),
+        ("alice", "0.0.0-stage", {"stub": True}, True),  # staged-publishing placeholder
+        ("alice", "0.0.0-stage", {"stub": True, "scripts": {"postinstall": "x"}}, False),
+        ("alice", "1.0.0", {"stub": True}, False),
     ],
 )
-def test_security_placeholder(
+def test_registry_placeholder(
     publisher: str | None, version: str, manifest: dict[str, object], expected: bool
 ) -> None:
     snapshot = VersionSnapshot(
@@ -137,4 +140,32 @@ def test_security_placeholder(
         publish=PublishInfo(publisher=publisher),
         manifest=manifest,
     )
-    assert is_security_placeholder(snapshot) is expected
+    assert is_registry_placeholder(snapshot) is expected
+
+
+def test_stub_is_never_a_diff_base() -> None:
+    doc = {
+        "name": "kx",
+        "versions": {
+            "0.0.0-stage": {"version": "0.0.0-stage", "stub": True},
+            "1.0.0": {"version": "1.0.0"},
+            "1.0.1": {"version": "1.0.1"},
+            "1.0.2": {"version": "1.0.2", "stub": True},  # publisher-set flag
+            "1.0.3": {"version": "1.0.3"},
+        },
+        "time": {
+            "0.0.0-stage": "2026-10-27T00:00:00Z",
+            "1.0.0": "2026-10-27T01:00:00Z",
+            "1.0.1": "2026-10-27T02:00:00Z",
+            "1.0.2": "2026-10-27T03:00:00Z",
+            "1.0.3": "2026-10-27T04:00:00Z",
+        },
+    }
+    packument = Packument(doc, expected_name="kx")
+    assert packument.previous_version("1.0.0") is None  # first real release: a new package
+    assert packument.previous_version("1.0.1") == "1.0.0"
+    assert packument.previous_version("1.0.3") == "1.0.1"  # the "stub" is skipped as a base...
+    window = Window(
+        start=datetime(2026, 10, 27, tzinfo=UTC), end=datetime(2026, 10, 28, tzinfo=UTC)
+    )
+    assert "1.0.2" in packument.versions_in(window)  # ...but still emitted and analysed

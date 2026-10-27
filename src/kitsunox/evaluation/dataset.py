@@ -25,14 +25,14 @@ metrics re-weight by it.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
 from pydantic import Field
 
 from kitsunox.core.models import Change, PackageVersionRef, Persisted, Record, VersionSnapshot
-from kitsunox.ecosystems.npm.packument import is_security_placeholder
+from kitsunox.ecosystems.npm.packument import is_registry_placeholder
 from kitsunox.evaluation.labels import LabelSet
 from kitsunox.stages.ingest import changes_file, read_changes
 from kitsunox.util.hashing import sha256_hex
@@ -51,7 +51,7 @@ class Shape(StrEnum):
 
 
 REGISTRY_PLACEHOLDER: dict[str, Callable[[VersionSnapshot], bool]] = {
-    "npm": is_security_placeholder
+    "npm": is_registry_placeholder
 }
 
 
@@ -59,22 +59,76 @@ def _never(_: VersionSnapshot) -> bool:
     return False
 
 
+def cell_key(sample: EvalSample, shape: str | None = None) -> str:
+    """`<label>/<shape>[/<source>][/follow-on][/provisional]`. Prospective samples carry no
+    source part, so real-world and third-party numbers are never pooled. Follow-on releases get
+    their own cell, but are included in the `all` rollup."""
+    key = f"{sample.label}/{shape or sample.shape}"
+    if sample.source != PROSPECTIVE:
+        key += f"/{sample.source}"
+    if sample.follow_on and shape is None:
+        key += "/follow-on"
+    return key + ("" if sample.settled else "/provisional")
+
+
 def stratum(shape: Shape, watched: bool) -> str:
     return f"{shape}/{'watched' if watched else 'unwatched'}"
 
 
+PROSPECTIVE = "prospective"
+
+
+class ExternalSample(Record):
+    """A known-malicious release from a third-party dataset, as the Change Stage 1 would see."""
+
+    path: str = Field(description="Where the sample lives in its dataset.")
+    shape: Shape
+    discovered: date | None
+    change: Change
+    previous_malicious: bool | None = Field(
+        default=None,
+        description="The previous version is also known-malicious (a follow-on release of an "
+        "ongoing compromise, or any later version of a malicious package). None if unknown.",
+    )
+
+
+class ExternalSampleSet(Persisted):
+    """Samples imported from one dataset at one commit (e.g. `evaluation/datadog.py`)."""
+
+    source: str
+    ecosystem: str
+    commit: str
+    fetched_at: datetime
+    limits: dict[str, int | None]
+    watchlist_id: str | None = Field(
+        description="Watchlist used for popularity, at import time (not at attack time)."
+    )
+    samples: tuple[ExternalSample, ...]
+    failures: dict[str, str]
+
+    @property
+    def id(self) -> str:
+        return f"{self.source}-{self.commit[:12]}"
+
+
 class EvalSample(Record):
     ref: PackageVersionRef
-    run_id: str
+    run_id: str = Field(description="Ingest run, or external sample set id.")
     label: Label
     shape: Shape
     watched: bool
     settled: bool
     label_ids: tuple[str, ...] = ()
+    source: str = PROSPECTIVE
+    follow_on: bool = Field(
+        default=False,
+        description="Diffed against a malicious previous version, so a change-based rule "
+        "cannot see the attack. Reported in its own cell.",
+    )
 
     @property
     def key(self) -> str:
-        return str(self.ref)
+        return str(self.ref) if self.source == PROSPECTIVE else f"{self.source}:{self.ref}"
 
     @property
     def stratum(self) -> str:
@@ -102,7 +156,7 @@ class EvalDataset(Persisted):
     def counts(self) -> dict[str, int]:
         result: dict[str, int] = {}
         for s in self.samples:
-            key = f"{s.label}/{s.shape}" + ("" if s.settled else "/provisional")
+            key = cell_key(s)
             result[key] = result.get(key, 0) + 1
         return dict(sorted(result.items()))
 
@@ -110,7 +164,17 @@ class EvalDataset(Persisted):
 def iter_run_changes(runs_root: Path, run_ids: Iterable[str]) -> Iterable[tuple[str, Change]]:
     for run_id in sorted(run_ids):
         for change in read_changes(changes_file(runs_root / run_id)):
-            yield run_id, change
+            yield run_id, rebase_stub_previous(change)
+
+
+def rebase_stub_previous(change: Change) -> Change:
+    """Runs recorded before tool 0.2.0 could use npm's `0.0.0-stage` placeholder as the previous
+    version of a package's first real release. Stage 0 now never does (see
+    `Packument.previous_version`). The placeholder is the lowest possible version, so it was
+    only chosen when nothing else was earlier: the release is really a new package."""
+    if change.previous is not None and change.previous.manifest.get("stub") is True:
+        return change.model_copy(update={"previous": None})
+    return change
 
 
 def build_dataset(
@@ -122,6 +186,7 @@ def build_dataset(
     built_at: datetime,
     benign_per_stratum: int = 500,
     min_benign_age_days: int = 30,
+    external: Iterable[ExternalSampleSet] = (),
 ) -> EvalDataset:
     first_seen: dict[str, tuple[str, Change]] = {}
     for run_id, change in changes:
@@ -177,6 +242,22 @@ def build_dataset(
         ordered = sorted(candidates, key=lambda s: sha256_hex(f"{name}\n{s.key}".encode()))
         benign.extend(ordered[:benign_per_stratum])
 
+    for sample_set in external:
+        for item in sample_set.samples:
+            malicious.append(
+                EvalSample(
+                    ref=item.change.new.ref,
+                    run_id=sample_set.id,
+                    label=Label.MALICIOUS,
+                    shape=item.shape,
+                    watched=bool(item.change.popularity and item.change.popularity.watched),
+                    settled=True,
+                    label_ids=(f"{sample_set.source}:{item.path}",),
+                    source=sample_set.source,
+                    follow_on=bool(item.previous_malicious),
+                )
+            )
+
     samples = sorted(malicious + benign, key=lambda s: (s.label, s.key))
     return EvalDataset(
         name=name,
@@ -193,17 +274,23 @@ def build_dataset(
     )
 
 
-def load_sample_changes(runs_root: Path, dataset: EvalDataset) -> Mapping[str, Change]:
+def load_sample_changes(
+    runs_root: Path, dataset: EvalDataset, external: Iterable[ExternalSampleSet] = ()
+) -> Mapping[str, Change]:
     """The recorded Change for every sample, keyed by `EvalSample.key`."""
     wanted: dict[str, set[str]] = {}
     for sample in dataset.samples:
-        wanted.setdefault(sample.run_id, set()).add(sample.key)
+        if sample.source == PROSPECTIVE:
+            wanted.setdefault(sample.run_id, set()).add(sample.key)
     found: dict[str, Change] = {}
+    for sample_set in external:
+        for item in sample_set.samples:
+            found.setdefault(f"{sample_set.source}:{item.change.new.ref}", item.change)
     for run_id, keys in wanted.items():
         for change in read_changes(changes_file(runs_root / run_id)):
             key = str(change.new.ref)
             if key in keys:
-                found.setdefault(key, change)
+                found.setdefault(key, rebase_stub_previous(change))
     missing = {s.key for s in dataset.samples} - found.keys()
     if missing:
         raise LookupError(f"{len(missing)} samples missing from their runs, e.g. {min(missing)}")

@@ -160,6 +160,10 @@ See also [validation.md](../validation.md) for measured results.
 - **Full packuments are large.** Packages with thousands of versions produce multi-MB documents.
   The abbreviated format lacks the per-version `time` map and `_npmUser`, so it can't replace
   them.
+- **Staged-publishing stubs.** npm creates a `0.0.0-stage` placeholder (`"stub": true`) before a
+  new package's first real release; 98% of "new packages" in the first 24h run were such stubs.
+  Since tool 0.2.0 a stub is never used as the previous version (so the first real release is
+  shape B), but stubs are still emitted, because `stub` is publisher-controlled.
 - **Repository URLs** are only normalized for GitHub. Others are kept as given.
 
 ## Tests

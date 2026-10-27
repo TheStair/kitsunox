@@ -1,15 +1,16 @@
 # Evaluation
 
-> **Status:** light harness implemented (2026-10-27): OSV labels, datasets built from our own
-> ingest runs, and baseline predictors. Malware tarballs (DataDog dataset) are deferred by
-> decision, so code-level stages can't yet be measured on real attacks.
+> **Status (2026-10-27):** OSV labels; datasets built from our own ingest runs; DataDog malware
+> samples imported as encrypted data ([0007](decisions/0007-datadog-samples-and-follow-on-releases.md));
+> baseline and Stage 1 predictors.
 
 ## How to run
 
 ```sh
 uv run kitsunox labels sync                  # OSV MAL- records for npm (~220 MB download)
 uv run kitsunox eval build <name>            # join all recorded runs with the newest labels
-uv run kitsunox eval run <name> --predictor popularity-only   # or forward-all
+uv run kitsunox samples datadog --intent 2000   # DataDog npm samples (~5 GB, kept encrypted)
+uv run kitsunox eval run <name> --predictor stage1-rules   # or stage1, popularity-only, forward-all
 ```
 
 - **Labels** (`evaluation/labels.py`): every OSV `MAL-` record for npm, reduced to
@@ -132,4 +133,7 @@ Target sizes for the first iteration: ~500 known-bad (with as many shape A as we
 | Date | Commit | Dataset | Stage | Recall A | Recall B | Pass-through (benign) | Notes |
 |---|---|---|---|---|---|---|---|
 | 2026-10-27 | Phase 3 label fixes | `first-24h` (1 run, 24h, 109,497 changes; 0 malicious, 1,500 benign, all provisional) | baseline `forward-all` | n/a | n/a | 100% | No malicious samples survive label hygiene: 41 takedown placeholders and 2 projected matches excluded |
+| 2026-10-27 | Stage 1 | `day1` (4 runs; 1,500 benign; DataDog 965 A + 905 B first releases, 481 A + 1,093 B follow-ons) | `stage1-rules` | **80.1%** (follow-on 2.7%) | **58.2%** (follow-on 21.7%) | **0.6%** weighted | DataDog recall (GuardDog-biased). `npm.publisher.unfamiliar` downgraded to LOW: 2.6% → 0.6% pass-through, A recall 81.1% → 80.1% |
+| 2026-10-27 | Stage 1 | `day1` | `stage1` (rules + watched) | 85.6% (21.8%) | 58.2% (23.1%) | 14.5% weighted | Watched packages dominate pass-through |
+| 2026-10-27 | Stage 1 | `day1` | baseline `popularity-only` | 21.8% | 0.0% | 13.9% weighted | |
 | 2026-10-27 | Phase 3 label fixes | `first-24h` | baseline `popularity-only` | n/a | n/a | 13.5% weighted (A 14.0%, B 0%; raw sample 33.3%) | 14,743 of 105,350 shape-A releases are watched. Before the fixes, this row read "recall 0/29", every one a label artifact |

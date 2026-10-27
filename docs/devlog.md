@@ -2,6 +2,57 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Stage 1 metadata triage, DataDog samples, and the stub bug
+
+**Stage(s):** Stage 1 (new), evaluation, plus one Stage 0 fix (flagged below)
+**Context:** The user approved Stage 1. With 0 prospective malicious samples, they also approved
+downloading malware as long as it is only executed in the sandbox
+([0007](decisions/0007-datadog-samples-and-follow-on-releases.md)).
+
+### Decisions
+- **Rule contract** (`core/rules.py`): `evaluate(change, ctx)`, with `RuleContext` holding only
+  `as_of`. Rule versions are recorded on findings.
+- **Forward policy:** MEDIUM or above, or a watched package. LOW findings only score.
+- **DataDog samples as metadata only:** the zips stay encrypted; only `package_info` (the
+  captured packument) is decrypted, in memory. It goes through the same `Packument` parser as
+  Stage 0.
+- **Follow-on releases in their own cell.** Recall measured against a malicious diff base is
+  meaningless for change-based rules.
+
+### Challenges
+- **A Stage 0 bug found through Stage 1's numbers.** The install-hook rule fired on 0 of 4,124
+  new packages. 98% of them were npm staged-publishing stubs (`0.0.0-stage`), and real first
+  releases diffed against those stubs.
+  - **Resolution:** the npm `Packument` skips stubs as a diff base (tool 0.2.0); evaluation
+    rebases old runs. This touches Stage 0 inside a Stage 1 task. It is a correctness fix in
+    the npm adapter with no contract change, and is flagged here and in
+    [validation.md](validation.md).
+  - **Trap avoided:** skipping stub *releases* outright would let an attacker hide a release
+    by setting `"stub": true` in package.json. Stubs are still emitted.
+- **Shape-A recall looked like 55%.** Splitting by whether the previous version was also
+  malicious gave 81% on first releases and 3% on follow-ons. Most "misses" were the 2nd–nth
+  versions of the same worm wave (Shai-Hulud, 2025-09/11).
+- **One rule was most of the noise.** `npm.publisher.unfamiliar` caused ~90% of benign forwards
+  for 10 unique catches. Downgraded to LOW: pass-through went from 2.6% to 0.6%, and A recall
+  from 81.1% to 80.1%.
+- **Smaller tunings:** CalVer exempted from `npm.version.suspicious`; `workspace:` specs
+  treated as registry specs.
+
+### Evaluation snapshot
+- `stage1-rules` on `day1`, first releases: recall A **80.1%**, B **58.2%**; benign
+  pass-through **0.6%** (weighted; labels provisional).
+- `stage1` (with watched packages): A 85.6%, B 58.2%, pass-through 14.5%.
+- Baseline `popularity-only`: A 21.8%, B 0%, pass-through 13.9%.
+
+### Open questions / next steps
+- **42% of shape-B first releases have no metadata signal** (payload runs on import), so Stage
+  2 is needed.
+- **Tarball capture at ingest** for forwarded changes, before npm removes them.
+- **The DataDog bias** towards GuardDog-detectable patterns needs checking against prospective
+  samples.
+- **Watched-package forwarding is 96% of Stage 1's output** (14.7k/day). Is that budget right
+  for Stage 2?
+
 ## 2026-10-27: Hourly chained collection and retention (Phase 9 started)
 
 **Stage(s):** Stage 0 orchestration (`core/run.py`, `core/retention.py`, `collect.py`, CLI)
