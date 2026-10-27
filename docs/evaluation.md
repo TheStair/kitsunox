@@ -18,24 +18,37 @@ uv run kitsunox eval run <name> --predictor popularity-only   # or forward-all
   lists, or SEMVER ranges (`introduced`/`fixed`/`last_affected`). The parser is fuzzed.
 - **Dataset** (`evaluation/dataset.py`): every `Change` from recorded runs is matched
   against the labels.
-  - **Malicious samples:** releases covered by a record.
+  - **Malicious samples:** releases a record *observes*: the version is listed explicitly, or
+    falls in a bounded range, or falls in an open-ended range ("all versions") and was published
+    no later than the record. See [0005](decisions/0005-label-hygiene.md).
+  - **Excluded, counted in `excluded`:**
+    - `registry-placeholder`: npm's own takedown stubs (`0.0.1-security`, `0.0.0-stage`,
+      published by the `npm` account). OSV's open ranges match them, but they hold no attacker
+      code.
+    - `label-projected`: matched only by an open range from a record published *before* the
+      release. That is a guess about the future, not evidence.
   - **Benign samples:** a deterministic stratified sample, N per (shape, watched) stratum,
     ordered by a hash of (dataset name, release). They are *settled* only once the label set is
-    ≥30 days newer than the release, and *provisional* until then.
+    ≥30 days newer than the release, and *provisional* until then. `population` records each
+    stratum's real size before sampling.
   - **Bookkeeping:** a release seen in several runs counts once (earliest run). Datasets record
-    the label set's id and SHA-256.
+    the label set's id and SHA-256. Rebuilding gives identical samples; only `built_at` changes.
 - **Metrics** (`evaluation/metrics.py`):
   - A `Predictor` decides forward/clear for each change. Each report cell is
     `label/shape[/provisional]` with total, forwarded and rate (recall for malicious,
     pass-through for benign). The `*/all` rollups use settled samples only.
+  - **Re-weighted pass-through:** strata are sampled equally, so the raw benign rate is biased
+    towards whichever stratum is smaller in reality (watched packages). Reports also give
+    `weighted_pass_through`: each stratum's sample rate weighted by its population. In the first
+    run the raw popularity-only rate was 50.0% and the weighted one 13.5%.
   - **Baselines:** `forward-all` (upper bound on recall) and `popularity-only` (the watchlist
     half of the forward policy, with no detection). Stage 1 will plug in as another predictor.
 
 ### Why malicious samples will be scarce at first
 
-npm replaces malicious versions with a `0.0.1-security` placeholder, usually within hours. A
-malicious release only becomes a sample if an ingest run recorded its packument **before** the
-takedown. The dataset therefore grows with regular ingest runs ("prospective labeling"). OSV
+npm replaces malicious versions with a placeholder (`0.0.1-security`, and in the 2026-10-27 run
+also `0.0.0-stage`), usually within hours. A malicious release only becomes a sample if an ingest
+run recorded its packument **before** the takedown. The dataset therefore grows with regular ingest runs ("prospective labeling"). OSV
 publishes about 20 new npm `MAL-` records a day (141 in the week to 2026-10-27).
 
 The OSV npm export on 2026-10-27 had 222,848 `MAL-` records. 86% mark every version of the
@@ -118,4 +131,5 @@ Target sizes for the first iteration: ~500 known-bad (with as many shape A as we
 
 | Date | Commit | Dataset | Stage | Recall A | Recall B | Pass-through (benign) | Notes |
 |---|---|---|---|---|---|---|---|
-| (none yet) | | | | | | | |
+| 2026-10-27 | Phase 3 label fixes | `first-24h` (1 run, 24h, 109,497 changes; 0 malicious, 1,500 benign, all provisional) | baseline `forward-all` | n/a | n/a | 100% | No malicious samples survive label hygiene: 41 takedown placeholders and 2 projected matches excluded |
+| 2026-10-27 | Phase 3 label fixes | `first-24h` | baseline `popularity-only` | n/a | n/a | 13.5% weighted (A 14.0%, B 0%; raw sample 33.3%) | 14,743 of 105,350 shape-A releases are watched. Before the fixes, this row read "recall 0/29", every one a label artifact |

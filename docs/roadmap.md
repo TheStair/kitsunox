@@ -1,7 +1,10 @@
 # Roadmap
 
-> **Status as of 2026-10-27:** Phases 0–2 done. Stage 0 records and replays npm runs, with
-> popularity from a weekly watchlist. Next: Phase 3, the evaluation harness.
+> **Status as of 2026-10-27:** Phases 0–3 done (Phase 3 in its light form). Stage 0 records and
+> replays npm runs, with popularity from a weekly watchlist. The first full 24h run gave 109,497
+> changes and 0 malicious samples after label hygiene: everything malicious was taken down
+> before the run fetched it. Growing the malicious set needs Phase 9 (scheduled ingest). Next:
+> Phase 4, Stage 1.
 
 ## Phases
 

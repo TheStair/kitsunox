@@ -179,6 +179,9 @@ def eval_build(
     typer.echo(f"dataset {name}: {len(dataset.samples)} samples from {len(dataset.runs)} runs")
     for key, count in dataset.counts().items():
         typer.echo(f"  {key:28s} {count}")
+    typer.echo(f"benign population: {dataset.population}")
+    if dataset.excluded:
+        typer.echo(f"excluded: {dataset.excluded}")
     typer.echo(f"saved to {path} (sha256 {sha})")
 
 

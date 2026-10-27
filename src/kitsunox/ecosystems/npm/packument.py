@@ -137,6 +137,16 @@ class Packument:
         return changes
 
 
+def is_security_placeholder(snapshot: VersionSnapshot) -> bool:
+    """npm's stand-in for a removed malicious package: a stub version (`0.0.1-security`, and in
+    the 2026-10-27 run also `0.0.0-stage`) published by npm's own account. It holds the name, so
+    it shows up in the change feed like any release, but contains none of the removed code."""
+    publish, manifest = snapshot.publish, snapshot.manifest
+    return publish.publisher == "npm" and (
+        manifest.get("stub") is True or snapshot.ref.version == "0.0.1-security"
+    )
+
+
 def publish_info(manifest: Mapping[str, Any], published_at: datetime | None) -> PublishInfo:
     npm_user = _dict(manifest.get("_npmUser"))
     trusted = _dict(npm_user.get("trustedPublisher"))

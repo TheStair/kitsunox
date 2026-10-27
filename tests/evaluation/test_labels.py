@@ -10,6 +10,7 @@ from kitsunox.evaluation.harness import label_store, sync_labels
 from kitsunox.evaluation.labels import (
     OSV_EXPORT_URL,
     AffectedRange,
+    LabelSet,
     MalwareLabel,
     parse_osv_export,
 )
@@ -164,3 +165,60 @@ def test_hostile_osv_records_never_crash(records: list[object], version: str) ->
         assert isinstance(name, str)
         for label in entries:
             label.affects(version)  # must not raise for any version string
+
+
+RECORD = datetime(2026, 10, 1, tzinfo=UTC)
+BEFORE, AFTER = datetime(2026, 9, 1, tzinfo=UTC), datetime(2026, 10, 20, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("label", "published_at", "observed"),
+    [
+        (
+            MalwareLabel(id="M", published=RECORD, ranges=(AffectedRange(introduced="0"),)),
+            BEFORE,
+            True,
+        ),
+        (
+            MalwareLabel(id="M", published=RECORD, ranges=(AffectedRange(introduced="0"),)),
+            AFTER,
+            False,
+        ),
+        (
+            MalwareLabel(id="M", published=RECORD, ranges=(AffectedRange(introduced="0"),)),
+            None,
+            False,
+        ),
+        (MalwareLabel(id="M", published=RECORD, versions=("1.0.0",)), AFTER, True),
+        (
+            MalwareLabel(
+                id="M", published=RECORD, ranges=(AffectedRange(introduced="0", fixed="2.0.0"),)
+            ),
+            AFTER,
+            True,
+        ),
+        (MalwareLabel(id="M", published=RECORD, versions=("9.9.9",)), BEFORE, False),
+    ],
+)
+def test_open_ranges_only_observe_earlier_releases(
+    label: MalwareLabel, published_at: datetime | None, observed: bool
+) -> None:
+    assert label.observes("1.0.0", published_at) is observed
+
+
+def test_classify_splits_observed_and_projected() -> None:
+    labels = LabelSet(
+        ecosystem="npm",
+        source="t",
+        fetched_at=AFTER,
+        source_sha256="0" * 64,
+        labels={
+            "pkg": (
+                MalwareLabel(id="MAL-A", published=RECORD, ranges=(AffectedRange(introduced="0"),)),
+                MalwareLabel(id="MAL-B", published=RECORD, versions=("1.0.0",)),
+            )
+        },
+    )
+    assert labels.classify("pkg", "1.0.0", AFTER) == (("MAL-B",), ("MAL-A",))
+    assert labels.classify("pkg", "1.0.1", AFTER) == ((), ("MAL-A",))
+    assert labels.classify("pkg", "1.0.1", BEFORE) == (("MAL-A",), ())

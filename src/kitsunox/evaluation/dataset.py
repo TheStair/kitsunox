@@ -9,18 +9,30 @@ A sample is a `Change` we recorded, labeled by joining it against a `LabelSet`:
   `min_benign_age_days` after the release (a malicious release may not be reported yet);
   younger ones are kept but marked provisional, and metrics report them separately.
 
+Some releases are neither, and are left out (counted in `EvalDataset.excluded`):
+
+- **registry-placeholder**: the registry's own stand-in for a removed package (npm's
+  `0.0.1-security` stubs). OSV's "all versions" ranges match them, but they hold no attacker code.
+- **label-projected**: matched only by an open-ended OSV range from a record published before the
+  release (see `MalwareLabel.observes`). The record is a guess about this release, not evidence.
+
 Benign samples are a deterministic stratified sample: within each (shape, watched) stratum,
-candidates are ordered by a hash of (dataset name, release) and the first N are taken.
+candidates are ordered by a hash of (dataset name, release) and the first N are taken. Strata
+are sampled equally, not in proportion, so `population` records each stratum's real size and
+metrics re-weight by it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
-from kitsunox.core.models import Change, PackageVersionRef, Persisted, Record
+from pydantic import Field
+
+from kitsunox.core.models import Change, PackageVersionRef, Persisted, Record, VersionSnapshot
+from kitsunox.ecosystems.npm.packument import is_security_placeholder
 from kitsunox.evaluation.labels import LabelSet
 from kitsunox.stages.ingest import read_changes
 from kitsunox.util.hashing import sha256_hex
@@ -38,6 +50,19 @@ class Shape(StrEnum):
     B = "B"
 
 
+REGISTRY_PLACEHOLDER: dict[str, Callable[[VersionSnapshot], bool]] = {
+    "npm": is_security_placeholder
+}
+
+
+def _never(_: VersionSnapshot) -> bool:
+    return False
+
+
+def stratum(shape: Shape, watched: bool) -> str:
+    return f"{shape}/{'watched' if watched else 'unwatched'}"
+
+
 class EvalSample(Record):
     ref: PackageVersionRef
     run_id: str
@@ -51,8 +76,15 @@ class EvalSample(Record):
     def key(self) -> str:
         return str(self.ref)
 
+    @property
+    def stratum(self) -> str:
+        return stratum(self.shape, self.watched)
+
 
 class EvalDataset(Persisted):
+    SCHEMA_VERSION = 2
+    schema_version: int = 2
+
     name: str
     ecosystem: str
     built_at: datetime
@@ -62,6 +94,10 @@ class EvalDataset(Persisted):
     min_benign_age_days: int
     benign_per_stratum: int
     samples: tuple[EvalSample, ...]
+    population: dict[str, int] = Field(
+        description="Benign candidates per stratum before sampling, for re-weighting."
+    )
+    excluded: dict[str, int] = Field(description="Releases left out, by reason.")
 
     def counts(self) -> dict[str, int]:
         result: dict[str, int] = {}
@@ -93,12 +129,25 @@ def build_dataset(
 
     malicious: list[EvalSample] = []
     benign_by_stratum: dict[tuple[Shape, bool], list[EvalSample]] = {}
+    excluded: dict[str, int] = {}
     settle_by = labels.fetched_at - timedelta(days=min_benign_age_days)
+    is_placeholder = REGISTRY_PLACEHOLDER.get(labels.ecosystem, _never)
     for run_id, change in first_seen.values():
         ref = change.new.ref
         shape = Shape.B if change.is_new_package else Shape.A
         watched = bool(change.popularity and change.popularity.watched)
-        label_ids = labels.match(ref.name, ref.version)
+        published = change.new.publish.published_at
+        label_ids, projected = labels.classify(ref.name, ref.version, published)
+        reason = (
+            "registry-placeholder"
+            if is_placeholder(change.new)
+            else "label-projected"
+            if projected and not label_ids
+            else None
+        )
+        if reason:
+            excluded[reason] = excluded.get(reason, 0) + 1
+            continue
         if label_ids:
             malicious.append(
                 EvalSample(
@@ -112,7 +161,6 @@ def build_dataset(
                 )
             )
             continue
-        published = change.new.publish.published_at
         settled = published is not None and published <= settle_by
         sample = EvalSample(
             ref=ref,
@@ -140,6 +188,8 @@ def build_dataset(
         min_benign_age_days=min_benign_age_days,
         benign_per_stratum=benign_per_stratum,
         samples=tuple(samples),
+        population={stratum(*k): len(v) for k, v in sorted(benign_by_stratum.items())},
+        excluded=dict(sorted(excluded.items())),
     )
 
 

@@ -103,3 +103,50 @@ def test_metrics_report_recall_and_pass_through() -> None:
     assert "benign/all" in render_markdown(report)
     everything = evaluate(dataset, "b" * 64, changes, ForwardAll())  # type: ignore[arg-type]
     assert everything.cells["malicious/all"].rate == 1.0
+
+
+def placeholder(name: str, version: str, when: datetime) -> Change:
+    return Change(
+        new=VersionSnapshot(
+            ref=PackageVersionRef(ecosystem="npm", name=name, version=version),
+            publish=PublishInfo(published_at=when, publisher="npm", maintainers=("npm",)),
+            manifest={"stub": True},
+        )
+    )
+
+
+def test_placeholders_and_projected_labels_are_excluded() -> None:
+    # The first live run: npm takedown stubs and a legitimate later build both matched
+    # open-ended "all versions" ranges and were counted as malware.
+    extra = [
+        ("run-1", placeholder("typosquat", "0.0.1-security", RECENT)),
+        ("run-1", placeholder("typosquat", "0.0.0-stage", RECENT)),
+        ("run-1", change("typosquat", "1.0.1", RECENT, new=False, watched=False)),
+    ]
+    dataset = build_dataset(
+        sample_changes() + extra,
+        LABELS,
+        name="ds",
+        label_set_sha256="a" * 64,
+        built_at=FETCHED,
+    )
+    keys = {s.key for s in dataset.samples}
+    assert "npm:typosquat@1.0.0" in keys  # published no later than MAL-1: observed
+    assert not keys & {f"npm:typosquat@{v}" for v in ("0.0.1-security", "0.0.0-stage", "1.0.1")}
+    assert dataset.excluded == {"label-projected": 1, "registry-placeholder": 2}
+
+
+def test_population_counts_every_benign_candidate() -> None:
+    dataset = build(per_stratum=1)
+    assert dataset.population == {"A/unwatched": 5, "A/watched": 6, "B/unwatched": 1}  # type: ignore[attr-defined]
+
+
+def test_pass_through_is_reweighted_to_population() -> None:
+    # 1 watched + 1 unwatched sampled per stratum, but 6 watched vs 5 unwatched A in population.
+    dataset = build(per_stratum=1)
+    changes = {str(c.new.ref): c for _, c in sample_changes()}
+    report = evaluate(dataset, "b" * 64, changes, PopularityOnly())  # type: ignore[arg-type]
+    assert report.cells["benign/all"].rate == 0.5  # raw sample rate: 1 of 2
+    assert report.weighted_pass_through["A"] == 6 / 11
+    assert report.weighted_pass_through["all"] == 6 / 12
+    assert "re-weighted" in render_markdown(report)

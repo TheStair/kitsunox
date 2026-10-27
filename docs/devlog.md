@@ -2,6 +2,62 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Phase 3 (light) evaluation harness, and the first real 24h run
+
+**Stage(s):** evaluation harness (`evaluation/`), Stage 0 at full scale
+**Context:** Build the light harness chosen by the user: OSV labels, datasets from our own runs,
+and baselines, with no malware tarballs. Then run the whole chain for real over 24 hours. Harness
+code: `b325b72`. Label fixes: the commit after it.
+
+### Decisions
+- **Ground truth comes from our own runs** (prospective labeling), not from downloaded malware.
+  A release becomes a sample only if we recorded it, so samples always have the metadata the
+  pipeline actually sees.
+- **Label hygiene** ([0005](decisions/0005-label-hygiene.md)): npm takedown placeholders are
+  never malicious. An open-ended OSV range counts only for releases published no later than the
+  record.
+- **Re-weighted pass-through:** benign strata are sampled equally (500 each) but differ hugely
+  in size, so reports weight each stratum's rate by its population.
+
+### Challenges
+- **Every "malicious" match in the first run was a label artifact.** The run matched 29
+  releases. 27 were npm placeholder stubs (`0.0.1-security`, `0.0.0-stage`, published by the
+  `npm` account) matched by "all versions" ranges. 2 were legitimate GitLab-CI trusted-publisher
+  builds of `@magda/semantic-indexer-sdk`, matched by a 2025 Shai-Hulud record. Found by reading
+  the 29 samples before writing up the numbers.
+  - **Resolution:** exclude placeholders and open-range projections, counting both
+    (`excluded: {registry-placeholder: 41, label-projected: 2}`). Tests:
+    `test_placeholders_and_projected_labels_are_excluded`,
+    `test_open_ranges_only_observe_earlier_releases`, `test_security_placeholder`.
+  - **Why it worked:** 0 malicious samples remain. That is correct for a single run: every
+    malicious package in the window was taken down before the run fetched its packument.
+- **Popularity-only pass-through read 50.0%, which was meaningless.** It is exactly the share
+  of watched samples, because the sampler takes 500 per stratum.
+  - **Resolution:** record stratum populations and weight by them. The population had 14,743
+    watched and 90,607 unwatched shape-A releases, so the weighted rate is **13.5%**
+    (A: 14.0%, B: 0%).
+  - **Why it worked:** checked by hand against the population counts, and by
+    `test_pass_through_is_reweighted_to_population`.
+- **Dataset rebuilds were not byte-identical**, because `built_at` is the current time. The
+  samples are identical, so this was left as provenance metadata and documented.
+
+### Evaluation snapshot
+- Run `20261027T210847Z-npm` (offline replay identical, 7.4 min): 24h window, feed `(139752494, 140152494]`, 63,143 packages,
+  109,497 changes, 0 skipped, 0 popularity failures. Window covered: the feed start estimate is
+  2026-10-26T14:28Z, 6.7h before the window start.
+- Timing: watchlist 12.2 min (63,172 packages); labels sync 14 s (222,516 records, 222,515
+  packages); 24h ingest 46.5 min (~23 packages/s). Disk: blobs 5.5 GB, runs 792 MB.
+- Baselines on `first-24h` (benign labels all provisional, since labels are less than 30 days
+  newer): forward-all 100% pass-through; popularity-only 13.5% weighted. Recall is n/a with no
+  malicious samples.
+
+### Open questions / next steps
+- **Malicious samples need repeated ingest runs** to catch releases before takedown. A scheduled
+  hourly run (launchd) needs the user's go-ahead.
+- **Blob store growth:** 5.5 GB per day of packuments. This needs a retention policy before
+  scheduling.
+- **Next:** Phase 4, Stage 1 metadata triage. Ask before starting.
+
 ## 2026-10-27: Scope correction: git-commit path planned alongside npm
 
 **Stage(s):** architecture (no code)

@@ -50,6 +50,10 @@ class AffectedRange(Record):
             return high is not None and version <= high
         return True
 
+    @property
+    def open_ended(self) -> bool:
+        return self.fixed is None and self.last_affected is None
+
 
 class MalwareLabel(Record):
     id: str
@@ -63,11 +67,30 @@ class MalwareLabel(Record):
         parsed = semver.parse(version)
         return parsed is not None and any(r.contains(parsed) for r in self.ranges)
 
+    def observes(self, version: str, published_at: datetime | None) -> bool:
+        """Whether the record is evidence about this release, not just a projection onto it.
+
+        An open-ended range ("introduced 0", nothing fixed) says "every version, including future
+        ones". For a release published *after* the record, that is a guess: in the first live run
+        it labeled two legitimate trusted-publisher builds of `@magda/semantic-indexer-sdk` as
+        malware, from a 2025 record about the Shai-Hulud compromise. Listed versions and bounded
+        ranges always count; open ranges count only for releases published before the record.
+        """
+        if version in self.versions:
+            return True
+        parsed = semver.parse(version)
+        if parsed is None:
+            return False
+        for r in self.ranges:
+            if not r.contains(parsed):
+                continue
+            if not r.open_ended or (published_at is not None and published_at <= self.published):
+                return True
+        return False
+
     @property
     def all_versions(self) -> bool:
-        return any(
-            r.introduced == "0" and r.fixed is None and r.last_affected is None for r in self.ranges
-        )
+        return any(r.introduced == "0" and r.open_ended for r in self.ranges)
 
 
 class LabelSet(Persisted):
@@ -84,6 +107,14 @@ class LabelSet(Persisted):
     def match(self, name: str, version: str) -> tuple[str, ...]:
         """Ids of malware records covering this exact release."""
         return tuple(label.id for label in self.labels.get(name, ()) if label.affects(version))
+
+    def classify(
+        self, name: str, version: str, published_at: datetime | None
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """`(observed, projected)` record ids for a release; see `MalwareLabel.observes`."""
+        matched = [label for label in self.labels.get(name, ()) if label.affects(version)]
+        observed = tuple(m.id for m in matched if m.observes(version, published_at))
+        return observed, tuple(m.id for m in matched if m.id not in observed)
 
     @property
     def record_count(self) -> int:

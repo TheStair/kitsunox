@@ -3,10 +3,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from kitsunox.core.models import Window
+from kitsunox.core.models import PackageVersionRef, PublishInfo, VersionSnapshot, Window
 from kitsunox.ecosystems.npm.packument import (
     Packument,
     PackumentError,
+    is_security_placeholder,
     normalize_repository_url,
 )
 
@@ -116,3 +117,24 @@ def test_non_list_maintainers_are_ignored(maintainers: object) -> None:
     }
     (change,) = Packument(doc, expected_name="p").changes_in(WINDOW)
     assert change.new.publish.maintainers == ()
+
+
+@pytest.mark.parametrize(
+    ("publisher", "version", "manifest", "expected"),
+    [
+        ("npm", "0.0.1-security", {}, True),
+        ("npm", "0.0.0-stage", {"stub": True}, True),
+        ("npm", "1.2.3", {}, False),  # npm's account publishing a real release
+        ("mallory", "0.0.1-security", {"stub": True}, False),  # anyone can pick the version
+        (None, "0.0.1-security", {}, False),
+    ],
+)
+def test_security_placeholder(
+    publisher: str | None, version: str, manifest: dict[str, object], expected: bool
+) -> None:
+    snapshot = VersionSnapshot(
+        ref=PackageVersionRef(ecosystem="npm", name="x", version=version),
+        publish=PublishInfo(publisher=publisher),
+        manifest=manifest,
+    )
+    assert is_security_placeholder(snapshot) is expected

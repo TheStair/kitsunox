@@ -117,3 +117,20 @@ uv run pytest -m network                                 # live record + replay
 The completeness, field-accuracy and feed-rate checks were one-off scripts run against a live
 ingest. Their method is described above. Turning them into a repeatable
 `kitsunox validate` command is listed as a next step.
+
+## 2026-10-27 (later): first full 24h run and label audit
+
+Run `20261027T210847Z-npm`: 24h window, feed `(139752494, 140152494]`, 63,143 packages,
+109,497 changes.
+
+| Check | Result |
+|---|---|
+| Offline replay of the full run | **identical** (`changes.jsonl` sha256 `156daffb0e06…`), 7m24s, CPU-bound, no network |
+| Window coverage | covered: the feed start estimate (2026-10-26T14:28Z) is 6.7h before the window start |
+| Per-package failures | 0 skipped, 0 popularity lookup failures |
+| Dataset rebuild determinism | samples identical across rebuilds; only `built_at` differs |
+| Manual audit of all 29 OSV matches | **29 of 29 were label artifacts**: 27 npm takedown placeholders, 2 legitimate builds matched by an open-ended 2025 range. Fixed by [0005](decisions/0005-label-hygiene.md). 0 malicious samples remain |
+| Benign pass-through estimator | the raw stratified rate (50%) was biased; now population-weighted (13.5%) |
+
+Lesson: OSV "all versions" ranges are not release-level ground truth. Any future label source
+gets the same manual audit of its first matches before its numbers are trusted.

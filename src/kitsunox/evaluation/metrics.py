@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
+from pydantic import Field
+
 from kitsunox.core.models import Change, Persisted, Record
 from kitsunox.evaluation.dataset import EvalDataset, Label
 
@@ -55,10 +57,17 @@ class Cell(Record):
 
 
 class EvalReport(Persisted):
+    SCHEMA_VERSION = 2
+    schema_version: int = 2
+
     dataset: str
     dataset_sha256: str
     predictor: str
     cells: dict[str, Cell]
+    weighted_pass_through: dict[str, float] = Field(
+        description="Benign pass-through re-weighted to the real stratum sizes, by shape and "
+        "'all'. Counts provisional samples too."
+    )
     forwarded: tuple[str, ...]
 
 
@@ -71,6 +80,7 @@ def evaluate(
     """Cells are keyed `<label>/<shape>[/provisional]`, plus `<label>/all` rollups (settled
     samples only for benign, since provisional benign labels may still flip)."""
     tallies: dict[str, list[int]] = {}
+    strata: dict[str, list[int]] = {}
     forwarded: list[str] = []
 
     def add(key: str, hit: bool) -> None:
@@ -86,13 +96,36 @@ def evaluate(
         add(f"{sample.label}/{sample.shape}{suffix}", hit)
         if sample.settled:
             add(f"{sample.label}/all", hit)
+        if sample.label is Label.BENIGN:
+            tally = strata.setdefault(sample.stratum, [0, 0])
+            tally[0] += 1
+            tally[1] += hit
     return EvalReport(
         dataset=dataset.name,
         dataset_sha256=dataset_sha256,
         predictor=predictor.name,
         cells={k: Cell(total=t, forwarded=f) for k, (t, f) in sorted(tallies.items())},
+        weighted_pass_through=_reweight(strata, dataset.population),
         forwarded=tuple(sorted(forwarded)),
     )
+
+
+def _reweight(strata: Mapping[str, list[int]], population: Mapping[str, int]) -> dict[str, float]:
+    """Benign strata are sampled equally (500 watched, 500 unwatched), but in the population
+    unwatched releases far outnumber watched ones; the raw sample rate would overstate the
+    pass-through of anything that forwards watched packages. Estimate each group's rate as the
+    population-weighted mean of its strata's sample rates."""
+    groups: dict[str, list[str]] = {"all": sorted(strata)}
+    for key in strata:
+        groups.setdefault(key.split("/")[0], []).append(key)
+    result = {}
+    for group, keys in sorted(groups.items()):
+        weight = sum(population.get(k, 0) for k in keys)
+        if weight:
+            result[group] = (
+                sum(population.get(k, 0) * strata[k][1] / strata[k][0] for k in keys) / weight
+            )
+    return result
 
 
 def render_markdown(report: EvalReport) -> str:
@@ -109,4 +142,7 @@ def render_markdown(report: EvalReport) -> str:
         if key.endswith("/provisional"):
             meaning += " (provisional labels)"
         rows.append(f"| {key} | {cell.total} | {cell.forwarded} | {rate} | {meaning} |")
+    if report.weighted_pass_through:
+        rows += ["", "Benign pass-through re-weighted to stratum sizes (includes provisional):", ""]
+        rows += [f"- {k}: {v:.1%}" for k, v in report.weighted_pass_through.items()]
     return "\n".join(rows) + "\n"
