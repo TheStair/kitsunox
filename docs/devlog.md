@@ -2,6 +2,55 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Hourly chained collection and retention (Phase 9 started)
+
+**Stage(s):** Stage 0 orchestration (`core/run.py`, `core/retention.py`, `collect.py`, CLI)
+**Context:** The first 24h run found no malicious samples, because everything malicious was
+removed before the run fetched it. The user chose hourly collection with retention, ahead of
+Stage 1, so samples accumulate while Stage 1 is built.
+
+### Decisions
+- **`kitsunox collect` under launchd, hourly**:
+  - The watchlist is refreshed weekly and labels daily. Both are best-effort: a failure is
+    logged and the previous one is kept.
+  - Each tick records one chained ingest run. A failed ingest fails the tick and leaves the
+    checkpoint where it was.
+  - Pruning runs daily. See [0006](decisions/0006-scheduled-collection-and-retention.md).
+- **Chained runs instead of fixed 24h windows.** The checkpoint now records the previous run's
+  id and `as_of`. The next window starts 15 minutes before that, and coverage holds because
+  the feed ranges are contiguous. Alternatives were a fixed 1h window (it loses releases whose
+  feed entry lands after the run that should have seen them) and a 24h window every hour
+  (re-emits every release 24 times).
+- **7-day retention, not 30** (roadmap decision 5, resolved). Datasets need only the
+  `Change` records, which are kept forever and compressed. Raw packuments are pinned only for
+  packages named in OSV records.
+- **A data-directory lock** (`flock`), because pruning deletes unreferenced blobs and a
+  recording run's blobs aren't referenced yet.
+
+### Challenges
+- **A coverage false alarm in the design.** The coverage estimate of an hourly run (1st
+  percentile of last-modified times) always falls just after the window start once the window
+  overlaps the previous run. Every tick would have warned. **Resolution:** chained runs are
+  covered by contiguity of the feed, recorded as `chained_from` in the manifest.
+- **Crash-safety of pruning.** If the process died after compressing `changes.jsonl` but before
+  writing `retention.json`, the retry would have found no plain `changes.jsonl` and pinned
+  nothing. Caught while writing the code. **Resolution:** read through `changes_file()`, and
+  write the marker last. Test: `test_crash_after_compressing_still_pins`.
+- **Each step closes its HTTP client**, so a single injected client failed after the first
+  step in tests. `collect` now takes a client factory.
+
+### Evaluation snapshot
+- First real tick (foreground): 70 minutes of feed, 3,502 packages, 4,704 changes, 2m23s,
+  chained from the 24h run, replay identical. First launchd tick: 178 packages in 9s, exit 0,
+  no macOS privacy (TCC) problems from running inside `~/Documents`.
+
+### Open questions / next steps
+- **Tarballs are not captured at ingest**, so malicious samples will have metadata but no code.
+  That needs solving with the forward policy (Stage 1/2).
+- **Dataset rebuilds are still manual** (`eval build`). They could join `collect` once Stage 1
+  has a predictor worth tracking.
+- Next: Phase 4, Stage 1.
+
 ## 2026-10-27: Phase 3 (light) evaluation harness, and the first real 24h run
 
 **Stage(s):** evaluation harness (`evaluation/`), Stage 0 at full scale

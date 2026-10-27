@@ -3,8 +3,8 @@
 > **Status as of 2026-10-27:** Phases 0–3 done (Phase 3 in its light form). Stage 0 records and
 > replays npm runs, with popularity from a weekly watchlist. The first full 24h run gave 109,497
 > changes and 0 malicious samples after label hygiene: everything malicious was taken down
-> before the run fetched it. Growing the malicious set needs Phase 9 (scheduled ingest). Next:
-> Phase 4, Stage 1.
+> before the run fetched it. Hourly chained collection (Phase 9) has been running since then, so the malicious set can now
+> grow. Next: Phase 4, Stage 1.
 
 ## Phases
 
@@ -20,7 +20,7 @@
 | 7 | Stage 4 correlation | Tarball-vs-repo diff; OSV/GHSA lookups; new-dependency reputation; combination rules and final score | ⬜ |
 | 8 | Reporting | `report.json` → Markdown per candidate + `index.md`; `kitsunox run` end to end | ⬜ |
 | 8b | Git path (parallel source) | Commits on GitHub/GitLab repos of watchlist packages → filter → full repo fetch when needed → join with npm releases. See [decision 0004](decisions/0004-git-path-parallel-to-npm.md) | ⬜ after the npm workflow |
-| 9 | Prospective labeling | Scheduled ingest + cache retention; nightly join against new `MAL-` records to grow the eval set | ⬜ |
+| 9 | Prospective labeling | Scheduled ingest + cache retention; nightly join against new `MAL-` records to grow the eval set | 🟡 hourly `kitsunox collect` (launchd) + retention running since 2026-10-27; datasets are rebuilt by hand with `eval build`. Tarball capture still missing |
 | 10 | Sandbox (optional) | Design doc and review **first**; then Docker runner for install hooks, no network or capture proxy | ⬜ |
 | 11 | Extras (optional) | Local web viewer for reports; Claude-based analysis stage in `modules/`; second ecosystem (PyPI) | ⬜ |
 
@@ -55,8 +55,9 @@ devlog). Decision 5 is still open.
 4. **Report format.** ✅ *Accepted:* `report.json` is the canonical, deterministic output. Markdown
    per candidate plus a summary `index.md` is rendered from it. HTML and the web viewer come
    later, from the same JSON.
-5. **Blob retention.** *Open:* a full day of ingest is ~10 GB of compressed blobs. Proposed:
-   keep packuments for 30 days (matches the benign-label delay); keep tarballs for anything
-   forwarded past Stage 1 indefinitely (they become evaluation data).
+5. **Blob retention.** ✅ *Accepted 2026-10-27:* full replayability for 7 days. After that, keep
+   `changes.jsonl` (compressed) and the packuments of packages named in OSV records, and delete
+   the other blobs. See [0006](decisions/0006-scheduled-collection-and-retention.md). Tarball
+   retention is still open: tarballs aren't captured yet.
 6. **Benign-label delay.** *Open, proposed:* 30 days without a `MAL-`/GHSA record (see evaluation.md). Shorter
    means faster iteration, but the labels are noisier.

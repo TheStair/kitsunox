@@ -34,7 +34,7 @@ from pydantic import Field
 from kitsunox.core.models import Change, PackageVersionRef, Persisted, Record, VersionSnapshot
 from kitsunox.ecosystems.npm.packument import is_security_placeholder
 from kitsunox.evaluation.labels import LabelSet
-from kitsunox.stages.ingest import read_changes
+from kitsunox.stages.ingest import changes_file, read_changes
 from kitsunox.util.hashing import sha256_hex
 
 
@@ -109,7 +109,7 @@ class EvalDataset(Persisted):
 
 def iter_run_changes(runs_root: Path, run_ids: Iterable[str]) -> Iterable[tuple[str, Change]]:
     for run_id in sorted(run_ids):
-        for change in read_changes(runs_root / run_id / "changes.jsonl"):
+        for change in read_changes(changes_file(runs_root / run_id)):
             yield run_id, change
 
 
@@ -200,7 +200,7 @@ def load_sample_changes(runs_root: Path, dataset: EvalDataset) -> Mapping[str, C
         wanted.setdefault(sample.run_id, set()).add(sample.key)
     found: dict[str, Change] = {}
     for run_id, keys in wanted.items():
-        for change in read_changes(runs_root / run_id / "changes.jsonl"):
+        for change in read_changes(changes_file(runs_root / run_id)):
             key = str(change.new.ref)
             if key in keys:
                 found.setdefault(key, change)

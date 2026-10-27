@@ -1,4 +1,5 @@
 import json
+import plistlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,3 +51,24 @@ def test_record_without_watchlist_explains_and_exits(tmp_path: Path) -> None:
     result = runner.invoke(app, ["ingest", "record", "--data-dir", str(tmp_path)])
     assert result.exit_code == 2
     assert "kitsunox watchlist build" in result.output
+
+
+def test_schedule_plist_runs_collect(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["schedule", "plist", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    agent = plistlib.loads(result.stdout_bytes)
+    assert agent["ProgramArguments"][-3:] == ["collect", "--data-dir", str(tmp_path.resolve())]
+    assert agent["StartInterval"] == 3600
+
+
+def test_prune_needs_labels(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["data", "prune", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 2
+
+
+def test_collect_skips_when_locked(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    with data.lock():
+        result = runner.invoke(app, ["collect", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "skipped" in result.stdout

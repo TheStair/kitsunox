@@ -12,11 +12,21 @@ import tarfile
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 from hypothesis import settings
+
+from kitsunox.core.run import DataDir
+from kitsunox.core.watchlist import WatchEntry, Watchlist
+from kitsunox.ecosystems.npm.registry import (
+    DOWNLOADS_URL,
+    FEED_PAGE_LIMIT,
+    REGISTRY_URL,
+    REPLICATE_URL,
+)
 
 # Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
 # reproducibility rule. `HYPOTHESIS_PROFILE=deep` runs many more examples for a validation pass.
@@ -107,3 +117,35 @@ def mal(record_id: str, name: str, **affected: object) -> dict[str, object]:
         "published": PUBLISHED,
         "affected": [{"package": {"name": name, "ecosystem": "npm"}, **affected}],
     }
+
+
+# Mock npm registry for Stage 0 runs: feed (100, 200] holds kx-fixture and a deleted package.
+AS_OF = datetime(2026, 10, 27, 12, tzinfo=UTC)
+
+
+@pytest.fixture
+def registry(router: Router, load_fixture: Callable[[str], object]) -> Router:
+    router.add_json(f"{REPLICATE_URL}/", {"update_seq": 200})
+    router.add_json(
+        f"{REPLICATE_URL}/_changes?since=100&limit={FEED_PAGE_LIMIT}",
+        {"results": [{"seq": 150, "id": "kx-fixture"}, {"seq": 160, "id": "gone"}]},
+    )
+    router.add_json(f"{REPLICATE_URL}/_changes?since=160&limit={FEED_PAGE_LIMIT}", {"results": []})
+    router.add_json(f"{REGISTRY_URL}/kx-fixture", load_fixture("npm/packument_basic.json"))
+    router.add_json(
+        f"{DOWNLOADS_URL}/2026-10-19:2026-10-25/kx-fixture",
+        {"downloads": 1234, "package": "kx-fixture"},
+    )
+    return router
+
+
+def save_watchlist(data: DataDir, built_at: datetime) -> str:
+    watchlist = Watchlist(
+        ecosystem="npm",
+        source="test",
+        built_at=built_at,
+        min_monthly_downloads=43_000,
+        entries={"kx-fixture": WatchEntry(monthly_downloads=99_000)},
+    )
+    data.watchlists.save(watchlist.ecosystem, watchlist.id, watchlist)
+    return watchlist.id

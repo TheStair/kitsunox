@@ -24,6 +24,7 @@ from kitsunox.evaluation.dataset import (
 )
 from kitsunox.evaluation.labels import OSV_MAX_DOWNLOAD, LabelSet, fetch_label_set
 from kitsunox.evaluation.metrics import EvalReport, Predictor, evaluate
+from kitsunox.stages.ingest import changes_file
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -114,5 +115,5 @@ def _runs_for(runs_root: Path, ecosystem: str) -> list[str]:
     return sorted(
         p.name
         for p in runs_root.iterdir()
-        if p.name.endswith(f"-{ecosystem}") and (p / "changes.jsonl").exists()
+        if p.name.endswith(f"-{ecosystem}") and changes_file(p).exists()
     )

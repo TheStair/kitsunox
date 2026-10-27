@@ -23,6 +23,7 @@ uv sync                              # create .venv and install locked dependenc
 uv run kitsunox --help
 uv run kitsunox ingest record        # Stage 0: collect the last 24h of npm releases
 uv run kitsunox ingest replay <run>  # re-run a recorded run offline, check output is identical
+uv run kitsunox collect              # one unattended tick (run hourly by launchd, see stages/ingest.md)
 ```
 
 Runs are written to `data/runs/<run_id>/`. See [stages/ingest.md](stages/ingest.md).

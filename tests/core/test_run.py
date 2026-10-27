@@ -1,14 +1,17 @@
 """End-to-end Stage 0 record/replay against a mocked npm registry."""
 
-from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from conftest import Router
+from conftest import AS_OF, Router, save_watchlist
 from kitsunox.core.run import (
+    CHAIN_OVERLAP,
+    MAX_CHAIN_GAP,
+    Checkpoint,
     DataDir,
+    DataDirBusyError,
     IngestRequest,
     PopularityMode,
     RunManifest,
@@ -17,46 +20,14 @@ from kitsunox.core.run import (
     record_ingest,
     replay_ingest,
 )
-from kitsunox.core.watchlist import WatchEntry, Watchlist
 from kitsunox.ecosystems.npm.registry import (
-    DOWNLOADS_URL,
     FEED_PAGE_LIMIT,
-    REGISTRY_URL,
     REPLICATE_URL,
     NpmEcosystem,
 )
 from kitsunox.stages.ingest import read_changes
 
-AS_OF = datetime(2026, 10, 27, 12, tzinfo=UTC)
 NONE = PopularityMode.NONE
-
-
-@pytest.fixture
-def registry(router: Router, load_fixture: Callable[[str], object]) -> Router:
-    router.add_json(f"{REPLICATE_URL}/", {"update_seq": 200})
-    router.add_json(
-        f"{REPLICATE_URL}/_changes?since=100&limit={FEED_PAGE_LIMIT}",
-        {"results": [{"seq": 150, "id": "kx-fixture"}, {"seq": 160, "id": "gone"}]},
-    )
-    router.add_json(f"{REPLICATE_URL}/_changes?since=160&limit={FEED_PAGE_LIMIT}", {"results": []})
-    router.add_json(f"{REGISTRY_URL}/kx-fixture", load_fixture("npm/packument_basic.json"))
-    router.add_json(
-        f"{DOWNLOADS_URL}/2026-10-19:2026-10-25/kx-fixture",
-        {"downloads": 1234, "package": "kx-fixture"},
-    )
-    return router
-
-
-def save_watchlist(data: DataDir, built_at: datetime) -> str:
-    watchlist = Watchlist(
-        ecosystem="npm",
-        source="test",
-        built_at=built_at,
-        min_monthly_downloads=43_000,
-        entries={"kx-fixture": WatchEntry(monthly_downloads=99_000)},
-    )
-    data.watchlists.save(watchlist.ecosystem, watchlist.id, watchlist)
-    return watchlist.id
 
 
 def record(
@@ -138,7 +109,8 @@ def test_default_range_uses_lookback_then_checkpoint(tmp_path: Path, registry: R
         client=registry.client(),
     )
     assert (first.cursor_since, first.cursor_until) == (100, 200)
-    assert data.read_checkpoint("npm") == 200
+    checkpoint = data.read_checkpoint("npm")
+    assert checkpoint is not None and checkpoint.cursor == 200
 
     registry.add_json(
         f"{REPLICATE_URL}/_changes?since=200&limit={FEED_PAGE_LIMIT}", {"results": []}
@@ -157,3 +129,54 @@ def test_existing_run_is_not_overwritten(tmp_path: Path, registry: Router) -> No
     record(data, registry, NONE)
     with pytest.raises(FileExistsError):
         record(data, registry, NONE)
+
+
+def default_run(
+    data: DataDir, registry: Router, as_of: datetime, *, chain: bool = False
+) -> RunManifest:
+    request = IngestRequest(as_of=as_of, lookback=100, popularity=NONE, chain=chain)
+    return record_ingest(data, NpmEcosystem, request, client=registry.client())
+
+
+def test_chained_run_continues_where_the_previous_ended(tmp_path: Path, registry: Router) -> None:
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=200&limit={FEED_PAGE_LIMIT}", {"results": []}
+    )
+    data = DataDir(tmp_path)
+    first = default_run(data, registry, AS_OF)
+    assert first.chained_from is None  # no checkpoint yet: plain 24h window
+    second = default_run(data, registry, AS_OF + timedelta(hours=1), chain=True)
+    assert second.chained_from == first.run_id
+    assert second.cursor_since == first.cursor_until
+    assert second.window.start == AS_OF - CHAIN_OVERLAP
+    assert second.window_covered is True
+    checkpoint = data.read_checkpoint("npm")
+    assert checkpoint == Checkpoint(cursor=200, run_id=second.run_id, as_of=second.as_of)
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        Checkpoint(cursor=200),  # written before chaining existed
+        Checkpoint(cursor=200, run_id="old", as_of=AS_OF - MAX_CHAIN_GAP - timedelta(hours=2)),
+    ],
+)
+def test_chain_falls_back_without_a_usable_checkpoint(
+    tmp_path: Path, registry: Router, checkpoint: Checkpoint
+) -> None:
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=200&limit={FEED_PAGE_LIMIT}", {"results": []}
+    )
+    data = DataDir(tmp_path)
+    data.write_checkpoint("npm", checkpoint)
+    manifest = default_run(data, registry, AS_OF, chain=True)
+    assert manifest.chained_from is None
+    assert manifest.window.start == AS_OF - timedelta(hours=24)
+
+
+def test_data_dir_lock_is_exclusive(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    with data.lock(), pytest.raises(DataDirBusyError), data.lock():
+        pass
+    with data.lock():  # released again
+        pass

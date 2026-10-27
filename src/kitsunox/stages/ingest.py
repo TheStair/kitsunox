@@ -8,6 +8,7 @@ worker threads fetched it.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from compression import zstd
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -173,6 +174,16 @@ def write_jsonl(path: Path, records: Iterable[Record]) -> None:
             handle.write("\n")
 
 
+def changes_file(run_dir: Path) -> Path:
+    """A run's Stage 0 output: `changes.jsonl`, or `changes.jsonl.zst` once retention has
+    compressed it."""
+    plain = run_dir / "changes.jsonl"
+    return plain if plain.exists() else run_dir / "changes.jsonl.zst"
+
+
 def read_changes(path: Path) -> Sequence[Change]:
+    if path.suffix == ".zst":
+        with zstd.open(path, "rt", encoding="utf-8") as handle:
+            return [Change.load_json(line) for line in handle if line.strip()]
     with path.open(encoding="utf-8") as handle:
         return [Change.load_json(line) for line in handle if line.strip()]

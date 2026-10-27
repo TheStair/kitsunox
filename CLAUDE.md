@@ -111,6 +111,8 @@ uv run kitsunox watchlist build                     # weekly popularity list (~1
 uv run kitsunox ingest record --since-seq N --until-seq M --window-hours 2   # small live Stage 0 run
 uv run kitsunox ingest replay <run_id>             # offline replay; must print "identical"
 uv run kitsunox labels sync                        # OSV malware labels (~220 MB)
+uv run kitsunox collect                            # hourly tick: refresh lists, chained ingest, prune
+uv run kitsunox data prune --keep-days 7           # retention (takes the data-dir lock)
 uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor popularity-only
 ```
 
@@ -270,6 +272,10 @@ Key invariants:
 - Analysis never reads the clock; it uses the run's `as_of`.
 - Tarballs are only ever extracted with `extract_tar_gz`.
 - Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
+- A launchd agent (`local.kitsunox.collect`) runs `kitsunox collect` hourly against `data/`.
+  Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit
+  `data/state/` or delete blobs while the agent might be running. Runs older than 7 days are
+  pruned and can't be replayed. See `docs/decisions/0006-scheduled-collection-and-retention.md`.
 - Validation results live in `docs/validation.md`. Add a new dated section after significant
   changes.
 

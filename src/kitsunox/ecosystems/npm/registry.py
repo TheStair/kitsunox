@@ -74,7 +74,7 @@ class NpmEcosystem:
 
     def packument(self, name: str) -> Packument | None:
         """Full packument, or None if the package no longer exists (404)."""
-        response = self.fetcher.get(f"{REGISTRY_URL}/{quote(name, safe='@')}", headers=_JSON)
+        response = self.fetcher.get(packument_url(name), headers=_JSON)
         if response.status == 404:
             return None
         if not response.ok:
@@ -168,3 +168,7 @@ def parse_downloads(doc: object, batch: Sequence[str]) -> dict[str, int | None]:
             raise ValueError(f"bad download count for {name}")
         counts[name] = downloads
     return counts
+
+
+def packument_url(name: str) -> str:
+    return f"{REGISTRY_URL}/{quote(name, safe='@')}"

@@ -5,19 +5,29 @@ Layout under the data directory (gitignored):
     blobs/                      content-addressed HTTP response bodies, shared by all runs
     http-immutable/             cross-run index for immutable responses (e.g. tarballs)
     state/<ecosystem>.json      change-feed checkpoint for continuous mode
+    .lock                       held by every command that writes runs or deletes blobs
     watchlists/<ecosystem>/     popularity watchlists, one JSON file per build
     runs/<run_id>/
         manifest.json           RunManifest
         snapshot.json           every HTTP response the run used
-        changes.jsonl           Stage 0 output, one Change per line
+        changes.jsonl           Stage 0 output, one Change per line (`.jsonl.zst` once pruned)
         skipped.jsonl           packages Stage 0 could not process, with reasons
+        retention.json          only on pruned runs: which blobs were kept (core/retention.py)
+
+Chained runs (`IngestRequest.chain`, used by `kitsunox collect`) continue from the checkpoint the
+previous run left. Their window starts `CHAIN_OVERLAP` before the previous run's `as_of`, so a
+release that reached the feed a little after it was published is not lost between runs. Because
+the feed ranges are contiguous, a chained run's window is covered by construction.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -54,6 +64,28 @@ class WatchlistMissingError(LookupError):
     """Watchlist mode was requested but no watchlist has been built yet."""
 
 
+class RunPrunedError(LookupError):
+    """The run's blobs were removed by retention, so it can no longer be replayed."""
+
+
+class DataDirBusyError(RuntimeError):
+    """Another Kitsunox process holds the data directory lock."""
+
+
+CHAIN_OVERLAP = timedelta(minutes=15)
+MAX_CHAIN_GAP = timedelta(hours=48)
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """Where the last default-range run stopped reading the feed, and which run that was. Files
+    written before chaining existed hold only the cursor."""
+
+    cursor: int
+    run_id: str | None = None
+    as_of: datetime | None = None
+
+
 class RunManifest(Persisted):
     """Everything needed to identify, verify and replay one run."""
 
@@ -75,6 +107,7 @@ class RunManifest(Persisted):
     popularity_failures: int = 0
     feed_start_estimate: datetime | None = None
     window_covered: bool | None = None
+    chained_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,17 +132,46 @@ class DataDir:
     def checkpoint_path(self, ecosystem: str) -> Path:
         return self.root / "state" / f"{ecosystem}.json"
 
-    def read_checkpoint(self, ecosystem: str) -> int | None:
+    def read_checkpoint(self, ecosystem: str) -> Checkpoint | None:
         path = self.checkpoint_path(ecosystem)
         if not path.exists():
             return None
-        value = json.loads(path.read_text()).get("cursor")
-        return value if isinstance(value, int) else None
+        raw = json.loads(path.read_text())
+        cursor, run_id, as_of = raw.get("cursor"), raw.get("run_id"), raw.get("as_of")
+        if not isinstance(cursor, int):
+            return None
+        return Checkpoint(
+            cursor=cursor,
+            run_id=run_id if isinstance(run_id, str) else None,
+            as_of=datetime.fromisoformat(as_of) if isinstance(as_of, str) else None,
+        )
 
-    def write_checkpoint(self, ecosystem: str, cursor: int) -> None:
+    def write_checkpoint(self, ecosystem: str, checkpoint: Checkpoint) -> None:
         path = self.checkpoint_path(ecosystem)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"cursor": cursor}) + "\n")
+        raw = {
+            "cursor": checkpoint.cursor,
+            "run_id": checkpoint.run_id,
+            "as_of": checkpoint.as_of.isoformat() if checkpoint.as_of else None,
+        }
+        path.write_text(json.dumps(raw) + "\n")
+
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        """Exclusive, non-blocking lock on the data directory. Pruning deletes blobs that no run
+        references, so it must never overlap a run that is still writing them."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.root / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise DataDirBusyError(
+                    f"{self.root} is in use by another kitsunox process"
+                ) from exc
+            yield
+        finally:
+            os.close(fd)  # closing releases the lock
 
 
 @dataclass(frozen=True)
@@ -122,6 +184,7 @@ class IngestRequest:
     workers: int = 8
     popularity: PopularityMode = PopularityMode.WATCHLIST
     watchlist_id: str | None = None
+    chain: bool = False
 
 
 def make_run_id(ecosystem: str, as_of: datetime) -> str:
@@ -186,12 +249,15 @@ def record_ingest(
         if request.since is not None:
             since = request.since
         elif checkpoint is not None:
-            since = checkpoint
+            since = checkpoint.cursor
         else:
             since = max(0, until - request.lookback)
         window = Window(
             start=request.as_of - timedelta(hours=request.window_hours), end=request.as_of
         )
+        chained_from = _chain_parent(request, checkpoint)
+        if chained_from is not None and checkpoint is not None and checkpoint.as_of is not None:
+            window = Window(start=checkpoint.as_of - CHAIN_OVERLAP, end=request.as_of)
         result = run_ingest(
             ecosystem,
             window,
@@ -221,12 +287,27 @@ def record_ingest(
         watchlist_sha256=watchlist_sha,
         popularity_failures=len(result.popularity_failures),
         feed_start_estimate=result.feed_start_estimate,
-        window_covered=result.window_covered,
+        window_covered=True if chained_from is not None else result.window_covered,
+        chained_from=chained_from,
     )
     manifest = _persist(data, manifest, snapshot, result)
     if not explicit_since and request.until is None:
-        data.write_checkpoint(ecosystem.name, until)
+        data.write_checkpoint(
+            ecosystem.name, Checkpoint(cursor=until, run_id=run_id, as_of=request.as_of)
+        )
     return manifest
+
+
+def _chain_parent(request: IngestRequest, checkpoint: Checkpoint | None) -> str | None:
+    """The run this one continues, if it can: chaining needs the default feed range and a
+    checkpoint that says when the previous run ended, recently enough. Otherwise the run falls
+    back to `window_hours` and the usual coverage estimate."""
+    if not request.chain or request.since is not None or request.until is not None:
+        return None
+    if checkpoint is None or checkpoint.run_id is None or checkpoint.as_of is None:
+        return None
+    gap = request.as_of - checkpoint.as_of
+    return checkpoint.run_id if timedelta(0) < gap <= MAX_CHAIN_GAP else None
 
 
 def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> IngestResult:
@@ -234,6 +315,8 @@ def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> Inge
     used, verified by hash). No network access."""
     run_dir = data.run_dir(run_id)
     manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
+    if (run_dir / "retention.json").exists():
+        raise RunPrunedError(f"run {run_id} was pruned; its HTTP bodies are no longer stored")
     fetcher = HttpFetcher(
         store=data.blobs,
         snapshot=Snapshot.load(run_dir / "snapshot.json"),

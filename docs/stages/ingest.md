@@ -23,7 +23,20 @@ uv run kitsunox watchlist build
 
 # Re-run offline from the run's snapshot and verify byte-identical output
 uv run kitsunox ingest replay 20261027T184048Z-npm
+
+# Chained: continue from the previous run (window starts 15 min before it ended)
+uv run kitsunox ingest record --chain
+
+# Unattended: what the hourly launchd agent runs (watchlist/labels refresh, chained run, prune)
+uv run kitsunox collect
+uv run kitsunox data prune --keep-days 7
 ```
+
+**Scheduling.** Install the agent with:
+`uv run kitsunox schedule plist > ~/Library/LaunchAgents/local.kitsunox.collect.plist` and
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.kitsunox.collect.plist`. Remove
+it with `launchctl bootout gui/$(id -u)/local.kitsunox.collect`. Its log is
+`data/logs/collect.log`. Design: [0006](../decisions/0006-scheduled-collection-and-retention.md).
 
 Output lives in `data/runs/<run_id>/`:
 
@@ -33,6 +46,7 @@ Output lives in `data/runs/<run_id>/`:
 | `snapshot.json` | Every HTTP response the run used (request key → blob hash, status, fetch time) |
 | `changes.jsonl` | One `Change` per line, sorted by (ecosystem, name, version) |
 | `skipped.jsonl` | Packages that couldn't be processed, with the reason |
+| `retention.json` | Only on pruned runs (older than 7 days): the pinned snapshot entries. `changes.jsonl` is then `changes.jsonl.zst` and the run can't be replayed |
 
 Response bodies live once in `data/blobs/`, zstd-compressed and addressed by SHA-256.
 
@@ -118,7 +132,9 @@ sequenceDiagram
 | Replay | byte-identical (`ingest replay` digest match) |
 
 Extrapolated to a full day (~100k packages): about 50 minutes of fetching and about 10 GB of
-compressed blobs. That still needs a retention policy (open question below).
+compressed blobs. Measured on the first real 24h run: 46.5 minutes and 5.5 GB. Retention is in
+[0006](../decisions/0006-scheduled-collection-and-retention.md). A chained hourly tick took
+2m23s for 70 minutes of feed (3,502 packages), and 9s for 3 minutes of feed.
 
 ## Known limits
 
@@ -138,8 +154,9 @@ See also [validation.md](../validation.md) for measured results.
   past the range. The next run picks it up, but only if its publish time is still inside that
   run's window.
 - **Re-processing across runs.** A package modified for an unrelated reason (dist-tag, deprecate)
-  shows up in the feed again, and its in-window versions are emitted again. Cross-run dedupe is
-  not implemented.
+  shows up in the feed again, and its in-window versions are emitted again. Chained runs add a
+  15-minute overlap on purpose. Datasets dedupe across runs (the earliest run wins); runs
+  themselves don't.
 - **Full packuments are large.** Packages with thousands of versions produce multi-MB documents.
   The abbreviated format lacks the per-version `time` map and `_npmUser`, so it can't replace
   them.

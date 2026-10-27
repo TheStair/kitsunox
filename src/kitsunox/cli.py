@@ -1,6 +1,9 @@
 """Command-line entry point. Pipeline commands are added as each stage lands."""
 
 import os
+import plistlib
+import shutil
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -8,8 +11,11 @@ from typing import Annotated
 import typer
 
 from kitsunox import __version__
+from kitsunox.collect import DEFAULT_KEEP_DAYS, collect
+from kitsunox.core.retention import prune
 from kitsunox.core.run import (
     DataDir,
+    DataDirBusyError,
     IngestRequest,
     PopularityMode,
     RunManifest,
@@ -21,8 +27,8 @@ from kitsunox.core.run import (
 )
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
-from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem
-from kitsunox.evaluation.harness import make_dataset, run_eval, sync_labels
+from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
+from kitsunox.evaluation.harness import label_store, make_dataset, run_eval, sync_labels
 from kitsunox.evaluation.metrics import PREDICTORS, render_markdown
 
 app = typer.Typer(help="Flag likely software supply chain attacks in recent npm releases.")
@@ -34,6 +40,12 @@ labels_app = typer.Typer(help="Ground-truth malware labels (OSV MAL- records).")
 app.add_typer(labels_app, name="labels")
 eval_app = typer.Typer(help="Evaluation: build datasets from runs and score predictors.")
 app.add_typer(eval_app, name="eval")
+data_app = typer.Typer(help="Data directory maintenance.")
+app.add_typer(data_app, name="data")
+schedule_app = typer.Typer(help="Run `kitsunox collect` on a schedule (macOS launchd).")
+app.add_typer(schedule_app, name="schedule")
+
+LAUNCHD_LABEL = "local.kitsunox.collect"
 
 DataDirOption = Annotated[
     Path,
@@ -89,6 +101,10 @@ def ingest_record(
     watchlist: Annotated[
         str | None, typer.Option(help="Watchlist id. Default: newest built before --as-of.")
     ] = None,
+    chain: Annotated[
+        bool,
+        typer.Option(help="Continue from the previous run: window starts where it ended."),
+    ] = False,
 ) -> None:
     """Fetch recent npm changes and write a replayable run."""
     moment = as_of or datetime.now(UTC)
@@ -103,9 +119,15 @@ def ingest_record(
         workers=workers,
         popularity=popularity,
         watchlist_id=watchlist,
+        chain=chain,
     )
+    data = DataDir(data_dir)
     try:
-        manifest = record_ingest(DataDir(data_dir), NpmEcosystem, request)
+        with data.lock():
+            manifest = record_ingest(data, NpmEcosystem, request)
+    except DataDirBusyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
     except WatchlistMissingError as exc:
         typer.echo(f"{exc}. Run `kitsunox watchlist build` first, or pass --popularity none.")
         raise typer.Exit(code=2) from exc
@@ -205,12 +227,107 @@ def eval_run(
     typer.echo(render_markdown(report))
 
 
+@app.command("collect")
+def collect_cmd(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    keep_days: Annotated[int, typer.Option(min=1)] = DEFAULT_KEEP_DAYS,
+) -> None:
+    """One unattended collection tick: refresh watchlist/labels when stale, record a chained
+    ingest run, prune old runs. Exits 0 without doing anything if another tick is running."""
+
+    def log(message: str) -> None:
+        typer.echo(f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ} {message}")
+
+    data = DataDir(data_dir)
+    try:
+        with data.lock():
+            log("collect: start")
+            collect(data, now=datetime.now(UTC), keep_days=keep_days, log=log)
+            log("collect: done")
+    except DataDirBusyError as exc:
+        log(f"collect: skipped, {exc}")
+
+
+@data_app.command("prune")
+def data_prune(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    keep_days: Annotated[int, typer.Option(min=1)] = DEFAULT_KEEP_DAYS,
+) -> None:
+    """Drop HTTP bodies of runs older than KEEP_DAYS (they can no longer be replayed), keeping
+    packuments of packages with OSV malware records, and compress their changes."""
+    data = DataDir(data_dir)
+    labels_id = label_store(data).latest_id(NPM)
+    if labels_id is None:
+        typer.echo("no label set; run `kitsunox labels sync` first", err=True)
+        raise typer.Exit(code=2)
+    labels = label_store(data).load(NPM, labels_id)
+    try:
+        with data.lock():
+            report = prune(
+                data,
+                now=datetime.now(UTC),
+                keep_days=keep_days,
+                pinned_names=labels.labels.keys(),
+                metadata_url=packument_url,
+            )
+    except DataDirBusyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(
+        f"{len(report.runs_pruned)} runs pruned, {report.blobs_pinned} blobs pinned, "
+        f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB freed)"
+    )
+
+
+@schedule_app.command("plist")
+def schedule_plist(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    interval_minutes: Annotated[int, typer.Option(min=10)] = 60,
+) -> None:
+    """Print a launchd agent that runs `kitsunox collect` every INTERVAL_MINUTES. Install it
+    with: kitsunox schedule plist > ~/Library/LaunchAgents/local.kitsunox.collect.plist &&
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.kitsunox.collect.plist"""
+    uv = shutil.which("uv")
+    if uv is None:
+        typer.echo("uv not found on PATH", err=True)
+        raise typer.Exit(code=2)
+    project = Path.cwd().resolve()
+    data = data_dir.resolve()
+    log = data / "logs" / "collect.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    agent = {
+        "Label": LAUNCHD_LABEL,
+        "ProgramArguments": [
+            uv,
+            "run",
+            "--frozen",
+            "--project",
+            str(project),
+            "kitsunox",
+            "collect",
+            "--data-dir",
+            str(data),
+        ],
+        "WorkingDirectory": str(project),
+        "StartInterval": interval_minutes * 60,
+        "RunAtLoad": False,
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+        "EnvironmentVariables": {"PATH": "/usr/bin:/bin:" + str(Path(uv).parent)},
+        "ProcessType": "Background",
+        "LowPriorityIO": True,
+    }
+    sys.stdout.buffer.write(plistlib.dumps(agent))
+
+
 def _print_summary(manifest: RunManifest, data_dir: Path) -> None:
     typer.echo(f"run:      {manifest.run_id}  ({data_dir / 'runs' / manifest.run_id})")
     typer.echo(
         f"window:   {manifest.window.start.isoformat()} .. {manifest.window.end.isoformat()}"
     )
     typer.echo(f"feed:     ({manifest.cursor_since}, {manifest.cursor_until}]")
+    if manifest.chained_from:
+        typer.echo(f"chained:  from {manifest.chained_from}")
     if manifest.window_covered is False and manifest.feed_start_estimate is not None:
         typer.echo(
             f"WARNING:  the feed range only reaches back to about "
