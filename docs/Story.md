@@ -112,7 +112,7 @@ same protocol: 10 commits deep, Actions with tags): Actions 390 changes -> 4 ale
 392 changes -> 1 alert -- the same five survivors as the rescore above. Each survivor is
 a correct detection of its behaviour; review time is the remaining cost.
 
-**Holdout-2 (th**Holdout-2 (the measurement, Oct 26):** 80 targets drawn by seed 20261026, disjoint by
+**Holdout-2 (the measurement, Oct 26):** 80 targets drawn by seed 20261026, disjoint by
 repository and owner, hunted once with frozen rules after the three policy questions were
 settled (all three kept as they were). Queues in `triage/measurement/`.
 
@@ -135,7 +135,11 @@ Six root causes explain all 19 (a description of what matched, not a disposition
 
 The two precision gaps are **reported, not fixed**: fixing them would make holdout-2
 calibration. Dispositions and minutes per alert are recorded in each queue's
-`dispositions.csv`.allenges and how they were solved
+`dispositions.csv`.
+
+---
+
+## 5. Challenges and how they were solved
 
 Each is a candidate slide: *problem -> how it was found -> fix -> measured effect.*
 
@@ -259,7 +263,8 @@ benchmark fetching code from a gist, an action writing an SSH key into `~/.ssh`)
 open **policy** questions left to the designer: whether `scripts/` is a build directory
 (4 alerts: dev scripts using `child_process`), whether many low/medium findings in one
 large feature commit should reach the threshold through the category bonus (2), and
-library code in a newly added bundle (1: `@actions/core`'s own `powershell` call).
+library code in a newly added bundle (1: `@actions/core`'s own `powershell` call). All three were
+settled before holdout-2 ran: each kept as it was.
 
 **Review tooling.** The queue was rebuilt for the human reviewer: an at-a-glance table, one
 card per alert with a plain-words headline and a fact table, evidence and circumstance
