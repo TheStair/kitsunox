@@ -50,6 +50,7 @@ which is gitignored.
 - [`architecture.md`](architecture.md): pipeline, data models, stage contracts
 - [`threat-model.md`](threat-model.md): attack patterns and planned coverage
 - [`evaluation.md`](evaluation.md): datasets, metrics, results log
+- [`validation.md`](validation.md): what's been verified about the implementation, and how
 - [`roadmap.md`](roadmap.md): phases and decisions
 - [`stages/`](stages/): one page per pipeline stage
 - [`decisions/`](decisions/): records of significant design choices

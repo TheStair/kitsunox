@@ -5,6 +5,12 @@ normalized relative paths to file bytes. Entries that aren't regular files (syml
 devices, FIFOs) and entries with unsafe paths are not extracted; they're reported in `skipped`
 because their presence can itself be a signal. Size, file-count and compression-ratio limits guard
 against archive bombs.
+
+Parser differentials: a strict tar reader stops at the end-of-archive marker or the first invalid
+header, but lenient readers keep going, so an attacker can hide entries that some installer sees
+and an analyzer doesn't. We therefore read leniently (skipping zero and invalid blocks) so every
+entry any reader could find is extracted, and record an `anomaly` whenever the lenient and strict
+readings differ or non-zero bytes follow the last entry. `npm pack` never produces either.
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ class ArtifactTree(Mapping[str, bytes]):
     files: Mapping[str, bytes]
     skipped: tuple[SkippedEntry, ...] = ()
     duplicates: tuple[str, ...] = field(default=())
+    anomalies: tuple[str, ...] = field(default=())
 
     def __getitem__(self, path: str) -> bytes:
         return self.files[path]
@@ -66,12 +73,15 @@ def extract_tar_gz(
         raise ArchiveError(f"compressed size {len(data)} exceeds limit")
     raw = _gunzip_limited(data, limits)
 
+    strict_count = _strict_member_count(raw)
     files: dict[str, bytes] = {}
     skipped: list[SkippedEntry] = []
     duplicates: list[str] = []
+    lenient_count = 0
     try:
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:", ignore_zeros=True) as tar:
             for count, member in enumerate(tar, start=1):
+                lenient_count = count
                 if count > limits.max_files:
                     raise ArchiveError(f"more than {limits.max_files} entries")
                 if member.isdir():
@@ -92,9 +102,38 @@ def extract_tar_gz(
                 if path in files:
                     duplicates.append(path)
                 files[path] = handle.read()
+            end_offset = tar.offset
     except tarfile.TarError as exc:
         raise ArchiveError(f"malformed tar: {exc}") from exc
-    return ArtifactTree(files=files, skipped=tuple(skipped), duplicates=tuple(duplicates))
+
+    anomalies = []
+    if strict_count != lenient_count:
+        anomalies.append(
+            f"{lenient_count - strict_count} entries follow an end-of-archive marker or invalid "
+            "header (a strict tar reader would not see them)"
+        )
+    if any(raw[end_offset:]):
+        anomalies.append("non-zero data after the last archive entry")
+    return ArtifactTree(
+        files=files,
+        skipped=tuple(skipped),
+        duplicates=tuple(duplicates),
+        anomalies=tuple(anomalies),
+    )
+
+
+def _strict_member_count(raw: bytes) -> int:
+    """Entries a strict reader sees. Fails if even the first header is unreadable: then the
+    input isn't a tar archive at all, however much a lenient scan might salvage from it."""
+    count = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
+            for _ in tar:
+                count += 1
+    except tarfile.TarError as exc:
+        if count == 0:
+            raise ArchiveError(f"not a tar archive: {exc}") from exc
+    return count
 
 
 def safe_relative_path(name: str, strip_components: int = 0) -> str | None:
@@ -108,8 +147,8 @@ def safe_relative_path(name: str, strip_components: int = 0) -> str | None:
     if ".." in parts:
         return None
     parts = parts[strip_components:]
-    if not parts:
-        return None
+    if not parts or (len(parts[0]) > 1 and parts[0][1] == ":"):
+        return None  # empty, or a drive letter exposed by stripping ("package/C:/x" -> "C:/x")
     return posixpath.join(*parts)
 
 
@@ -122,6 +161,8 @@ def _gunzip_limited(data: bytes, limits: ExtractLimits) -> bytes:
         raise ArchiveError(f"malformed gzip: {exc}") from exc
     if len(out) > cap or decompressor.unconsumed_tail:
         raise ArchiveError(f"decompressed size exceeds limit ({cap} bytes)")
+    if not decompressor.eof:
+        raise ArchiveError("truncated gzip stream")
     if decompressor.unused_data:
         # A second gzip member or trailing bytes: tools disagree on how to read these, which is
         # exactly the kind of ambiguity an attacker could exploit, so refuse.

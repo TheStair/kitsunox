@@ -73,6 +73,7 @@ class Packument:
             if version in self.versions and moment is not None:
                 self.publish_times[version] = moment
         self.unpublished = "unpublished" in _dict(root.get("time")) and not self.versions
+        self.modified_at = _parse_time(_dict(root.get("time")).get("modified"))
         self.top_level_repository = root.get("repository")
 
     def versions_in(self, window: Window) -> list[str]:
@@ -141,8 +142,13 @@ def publish_info(manifest: Mapping[str, Any], published_at: datetime | None) -> 
     trusted = _dict(npm_user.get("trustedPublisher"))
     approver = _dict(npm_user.get("approver"))
     dist = _dict(manifest.get("dist"))
+    raw_maintainers = manifest.get("maintainers")
     maintainers = sorted(
-        {name for m in manifest.get("maintainers") or [] if (name := _str(_dict(m).get("name")))}
+        {
+            name
+            for m in (raw_maintainers if isinstance(raw_maintainers, list) else [])
+            if (name := _str(_dict(m).get("name")))
+        }
     )
     return PublishInfo(
         published_at=published_at,

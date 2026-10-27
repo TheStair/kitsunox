@@ -1,4 +1,5 @@
 import gzip
+import io
 import tarfile
 
 import pytest
@@ -34,6 +35,8 @@ def test_extracts_regular_files_and_strips_prefix() -> None:
         ("package/../evil.js", None),
         ("/etc/passwd", None),
         ("C:/x.js", None),
+        ("package/C:/Windows/x.js", None),  # found by fuzzing, 2026-10-27
+        ("package/C:", None),
         ("package\\x.js", None),
         ("package/a\x00.js", None),
         ("package", None),
@@ -102,3 +105,53 @@ def test_trailing_gzip_member_rejected() -> None:
 def test_malformed_input_raises_archive_error(data: bytes) -> None:
     with pytest.raises(ArchiveError):
         extract_tar_gz(data)
+
+
+def _raw_member(name: str, data: bytes) -> bytes:
+    """One tar header + data block, without the end-of-archive marker."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()[: 512 + ((len(data) + 511) // 512) * 512]
+
+
+EOF_MARKER = b"\0" * 1024
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [EOF_MARKER, b"\xff" * 512, b"\0" * 512],
+    ids=["after-eof-marker", "after-garbage-header", "after-zero-block"],
+)
+def test_entries_hidden_from_strict_readers_are_extracted_and_flagged(separator: bytes) -> None:
+    # Parser-differential attack: content a lenient installer would extract must not be
+    # invisible to analysis. Regression for the 2026-10-27 validation finding.
+    raw = (
+        _raw_member("package/index.js", b"benign")
+        + separator
+        + _raw_member("package/evil.js", b"payload")
+        + EOF_MARKER
+    )
+    tree = extract_tar_gz(gzip.compress(raw), strip_components=1)
+    assert sorted(tree) == ["evil.js", "index.js"]
+    assert tree["evil.js"] == b"payload"
+    assert any("strict tar reader" in a for a in tree.anomalies)
+
+
+def test_trailing_non_zero_bytes_are_flagged() -> None:
+    raw = _raw_member("package/index.js", b"x") + EOF_MARKER + b"\x01" * 7
+    tree = extract_tar_gz(gzip.compress(raw), strip_components=1)
+    assert "non-zero data after the last archive entry" in tree.anomalies
+
+
+def test_normal_archive_has_no_anomalies() -> None:
+    tree = extract_tar_gz(make_tar_gz([TarEntry("package/a.js", b"1")]), strip_components=1)
+    assert tree.anomalies == ()
+
+
+def test_truncated_gzip_is_rejected() -> None:
+    data = make_tar_gz([TarEntry("package/a.js", b"x" * 5000), TarEntry("package/b.js", b"y")])
+    with pytest.raises(ArchiveError, match="truncated"):
+        extract_tar_gz(data[:-20])

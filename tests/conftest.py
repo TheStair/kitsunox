@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import tarfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -14,6 +15,15 @@ from pathlib import Path
 
 import httpx
 import pytest
+from hypothesis import settings
+
+# Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
+# reproducibility rule. `HYPOTHESIS_PROFILE=deep` runs many more examples for a validation pass.
+settings.register_profile("default", derandomize=True, max_examples=300, deadline=None)
+settings.register_profile("deep", derandomize=True, max_examples=20_000, deadline=None)
+# Random seeds, for searching beyond the fixed examples during a validation pass.
+settings.register_profile("explore", derandomize=False, max_examples=20_000, deadline=None)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

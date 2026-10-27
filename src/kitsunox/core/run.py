@@ -72,6 +72,8 @@ class RunManifest(Persisted):
     watchlist_id: str | None = None
     watchlist_sha256: str | None = None
     popularity_failures: int = 0
+    feed_start_estimate: datetime | None = None
+    window_covered: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +219,8 @@ def record_ingest(
         watchlist_id=watchlist_id,
         watchlist_sha256=watchlist_sha,
         popularity_failures=len(result.popularity_failures),
+        feed_start_estimate=result.feed_start_estimate,
+        window_covered=result.window_covered,
     )
     manifest = _persist(data, manifest, snapshot, result)
     if not explicit_since and request.until is None:

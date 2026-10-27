@@ -23,9 +23,12 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170.12",
     "mypy>=2.4.0",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.3",
+    "semver>=3.1.0",
 ]
 
 [tool.ruff]
@@ -54,3 +57,13 @@ addopts = "-ra --strict-markers --import-mode=importlib -m 'not network'"
 markers = [
     "network: test makes live network calls; deselected by default",
 ]
+
+[tool.coverage.run]
+source = ["kitsunox"]
+branch = true
+
+[tool.coverage.report]
+# Floor for `uv run pytest --cov`; measured 96% branch coverage on 2026-10-27.
+fail_under = 90
+show_missing = true
+skip_covered = true

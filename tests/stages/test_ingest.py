@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kitsunox.core.interfaces import ChangeStub, DownloadCounts
+from kitsunox.core.interfaces import ChangeStub, DownloadCounts, PackageChanges
 from kitsunox.core.models import (
     ArtifactRef,
     Change,
@@ -53,6 +53,7 @@ class FakeEcosystem:
         self.behavior = behavior
         self.downloads = downloads or {}
         self.popularity_requests: list[tuple[str, ...]] = []
+        self.modified: dict[str, datetime] = {}
 
     def feed_head(self) -> int:
         return 0
@@ -60,11 +61,12 @@ class FakeEcosystem:
     def list_changes(self, since: int, until: int) -> list[ChangeStub]:
         return [ChangeStub(name=n, cursor=i) for i, n in enumerate(sorted(self.behavior))]
 
-    def build_changes(self, stub: ChangeStub, window: Window) -> list[Change]:
+    def build_changes(self, stub: ChangeStub, window: Window) -> PackageChanges:
         outcome = self.behavior[stub.name]
         if isinstance(outcome, Exception):
             raise outcome
-        return outcome
+        modified = self.modified.get(stub.name)
+        return PackageChanges(changes=tuple(outcome), modified_at=modified)
 
     def download_counts(self, names: Sequence[str], as_of: datetime) -> DownloadCounts:
         self.popularity_requests.append(tuple(names))
@@ -81,6 +83,7 @@ def test_failures_are_recorded_not_dropped() -> None:
             "ok": [change("ok", "1.0.0")],
             "net": FetchError("timeout"),
             "bad": ValueError("malformed\nsecond line"),
+            "bug": TypeError("'float' object is not iterable"),
             "quiet": [],
         }
     )
@@ -88,9 +91,10 @@ def test_failures_are_recorded_not_dropped() -> None:
     assert [str(c.new.ref) for c in result.changes] == ["fake:ok@1.0.0"]
     assert [(s.name, s.reason) for s in result.skipped] == [
         ("bad", "ValueError: malformed"),
+        ("bug", "UNEXPECTED TypeError: 'float' object is not iterable"),
         ("net", "FetchError: timeout"),
     ]
-    assert result.packages_seen == 4
+    assert result.packages_seen == 5
 
 
 @pytest.mark.parametrize("workers", [1, 8])
@@ -154,3 +158,35 @@ def test_watchlist_popularity_answers_every_existing_package() -> None:
 def test_no_popularity_source() -> None:
     result = run_ingest(popular_fixture(), WINDOW, since=0, until=10)
     assert all(c.popularity is None for c in result.changes)
+
+
+@pytest.mark.parametrize(
+    ("earliest_hour", "covered"), [(0, True), (6, False)], ids=["covered", "gap"]
+)
+def test_window_coverage_from_earliest_modification(earliest_hour: int, covered: bool) -> None:
+    eco = FakeEcosystem({"a": [change("a", "1.0.0")], "b": [], "c": FetchError("x")})
+    eco.modified = {
+        "a": WINDOW.start.replace(hour=earliest_hour),
+        "b": WINDOW.start.replace(hour=12),
+    }
+    result = run_ingest(eco, WINDOW, since=0, until=10)
+    assert result.feed_start_estimate == WINDOW.start.replace(hour=earliest_hour)
+    assert result.window_covered is covered
+
+
+def test_window_coverage_unknown_without_packages() -> None:
+    result = run_ingest(FakeEcosystem({}), WINDOW, since=0, until=10)
+    assert result.feed_start_estimate is None
+    assert result.window_covered is None
+
+
+def test_feed_start_estimate_ignores_lagging_outliers() -> None:
+    names = [f"p{i:03d}" for i in range(200)]
+    eco = FakeEcosystem({n: [] for n in names})
+    base = WINDOW.start.replace(hour=10)
+    eco.modified = {n: base.replace(minute=i % 60) for i, n in enumerate(names)}
+    eco.modified["p000"] = WINDOW.start  # one package that reached the feed very late
+    eco.modified["p001"] = WINDOW.start
+    result = run_ingest(eco, WINDOW, since=0, until=10)
+    assert result.feed_start_estimate == base.replace(minute=0)  # 1st percentile, not min
+    assert result.window_covered is False

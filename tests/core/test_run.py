@@ -75,6 +75,9 @@ def test_record_then_replay_is_identical_api_mode(tmp_path: Path, registry: Rout
     assert manifest.run_id == "20261027T120000Z-npm"
     assert manifest.packages_seen == 2
     assert manifest.change_count == 4  # kx-fixture versions in the window; "gone" is a 404
+    # Fixture packument was last modified at 12:00, after the 00:00 window start.
+    assert manifest.feed_start_estimate == datetime(2026, 10, 27, 12, tzinfo=UTC)
+    assert manifest.window_covered is False
     run_dir = data.run_dir(manifest.run_id)
     changes = read_changes(run_dir / "changes.jsonl")
     assert {c.popularity.downloads for c in changes if c.popularity} == {1234}

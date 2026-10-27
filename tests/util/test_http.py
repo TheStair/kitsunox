@@ -147,3 +147,23 @@ def test_min_interval_paces_network_requests_per_host(tmp_path: Path, router: Ro
     fetcher.get(URL + "2")
     fetcher.get("https://other.example/x")  # different host: not paced
     assert sleeps == [0.5]
+
+
+def test_redirect_to_plain_http_is_refused(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.scheme == "https":
+            return httpx.Response(302, headers={"Location": "http://evil.example/x"})
+        return httpx.Response(200, content=b"tampered")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    with pytest.raises(FetchError, match="non-HTTPS"):
+        make_fetcher(tmp_path, client).get(URL)
+
+
+def test_non_transport_http_errors_become_fetch_errors(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=b"not gzip")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(FetchError, match="DecodingError"):
+        make_fetcher(tmp_path, client).get(URL)

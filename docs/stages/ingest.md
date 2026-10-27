@@ -94,6 +94,9 @@ sequenceDiagram
   They're verified against `dist.integrity` (or the legacy `shasum`) and extracted **in memory**
   by `util.archive.extract_tar_gz`:
   - Unsafe paths, links, devices and FIFOs are reported, not extracted.
+  - Entries a strict tar reader would miss (after an end-of-archive marker or an invalid header)
+    are still extracted, and recorded as `anomalies`. Trailing non-zero data and truncated gzip
+    streams are rejected or flagged too.
   - Size, count and ratio limits stop archive bombs.
   - Trailing data after the gzip stream is rejected.
   - Nothing is written to disk or executed.
@@ -118,6 +121,15 @@ Extrapolated to a full day (~100k packages): about 50 minutes of fetching and ab
 compressed blobs. That still needs a retention policy (open question below).
 
 ## Known limits
+
+See also [validation.md](../validation.md) for measured results.
+
+- **npm's feed omits some publishes.** In one validation sample, 1 of 149 releases (0.7%) never
+  appeared in `_changes`. A supplementary discovery source is an open question.
+- **Window coverage is estimated, not exact.** The 1st percentile of packages' last-modified
+  times estimates where the feed range starts (`feed_start_estimate`). Runs record
+  `window_covered`, and the CLI warns if it's false. The default 400k lookback reached ~31h when
+  probed on 2026-10-27.
 
 - **Popularity is up to a week stale** (watchlist rebuilt weekly; ecosyste.ms adds its own sync
   lag). Packages with many dependents but few downloads aren't watched (dependents aren't a

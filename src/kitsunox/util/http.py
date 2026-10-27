@@ -230,6 +230,8 @@ class HttpFetcher:
             self._pace(url)
             try:
                 with self._client.stream("GET", url, headers=dict(headers or {})) as resp:
+                    if resp.url.scheme != "https":
+                        raise FetchError(f"GET {url}: refusing non-HTTPS response from {resp.url}")
                     if resp.status_code not in RETRYABLE_STATUS:
                         body = self._read_limited(resp)
                         content_type = resp.headers.get("content-type")
@@ -240,6 +242,8 @@ class HttpFetcher:
                     retry_after = _parse_retry_after(resp.headers.get("retry-after"))
             except httpx.TransportError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
+            except httpx.HTTPError as exc:  # decoding errors, redirect loops: not retryable
+                raise FetchError(f"GET {url}: {type(exc).__name__}: {exc}") from exc
             if attempt < self.retry.max_attempts:
                 delay = min(self.retry.max_delay, self.retry.base_delay * 2 ** (attempt - 1))
                 self._sleep(max(delay, retry_after or 0.0))

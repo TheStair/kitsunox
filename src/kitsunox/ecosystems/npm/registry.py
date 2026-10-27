@@ -12,8 +12,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Final
 from urllib.parse import quote
 
-from kitsunox.core.interfaces import ChangeStub, DownloadCounts
-from kitsunox.core.models import ArtifactRef, Change, Window
+from kitsunox.core.interfaces import ChangeStub, DownloadCounts, PackageChanges
+from kitsunox.core.models import ArtifactRef, Window
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM, Packument
 from kitsunox.util.archive import ArtifactTree, extract_tar_gz
 from kitsunox.util.hashing import verify_integrity
@@ -81,11 +81,14 @@ class NpmEcosystem:
             raise FetchError(f"packument {name}: HTTP {response.status}")
         return Packument(response.json(), expected_name=name)
 
-    def build_changes(self, stub: ChangeStub, window: Window) -> list[Change]:
+    def build_changes(self, stub: ChangeStub, window: Window) -> PackageChanges:
         packument = self.packument(stub.name)
         if packument is None:
-            return []
-        return packument.changes_in(window, feed_seq=stub.cursor)
+            return PackageChanges()
+        return PackageChanges(
+            changes=tuple(packument.changes_in(window, feed_seq=stub.cursor)),
+            modified_at=packument.modified_at,
+        )
 
     def download_counts(self, names: Sequence[str], as_of: datetime) -> DownloadCounts:
         """Weekly downloads from the npm downloads API. Slow for scoped names (one paced

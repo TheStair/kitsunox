@@ -24,6 +24,18 @@ class ChangeStub(Record):
     cursor: int
 
 
+class PackageChanges(Record):
+    """What `build_changes` found for one feed entry."""
+
+    changes: tuple[Change, ...] = ()
+    modified_at: datetime | None = Field(
+        default=None,
+        description="When the package last changed. Because the feed lists a package at its "
+        "latest change, a low percentile of these over a run estimates the feed range's start "
+        "time, which is how Stage 0 checks that the range covers the window.",
+    )
+
+
 class DownloadCounts(Record):
     source: str = Field(description="Source and exact period, e.g. 'npm-downloads:<a>..<b>'.")
     period_days: int
@@ -44,7 +56,7 @@ class Ecosystem(Protocol):
         name."""
         ...
 
-    def build_changes(self, stub: ChangeStub, window: Window) -> list[Change]:
+    def build_changes(self, stub: ChangeStub, window: Window) -> PackageChanges:
         """One Change per version of `stub.name` published inside `window`, each paired with the
         version it should be diffed against."""
         ...

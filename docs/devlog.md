@@ -2,6 +2,67 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Validation pass on Stage 0: fuzzing, live cross-checks, 6 fixes
+
+**Stage(s):** Stage 0 ingest and foundations (`util/`, `core/`, `ecosystems/npm/`)
+**Context:** Before building the evaluation harness, the user asked to test and validate what
+exists. Full report: [validation.md](validation.md). Also in this session: schema versions on
+persisted records (`6b027a1`, see architecture.md).
+
+### Decisions
+- **Property-based fuzzing with Hypothesis, deterministic by default** (`derandomize=True`), so
+  the normal test run stays reproducible. An `explore` profile with random seeds and 20k
+  examples is used for validation passes.
+- **Differential testing for semver** against the `semver` library, as an independent oracle
+  instead of hand-picked cases.
+- **Live validation against independent sources:** ecosyste.ms (releases) for completeness and
+  deps.dev for field accuracy. Neither is used in the pipeline itself, which keeps the check
+  independent.
+- **Lenient tar reading + anomaly flag** instead of strict reading. Analysis must see everything
+  any installer might extract. The disagreement between readers is itself evidence.
+- **Catch-all per-package error handling in Stage 0**, recorded as `UNEXPECTED ...` in
+  `skipped.jsonl`. Normally a broad `except` hides bugs, but here the alternative is an attacker
+  being able to halt the scanner with one malformed package. Visibility comes from
+  `skipped.jsonl`.
+
+### Challenges
+- **Tar parser differential (high severity):** a malicious file after an end-of-archive marker,
+  an invalid header, or a zero block was invisible to analysis. Confirmed with crafted archives
+  and fixed (F1 in validation.md).
+- **Run-wide crash from one packument (high severity):** `"maintainers": 1.0` raised
+  `TypeError`. Found by fuzzing, though at first it surfaced only intermittently: the failing
+  example had been found by the random-seed run and saved to Hypothesis's database, and the
+  deterministic run then replayed it. Fixed (F4).
+- **Completeness check looked catastrophic at first:** 823 of 1,015 independently listed
+  releases were "absent".
+  - **Resolution:** the feed range covered only ~31 minutes of the 3-hour window. Within the
+    covered time, 148 of 149 releases were found.
+  - **Why this matters:** it revealed that nothing checked coverage (F6, fixed), and that the
+    "2h window" smoke runs earlier today had really covered ~12–25 minutes. Their throughput
+    numbers are still valid. Their coverage claims weren't.
+- **Feed start estimate:** the minimum last-modified time (18:36) badly overstated coverage. The
+  1st percentile (19:52) matched the measured start, so that's what is used.
+- **Truncated gzip (F2), drive letter after strip (F3, found by deep fuzzing), and HTTP error
+  handling (F5)** were smaller fixes.
+
+### Evaluation snapshot
+- Not a detection evaluation. Implementation quality, before → after:
+  - Tests: 106 → 140.
+  - Branch coverage: 94% → 96%.
+  - Fuzz failures: 4 distinct bugs → 0 over 240k random cases.
+  - Live feed completeness: 99.3% (148/149).
+  - Publish-time accuracy: 127/127.
+  - Provenance: 127/127 after checking the 2 disagreements against npm (deps.dev lag).
+
+### Open questions / next steps
+- **npm feed omissions** (1 in 149 observed; the true rate is unknown). Measure over a larger
+  sample, then decide whether to add a supplementary discovery sweep, e.g. periodically
+  re-checking ecosyste.ms recent releases against our runs.
+- Make the live cross-checks a repeatable `kitsunox validate` command.
+- Provenance is the registry's claim, not a verified Sigstore bundle. Decide whether
+  verification is worth it for Stage 1.
+- Then Phase 3, the evaluation harness.
+
 ## 2026-10-27: Popularity: per-change lookups abandoned for a weekly watchlist
 
 **Stage(s):** Stage 0 ingest (popularity enrichment). Closes Phase 2.

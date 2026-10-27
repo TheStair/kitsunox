@@ -104,3 +104,15 @@ def test_unpublished_package() -> None:
 )
 def test_normalize_repository_url(raw: str, expected: str | None) -> None:
     assert normalize_repository_url(raw) == expected
+
+
+@pytest.mark.parametrize("maintainers", [1.0, "alice", {"name": "alice"}, None, [None, 3]])
+def test_non_list_maintainers_are_ignored(maintainers: object) -> None:
+    # Regression: a float here crashed the whole ingest run (found by fuzzing, 2026-10-27).
+    doc = {
+        "name": "p",
+        "time": {"1.0.0": "2026-10-27T06:00:00Z"},
+        "versions": {"1.0.0": {"maintainers": maintainers}},
+    }
+    (change,) = Packument(doc, expected_name="p").changes_in(WINDOW)
+    assert change.new.publish.maintainers == ()

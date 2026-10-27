@@ -143,6 +143,14 @@ def _print_summary(manifest: RunManifest, data_dir: Path) -> None:
         f"window:   {manifest.window.start.isoformat()} .. {manifest.window.end.isoformat()}"
     )
     typer.echo(f"feed:     ({manifest.cursor_since}, {manifest.cursor_until}]")
+    if manifest.window_covered is False and manifest.feed_start_estimate is not None:
+        typer.echo(
+            f"WARNING:  the feed range only reaches back to about "
+            f"{manifest.feed_start_estimate.isoformat()}, "
+            "after the window start. Releases before that are missed unless their package "
+            "changed again. Use an earlier --since-seq or a larger --lookback-seq.",
+            err=True,
+        )
     typer.echo(f"packages: {manifest.packages_seen} seen")
     typer.echo(f"changes:  {manifest.change_count}")
     typer.echo(f"skipped:  {manifest.skipped_count}")

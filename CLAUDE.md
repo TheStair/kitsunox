@@ -104,6 +104,8 @@ uv run mypy                                        # strict type check
 uv run pytest                                      # offline tests
 uv run pytest tests/test_cli.py::test_version      # single test
 uv run pytest -m network                           # opt-in live-network tests
+uv run pytest --cov                                # coverage, fails under 90% branch
+HYPOTHESIS_PROFILE=explore uv run pytest -p no:cacheprovider tests/util/test_archive_fuzz.py tests/ecosystems/npm/test_npm_fuzz.py   # deep fuzz (~4 min)
 uv run kitsunox --help                             # CLI
 uv run kitsunox watchlist build                     # weekly popularity list (~1 GB transfer, ~10 min)
 uv run kitsunox ingest record --since-seq N --until-seq M --window-hours 2   # small live Stage 0 run
@@ -264,5 +266,8 @@ Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.
 - Analysis never reads the clock; it uses the run's `as_of`.
 - Tarballs are only ever extracted with `extract_tar_gz`.
+- Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
+- Validation results live in `docs/validation.md`. Add a new dated section after significant
+  changes.
 
 Ask before starting implementation of any pipeline stage.
