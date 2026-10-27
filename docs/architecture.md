@@ -74,6 +74,14 @@ Sketch only. Field lists will be refined in Phase 2.
 `Evidence.snippet` is always treated as untrusted text. Renderers must escape it, and it is never
 interpreted. This matters again once an LLM stage exists.
 
+### Schema versions
+
+Every record written to disk on its own (`Change`, `SkippedPackage`, `RunManifest`, `Watchlist`,
+`Snapshot`, cached `SnapshotEntry`) carries `schema_version`. Loaders check it before validating
+and refuse other versions with a clear error (`util/schema.py`, `Persisted.load_json`). Any
+incompatible model change bumps the version and gets a devlog entry. Old files are re-created,
+or a migration is added if they are evaluation data worth keeping.
+
 ## Interfaces
 
 ```python

@@ -27,7 +27,7 @@ import httpx
 
 from kitsunox import __version__
 from kitsunox.core.interfaces import Ecosystem
-from kitsunox.core.models import Record, Window
+from kitsunox.core.models import Persisted, Window
 from kitsunox.core.watchlist import Watchlist, WatchlistStore, build_watchlist
 from kitsunox.stages.ingest import (
     DownloadsApiPopularity,
@@ -53,7 +53,7 @@ class WatchlistMissingError(LookupError):
     """Watchlist mode was requested but no watchlist has been built yet."""
 
 
-class RunManifest(Record):
+class RunManifest(Persisted):
     """Everything needed to identify, verify and replay one run."""
 
     run_id: str
@@ -228,7 +228,7 @@ def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> Inge
     """Re-run Stage 0 for a recorded run using only its snapshot (and the exact watchlist it
     used, verified by hash). No network access."""
     run_dir = data.run_dir(run_id)
-    manifest = RunManifest.model_validate_json((run_dir / "manifest.json").read_bytes())
+    manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
     fetcher = HttpFetcher(
         store=data.blobs,
         snapshot=Snapshot.load(run_dir / "snapshot.json"),

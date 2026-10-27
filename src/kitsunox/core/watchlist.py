@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from kitsunox.core.models import Popularity, Record
+from kitsunox.core.models import Persisted, Popularity, Record
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import FetchError, HttpFetcher
 
@@ -30,7 +30,7 @@ class WatchEntry(Record):
     dependents: int | None = None
 
 
-class Watchlist(Record):
+class Watchlist(Persisted):
     ecosystem: str
     source: str
     built_at: datetime
@@ -123,7 +123,7 @@ class WatchlistStore:
         data = self.path(ecosystem, watchlist_id).read_bytes()
         if sha256 is not None and sha256_hex(data) != sha256:
             raise ValueError(f"watchlist {watchlist_id} changed since it was recorded")
-        return Watchlist.model_validate_json(data)
+        return Watchlist.load_json(data)
 
     def sha256(self, ecosystem: str, watchlist_id: str) -> str:
         return sha256_hex(self.path(ecosystem, watchlist_id).read_bytes())

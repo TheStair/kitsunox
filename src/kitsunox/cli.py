@@ -110,9 +110,7 @@ def ingest_record(
 def ingest_replay(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
     """Re-run Stage 0 offline from a run's snapshot and check the output is identical."""
     data = DataDir(data_dir)
-    manifest = RunManifest.model_validate_json(
-        (data.run_dir(run_id) / "manifest.json").read_bytes()
-    )
+    manifest = RunManifest.load_json((data.run_dir(run_id) / "manifest.json").read_bytes())
     digest = changes_digest(replay_ingest(data, NpmEcosystem, run_id))
     if digest != manifest.changes_sha256:
         typer.echo(f"MISMATCH: recorded {manifest.changes_sha256}, replayed {digest}", err=True)

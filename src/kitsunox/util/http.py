@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict
 
 from kitsunox import __version__
 from kitsunox.util.hashing import sha256_hex
+from kitsunox.util.schema import require_schema_version
 
 USER_AGENT: Final = f"kitsunox/{__version__} (+https://github.com/TheStair/kitsunox)"
 RETRYABLE_STATUS: Final = frozenset({429, 500, 502, 503, 504})
@@ -43,9 +44,13 @@ class FetchError(RuntimeError):
     replay miss)."""
 
 
+SNAPSHOT_SCHEMA_VERSION: Final = 1
+
+
 class SnapshotEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    schema_version: int = SNAPSHOT_SCHEMA_VERSION
     url: str
     status: int
     content_type: str | None
@@ -59,6 +64,7 @@ class Snapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    schema_version: int = SNAPSHOT_SCHEMA_VERSION
     entries: dict[str, SnapshotEntry] = {}
 
     def save(self, path: Path) -> None:
@@ -68,7 +74,9 @@ class Snapshot(BaseModel):
 
     @classmethod
     def load(cls, path: Path) -> Snapshot:
-        return cls.model_validate_json(path.read_bytes())
+        data = path.read_bytes()
+        require_schema_version(data, SNAPSHOT_SCHEMA_VERSION, "Snapshot")
+        return cls.model_validate_json(data)
 
 
 @dataclass(frozen=True)
@@ -257,7 +265,9 @@ class HttpFetcher:
         path = self._immutable_path(key)
         if path is None or not path.exists():
             return None
-        return SnapshotEntry.model_validate_json(path.read_bytes())
+        data = path.read_bytes()
+        require_schema_version(data, SNAPSHOT_SCHEMA_VERSION, "SnapshotEntry")
+        return SnapshotEntry.model_validate_json(data)
 
     def _immutable_store(self, key: str, entry: SnapshotEntry) -> None:
         path = self._immutable_path(key)

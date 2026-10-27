@@ -8,15 +8,40 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from kitsunox.util.schema import require_schema_version
 
 
 class Record(BaseModel):
     """Base for all inter-stage records: immutable, and strict about unknown fields."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class Persisted(Record):
+    """A record written to disk on its own (one file, or one JSON line). `load_json` refuses
+    data written with another schema version. On an incompatible change, bump both
+    `SCHEMA_VERSION` and the `schema_version` default in the subclass."""
+
+    SCHEMA_VERSION: ClassVar[int] = 1
+    schema_version: int = 1
+
+    @model_validator(mode="after")
+    def _check_schema_version(self) -> Self:
+        if self.schema_version != self.SCHEMA_VERSION:
+            raise ValueError(
+                f"schema_version {self.schema_version} != {self.SCHEMA_VERSION} for "
+                f"{type(self).__name__}"
+            )
+        return self
+
+    @classmethod
+    def load_json(cls, data: str | bytes) -> Self:
+        require_schema_version(data, cls.SCHEMA_VERSION, cls.__name__)
+        return cls.model_validate_json(data)
 
 
 class PackageVersionRef(Record):
@@ -93,7 +118,7 @@ class Popularity(Record):
     )
 
 
-class Change(Record):
+class Change(Persisted):
     """Unit of work produced by Stage 0: one new version, plus the version it should be diffed
     against. `previous is None` means a brand-new package (threat-model shape B)."""
 

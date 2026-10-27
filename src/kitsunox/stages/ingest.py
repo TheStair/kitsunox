@@ -16,14 +16,14 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from kitsunox.core.interfaces import ChangeStub, Ecosystem
-from kitsunox.core.models import Change, Popularity, Record, Window
+from kitsunox.core.models import Change, Persisted, Popularity, Record, Window
 from kitsunox.core.watchlist import WEEKLY_CUTOFF, Watchlist
 from kitsunox.util.http import FetchError
 
 STAGE_ID = "ingest"
 
 
-class SkippedPackage(Record):
+class SkippedPackage(Persisted):
     name: str
     cursor: int
     reason: str
@@ -145,4 +145,4 @@ def write_jsonl(path: Path, records: Iterable[Record]) -> None:
 
 def read_changes(path: Path) -> Sequence[Change]:
     with path.open(encoding="utf-8") as handle:
-        return [Change.model_validate_json(line) for line in handle if line.strip()]
+        return [Change.load_json(line) for line in handle if line.strip()]
