@@ -10,7 +10,7 @@
 | 0 | Scaffold | `ruff`, `mypy`, `pytest` gates pass; CLI entry point runs | ✅ done |
 | 1 | Plan | Threat model, architecture, data sources, eval plan reviewed; open decisions below answered | ✅ done |
 | 2 | Core + ingest | `core/` models and interfaces; caching HTTP client in `util/`; safe tarball extractor; npm `Ecosystem` adapter; Stage 0 produces `Change` records for a window and replays offline from the snapshot; popularity watchlist | ✅ done |
-| 3 | Evaluation harness | Eval manifest format; loader for OSV labels and DataDog samples; benign sampler; `kitsunox eval` reports per-stage recall / pass-through into `evaluation.md` | ⬜ |
+| 3 | Evaluation harness | Eval manifest format; loader for OSV labels and DataDog samples; benign sampler; `kitsunox eval` reports per-stage recall / pass-through into `evaluation.md` | ✅ light version (OSV labels, datasets from our runs, baselines). DataDog samples deferred |
 | 4 | Stage 1 metadata triage | Manifest-diff, install-hook, dependency, maintainer, publish-method and version-anomaly rules, each with tests and eval numbers | ⬜ |
 | 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | ⬜ |
 | 6 | Stage 3 AST capabilities | tree-sitter JS/TS parsing; per-file capability sets; capability-delta rules | ⬜ |

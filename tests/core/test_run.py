@@ -55,7 +55,7 @@ def save_watchlist(data: DataDir, built_at: datetime) -> str:
         min_monthly_downloads=43_000,
         entries={"kx-fixture": WatchEntry(monthly_downloads=99_000)},
     )
-    data.watchlists.save(watchlist)
+    data.watchlists.save(watchlist.ecosystem, watchlist.id, watchlist)
     return watchlist.id
 
 

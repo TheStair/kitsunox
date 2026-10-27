@@ -9,6 +9,7 @@ from kitsunox.util.archive import (
     ArchiveError,
     ExtractLimits,
     extract_tar_gz,
+    extract_zip,
     safe_relative_path,
 )
 
@@ -155,3 +156,29 @@ def test_truncated_gzip_is_rejected() -> None:
     data = make_tar_gz([TarEntry("package/a.js", b"x" * 5000), TarEntry("package/b.js", b"y")])
     with pytest.raises(ArchiveError, match="truncated"):
         extract_tar_gz(data[:-20])
+
+
+def _zip(entries: dict[str, bytes]) -> bytes:
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def test_zip_extraction_applies_path_rules() -> None:
+    tree = extract_zip(_zip({"a/b.json": b"{}", "../evil": b"x", "/abs": b"y"}))
+    assert list(tree) == ["a/b.json"]
+    assert {s.reason for s in tree.skipped} == {"unsafe path"}
+
+
+def test_zip_bomb_rejected() -> None:
+    with pytest.raises(ArchiveError, match="ratio"):
+        extract_zip(_zip({"zeros": b"\0" * 5_000_000}), limits=ExtractLimits(max_ratio=100))
+
+
+def test_malformed_zip_rejected() -> None:
+    with pytest.raises(ArchiveError, match="malformed zip"):
+        extract_zip(b"PK\x03\x04 not really a zip")

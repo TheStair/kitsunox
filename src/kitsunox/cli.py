@@ -22,12 +22,18 @@ from kitsunox.core.run import (
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem
+from kitsunox.evaluation.harness import make_dataset, run_eval, sync_labels
+from kitsunox.evaluation.metrics import PREDICTORS, render_markdown
 
 app = typer.Typer(help="Flag likely software supply chain attacks in recent npm releases.")
 ingest_app = typer.Typer(help="Stage 0: collect recent releases into Change records.")
 app.add_typer(ingest_app, name="ingest")
 watchlist_app = typer.Typer(help="Popularity watchlists (packages always analyzed in depth).")
 app.add_typer(watchlist_app, name="watchlist")
+labels_app = typer.Typer(help="Ground-truth malware labels (OSV MAL- records).")
+app.add_typer(labels_app, name="labels")
+eval_app = typer.Typer(help="Evaluation: build datasets from runs and score predictors.")
+app.add_typer(eval_app, name="eval")
 
 DataDirOption = Annotated[
     Path,
@@ -135,6 +141,65 @@ def watchlist_build(
     )
     typer.echo(f"watchlist {watchlist.id}: {len(watchlist.entries)} packages")
     typer.echo(f"saved to {path} (sha256 {sha})")
+
+
+@labels_app.command("sync")
+def labels_sync(data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
+    """Download OSV malware records for npm (~220 MB) and save a label set."""
+    labels, path, sha = sync_labels(DataDir(data_dir), ecosystem=NPM, fetched_at=datetime.now(UTC))
+    typer.echo(
+        f"label set {labels.id}: {labels.record_count} malware records "
+        f"for {len(labels.labels)} packages"
+    )
+    typer.echo(f"saved to {path} (sha256 {sha})")
+
+
+@eval_app.command("build")
+def eval_build(
+    name: str,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    benign_per_stratum: Annotated[int, typer.Option(min=1)] = 500,
+    min_benign_age_days: Annotated[int, typer.Option(min=0)] = 30,
+    labels: Annotated[str | None, typer.Option(help="Label set id. Default: newest.")] = None,
+) -> None:
+    """Build dataset NAME from all recorded npm runs and the newest label set."""
+    try:
+        dataset, path, sha = make_dataset(
+            DataDir(data_dir),
+            ecosystem=NPM,
+            name=name,
+            built_at=datetime.now(UTC),
+            label_set_id=labels,
+            benign_per_stratum=benign_per_stratum,
+            min_benign_age_days=min_benign_age_days,
+        )
+    except LookupError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"dataset {name}: {len(dataset.samples)} samples from {len(dataset.runs)} runs")
+    for key, count in dataset.counts().items():
+        typer.echo(f"  {key:28s} {count}")
+    typer.echo(f"saved to {path} (sha256 {sha})")
+
+
+@eval_app.command("run")
+def eval_run(
+    name: str,
+    predictor: Annotated[
+        str, typer.Option(help=f"One of: {', '.join(PREDICTORS)}.")
+    ] = "popularity-only",
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+) -> None:
+    """Score a predictor on dataset NAME and print a Markdown table."""
+    if predictor not in PREDICTORS:
+        typer.echo(
+            f"unknown predictor {predictor!r}; choose from {', '.join(PREDICTORS)}", err=True
+        )
+        raise typer.Exit(code=2)
+    report = run_eval(
+        DataDir(data_dir), ecosystem=NPM, dataset_name=name, predictor=PREDICTORS[predictor]()
+    )
+    typer.echo(render_markdown(report))
 
 
 def _print_summary(manifest: RunManifest, data_dir: Path) -> None:

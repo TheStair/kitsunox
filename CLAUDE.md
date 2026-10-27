@@ -110,6 +110,8 @@ uv run kitsunox --help                             # CLI
 uv run kitsunox watchlist build                     # weekly popularity list (~1 GB transfer, ~10 min)
 uv run kitsunox ingest record --since-seq N --until-seq M --window-hours 2   # small live Stage 0 run
 uv run kitsunox ingest replay <run_id>             # offline replay; must print "identical"
+uv run kitsunox labels sync                        # OSV malware labels (~220 MB)
+uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor popularity-only
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -126,6 +128,7 @@ src/kitsunox/
       rules/        # rules that depend on npm concepts (package.json scripts, npm maintainers)
   stages/           # ingest, triage, static, ast, correlate, sandbox
   rules/            # ecosystem-agnostic rules (entropy, URLs/IPs, eval/dynamic code)
+  evaluation/       # OSV labels, datasets built from ingest runs, predictors + metrics
   reporting/        # report rendering (Markdown/HTML), summary index
   util/             # shared helpers: HTTP + retry, hashing, diffing, entropy, logging
   cli.py            # typer app; entry point `kitsunox`
@@ -253,14 +256,14 @@ updating it.
 
 ---
 
-## Current focus: Phase 3, the evaluation harness
+## Current focus: Phase 4, Stage 1 metadata triage
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
-`util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor), and
-`ecosystems/npm/`, plus the popularity watchlist (`core/watchlist.py`,
-`docs/decisions/0003-popularity-watchlist.md`). See `docs/stages/ingest.md`. Next is Phase 3, the
-eval harness, before any detection rules. The `Rule` and `Stage` contracts in
-`docs/architecture.md` are still proposals; finalize them with Stage 1.
+`util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor),
+`ecosystems/npm/`, and the popularity watchlist (`core/watchlist.py`). See
+`docs/stages/ingest.md`. The light evaluation harness (Phase 3) is in `evaluation/`: see
+`docs/evaluation.md`. Stage 1 rules plug in as an `evaluation.metrics.Predictor`. The `Rule` and
+`Stage` contracts in `docs/architecture.md` are still proposals; finalize them with Stage 1.
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.

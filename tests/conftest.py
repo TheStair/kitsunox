@@ -9,6 +9,7 @@ import io
 import json
 import os
 import tarfile
+import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,3 +87,23 @@ def load_fixture() -> Callable[[str], object]:
         return json.loads((FIXTURES / relative).read_text())
 
     return load
+
+
+# OSV export helpers (inert JSON records shaped like malicious-packages entries).
+PUBLISHED = "2026-10-26T01:34:10Z"
+
+
+def osv_zip(records: dict[str, object]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, record in records.items():
+            archive.writestr(name, record if isinstance(record, str) else json.dumps(record))
+    return buffer.getvalue()
+
+
+def mal(record_id: str, name: str, **affected: object) -> dict[str, object]:
+    return {
+        "id": record_id,
+        "published": PUBLISHED,
+        "affected": [{"package": {"name": name, "ecosystem": "npm"}, **affected}],
+    }

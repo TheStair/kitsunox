@@ -10,12 +10,11 @@ records which list (id + SHA-256) it used, so replays see the same popularity.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
 from typing import Final
 
 from kitsunox.core.models import Persisted, Popularity, Record
-from kitsunox.util.hashing import sha256_hex
+from kitsunox.core.store import timestamp_id
 from kitsunox.util.http import FetchError, HttpFetcher
 
 ECOSYSTEMS_URL: Final = "https://packages.ecosyste.ms/api/v1/registries/{registry}/packages"
@@ -39,7 +38,7 @@ class Watchlist(Persisted):
 
     @property
     def id(self) -> str:
-        return f"{self.built_at.astimezone(UTC):%Y%m%dT%H%M%SZ}"
+        return timestamp_id(self.built_at)
 
     def lookup(self, names: Sequence[str]) -> Mapping[str, Popularity]:
         """Every name gets an answer: listed packages are watched; anything else is below the
@@ -103,36 +102,3 @@ def build_watchlist(
         min_monthly_downloads=min_monthly_downloads,
         entries=dict(sorted(entries.items())),
     )
-
-
-class WatchlistStore:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def path(self, ecosystem: str, watchlist_id: str) -> Path:
-        return self.root / ecosystem / f"{watchlist_id}.json"
-
-    def save(self, watchlist: Watchlist) -> tuple[Path, str]:
-        path = self.path(watchlist.ecosystem, watchlist.id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = watchlist.model_dump_json().encode()
-        path.write_bytes(data)
-        return path, sha256_hex(data)
-
-    def load(self, ecosystem: str, watchlist_id: str, *, sha256: str | None = None) -> Watchlist:
-        data = self.path(ecosystem, watchlist_id).read_bytes()
-        if sha256 is not None and sha256_hex(data) != sha256:
-            raise ValueError(f"watchlist {watchlist_id} changed since it was recorded")
-        return Watchlist.load_json(data)
-
-    def sha256(self, ecosystem: str, watchlist_id: str) -> str:
-        return sha256_hex(self.path(ecosystem, watchlist_id).read_bytes())
-
-    def latest_id(self, ecosystem: str, *, not_after: datetime | None = None) -> str | None:
-        """Newest watchlist built no later than `not_after` (ids sort chronologically)."""
-        directory = self.root / ecosystem
-        ids = sorted(p.stem for p in directory.glob("*.json")) if directory.exists() else []
-        if not_after is not None:
-            cutoff = f"{not_after.astimezone(UTC):%Y%m%dT%H%M%SZ}"
-            ids = [i for i in ids if i <= cutoff]
-        return ids[-1] if ids else None

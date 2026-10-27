@@ -28,7 +28,8 @@ import httpx
 from kitsunox import __version__
 from kitsunox.core.interfaces import Ecosystem
 from kitsunox.core.models import Persisted, Window
-from kitsunox.core.watchlist import Watchlist, WatchlistStore, build_watchlist
+from kitsunox.core.store import RecordStore
+from kitsunox.core.watchlist import Watchlist, build_watchlist
 from kitsunox.stages.ingest import (
     DownloadsApiPopularity,
     IngestResult,
@@ -89,8 +90,8 @@ class DataDir:
         return self.root / "http-immutable"
 
     @property
-    def watchlists(self) -> WatchlistStore:
-        return WatchlistStore(self.root / "watchlists")
+    def watchlists(self) -> RecordStore[Watchlist]:
+        return RecordStore(self.root / "watchlists", Watchlist)
 
     def run_dir(self, run_id: str) -> Path:
         return self.root / "runs" / run_id
@@ -152,7 +153,7 @@ def record_watchlist(
             )
         finally:
             fetcher.close()
-    path, sha = data.watchlists.save(watchlist)
+    path, sha = data.watchlists.save(watchlist.ecosystem, watchlist.id, watchlist)
     return watchlist, path, sha
 
 

@@ -6,7 +6,8 @@ import pytest
 
 from conftest import Router
 from kitsunox.core.run import DataDir, record_watchlist
-from kitsunox.core.watchlist import ECOSYSTEMS_URL, WatchlistStore, build_watchlist
+from kitsunox.core.store import RecordStore
+from kitsunox.core.watchlist import ECOSYSTEMS_URL, Watchlist, build_watchlist
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
 
 BASE = ECOSYSTEMS_URL.format(registry="npmjs.org")
@@ -94,7 +95,7 @@ def test_build_rejects_error_and_non_list_responses(tmp_path: Path, router: Rout
 
 
 def test_store_latest_respects_not_after(tmp_path: Path) -> None:
-    store = WatchlistStore(tmp_path)
+    store = RecordStore(tmp_path, Watchlist)
     assert store.latest_id("npm") is None
     for day in (1, 5, 9):
         (tmp_path / "npm").mkdir(exist_ok=True)

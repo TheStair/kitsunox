@@ -1,6 +1,45 @@
 # Evaluation
 
-> **Status:** proposal (2026-10-27). No dataset has been built and no results exist yet.
+> **Status:** light harness implemented (2026-10-27): OSV labels, datasets built from our own
+> ingest runs, and baseline predictors. Malware tarballs (DataDog dataset) are deferred by
+> decision, so code-level stages can't yet be measured on real attacks.
+
+## How to run
+
+```sh
+uv run kitsunox labels sync                  # OSV MAL- records for npm (~220 MB download)
+uv run kitsunox eval build <name>            # join all recorded runs with the newest labels
+uv run kitsunox eval run <name> --predictor popularity-only   # or forward-all
+```
+
+- **Labels** (`evaluation/labels.py`): every OSV `MAL-` record for npm, reduced to
+  `{package → (id, published, versions, ranges)}` and saved under
+  `data/labels/npm/<id>.json`. Withdrawn records are dropped. Matching is exact: explicit version
+  lists, or SEMVER ranges (`introduced`/`fixed`/`last_affected`). The parser is fuzzed.
+- **Dataset** (`evaluation/dataset.py`): every `Change` from recorded runs is matched
+  against the labels.
+  - **Malicious samples:** releases covered by a record.
+  - **Benign samples:** a deterministic stratified sample, N per (shape, watched) stratum,
+    ordered by a hash of (dataset name, release). They are *settled* only once the label set is
+    ≥30 days newer than the release, and *provisional* until then.
+  - **Bookkeeping:** a release seen in several runs counts once (earliest run). Datasets record
+    the label set's id and SHA-256.
+- **Metrics** (`evaluation/metrics.py`):
+  - A `Predictor` decides forward/clear for each change. Each report cell is
+    `label/shape[/provisional]` with total, forwarded and rate (recall for malicious,
+    pass-through for benign). The `*/all` rollups use settled samples only.
+  - **Baselines:** `forward-all` (upper bound on recall) and `popularity-only` (the watchlist
+    half of the forward policy, with no detection). Stage 1 will plug in as another predictor.
+
+### Why malicious samples will be scarce at first
+
+npm replaces malicious versions with a `0.0.1-security` placeholder, usually within hours. A
+malicious release only becomes a sample if an ingest run recorded its packument **before** the
+takedown. The dataset therefore grows with regular ingest runs ("prospective labeling"). OSV
+publishes about 20 new npm `MAL-` records a day (141 in the week to 2026-10-27).
+
+The OSV npm export on 2026-10-27 had 222,848 `MAL-` records. 86% mark every version of the
+package as malicious, which in practice means a brand-new malicious package (shape B).
 
 ## What we measure
 
