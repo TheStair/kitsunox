@@ -89,6 +89,14 @@ DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
 DOC_NAMES = ("readme", "license", "licence", "changelog", "contributing", "authors",
              "notice", "code_of_conduct", "security")
 
+# Prose nothing executes -- not npm, not a runner. A README telling users to add a scope
+# to their `.npmrc`, or to `cat ~/.ssh/id_ed25519.pub`, escalated four commits on the
+# round-2 targets as credential theft. Instruction files for coding agents are the
+# exception: an agent does act on them, so a Markdown file that tells one to read
+# ~/.npmrc and post it to a webhook is a payload.
+PROSE_SUFFIXES = (".md", ".markdown", ".rst", ".adoc")
+AGENT_INSTRUCTION_NAMES = {"agents.md", "claude.md", "gemini.md", "copilot-instructions.md"}
+
 # Binary files that can carry a payload: executables, native modules, archives and raw
 # or compressed data. In a JavaScript, TypeScript or Actions repository nothing in this
 # list has a reason to arrive without explanation, and none of it can be reviewed as a
@@ -142,7 +150,7 @@ EMBEDDED_ASSET_MAGIC = {
 EMBEDDED_WASM_MAGIC = b"\x00asm"
 
 DECODE_CALLS = re.compile(
-    r"\b(base64\s+(-d|--decode|-D)|atob|b64decode|Buffer\.from\s*\([^)]*base64|"
+    r"\b(base64\s+(-d|--decode|-D)|atob\b|b64decode|Buffer\.from\s*\([^)]*base64|"
     r"FromBase64String)",
     re.IGNORECASE,
 )
@@ -202,9 +210,12 @@ RECON = re.compile(
 
 # Loopback, RFC1918, link-local and broadcast. Test suites are full of these — axios
 # alone added 20+ `127.0.0.1` lines in a single proxy-test PR — and none of them can
-# reach an attacker. Exfiltration needs a routable address.
+# reach an attacker. Exfiltration needs a routable address. The RFC 5737 documentation
+# ranges route nowhere by definition: `203.0.113.10` in a Juror-AI test fixture
+# escalated a feature commit as credential exfiltration.
 PRIVATE_IP = re.compile(
-    r"^(0\.|127\.|10\.|192\.168\.|169\.254\.|255\.|172\.(1[6-9]|2\d|3[01])\.)"
+    r"^(0\.|127\.|10\.|192\.168\.|169\.254\.|255\.|172\.(1[6-9]|2\d|3[01])\.|"
+    r"192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)"
 )
 
 # Reaching into a credential store or a process's memory, or dumping the whole
@@ -213,8 +224,11 @@ PRIVATE_IP = re.compile(
 # The /proc match spans the line rather than requiring a contiguous path, because
 # '/proc/' + pid + '/mem' and os.path.join('/proc', pid, 'mem') are trivial evasions of
 # a contiguous pattern; word boundaries keep /proc/meminfo and "memory" out.
+# Key files are matched as names, not substrings: `config/deploy_id_rsa` is a key an
+# action decrypted into its own working tree, and `id_ed25519.pub` is a public key.
 SECRET_ACCESS = re.compile(
-    r"(\.npmrc|~/\.aws|\.aws/credentials|id_rsa|id_ed25519|\.git-credentials|\.netrc\b|"
+    r"(\.npmrc|~/\.aws|\.aws/credentials|(?<![\w-])id_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)|"
+    r"\.git-credentials|\.netrc\b|"
     r"\.docker/config\.json|/proc\b.*\b(mem|maps|environ)\b)"
 )
 # The whole environment serialised or sent: `JSON.stringify(process.env)`,
@@ -296,6 +310,13 @@ def _added_lines(file: FileDiff) -> Iterator[tuple[int, str]]:
             lineno += 1
 
 
+def _removed_lines(file: FileDiff) -> Iterator[str]:
+    """Yield the text of each line a patch removed."""
+    for raw in file.patch.split("\n"):
+        if raw.startswith("-") and not raw.startswith("---"):
+            yield raw[1:]
+
+
 def _basename(path: str) -> str:
     return path.rsplit("/", 1)[-1].lower()
 
@@ -346,8 +367,19 @@ def _is_vendored(path: str) -> bool:
 
 
 def _is_doc(path: str) -> bool:
-    return (path.lower().endswith(DOC_SUFFIXES) or path.lower().startswith("docs/")
-            or _basename(path).split(".", 1)[0] in DOC_NAMES)
+    # A doc name only counts without a code suffix: `src/security.js` is code, and
+    # `CMakeLists.txt` is a build script whatever its suffix says.
+    name = _basename(path)
+    if name in BUILD_SCRIPT_NAMES:
+        return False
+    return (name.endswith(DOC_SUFFIXES) or path.lower().startswith("docs/")
+            or ("." not in name and name in DOC_NAMES))
+
+
+def _is_prose(path: str) -> bool:
+    name = _basename(path)
+    return (name.endswith(PROSE_SUFFIXES) or ("." not in name and name in DOC_NAMES)) \
+        and name not in AGENT_INSTRUCTION_NAMES
 
 
 def _embedded_asset(blob: str, in_bundle: bool) -> str | None:
@@ -401,7 +433,7 @@ def _scannable(file: FileDiff) -> bool:
     # bundled dependency's source: one map was a single line holding a `for (... <
     # Infinity ...)` from a library, and escalated an initial release as sabotage.
     return (not file.is_binary and _basename(file.path) not in LOCKFILES
-            and not file.path.lower().endswith(".map")
+            and not file.path.lower().endswith(".map") and not _is_prose(file.path)
             and not _is_vendored(file.path) and bool(file.patch))
 
 
@@ -548,6 +580,14 @@ def _content_rules(change: Change) -> list[Finding]:
         # added code is an ordinary loop, not a hang.
         has_escape = any(LOOP_ESCAPE.search(t) for _, t in _added_lines(file))
         baseline = file.baseline or ""
+        # A bundle GitHub did show a diff for still moves its dependencies around: the
+        # `child_process`, `execSync` and `atob` in three round-2 rebuilds (setup-zig
+        # twice, one minified line in Horus) were each on a line the same diff removed.
+        # Without the recovered previous version, the removed lines stand in for it.
+        # Known evasion, the same as a rebuild's: replacing an existing `execSync(...)`
+        # line with a hostile one inside a bundle.
+        if file.baseline is None and _is_artifact(file.path):
+            baseline = "\n".join(t for t in _removed_lines(file))
         # A generated bundle whose diff was too large for GitHub to show is a rebuild: tens
         # of thousands of lines of bundled dependencies. Their `child_process`, `fetch`,
         # `Buffer.from(x, 'base64')` and `Object.keys(process.env)` are the dependencies'
@@ -634,6 +674,12 @@ def _content_rules(change: Change) -> list[Finding]:
                     "generated bundle, pulling unreviewed content into the build.",
                 )
             secret = SECRET_ACCESS.search(text) if rebuilt_bundle else _secret_access(text)
+            if isinstance(secret, re.Match):
+                secret = secret.group(0)
+            # A repository's own `.npmrc` naming itself in a comment is not reaching into
+            # anyone's credential store.
+            if secret == _basename(file.path):
+                secret = None
             if novel(secret):
                 hit(
                     "content.secret_access",
