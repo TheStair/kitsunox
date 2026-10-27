@@ -1,0 +1,5 @@
+key,url,first_seen,score,verdict,cost_usd,disposition,minutes,notes
+DoozyX/clang-format-lint-action@c71d0bf4e2,https://github.com/DoozyX/clang-format-lint-action/commit/c71d0bf4e21876ebec3e5647491186f8797fde31,2026-10-26,15,,0.0000,unreviewed,,
+apisec-inc/AI-Surface@dae6cfe8cc,https://github.com/apisec-inc/AI-Surface/commit/dae6cfe8cc108153e0f3c0d9b60398f9f9d6e5a3,2026-10-26,11,,0.0000,unreviewed,,
+DoozyX/clang-format-lint-action@99a106be2f,https://github.com/DoozyX/clang-format-lint-action/commit/99a106be2f3f1a92d9783ea7c744fde62d8ce1fa,2026-10-26,8,,0.0000,unreviewed,,
+DoozyX/clang-format-lint-action@bcb4eb2cb0,https://github.com/DoozyX/clang-format-lint-action/commit/bcb4eb2cb0d707ee4f3e5cc3b456eb075f12cf73,2026-10-26,8,,0.0000,unreviewed,,
