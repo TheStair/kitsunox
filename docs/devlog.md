@@ -2,6 +2,29 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Scope correction: git-commit path planned alongside npm
+
+**Stage(s):** architecture (no code)
+**Context:** The user pointed out that they had intended a git-first pipeline (commits → filter →
+full repo → compare to npm). The npm-only focus came from my recommendation in
+[0002](decisions/0002-data-sources.md), which was approved in a bundle of recommendations. The
+git-first option was never presented as an explicit choice.
+
+### Decisions
+- **Parallel paths** (user's proposal): keep the npm registry path, and add a path that watches
+  commits on the GitHub/GitLab repos of popular npm packages. Releases are joined to repos for
+  tarball-vs-repo comparison. See [0004](decisions/0004-git-path-parallel-to-npm.md).
+- **Order:** finish the npm workflow first, then build the git path (roadmap 8b).
+
+### Challenges
+- **Scope drift from a bundled recommendation**: a direction-setting choice (which source drives
+  the pipeline) was accepted without its alternative being visible. **Resolution:** from now on,
+  such choices are presented as explicit options with what they exclude.
+
+### Open questions / next steps
+- Git phase: polling budget vs. GH Archive, a GitHub token, GitLab coverage.
+- Next: Phase 3 (evaluation harness) scope.
+
 ## 2026-10-27: Validation pass on Stage 0: fuzzing, live cross-checks, 6 fixes
 
 **Stage(s):** Stage 0 ingest and foundations (`util/`, `core/`, `ecosystems/npm/`)

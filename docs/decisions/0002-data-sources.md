@@ -1,7 +1,7 @@
 # 0002: Data sources for "recent npm changes"
 
 **Date:** 2026-10-27
-**Status:** Accepted (2026-10-27)
+**Status:** Accepted (2026-10-27). Amended by [0004](0004-git-path-parallel-to-npm.md): a git-commit path will run in parallel.
 
 ## Context
 

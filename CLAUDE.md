@@ -270,4 +270,8 @@ Key invariants:
 - Validation results live in `docs/validation.md`. Add a new dated section after significant
   changes.
 
+Planned after the npm workflow: a parallel **git-commit path** (GitHub/GitLab repos of watchlist
+packages), joined to npm releases by tarball-vs-repo comparison. See
+`docs/decisions/0004-git-path-parallel-to-npm.md`. Don't treat npm as the only source in designs.
+
 Ask before starting implementation of any pipeline stage.
