@@ -248,18 +248,10 @@ updating it.
 
 ---
 
-## Current focus: planning docs (no pipeline code yet)
+## Current focus: Phase 2, core models and Stage 0 ingest
 
-Done: project scaffold (uv, ruff, mypy, pytest, package layout) and the first devlog entry.
-
-Remaining deliverables:
-
-1. Draft `docs/threat-model.md`, `docs/architecture.md` (with a Mermaid pipeline diagram), and
-   `docs/roadmap.md`.
-2. Evaluate the data sources for "recent npm changes" (registry changes feed, GitHub API, others)
-   and recommend one, with tradeoffs.
-3. Propose the evaluation dataset and how to build it safely.
-4. List open questions and decisions for the user, especially: tarball-vs-repo scope, how "recent"
-   is defined, how many packages to watch (all of npm vs. a popularity cutoff), and report format.
+Planning is done: see `docs/roadmap.md` (phases and accepted decisions), `docs/architecture.md`
+(contracts), and `docs/decisions/0002-data-sources.md`. Next is Phase 2: `core/` models and
+interfaces, a caching HTTP client, a safe tarball extractor, and the npm adapter for Stage 0.
 
 Ask before starting implementation of any pipeline stage.

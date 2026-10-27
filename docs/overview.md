@@ -44,5 +44,9 @@ which is gitignored.
 
 ## Further reading
 
+- [`architecture.md`](architecture.md): pipeline, data models, stage contracts
+- [`threat-model.md`](threat-model.md): attack patterns and planned coverage
+- [`evaluation.md`](evaluation.md): datasets, metrics, results log
+- [`roadmap.md`](roadmap.md): phases and decisions
 - [`decisions/`](decisions/): records of significant design choices
 - [`devlog.md`](devlog.md): project journal
