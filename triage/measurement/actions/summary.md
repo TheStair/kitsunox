@@ -1,0 +1,41 @@
+# Review summary -- `triage/measurement/actions`
+
+Generated 2026-10-26T22:04 from `dispositions.csv`. Re-run `kitsunox tally --queue triage/measurement/actions --summary` after recording dispositions.
+
+## Result
+
+| | |
+|---|---|
+| Alerts | 11 |
+| Reviewed | 0 of 11 |
+| Brief cost | $0.00 ($0.000 per alert) |
+
+## Alerts
+
+| Change | Score | Model | Disposition | Minutes | Notes |
+|---|---|---|---|---|---|
+| [`autofix-ci/action@dd55f44df8`](https://github.com/autofix-ci/action/commit/dd55f44df8f7cdb7a6bf74c78677eb8acd40cd0a) | 34 | - | unreviewed | - | - |
+| [`PyO3/maturin-action@acb699e673`](https://github.com/PyO3/maturin-action/commit/acb699e6734322acb57a0b1a5b4b62d01d68156d) | 18 | - | unreviewed | - | - |
+| [`autofix-ci/action@c5b2d67aa2`](https://github.com/autofix-ci/action/commit/c5b2d67aa2274e7b5a18224e8171550871fc7e4a) | 16 | - | unreviewed | - | - |
+| [`danharrin/monorepo-split-github-action@1ca3dc2277`](https://github.com/danharrin/monorepo-split-github-action/commit/1ca3dc2277d3604e511a02b7390908bf24b41007) | 15 | - | unreviewed | - | - |
+| [`typst-community/setup-typst@40d32bb6cc`](https://github.com/typst-community/setup-typst/commit/40d32bb6ccb235bd7f5164cb47cfd40a5ea3a314) | 11 | - | unreviewed | - | - |
+| [`typst-community/setup-typst@63ac138db4`](https://github.com/typst-community/setup-typst/commit/63ac138db421d586de61f7f5ac3bcef6a2e6c78c) | 11 | - | unreviewed | - | - |
+| [`typst-community/setup-typst@f3792ba4fd`](https://github.com/typst-community/setup-typst/commit/f3792ba4fd5a663366a44b5a6559de6ecc91a520) | 11 | - | unreviewed | - | - |
+| [`typst-community/setup-typst@fee4b65b09`](https://github.com/typst-community/setup-typst/commit/fee4b65b091cc546f02ce3be15fad8760f38a108) | 11 | - | unreviewed | - | - |
+| [`Actions-R-Us/actions-tagger@330ddfac76`](https://github.com/Actions-R-Us/actions-tagger/commit/330ddfac760021349fef7ff62b372f2f691c20fb) | 9 | - | unreviewed | - | - |
+| [`dorny/test-reporter@3eeb9fc888`](https://github.com/dorny/test-reporter/commit/3eeb9fc888e82e8be2fb356bbeec2750231672bc) | 9 | - | unreviewed | - | - |
+| [`pullpreview/action@10964acbc3`](https://github.com/pullpreview/action/commit/10964acbc3cda0b3b622eeba179cb3a399e6e6a6) | 8 | - | unreviewed | - | - |
+
+## Still to review (11)
+
+- [ ] `autofix-ci/action@dd55f44df8` <https://github.com/autofix-ci/action/commit/dd55f44df8f7cdb7a6bf74c78677eb8acd40cd0a>
+- [ ] `PyO3/maturin-action@acb699e673` <https://github.com/PyO3/maturin-action/commit/acb699e6734322acb57a0b1a5b4b62d01d68156d>
+- [ ] `autofix-ci/action@c5b2d67aa2` <https://github.com/autofix-ci/action/commit/c5b2d67aa2274e7b5a18224e8171550871fc7e4a>
+- [ ] `danharrin/monorepo-split-github-action@1ca3dc2277` <https://github.com/danharrin/monorepo-split-github-action/commit/1ca3dc2277d3604e511a02b7390908bf24b41007>
+- [ ] `typst-community/setup-typst@40d32bb6cc` <https://github.com/typst-community/setup-typst/commit/40d32bb6ccb235bd7f5164cb47cfd40a5ea3a314>
+- [ ] `typst-community/setup-typst@63ac138db4` <https://github.com/typst-community/setup-typst/commit/63ac138db421d586de61f7f5ac3bcef6a2e6c78c>
+- [ ] `typst-community/setup-typst@f3792ba4fd` <https://github.com/typst-community/setup-typst/commit/f3792ba4fd5a663366a44b5a6559de6ecc91a520>
+- [ ] `typst-community/setup-typst@fee4b65b09` <https://github.com/typst-community/setup-typst/commit/fee4b65b091cc546f02ce3be15fad8760f38a108>
+- [ ] `Actions-R-Us/actions-tagger@330ddfac76` <https://github.com/Actions-R-Us/actions-tagger/commit/330ddfac760021349fef7ff62b372f2f691c20fb>
+- [ ] `dorny/test-reporter@3eeb9fc888` <https://github.com/dorny/test-reporter/commit/3eeb9fc888e82e8be2fb356bbeec2750231672bc>
+- [ ] `pullpreview/action@10964acbc3` <https://github.com/pullpreview/action/commit/10964acbc3cda0b3b622eeba179cb3a399e6e6a6>

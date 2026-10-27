@@ -22,7 +22,7 @@ Headline results (details in §4):
 | False positives, held-out 10-language corpus | **1.15%** (8/695) -- measured before tuning on it |
 | LLM recognition ablation | Tier 2 drops **5/5 -> 4/5** with names withheld |
 | In-the-wild alerts, first holdout | **17** -> **5** from ~780 changes, re-hunted with the round-2 fixes (in-sample) |
-| In-the-wild alerts, holdout-2 (measurement) | **pending** -- runs once the three open policy questions (§5.9) are settled |
+| In-the-wild alerts, holdout-2 (measurement) | **19** from 809 unseen changes (2.3%); 11 of 80 repositories |
 
 ---
 
@@ -112,16 +112,30 @@ same protocol: 10 commits deep, Actions with tags): Actions 390 changes -> 4 ale
 392 changes -> 1 alert -- the same five survivors as the rescore above. Each survivor is
 a correct detection of its behaviour; review time is the remaining cost.
 
-**Holdout-2 (the measurement):** 80 targets drawn by seed 20261026, disjoint by repository
-and owner, committed (`targets/holdout2-*.txt`) and not yet hunted. It runs once, with
-final rules, after the three open policy questions are settled -- so that no rule is
-decided after seeing it. Command:
-`kitsunox scan --targets targets/holdout2-actions.txt --tags --queue triage/measurement/actions --limit 10`
-and the npm equivalent without `--tags`.
+**Holdout-2 (th**Holdout-2 (the measurement, Oct 26):** 80 targets drawn by seed 20261026, disjoint by
+repository and owner, hunted once with frozen rules after the three policy questions were
+settled (all three kept as they were). Queues in `triage/measurement/`.
 
----
+| | Actions | npm | Total |
+|---|---|---|---|
+| Changes | 409 | 400 | 809 |
+| Alerts | 11 | 8 | **19 (2.3%)** |
+| Repositories with an alert | 7 / 40 | 4 / 40 | 11 / 80 |
 
-## 5. Challenges and how they were solved
+Six root causes explain all 19 (a description of what matched, not a disposition):
+
+| What fired | Alerts | First read |
+|---|---|---|
+| Release tags: 1 version collapse, 3 on no branch | 4 | real behaviour; needs review |
+| Azure SDK comment bundled into dist/: example address `192.0.0.10` | 5 | precision gap: one library comment |
+| Minified bundle named `index.dist.js` (autofix-ci) | 2 | precision gap: not recognised as generated |
+| `child_process` in `scripts/` dev scripts (pixi-vn) | 3 | the `scripts/` policy, kept deliberately |
+| Opaque binaries: a demo `.zip`, an `.onnx` model, `.js.gz` bundles | 3 | as designed |
+| `package.json` homepage is a raw IP address | 2 | as designed |
+
+The two precision gaps are **reported, not fixed**: fixing them would make holdout-2
+calibration. Dispositions and minutes per alert are recorded in each queue's
+`dispositions.csv`.allenges and how they were solved
 
 Each is a candidate slide: *problem -> how it was found -> fix -> measured effect.*
 
