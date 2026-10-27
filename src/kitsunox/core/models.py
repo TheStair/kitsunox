@@ -81,6 +81,18 @@ class VersionSnapshot(Record):
     artifact: ArtifactRef | None = None
 
 
+class Popularity(Record):
+    """How widely used a package is, and whether it clears the run's popularity cutoff."""
+
+    source: str = Field(description="Where the numbers came from, e.g. 'watchlist:<id>'.")
+    downloads: int | None = Field(description="Downloads over `period_days`; None if unknown.")
+    period_days: int
+    watched: bool = Field(
+        description="Meets the popularity cutoff: tarball stages see this change even when "
+        "Stage 1 finds nothing."
+    )
+
+
 class Change(Record):
     """Unit of work produced by Stage 0: one new version, plus the version it should be diffed
     against. `previous is None` means a brand-new package (threat-model shape B)."""
@@ -89,6 +101,9 @@ class Change(Record):
     previous: VersionSnapshot | None = None
     repository_url: str | None = None
     feed_seq: int | None = Field(default=None, description="Change-feed sequence it came from.")
+    popularity: Popularity | None = Field(
+        default=None, description="None when not fetched (new packages, or the lookup failed)."
+    )
 
     @property
     def is_new_package(self) -> bool:

@@ -1,6 +1,6 @@
 # Stage 0: Ingest
 
-> **Status:** implemented for npm (2026-10-27). Popularity enrichment not yet done.
+> **Status:** implemented for npm (2026-10-27), including popularity from a weekly watchlist.
 
 ## Purpose
 
@@ -17,6 +17,9 @@ uv run kitsunox ingest record
 
 # Ad-hoc range (doesn't move the checkpoint)
 uv run kitsunox ingest record --since-seq 140114769 --until-seq 140117769 --window-hours 2
+
+# Weekly: build the popularity watchlist (required by the default --popularity watchlist)
+uv run kitsunox watchlist build
 
 # Re-run offline from the run's snapshot and verify byte-identical output
 uv run kitsunox ingest replay 20261027T184048Z-npm
@@ -66,7 +69,17 @@ sequenceDiagram
    than it, so a backport like 1.4.1 published after 2.0.0 is diffed against 1.4.0. If none
    qualifies, the most recently published earlier version is used. No earlier version means a
    brand-new package (threat-model shape B).
-6. **Snapshot of each version.** `PublishInfo` (publisher, trusted-publisher provider, staged-publish
+6. **Popularity** (existing packages only; brand-new packages have no history). Three modes:
+   - `watchlist` (default): membership in the newest watchlist built no later than `as_of`. The
+     run records its id and SHA-256, and replay fails if the file has changed. No network.
+   - `api`: per-package npm downloads API lookups for a fixed 7-day period ending 2 days before
+     `as_of`. Bulk for unscoped names (128/request). Scoped names are one request each, paced to
+     0.5 s apart (the API returns 429 on bursts). Successful responses are cached across runs.
+     Slow: see [decision 0003](../decisions/0003-popularity-watchlist.md).
+   - `none`.
+
+   `Popularity.watched` is what the Stage 1 forward policy will use (cutoff ≥10k weekly).
+7. **Snapshot of each version.** `PublishInfo` (publisher, trusted-publisher provider, staged-publish
    approver, provenance present, `gitHead`, maintainers), `ArtifactRef` (tarball URL + integrity;
    non-HTTPS URLs are refused), and the manifest minus `readme`. The repository URL is
    normalized to `https://github.com/<owner>/<repo>` where possible, dropping any monorepo
@@ -106,8 +119,9 @@ compressed blobs. That still needs a retention policy (open question below).
 
 ## Known limits
 
-- **Popularity isn't fetched yet** (downloads API / deps.dev). Needed for the Stage 1 forward
-  policy.
+- **Popularity is up to a week stale** (watchlist rebuilt weekly; ecosyste.ms adds its own sync
+  lag). Packages with many dependents but few downloads aren't watched (dependents aren't a
+  criterion yet).
 - **Coalesced feed entries.** If a package changes again after `until`, its earlier entry moves
   past the range. The next run picks it up, but only if its publish time is still inside that
   run's window.

@@ -54,7 +54,8 @@ deterministic replay.
   first look if full-packument volume becomes a problem.
 - **Content:** registry tarballs (Stage 2+), integrity-checked.
 - **Popularity:** npm downloads API, with deps.dev for dependents count. Used for weighting and
-  any popularity cutoff.
+  any popularity cutoff. *Superseded by [0003](0003-popularity-watchlist.md): a weekly watchlist
+  from packages.ecosyste.ms; per-change downloads-API lookups are an optional fallback.*
 - **Repo comparison (Stage 4):** GitHub archive at `gitHead`, or at the tag matching the
   version, via authenticated API with a cache. Requires a read-only PAT in `.env`.
 - **Labels / known-bad:** OSV `MAL-` bulk export plus GHSA malware advisories.

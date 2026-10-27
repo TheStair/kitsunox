@@ -6,7 +6,11 @@ Phase 4), when there is a real consumer to shape them.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
+
+from pydantic import Field
 
 from kitsunox.core.models import ArtifactRef, Change, Record, Window
 from kitsunox.util.archive import ArtifactTree
@@ -18,6 +22,12 @@ class ChangeStub(Record):
 
     name: str
     cursor: int
+
+
+class DownloadCounts(Record):
+    source: str = Field(description="Source and exact period, e.g. 'npm-downloads:<a>..<b>'.")
+    period_days: int
+    counts: dict[str, int | None]
 
 
 class Ecosystem(Protocol):
@@ -37,6 +47,11 @@ class Ecosystem(Protocol):
     def build_changes(self, stub: ChangeStub, window: Window) -> list[Change]:
         """One Change per version of `stub.name` published inside `window`, each paired with the
         version it should be diffed against."""
+        ...
+
+    def download_counts(self, names: Sequence[str], as_of: datetime) -> DownloadCounts:
+        """Per-package download counts for a fixed period ending before `as_of`. Names whose
+        lookup failed are absent from `counts`; None means the registry has no stats."""
         ...
 
     def fetch_artifact(self, artifact: ArtifactRef) -> ArtifactTree:

@@ -138,6 +138,7 @@ class HttpFetcher:
         max_bytes: int = 256 * 1024 * 1024,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.store = store
         self.snapshot = snapshot
@@ -147,12 +148,34 @@ class HttpFetcher:
         self.max_bytes = max_bytes
         self._sleep = sleep
         self._clock = clock
+        self._monotonic = monotonic
         self._lock = threading.Lock()
+        self._pace_lock = threading.Lock()
+        self._min_interval: dict[str, float] = {}
+        self._next_slot: dict[str, float] = {}
         self._client = client or httpx.Client(
             headers={"User-Agent": USER_AGENT},
             timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=True,
         )
+
+    def set_min_interval(self, host: str, seconds: float) -> None:
+        """Space network requests to `host` at least `seconds` apart, across all threads. For
+        APIs that throttle bursts. Replays and cache hits are never paced."""
+        with self._pace_lock:
+            self._min_interval[host] = seconds
+
+    def _pace(self, url: str) -> None:
+        host = httpx.URL(url).host
+        with self._pace_lock:
+            interval = self._min_interval.get(host)
+            if interval is None:
+                return
+            now = self._monotonic()
+            slot = max(now, self._next_slot.get(host, now))
+            self._next_slot[host] = slot + interval
+        if slot > now:
+            self._sleep(slot - now)
 
     def close(self) -> None:
         self._client.close()
@@ -196,6 +219,7 @@ class HttpFetcher:
         last_error = "no attempts made"
         for attempt in range(1, self.retry.max_attempts + 1):
             retry_after: float | None = None
+            self._pace(url)
             try:
                 with self._client.stream("GET", url, headers=dict(headers or {})) as resp:
                     if resp.status_code not in RETRYABLE_STATUS:

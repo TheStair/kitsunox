@@ -11,16 +11,23 @@ from kitsunox import __version__
 from kitsunox.core.run import (
     DataDir,
     IngestRequest,
+    PopularityMode,
     RunManifest,
+    WatchlistMissingError,
     changes_digest,
     record_ingest,
+    record_watchlist,
     replay_ingest,
 )
-from kitsunox.ecosystems.npm.registry import NpmEcosystem
+from kitsunox.core.watchlist import MONTHLY_CUTOFF
+from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
+from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem
 
 app = typer.Typer(help="Flag likely software supply chain attacks in recent npm releases.")
 ingest_app = typer.Typer(help="Stage 0: collect recent releases into Change records.")
 app.add_typer(ingest_app, name="ingest")
+watchlist_app = typer.Typer(help="Popularity watchlists (packages always analyzed in depth).")
+app.add_typer(watchlist_app, name="watchlist")
 
 DataDirOption = Annotated[
     Path,
@@ -69,6 +76,13 @@ def ingest_record(
         int, typer.Option(help="Feed positions to scan when there's no checkpoint.")
     ] = 400_000,
     workers: Annotated[int, typer.Option(min=1, max=64)] = 8,
+    popularity: Annotated[
+        PopularityMode,
+        typer.Option(help="watchlist: prebuilt list (fast). api: per-package lookups (slow)."),
+    ] = PopularityMode.WATCHLIST,
+    watchlist: Annotated[
+        str | None, typer.Option(help="Watchlist id. Default: newest built before --as-of.")
+    ] = None,
 ) -> None:
     """Fetch recent npm changes and write a replayable run."""
     moment = as_of or datetime.now(UTC)
@@ -81,8 +95,14 @@ def ingest_record(
         until=until_seq,
         lookback=lookback_seq,
         workers=workers,
+        popularity=popularity,
+        watchlist_id=watchlist,
     )
-    manifest = record_ingest(DataDir(data_dir), NpmEcosystem, request)
+    try:
+        manifest = record_ingest(DataDir(data_dir), NpmEcosystem, request)
+    except WatchlistMissingError as exc:
+        typer.echo(f"{exc}. Run `kitsunox watchlist build` first, or pass --popularity none.")
+        raise typer.Exit(code=2) from exc
     _print_summary(manifest, data_dir)
 
 
@@ -100,6 +120,25 @@ def ingest_replay(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> No
     typer.echo(f"identical: {digest}")
 
 
+@watchlist_app.command("build")
+def watchlist_build(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    min_monthly_downloads: Annotated[
+        int, typer.Option(help="Cutoff (last-month downloads). Default is about 10k/week.")
+    ] = MONTHLY_CUTOFF,
+) -> None:
+    """Build the npm watchlist from packages.ecosyste.ms (about 1 GB transferred, ~10 min)."""
+    watchlist, path, sha = record_watchlist(
+        DataDir(data_dir),
+        ecosystem=NPM,
+        registry=ECOSYSTEMS_REGISTRY,
+        built_at=datetime.now(UTC),
+        min_monthly_downloads=min_monthly_downloads,
+    )
+    typer.echo(f"watchlist {watchlist.id}: {len(watchlist.entries)} packages")
+    typer.echo(f"saved to {path} (sha256 {sha})")
+
+
 def _print_summary(manifest: RunManifest, data_dir: Path) -> None:
     typer.echo(f"run:      {manifest.run_id}  ({data_dir / 'runs' / manifest.run_id})")
     typer.echo(
@@ -109,3 +148,7 @@ def _print_summary(manifest: RunManifest, data_dir: Path) -> None:
     typer.echo(f"packages: {manifest.packages_seen} seen")
     typer.echo(f"changes:  {manifest.change_count}")
     typer.echo(f"skipped:  {manifest.skipped_count}")
+    popularity = manifest.popularity_mode.value
+    if manifest.watchlist_id:
+        popularity += f" ({manifest.watchlist_id})"
+    typer.echo(f"popularity: {popularity}, failed lookups: {manifest.popularity_failures}")

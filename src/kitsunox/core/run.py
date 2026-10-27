@@ -5,6 +5,7 @@ Layout under the data directory (gitignored):
     blobs/                      content-addressed HTTP response bodies, shared by all runs
     http-immutable/             cross-run index for immutable responses (e.g. tarballs)
     state/<ecosystem>.json      change-feed checkpoint for continuous mode
+    watchlists/<ecosystem>/     popularity watchlists, one JSON file per build
     runs/<run_id>/
         manifest.json           RunManifest
         snapshot.json           every HTTP response the run used
@@ -15,9 +16,11 @@ Layout under the data directory (gitignored):
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 
 import httpx
@@ -25,11 +28,29 @@ import httpx
 from kitsunox import __version__
 from kitsunox.core.interfaces import Ecosystem
 from kitsunox.core.models import Record, Window
-from kitsunox.stages.ingest import IngestResult, run_ingest, write_jsonl
+from kitsunox.core.watchlist import Watchlist, WatchlistStore, build_watchlist
+from kitsunox.stages.ingest import (
+    DownloadsApiPopularity,
+    IngestResult,
+    PopularitySource,
+    WatchlistPopularity,
+    run_ingest,
+    write_jsonl,
+)
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
 
 EcosystemFactory = Callable[[HttpFetcher], Ecosystem]
+
+
+class PopularityMode(StrEnum):
+    WATCHLIST = "watchlist"
+    API = "api"
+    NONE = "none"
+
+
+class WatchlistMissingError(LookupError):
+    """Watchlist mode was requested but no watchlist has been built yet."""
 
 
 class RunManifest(Record):
@@ -47,6 +68,10 @@ class RunManifest(Record):
     change_count: int
     skipped_count: int
     packages_seen: int
+    popularity_mode: PopularityMode = PopularityMode.NONE
+    watchlist_id: str | None = None
+    watchlist_sha256: str | None = None
+    popularity_failures: int = 0
 
 
 @dataclass(frozen=True)
@@ -60,6 +85,10 @@ class DataDir:
     @property
     def immutable_index(self) -> Path:
         return self.root / "http-immutable"
+
+    @property
+    def watchlists(self) -> WatchlistStore:
+        return WatchlistStore(self.root / "watchlists")
 
     def run_dir(self, run_id: str) -> Path:
         return self.root / "runs" / run_id
@@ -88,10 +117,41 @@ class IngestRequest:
     until: int | None = None
     lookback: int = 400_000
     workers: int = 8
+    popularity: PopularityMode = PopularityMode.WATCHLIST
+    watchlist_id: str | None = None
 
 
 def make_run_id(ecosystem: str, as_of: datetime) -> str:
     return f"{as_of.astimezone(UTC):%Y%m%dT%H%M%SZ}-{ecosystem}"
+
+
+def record_watchlist(
+    data: DataDir,
+    *,
+    ecosystem: str,
+    registry: str,
+    built_at: datetime,
+    min_monthly_downloads: int,
+    client: httpx.Client | None = None,
+) -> tuple[Watchlist, Path, str]:
+    """Build and save a watchlist. The ~1 GB of raw ranking pages goes to a temporary blob
+    store and is discarded; only the derived list is kept (and hashed into each run)."""
+    with tempfile.TemporaryDirectory(prefix="kitsunox-watchlist-") as tmp:
+        fetcher = HttpFetcher(
+            store=BlobStore(Path(tmp)), snapshot=Snapshot(), mode=FetchMode.RECORD, client=client
+        )
+        try:
+            watchlist = build_watchlist(
+                fetcher,
+                ecosystem=ecosystem,
+                registry=registry,
+                built_at=built_at,
+                min_monthly_downloads=min_monthly_downloads,
+            )
+        finally:
+            fetcher.close()
+    path, sha = data.watchlists.save(watchlist)
+    return watchlist, path, sha
 
 
 def record_ingest(
@@ -113,9 +173,9 @@ def record_ingest(
     try:
         ecosystem = factory(fetcher)
         run_id = make_run_id(ecosystem.name, request.as_of)
-        run_dir = data.run_dir(run_id)
-        if run_dir.exists():
+        if data.run_dir(run_id).exists():
             raise FileExistsError(f"run {run_id} already exists")
+        source, watchlist_id, watchlist_sha = _popularity_source(data, ecosystem, request)
 
         until = request.until if request.until is not None else ecosystem.feed_head()
         explicit_since = request.since is not None
@@ -129,20 +189,44 @@ def record_ingest(
         window = Window(
             start=request.as_of - timedelta(hours=request.window_hours), end=request.as_of
         )
-        result = run_ingest(ecosystem, window, since=since, until=until, workers=request.workers)
+        result = run_ingest(
+            ecosystem,
+            window,
+            since=since,
+            until=until,
+            workers=request.workers,
+            popularity=source,
+        )
     finally:
         fetcher.close()
 
-    manifest = _persist(
-        data, run_id, ecosystem.name, request.as_of, window, since, until, snapshot, result
+    manifest = RunManifest(
+        run_id=run_id,
+        tool_version=__version__,
+        ecosystem=ecosystem.name,
+        as_of=request.as_of,
+        window=window,
+        cursor_since=since,
+        cursor_until=until,
+        snapshot_sha256="",  # filled in by _persist once the snapshot is written
+        changes_sha256=changes_digest(result),
+        change_count=len(result.changes),
+        skipped_count=len(result.skipped),
+        packages_seen=result.packages_seen,
+        popularity_mode=request.popularity,
+        watchlist_id=watchlist_id,
+        watchlist_sha256=watchlist_sha,
+        popularity_failures=len(result.popularity_failures),
     )
+    manifest = _persist(data, manifest, snapshot, result)
     if not explicit_since and request.until is None:
         data.write_checkpoint(ecosystem.name, until)
     return manifest
 
 
 def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> IngestResult:
-    """Re-run Stage 0 for a recorded run using only its snapshot. No network access."""
+    """Re-run Stage 0 for a recorded run using only its snapshot (and the exact watchlist it
+    used, verified by hash). No network access."""
     run_dir = data.run_dir(run_id)
     manifest = RunManifest.model_validate_json((run_dir / "manifest.json").read_bytes())
     fetcher = HttpFetcher(
@@ -152,12 +236,22 @@ def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> Inge
         client=httpx.Client(transport=_OfflineTransport()),
     )
     try:
+        ecosystem = factory(fetcher)
+        source: PopularitySource | None = None
+        if manifest.popularity_mode is PopularityMode.WATCHLIST and manifest.watchlist_id:
+            watchlist = data.watchlists.load(
+                manifest.ecosystem, manifest.watchlist_id, sha256=manifest.watchlist_sha256
+            )
+            source = WatchlistPopularity(watchlist)
+        elif manifest.popularity_mode is PopularityMode.API:
+            source = DownloadsApiPopularity(ecosystem)
         return run_ingest(
-            factory(fetcher),
+            ecosystem,
             manifest.window,
             since=manifest.cursor_since,
             until=manifest.cursor_until,
             workers=1,
+            popularity=source,
         )
     finally:
         fetcher.close()
@@ -169,35 +263,37 @@ def changes_digest(result: IngestResult) -> str:
     return sha256_hex("\n".join(lines).encode())
 
 
+def _popularity_source(
+    data: DataDir, ecosystem: Ecosystem, request: IngestRequest
+) -> tuple[PopularitySource | None, str | None, str | None]:
+    match request.popularity:
+        case PopularityMode.NONE:
+            return None, None, None
+        case PopularityMode.API:
+            return DownloadsApiPopularity(ecosystem), None, None
+        case PopularityMode.WATCHLIST:
+            watchlist_id = request.watchlist_id or data.watchlists.latest_id(
+                ecosystem.name, not_after=request.as_of
+            )
+            if watchlist_id is None:
+                raise WatchlistMissingError(
+                    f"no {ecosystem.name} watchlist built before {request.as_of.isoformat()}"
+                )
+            sha = data.watchlists.sha256(ecosystem.name, watchlist_id)
+            watchlist = data.watchlists.load(ecosystem.name, watchlist_id, sha256=sha)
+            return WatchlistPopularity(watchlist), watchlist_id, sha
+
+
 def _persist(
-    data: DataDir,
-    run_id: str,
-    ecosystem: str,
-    as_of: datetime,
-    window: Window,
-    since: int,
-    until: int,
-    snapshot: Snapshot,
-    result: IngestResult,
+    data: DataDir, manifest: RunManifest, snapshot: Snapshot, result: IngestResult
 ) -> RunManifest:
-    run_dir = data.run_dir(run_id)
+    run_dir = data.run_dir(manifest.run_id)
     run_dir.mkdir(parents=True)
     snapshot.save(run_dir / "snapshot.json")
     write_jsonl(run_dir / "changes.jsonl", result.changes)
     write_jsonl(run_dir / "skipped.jsonl", result.skipped)
-    manifest = RunManifest(
-        run_id=run_id,
-        tool_version=__version__,
-        ecosystem=ecosystem,
-        as_of=as_of,
-        window=window,
-        cursor_since=since,
-        cursor_until=until,
-        snapshot_sha256=sha256_hex((run_dir / "snapshot.json").read_bytes()),
-        changes_sha256=changes_digest(result),
-        change_count=len(result.changes),
-        skipped_count=len(result.skipped),
-        packages_seen=result.packages_seen,
+    manifest = manifest.model_copy(
+        update={"snapshot_sha256": sha256_hex((run_dir / "snapshot.json").read_bytes())}
     )
     (run_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2) + "\n")
     return manifest

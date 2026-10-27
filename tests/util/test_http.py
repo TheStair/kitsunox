@@ -127,3 +127,23 @@ def test_blob_store_detects_corruption(tmp_path: Path) -> None:
     store._path(sha).write_bytes(store._path(other).read_bytes())
     with pytest.raises(FetchError, match="corrupt"):
         store.get(sha)
+
+
+def test_min_interval_paces_network_requests_per_host(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"a")
+    router.add_bytes(URL + "2", b"b")
+    router.add_bytes("https://other.example/x", b"c")
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    fetcher = make_fetcher(tmp_path, router.client(), monotonic=lambda: now[0])
+    fetcher._sleep = sleep
+    fetcher.set_min_interval("registry.example", 0.5)
+    fetcher.get(URL)
+    fetcher.get(URL)  # snapshot hit: not paced
+    fetcher.get(URL + "2")
+    fetcher.get("https://other.example/x")  # different host: not paced
+    assert sleeps == [0.5]

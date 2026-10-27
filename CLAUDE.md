@@ -105,6 +105,7 @@ uv run pytest                                      # offline tests
 uv run pytest tests/test_cli.py::test_version      # single test
 uv run pytest -m network                           # opt-in live-network tests
 uv run kitsunox --help                             # CLI
+uv run kitsunox watchlist build                     # weekly popularity list (~1 GB transfer, ~10 min)
 uv run kitsunox ingest record --since-seq N --until-seq M --window-hours 2   # small live Stage 0 run
 uv run kitsunox ingest replay <run_id>             # offline replay; must print "identical"
 ```
@@ -250,12 +251,13 @@ updating it.
 
 ---
 
-## Current focus: finish Phase 2, then the evaluation harness (Phase 3)
+## Current focus: Phase 3, the evaluation harness
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
 `util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor), and
-`ecosystems/npm/`. See `docs/stages/ingest.md`. Remaining in Phase 2: popularity enrichment.
-Then Phase 3, the eval harness, before any detection rules. The `Rule` and `Stage` contracts in
+`ecosystems/npm/`, plus the popularity watchlist (`core/watchlist.py`,
+`docs/decisions/0003-popularity-watchlist.md`). See `docs/stages/ingest.md`. Next is Phase 3, the
+eval harness, before any detection rules. The `Rule` and `Stage` contracts in
 `docs/architecture.md` are still proposals; finalize them with Stage 1.
 
 Key invariants:

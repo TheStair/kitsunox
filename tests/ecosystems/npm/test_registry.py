@@ -1,3 +1,4 @@
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -5,10 +6,14 @@ import pytest
 from conftest import Router, TarEntry, make_tar_gz, sri_sha512
 from kitsunox.core.models import ArtifactRef
 from kitsunox.ecosystems.npm.registry import (
+    DOWNLOADS_BULK_LIMIT,
+    DOWNLOADS_URL,
     FEED_PAGE_LIMIT,
     REGISTRY_URL,
     REPLICATE_URL,
     NpmEcosystem,
+    downloads_period,
+    parse_downloads,
 )
 from kitsunox.util.hashing import IntegrityError
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
@@ -82,3 +87,40 @@ def test_fetch_artifact_verifies_and_extracts(npm: NpmEcosystem, router: Router)
         npm.fetch_artifact(ArtifactRef(url=url, integrity=sri_sha512(b"something else")))
     with pytest.raises(FetchError, match="no digest"):
         npm.fetch_artifact(ArtifactRef(url=url))
+
+
+AS_OF = datetime(2026, 10, 27, 3, tzinfo=UTC)
+PERIOD = "2026-10-19:2026-10-25"
+
+
+def test_downloads_period_is_fixed_by_as_of() -> None:
+    assert downloads_period(AS_OF) == (date(2026, 10, 19), date(2026, 10, 25))
+
+
+def test_download_counts_bulk_scoped_and_missing(npm: NpmEcosystem, router: Router) -> None:
+    router.add_json(
+        f"{DOWNLOADS_URL}/{PERIOD}/a,b,c",
+        {"a": {"downloads": 10, "package": "a"}, "b": None, "c": {"downloads": 0}},
+    )
+    router.add_json(f"{DOWNLOADS_URL}/{PERIOD}/@s%2Fone", {"downloads": 7, "package": "@s/one"})
+    # "@s/two" has no route -> 404 -> "no stats"; "@s/err" -> 500 -> failed lookup
+    router.add_json(f"{DOWNLOADS_URL}/{PERIOD}/@s%2Ferr", {}, status=500)
+    result = npm.download_counts(["c", "@s/one", "a", "b", "@s/two", "@s/err"], AS_OF)
+    assert result.counts == {"@s/one": 7, "@s/two": None, "a": 10, "b": None, "c": 0}
+    assert result.source == "npm-downloads:2026-10-19..2026-10-25"
+    assert result.period_days == 7
+
+
+def test_download_counts_bulk_requests_are_chunked(npm: NpmEcosystem, router: Router) -> None:
+    names = [f"p{i:03d}" for i in range(DOWNLOADS_BULK_LIMIT + 5)]
+    npm.download_counts(names, AS_OF)
+    assert len(router.requests) == 2
+    assert router.requests[1].endswith("/p128,p129,p130,p131,p132")
+
+
+@pytest.mark.parametrize(
+    "doc", [[], {"x": {"downloads": -1}}, {"x": {"downloads": "many"}}, {"x": {"downloads": 1.5}}]
+)
+def test_parse_downloads_rejects_hostile_values(doc: object) -> None:
+    with pytest.raises(ValueError):
+        parse_downloads(doc, ["x"])

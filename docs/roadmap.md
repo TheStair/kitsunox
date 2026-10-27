@@ -1,7 +1,7 @@
 # Roadmap
 
-> **Status as of 2026-10-27:** Phases 0–1 done. Phase 2 mostly done: Stage 0 records and replays
-> npm runs. Popularity enrichment is still outstanding.
+> **Status as of 2026-10-27:** Phases 0–2 done. Stage 0 records and replays npm runs, with
+> popularity from a weekly watchlist. Next: Phase 3, the evaluation harness.
 
 ## Phases
 
@@ -9,7 +9,7 @@
 |---|---|---|---|
 | 0 | Scaffold | `ruff`, `mypy`, `pytest` gates pass; CLI entry point runs | ✅ done |
 | 1 | Plan | Threat model, architecture, data sources, eval plan reviewed; open decisions below answered | ✅ done |
-| 2 | Core + ingest | `core/` models and interfaces; caching HTTP client in `util/`; safe tarball extractor; npm `Ecosystem` adapter; Stage 0 produces `Change` records for a window and replays offline from the snapshot | 🟡 all done except popularity enrichment (downloads API / deps.dev) |
+| 2 | Core + ingest | `core/` models and interfaces; caching HTTP client in `util/`; safe tarball extractor; npm `Ecosystem` adapter; Stage 0 produces `Change` records for a window and replays offline from the snapshot; popularity watchlist | ✅ done |
 | 3 | Evaluation harness | Eval manifest format; loader for OSV labels and DataDog samples; benign sampler; `kitsunox eval` reports per-stage recall / pass-through into `evaluation.md` | ⬜ |
 | 4 | Stage 1 metadata triage | Manifest-diff, install-hook, dependency, maintainer, publish-method and version-anomaly rules, each with tests and eval numbers | ⬜ |
 | 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | ⬜ |
@@ -41,11 +41,13 @@ devlog). Decision 5 is still open.
    (`time[version]`) is in `[as_of − 24h, as_of]`, with `as_of` an explicit run parameter
    (default: the `_changes` checkpoint time). Continuous mode = consecutive non-overlapping
    windows from the last `seq` checkpoint. Eval runs use fixed historical windows.
-3. **How many packages to watch.** ✅ *Accepted:* all of npm through Stage 1 (metadata is cheap),
-   then forward to tarball-based stages if **either** the package is above a popularity cutoff
-   (start with ≥1,000 weekly downloads or ≥10 dependents, tuned with eval) **or** Stage 1 fired
-   any rule. This keeps shape B (new, unpopular, malicious) in view without downloading 100k
-   tarballs a day.
+3. **How many packages to watch.** ✅ *Accepted, revised 2026-10-27:* all of npm through Stage 1
+   (metadata is cheap), then forward to tarball-based stages if **either** the package is on the
+   popularity **watchlist** (≥10k weekly downloads, built weekly from ecosyste.ms) **or** Stage 1
+   fired any rule. This keeps shape B (new, unpopular, malicious) in view without downloading
+   100k tarballs a day. The original "≥1k weekly or ≥10 dependents, looked up per change" was
+   replaced after measurement: a 1k cutoff covered 57% of changes, and per-change lookups would
+   take ~12h/day. See [decision 0003](decisions/0003-popularity-watchlist.md).
 4. **Report format.** ✅ *Accepted:* `report.json` is the canonical, deterministic output. Markdown
    per candidate plus a summary `index.md` is rendered from it. HTML and the web viewer come
    later, from the same JSON.

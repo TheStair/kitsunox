@@ -2,6 +2,58 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Popularity: per-change lookups abandoned for a weekly watchlist
+
+**Stage(s):** Stage 0 ingest (popularity enrichment). Closes Phase 2.
+**Context:** Stage 1's forward policy needs "is this package popular?" for every change to an
+existing package. The plan (roadmap decision 3) was per-change lookups against the npm downloads
+API, with a ≥1k weekly or ≥10 dependents cutoff. Full write-up:
+[decision 0003](decisions/0003-popularity-watchlist.md).
+
+### Decisions
+- **Weekly watchlist from packages.ecosyste.ms** (user-approved): packages ranked by last-month
+  downloads, paged until below the cutoff, saved as a small JSON list. Runs record the list's
+  id and SHA-256, and replay verifies it. Per-change API lookups are kept as `--popularity api`.
+- **Cutoff raised to 10k weekly** (user-approved): ≥43k monthly on the watchlist.
+- **Dependents dropped as a criterion for now**: deps.dev only has them via a per-version
+  `v3alpha` endpoint. Counts are stored in the watchlist for later.
+- **Per-host request pacing in `HttpFetcher`** (`set_min_interval`): generic, so any throttled
+  API can use it. Replays and cache hits are never paced.
+- **Download counts for a closed period are cached across runs** (immutable), since they're
+  final.
+
+### Challenges
+- **The npm downloads API throttles hard**: `429` with `retry-after: 0`. The first live run with
+  8 threads had 64 of ~1,100 lookups fail after retries, and took 3m22s vs 34s without
+  popularity.
+  - **Resolution:** a burst test showed sequential requests (~2.4/s) never got a 429 while two
+    parallel ones did almost at once, so requests are paced at 0.5 s. The next run had 0
+    failures.
+  - **Why it wasn't enough:** 88% of changed existing packages were scoped (946 of 1,075), and
+    scoped names can't use bulk lookups. That run took 8.5 minutes, which is ~12h for a full day.
+- **The planned 1k cutoff was far too low**: 57% of changed existing packages clear it (20% at
+  10k, 8% at 100k).
+- **ecosyste.ms pages are huge**: ~100–200 MB per 1,000 packages, with no field selection.
+  gzip transfer is ~8× smaller. Raw pages go to a temporary blob store and are discarded.
+- **Old run files no longer load** after the `Popularity` model changed: models forbid unknown
+  fields, so scratch runs recorded earlier fail validation. No real data was affected, but
+  records have **no schema version**. This needs fixing before data accumulates.
+
+### Evaluation snapshot
+- Watchlist vs API weekly counts on 1,638 packages: 92.2% agreement. The watchlist caught 221 of
+  296 packages that the API showed at ≥10k/week (75%). Its misses are mostly fast risers or
+  spikes. Mitigated by Stage 1 forwarding anything flagged; not yet measured against attacks.
+- Ingest with watchlist: 38 s per ~1,250 packages (vs 8.5 min API mode), replay identical.
+
+### Removed / abandoned
+- **Per-change downloads-API popularity as the default**: ~12h/day of paced requests for a full
+  day of npm. Kept as an opt-in mode.
+
+### Open questions / next steps
+- Add a schema version to persisted records (`Change`, `RunManifest`, `Watchlist`).
+- Consider a bulk downloads-API top-up for unscoped packages to catch fast risers.
+- Phase 3: evaluation harness.
+
 ## 2026-10-27: Phase 2, Stage 0 ingest with record/replay
 
 **Stage(s):** Stage 0 ingest, plus core and util foundations
