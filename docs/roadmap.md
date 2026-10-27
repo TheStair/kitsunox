@@ -1,6 +1,7 @@
 # Roadmap
 
-> **Status as of 2026-10-27:** Phase 0 done. Phase 1 done: decisions 1–4 accepted; next is Phase 2.
+> **Status as of 2026-10-27:** Phases 0–1 done. Phase 2 mostly done: Stage 0 records and replays
+> npm runs. Popularity enrichment is still outstanding.
 
 ## Phases
 
@@ -8,7 +9,7 @@
 |---|---|---|---|
 | 0 | Scaffold | `ruff`, `mypy`, `pytest` gates pass; CLI entry point runs | ✅ done |
 | 1 | Plan | Threat model, architecture, data sources, eval plan reviewed; open decisions below answered | ✅ done |
-| 2 | Core + ingest | `core/` models and interfaces; caching HTTP client in `util/`; safe tarball extractor; npm `Ecosystem` adapter; Stage 0 produces `Change` records for a window and replays offline from the snapshot | ⬜ |
+| 2 | Core + ingest | `core/` models and interfaces; caching HTTP client in `util/`; safe tarball extractor; npm `Ecosystem` adapter; Stage 0 produces `Change` records for a window and replays offline from the snapshot | 🟡 all done except popularity enrichment (downloads API / deps.dev) |
 | 3 | Evaluation harness | Eval manifest format; loader for OSV labels and DataDog samples; benign sampler; `kitsunox eval` reports per-stage recall / pass-through into `evaluation.md` | ⬜ |
 | 4 | Stage 1 metadata triage | Manifest-diff, install-hook, dependency, maintainer, publish-method and version-anomaly rules, each with tests and eval numbers | ⬜ |
 | 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | ⬜ |
@@ -48,5 +49,8 @@ devlog). Decision 5 is still open.
 4. **Report format.** ✅ *Accepted:* `report.json` is the canonical, deterministic output. Markdown
    per candidate plus a summary `index.md` is rendered from it. HTML and the web viewer come
    later, from the same JSON.
-5. **Benign-label delay.** *Open, proposed:* 30 days without a `MAL-`/GHSA record (see evaluation.md). Shorter
+5. **Blob retention.** *Open:* a full day of ingest is ~10 GB of compressed blobs. Proposed:
+   keep packuments for 30 days (matches the benign-label delay); keep tarballs for anything
+   forwarded past Stage 1 indefinitely (they become evaluation data).
+6. **Benign-label delay.** *Open, proposed:* 30 days without a `MAL-`/GHSA record (see evaluation.md). Shorter
    means faster iteration, but the labels are noisier.

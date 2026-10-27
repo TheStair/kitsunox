@@ -9,6 +9,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "httpx>=0.28.1",
     "pydantic>=2.14.1",
     "typer>=0.27.3",
 ]
@@ -30,6 +31,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 # S (bandit) is on deliberately: this is a security tool and should hold itself to that bar.
@@ -45,6 +47,8 @@ files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Lets tests import shared helpers with `from conftest import ...`.
+pythonpath = ["tests"]
 # Tests that hit live APIs are opt-in (`-m network`) so default runs stay deterministic.
 addopts = "-ra --strict-markers --import-mode=importlib -m 'not network'"
 markers = [

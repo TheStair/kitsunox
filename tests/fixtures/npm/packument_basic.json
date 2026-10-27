@@ -1,0 +1,76 @@
+{
+  "_comment": "Hand-written, inert packument for tests. Not a real package.",
+  "name": "kx-fixture",
+  "repository": {"type": "git", "url": "git+https://github.com/example/kx-fixture.git"},
+  "time": {
+    "created": "2026-01-01T00:00:00.000Z",
+    "modified": "2026-10-27T12:00:00.000Z",
+    "1.0.0": "2026-01-01T00:00:00.000Z",
+    "1.1.0": "2026-03-01T00:00:00.000Z",
+    "2.0.0": "2026-06-01T00:00:00.000Z",
+    "1.1.1": "2026-10-27T10:00:00.000Z",
+    "2.0.1": "2026-10-27T11:00:00.000Z",
+    "3.0.0-beta.1": "2026-10-27T11:30:00.000Z",
+    "9.9.9": "2026-10-27T11:00:00.000Z"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "kx-fixture",
+      "version": "1.0.0",
+      "_npmUser": {"name": "alice"},
+      "maintainers": [{"name": "alice"}],
+      "dist": {"tarball": "https://registry.npmjs.org/kx-fixture/-/kx-fixture-1.0.0.tgz", "integrity": "sha512-AAAA"}
+    },
+    "1.1.0": {
+      "name": "kx-fixture",
+      "version": "1.1.0",
+      "_npmUser": {"name": "alice"},
+      "maintainers": [{"name": "alice"}],
+      "dist": {"tarball": "https://registry.npmjs.org/kx-fixture/-/kx-fixture-1.1.0.tgz", "integrity": "sha512-AAAA"}
+    },
+    "2.0.0": {
+      "name": "kx-fixture",
+      "version": "2.0.0",
+      "gitHead": "0123456789abcdef0123456789abcdef01234567",
+      "_npmUser": {
+        "name": "GitHub Actions",
+        "trustedPublisher": {"id": "github", "oidcConfigId": "00000000-0000-0000-0000-000000000000"},
+        "approver": {"name": "alice"}
+      },
+      "maintainers": [{"name": "alice"}],
+      "dist": {
+        "tarball": "https://registry.npmjs.org/kx-fixture/-/kx-fixture-2.0.0.tgz",
+        "integrity": "sha512-AAAA",
+        "attestations": {"url": "https://registry.npmjs.org/-/npm/v1/attestations/kx-fixture@2.0.0", "provenance": {"predicateType": "https://slsa.dev/provenance/v1"}}
+      }
+    },
+    "1.1.1": {
+      "name": "kx-fixture",
+      "version": "1.1.1",
+      "_npmUser": {"name": "alice"},
+      "maintainers": [{"name": "alice"}],
+      "readme": "dropped from the manifest",
+      "dist": {"tarball": "https://registry.npmjs.org/kx-fixture/-/kx-fixture-1.1.1.tgz", "integrity": "sha512-AAAA"}
+    },
+    "2.0.1": {
+      "name": "kx-fixture",
+      "version": "2.0.1",
+      "scripts": {"postinstall": "node setup.js"},
+      "_npmUser": {"name": "mallory"},
+      "maintainers": [{"name": "alice"}, {"name": "mallory"}, {"bogus": true}],
+      "dist": {"tarball": "https://registry.npmjs.org/kx-fixture/-/kx-fixture-2.0.1.tgz", "integrity": "sha512-AAAA", "fileCount": "not-a-number"}
+    },
+    "3.0.0-beta.1": {
+      "name": "kx-fixture",
+      "version": "3.0.0-beta.1",
+      "_npmUser": {"name": "alice"},
+      "dist": {"tarball": "http://insecure.example/kx.tgz"}
+    },
+    "9.9.9": {
+      "name": "kx-fixture",
+      "version": "9.9.9",
+      "_npmUser": "not-an-object",
+      "dist": "not-an-object"
+    }
+  }
+}

@@ -9,7 +9,7 @@ heuristics, AST capability analysis, correlation (including published-tarball vs
 diffing), and later an optional Docker sandbox. Every flagged change gets a report showing which
 named, weighted rules fired and the evidence behind them.
 
-> **Status:** project scaffold only. No pipeline stages are implemented yet. See
+> **Status:** Stage 0 (ingest) works for npm. No detection stages yet. See
 > [`devlog.md`](devlog.md) for current progress.
 
 ## Requirements
@@ -19,10 +19,13 @@ named, weighted rules fired and the evidence behind them.
 ## Install and run
 
 ```sh
-uv sync                   # create .venv and install locked dependencies
-uv run kitsunox --version
+uv sync                              # create .venv and install locked dependencies
 uv run kitsunox --help
+uv run kitsunox ingest record        # Stage 0: collect the last 24h of npm releases
+uv run kitsunox ingest replay <run>  # re-run a recorded run offline, check output is identical
 ```
+
+Runs are written to `data/runs/<run_id>/`. See [stages/ingest.md](stages/ingest.md).
 
 Secrets (e.g. a read-only GitHub token) go in `.env` in the project root. Copy
 [`.env.example`](../.env.example) to start. `.env` is gitignored.
@@ -48,5 +51,6 @@ which is gitignored.
 - [`threat-model.md`](threat-model.md): attack patterns and planned coverage
 - [`evaluation.md`](evaluation.md): datasets, metrics, results log
 - [`roadmap.md`](roadmap.md): phases and decisions
+- [`stages/`](stages/): one page per pipeline stage
 - [`decisions/`](decisions/): records of significant design choices
 - [`devlog.md`](devlog.md): project journal

@@ -1,7 +1,9 @@
 # Architecture
 
-> **Status:** proposal (2026-10-27). Nothing below is implemented yet. Contracts may change during
-> Phase 2; any change gets a devlog entry.
+> **Status:** Stage 0 and its core pieces are implemented (2026-10-27): the data models
+> (`core/models.py`), the `Ecosystem` contract (`core/interfaces.py`), the caching fetcher
+> (`util/http.py`), the safe extractor (`util/archive.py`), and the npm adapter. The `Rule` and
+> `Stage` contracts below are still proposals and get finalized with Stage 1.
 
 ## Pipeline
 
@@ -75,15 +77,16 @@ interpreted. This matters again once an LLM stage exists.
 ## Interfaces
 
 ```python
-class Ecosystem(Protocol):  # ecosystems/<eco>/
+class Ecosystem(Protocol):  # implemented: core/interfaces.py
     name: str
 
-    def list_changes(self, window: Window) -> Iterable[ChangeStub]: ...
-    def build_change(self, stub: ChangeStub) -> Change: ...  # packuments, previous version
-    def fetch_artifact(self, ref: PackageVersionRef) -> ArtifactTree: ...  # safe extract, no exec
+    def feed_head(self) -> int: ...  # current change-feed position
+    def list_changes(self, since: int, until: int) -> list[ChangeStub]: ...  # feed (since, until]
+    def build_changes(self, stub: ChangeStub, window: Window) -> list[Change]: ...
+    def fetch_artifact(self, artifact: ArtifactRef) -> ArtifactTree: ...  # verify + safe extract
 
 
-class Rule(Protocol):  # rules/, ecosystems/<eco>/rules/
+class Rule(Protocol):  # proposed: rules/, ecosystems/<eco>/rules/
     id: str  # e.g. "npm.install-hook.added"
     version: int  # bump when behavior changes; recorded in RunManifest
     stage: StageId
@@ -91,7 +94,7 @@ class Rule(Protocol):  # rules/, ecosystems/<eco>/rules/
     def evaluate(self, candidate: Candidate, ctx: RuleContext) -> list[Finding]: ...
 
 
-class Stage(Protocol):  # stages/
+class Stage(Protocol):  # proposed: stages/
     id: StageId
 
     def run(self, candidates: Sequence[Candidate], ctx: StageContext) -> StageResult: ...
@@ -99,6 +102,10 @@ class Stage(Protocol):  # stages/
     # StageResult = forwarded candidates + cleared candidates (→ ledger)
 ```
 
+- **Why the Ecosystem contract takes a feed range, not just a window:** the npm feed has no
+  timestamps, so discovery has to work in feed positions. The publish-time window is applied
+  afterwards, to each packument's per-version times. Other feeds (e.g. PyPI's serial-numbered
+  changelog) fit the same shape. Details: [stages/ingest.md](stages/ingest.md).
 - **`ArtifactTree`** is an extracted, read-only view of a tarball or repo archive. Extraction
   rejects absolute paths, `..`, symlinks/hardlinks that point outside the root, device files,
   and archives that exceed size / file-count / compression-ratio limits. Nothing is ever

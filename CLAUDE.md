@@ -105,6 +105,8 @@ uv run pytest                                      # offline tests
 uv run pytest tests/test_cli.py::test_version      # single test
 uv run pytest -m network                           # opt-in live-network tests
 uv run kitsunox --help                             # CLI
+uv run kitsunox ingest record --since-seq N --until-seq M --window-hours 2   # small live Stage 0 run
+uv run kitsunox ingest replay <run_id>             # offline replay; must print "identical"
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -248,10 +250,17 @@ updating it.
 
 ---
 
-## Current focus: Phase 2, core models and Stage 0 ingest
+## Current focus: finish Phase 2, then the evaluation harness (Phase 3)
 
-Planning is done: see `docs/roadmap.md` (phases and accepted decisions), `docs/architecture.md`
-(contracts), and `docs/decisions/0002-data-sources.md`. Next is Phase 2: `core/` models and
-interfaces, a caching HTTP client, a safe tarball extractor, and the npm adapter for Stage 0.
+Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
+`util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor), and
+`ecosystems/npm/`. See `docs/stages/ingest.md`. Remaining in Phase 2: popularity enrichment.
+Then Phase 3, the eval harness, before any detection rules. The `Rule` and `Stage` contracts in
+`docs/architecture.md` are still proposals; finalize them with Stage 1.
+
+Key invariants:
+- All network access goes through `HttpFetcher`, so runs stay replayable.
+- Analysis never reads the clock; it uses the run's `as_of`.
+- Tarballs are only ever extracted with `extract_tar_gz`.
 
 Ask before starting implementation of any pipeline stage.

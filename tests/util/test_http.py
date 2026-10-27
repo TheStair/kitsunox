@@ -1,0 +1,129 @@
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+import pytest
+
+from conftest import Router
+from kitsunox.util.http import (
+    BlobStore,
+    FetchError,
+    FetchMode,
+    HttpFetcher,
+    RetryPolicy,
+    Snapshot,
+    request_key,
+)
+
+URL = "https://registry.example/pkg"
+FIXED = datetime(2026, 10, 27, tzinfo=UTC)
+
+
+def make_fetcher(
+    tmp_path: Path,
+    client: httpx.Client,
+    *,
+    mode: FetchMode = FetchMode.RECORD,
+    snapshot: Snapshot | None = None,
+    sleeps: list[float] | None = None,
+    **kwargs: object,
+) -> HttpFetcher:
+    return HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=snapshot if snapshot is not None else Snapshot(),
+        mode=mode,
+        immutable_index=tmp_path / "immutable",
+        client=client,
+        sleep=(sleeps if sleeps is not None else []).append,
+        clock=lambda: FIXED,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_record_then_replay_offline(tmp_path: Path, router: Router) -> None:
+    router.add_json(URL, {"v": 1})
+    snapshot = Snapshot()
+    fetcher = make_fetcher(tmp_path, router.client(), snapshot=snapshot)
+    assert fetcher.get(URL).json() == {"v": 1}
+    assert fetcher.get(URL).json() == {"v": 1}
+    assert len(router.requests) == 1  # second call served from the snapshot
+
+    snapshot.save(tmp_path / "snap.json")
+    offline = httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("network used")))
+    replay = make_fetcher(
+        tmp_path, offline, mode=FetchMode.REPLAY, snapshot=Snapshot.load(tmp_path / "snap.json")
+    )
+    response = replay.get(URL)
+    assert response.json() == {"v": 1}
+    assert response.fetched_at == FIXED
+
+
+def test_replay_miss_is_an_error(tmp_path: Path, router: Router) -> None:
+    fetcher = make_fetcher(tmp_path, router.client(), mode=FetchMode.REPLAY)
+    with pytest.raises(FetchError, match="replay miss"):
+        fetcher.get(URL)
+    assert router.requests == []
+
+
+def test_non_retryable_errors_are_recorded(tmp_path: Path, router: Router) -> None:
+    fetcher = make_fetcher(tmp_path, router.client())
+    response = fetcher.get(URL)
+    assert response.status == 404
+    assert fetcher.snapshot.entries[request_key(URL, None)].status == 404
+
+
+def test_retries_with_backoff_and_retry_after(tmp_path: Path) -> None:
+    responses = iter(
+        [
+            httpx.Response(503),
+            httpx.Response(429, headers={"Retry-After": "7"}),
+            httpx.Response(200, content=b"ok"),
+        ]
+    )
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: next(responses)))
+    sleeps: list[float] = []
+    fetcher = make_fetcher(tmp_path, client, sleeps=sleeps)
+    assert fetcher.get(URL).body == b"ok"
+    assert sleeps == [1.0, 7.0]
+
+
+def test_gives_up_after_max_attempts(tmp_path: Path) -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    client = httpx.Client(transport=httpx.MockTransport(fail))
+    fetcher = make_fetcher(tmp_path, client, retry=RetryPolicy(max_attempts=3))
+    with pytest.raises(FetchError, match="after 3 attempts: ConnectError"):
+        fetcher.get(URL)
+    assert fetcher.snapshot.entries == {}
+
+
+def test_response_size_limit(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"x" * 100)
+    fetcher = make_fetcher(tmp_path, router.client(), max_bytes=10)
+    with pytest.raises(FetchError, match="exceeds"):
+        fetcher.get(URL)
+
+
+def test_immutable_responses_are_reused_across_runs(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"tarball")
+    make_fetcher(tmp_path, router.client()).get(URL, immutable=True)
+    second = make_fetcher(tmp_path, router.client())
+    assert second.get(URL, immutable=True).body == b"tarball"
+    assert len(router.requests) == 1
+    assert request_key(URL, None) in second.snapshot.entries  # still recorded for replay
+
+
+def test_accept_header_is_part_of_the_key() -> None:
+    assert request_key(URL, {"Accept": "a"}) != request_key(URL, {"accept": "b"})
+    assert request_key(URL, {"User-Agent": "x"}) == request_key(URL, None)
+
+
+def test_blob_store_detects_corruption(tmp_path: Path) -> None:
+    store = BlobStore(tmp_path)
+    sha = store.put(b"content")
+    assert store.get(sha) == b"content"
+    other = store.put(b"different")
+    store._path(sha).write_bytes(store._path(other).read_bytes())
+    with pytest.raises(FetchError, match="corrupt"):
+        store.get(sha)

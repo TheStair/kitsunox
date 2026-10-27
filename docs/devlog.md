@@ -2,6 +2,67 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Phase 2, Stage 0 ingest with record/replay
+
+**Stage(s):** Stage 0 ingest, plus core and util foundations
+**Context:** Build the foundation every later stage depends on: data models, a fetch layer that
+makes runs reproducible, a safe way to open untrusted tarballs, and the npm adapter. See
+[stages/ingest.md](stages/ingest.md).
+
+### Decisions
+- **Snapshot fetcher instead of a plain HTTP cache** (`util/http.py`): each run records request
+  key → content hash in `snapshot.json`; replay mode answers only from it and fails on a miss.
+  A TTL cache was rejected because it gives "probably the same" inputs, not provably the same.
+  Integrity-pinned responses (tarballs) are also indexed across runs, so they're downloaded once.
+- **In-memory tarball extraction** (`util/archive.py`): no files written means no path-traversal
+  or symlink attack surface on the host. Links, devices, FIFOs and unsafe paths are *reported*,
+  not silently dropped, because a symlink to `~/.npmrc` inside a tarball is itself a signal.
+  Trailing gzip data is rejected, since tools disagree on how to read it.
+- **Previous version = highest lower semver published earlier**, falling back to publish order.
+  This diffs backports against their own release line (tested: `1.1.1` after `2.0.0` → `1.1.0`).
+- **Ecosystem contract uses feed positions, not time**: the npm feed has no timestamps, so
+  `list_changes(since, until)` works in sequence numbers and the publish-time window is applied
+  to packument `time` entries. This differs from the Phase 1 sketch; architecture.md is updated.
+- **Rule/Stage contracts deferred to Stage 1**: there's no consumer yet, and guessing them now
+  would mean revising them later.
+- **No popularity yet**: deferred within Phase 2, because it isn't needed until the Stage 1
+  forward policy.
+
+### Challenges
+- **Packument storage blew up**: the first live run stored **1.4 GB for 1,208 packages**, because
+  packages with long version histories have multi-MB packuments. At ~100k packages a day that
+  would be ~140 GB/day.
+  - **Resolution:** zstd-compress blobs (stdlib `compression.zstd`, Python 3.14), still keyed by
+    the hash of the uncompressed bytes.
+  - **Why it worked:** the second live run stored **119 MB for 1,068 packages** (≈10× smaller),
+    and the replay was still byte-identical. The abbreviated packument was considered and
+    rejected: it lacks the per-version `time` map and `_npmUser`.
+- **Extractor false positive on real tarballs**: a real package's tarball had a bare `package`
+  directory entry, which was reported as an "unsafe path".
+  - **Resolution:** skip directory entries before path validation. Directories are implied by
+    file paths anyway.
+- **Monorepo repository URLs** (`github.com/o/repo/sub/pkg.git`) weren't normalized.
+  - **Resolution:** drop the sub-path. Covered by a parametrized test.
+- **FIFO reported as "device"**: Python's `tarfile.isdev()` is also true for FIFOs. Caught by
+  `test_unsafe_and_special_entries_are_reported_not_extracted`; fixed by checking FIFO first.
+
+### Evaluation snapshot
+- No detection yet, so no recall/FP numbers. Ingest health on two live runs: 0 skipped packages,
+  59 of 60 random tarballs extracted cleanly (1 was a 404, removed after publish), replay
+  identical both times.
+- Live observations (one 2h sample of 1,821 changes, worth re-measuring):
+  - 40% of new versions use trusted publishing and 34% carry provenance.
+  - 2.5% are brand-new packages.
+  - 1.6% have install scripts.
+  - No trusted → manual publish downgrades were seen.
+
+### Open questions / next steps
+- Popularity enrichment (downloads API bulk for unscoped names; deps.dev for dependents).
+- Blob retention policy (roadmap decision 5).
+- Cross-run dedupe of changes re-emitted when a package is touched again.
+- Measure npm read rate limits at full-day volume (only ~35 packages/s tried so far, with no 429s).
+- Then Phase 3: the evaluation harness.
+
 ## 2026-10-27: Planning: threat model, architecture, data sources, evaluation
 
 **Stage(s):** all (design only, no pipeline code)
