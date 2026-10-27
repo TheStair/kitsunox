@@ -149,8 +149,10 @@ EMBEDDED_ASSET_MAGIC = {
 # bundle, where a bundler put it; anywhere else it stays an encoded blob.
 EMBEDDED_WASM_MAGIC = b"\x00asm"
 
+# `atob` is a case-sensitive JavaScript name and a whole word: a transliterated Bible in
+# anonyco's test data has "atoB" and "aTOB" as words.
 DECODE_CALLS = re.compile(
-    r"\b(base64\s+(-d|--decode|-D)|atob\b|b64decode|Buffer\.from\s*\([^)]*base64|"
+    r"\b(base64\s+(-d|--decode|-D)|(?-i:atob)\b|b64decode|Buffer\.from\s*\([^)]*base64|"
     r"FromBase64String)",
     re.IGNORECASE,
 )

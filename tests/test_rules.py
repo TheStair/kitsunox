@@ -1449,6 +1449,8 @@ def test_removed_lines_are_no_baseline_outside_a_bundle():
 @pytest.mark.parametrize("line, fires", [
     ("const binary = atob(value);", True),
     ("4 atoBm bm BaarocAOBHAH Hac", False),  # anonyco: a transliterated Bible in test data
+    ("He HyxHO HaM, atoB yMepTBHAH", False),
+    ("MaT(j)aTOB, JleBHMH", False),
 ])
 def test_atob_is_a_whole_word(line, fires):
     assert ("content.decode_call" in _scan_ids([_file("src/a.js", _added(line))])) is fires
