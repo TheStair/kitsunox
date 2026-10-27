@@ -137,6 +137,25 @@ The two precision gaps are **reported, not fixed**: fixing them would make holdo
 calibration. Dispositions and minutes per alert are recorded in each queue's
 `dispositions.csv`.
 
+**Tier 2 brief on the same 19** (run on request, $1.84, $0.10 per alert; unknown
+repositories, so the recognition effect from the ground-truth ablation should not apply):
+**16 benign, 3 suspicious, 0 malicious** -- the 3 suspicious are all the bundled Azure SDK
+comment. Briefed queues: `triage/measurement/*/queue-20261026-22*.md`.
+
+- *Legwork the rules cannot do:* it found a lockfile silently downgrading a dependency
+  (pixi-vn), TLS verification disabled (bulk-mail-cli) and a malformed `action.yml`
+  (pullpreview).
+- *Inconsistent on identical evidence:* four typst alerts with one cause -> two
+  suspicious (0.50), two benign (0.60). The verdict ranks; the investigator decides.
+- *A defect in Tier 2 itself, exposed by the measurement:* the prompt names each flagged
+  rule and file but not the matched line, and a file over its budget is cut from the top.
+  In the typst and PyO3 bundles the flagged line sat past line 53,000, so the model never
+  saw `192.0.0.10` and guessed the trigger (wrongly, as the `tunnel` package or a `127.`
+  check). The prompt's truncation note also claims flagged files were "kept in full".
+  Reported, not fixed: fixing it now would tune Tier 2 on holdout-2.
+- *Tags are not a diff question:* for all four tag alerts it cleared the diff and pointed
+  the investigator at the tag history -- correctly.
+
 ---
 
 ## 5. Challenges and how they were solved
