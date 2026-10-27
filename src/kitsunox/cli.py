@@ -188,10 +188,11 @@ def labels_sync(data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
 
 @app.command("triage")
 def triage_cmd(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
-    """Stage 1: run the metadata rules on a recorded run and write runs/<run_id>/triage.jsonl."""
+    """Stage 1: run the metadata rules on a recorded run; write triage.jsonl and the package
+    batches for Stage 2 (batches.jsonl) into the run directory."""
     data = DataDir(data_dir)
     manifest = RunManifest.load_json((data.run_dir(run_id) / "manifest.json").read_bytes())
-    candidates = triage_run(data.run_dir(run_id), RuleContext(as_of=manifest.as_of))
+    candidates, batches = triage_run(data.run_dir(run_id), RuleContext(as_of=manifest.as_of))
     reasons: dict[str, int] = {}
     for candidate in candidates:
         decision = candidate.history[-1]
@@ -202,7 +203,9 @@ def triage_cmd(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
     typer.echo(
         f"{len(candidates)} changes, {forwarded} forwarded ({dict(sorted(reasons.items()))})"
     )
-    typer.echo(f"saved to {data.run_dir(run_id) / 'triage.jsonl'}")
+    versions = sum(len(b.versions) for b in batches)
+    typer.echo(f"{len(batches)} package batches for Stage 2 ({versions} versions)")
+    typer.echo(f"saved to {data.run_dir(run_id)}/triage.jsonl and batches.jsonl")
 
 
 @samples_app.command("datadog")

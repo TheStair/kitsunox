@@ -25,6 +25,34 @@ uv run kitsunox eval run <dataset> --predictor stage1         # rules + watched 
   finding records the rule id and version.
 - **Forward policy:** forward if any finding is MEDIUM or above, or the package is watched.
   LOW findings are kept for scoring (Stage 4) but don't forward on their own.
+- **Handoff to Stage 2: `PackageBatch`** (`runs/<id>/batches.jsonl`). There is one batch per
+  package per run. It holds every version of that package in the run, oldest first, plus the
+  base (the earliest version's previous version). Unflagged sibling versions are included too.
+
+## Bursty packages and the Stage 2 contract
+
+Some packages publish dozens of versions a day (`@bike4mind/cli`: 233 on 2026-10-27).
+Analysing only the newest version would let an attacker publish a malicious version and revert
+it within the burst: a newest-vs-base diff shows nothing, but anyone who installed in between
+got the payload. So the contract for Stage 2 is:
+
+1. Analyse every **distinct file content** that appears in any version of the batch but not in
+   the base, **once**, and attribute each finding to the first version that contained it.
+2. Cache analysis results by **(content SHA-256, rule versions)** across runs. Analysis is a
+   pure function of the content, so the cache is deterministic, and a file seen in any earlier
+   version costs nothing.
+
+Measured on the first 24h run:
+
+| Unit of Stage 2 work | Count/day |
+|---|---|
+| Forwarded versions | 15,043 |
+| Package batches if batched daily | 5,634 |
+| Package batches at the hourly collection cadence (simulated by publish hour) | ~11,800 (median 1 version, p99 5, max 23) |
+
+Hourly batching alone saves only about 20%, because bursts spread across hours. The real saving
+is expected from the content cache (2.), which makes cost track the new code being published
+rather than the number of versions. It can only be measured once Stage 2 downloads tarballs.
 
 ## Rules
 

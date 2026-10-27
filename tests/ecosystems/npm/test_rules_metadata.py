@@ -25,7 +25,7 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     SuspiciousVersion,
     UnfamiliarPublisher,
 )
-from kitsunox.stages.triage import triage
+from kitsunox.stages.triage import batch_forwarded, triage
 
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
 CTX = RuleContext(as_of=T0)
@@ -186,3 +186,38 @@ def test_triage_forward_policy() -> None:
     assert decision.forwarded and decision.reason == "rules: npm.install-hook"
     low_only = change(snap("2", maintainers=("a", "b")), snap("1", maintainers=("a",)))
     assert not triage(low_only, CTX).history[-1].forwarded  # LOW findings alone don't forward
+
+
+def test_batches_keep_every_version_including_a_reverted_malicious_one() -> None:
+    base = snap("1.0.0", published_at=T0)
+    bad = snap(
+        "1.0.1", {"scripts": {"postinstall": "node x.js"}}, published_at=T0 + timedelta(minutes=5)
+    )
+    clean = snap("1.0.2", published_at=T0 + timedelta(minutes=10))
+    candidates = [
+        triage(change(clean, bad, watched=True), CTX),  # deliberately out of order
+        triage(change(bad, base, watched=True), CTX),
+    ]
+    (batch,) = batch_forwarded(candidates)
+    assert batch.name == "kx" and batch.base == base
+    assert [c.change.new.ref.version for c in batch.versions] == ["1.0.1", "1.0.2"]
+
+
+def test_batches_include_unflagged_siblings_and_drop_quiet_packages() -> None:
+    flagged = triage(change(snap("2.0.0", {"scripts": {"preinstall": "x"}}), snap("1.0.0")), CTX)
+    sibling = triage(
+        change(snap("2.0.1", published_at=T0 + timedelta(hours=1)), snap("2.0.0")), CTX
+    )
+    quiet = triage(
+        Change(
+            new=VersionSnapshot(
+                ref=PackageVersionRef(ecosystem="npm", name="other", version="1"),
+                publish=PublishInfo(published_at=T0),
+                manifest={},
+            )
+        ),
+        CTX,
+    )
+    (batch,) = batch_forwarded([sibling, quiet, flagged])
+    assert batch.forwarded and len(batch.versions) == 2
+    assert not sibling.history[-1].forwarded  # carried along by the flagged version

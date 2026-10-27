@@ -197,3 +197,25 @@ class Candidate(Record):
     @property
     def score(self) -> float:
         return sum(f.weight for f in self.findings)
+
+
+class PackageBatch(Persisted):
+    """Stage 1 → Stage 2 handoff: every version of one package from one run, analysed together.
+
+    Bursty packages publish dozens of versions an hour (233 in a day for one package on
+    2026-10-27). Analysing only the newest version would hide a malicious version that is
+    reverted within the burst, so Stage 2 instead analyses every *distinct file content* that
+    appears in any version here but not in `base`, once, and attributes each finding to the
+    first version that contained it. Cost scales with distinct contents, not with versions.
+    """
+
+    ecosystem: str
+    name: str
+    base: VersionSnapshot | None = Field(
+        description="What the earliest version was diffed against; None for a new package."
+    )
+    versions: tuple[Candidate, ...] = Field(description="Oldest first, by publish time.")
+
+    @property
+    def forwarded(self) -> bool:
+        return any(c.history and c.history[-1].forwarded for c in self.versions)

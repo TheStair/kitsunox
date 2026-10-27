@@ -133,8 +133,8 @@ class Stage(Protocol):  # proposed: stages/ (Stage 1 is a function, stages/triag
 | Stage | Input | Fetches | Output / forward criteria |
 |---|---|---|---|
 | 0 Ingest | change window | `_changes` page(s), packuments, popularity | One `Change` per new version in the window, with the previous version resolved |
-| 1 Metadata | `Change` | nothing (uses snapshot) | Manifest and publish-info rules. Forward on any signal, or always for watched/popular packages (policy TBD) |
-| 2 Static | `Candidate` | tarballs (new + previous) | File-level diff; entropy, blob, URL/IP, keyword rules on **changed files only** |
+| 1 Metadata | `Change` | nothing (uses snapshot) | Manifest and publish-info rules. Forward on MEDIUM+ or watched package; emit `PackageBatch` per package per run ([stages/triage.md](stages/triage.md)) |
+| 2 Static | `PackageBatch` (all versions of one package in a run + base) | tarballs (every version + base) | Each distinct file content not in the base is analysed once (cached by content hash + rule versions across runs); findings are attributed to the first version containing them. Entropy, blob, URL/IP and keyword rules |
 | 3 AST | `Candidate` | nothing new | tree-sitter parse of changed JS/TS; per-file capability sets; **capability delta** findings |
 | 4 Correlate | `Candidate` | repo archive at `gitHead`/tag; OSV; reputation of new deps | Tarball-vs-repo diff, known-bad lookups, combination rules, final score |
 | 5 Sandbox | `Candidate` | n/a (offline container) | Runtime observations as findings. Design review required before any code |

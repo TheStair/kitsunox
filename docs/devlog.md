@@ -2,6 +2,31 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Burst handling between Stage 1 and Stage 2
+
+**Stage(s):** Stage 1 output contract, Stage 2 design
+**Context:** Stage 1 forwards ~15k versions a day, 96% only because the package is watched.
+The user chose to handle bursty packages (option 1 of three; the other two were deprioritising
+prereleases and raising the popularity bar).
+
+### Decisions
+- **Batch per package per run, but never reduce a batch to its newest version.** My first
+  description of option 1 ("analyse the latest, diffed against the last analysed version")
+  was wrong: a malicious version reverted within the burst would never be inspected. The
+  corrected contract (`PackageBatch`, [stages/triage.md](stages/triage.md)) is that Stage 2
+  analyses every distinct file content in any version of the batch, once.
+- **Content-hash analysis cache across runs** for Stage 2, keyed on content SHA-256 plus rule
+  versions. It is deterministic because analysis is pure.
+
+### Challenges
+- **The estimated saving didn't hold.** I had estimated ~5k packages a day. That is true for
+  daily batching (5,634), but at the hourly collection cadence bursts spread across hours: the
+  simulation gives ~11,800 batches (−20%). The content cache is where the real saving should
+  come from. It is unmeasured until Stage 2 downloads tarballs.
+
+### Open questions / next steps
+- Measure distinct-content ratios once tarballs are fetched (Stage 2).
+
 ## 2026-10-27: Stage 1 metadata triage, DataDog samples, and the stub bug
 
 **Stage(s):** Stage 1 (new), evaluation, plus one Stage 0 fix (flagged below)
