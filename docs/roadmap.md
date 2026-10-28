@@ -22,7 +22,7 @@
 | 8 | Reporting | `report.json` → Markdown per candidate + `index.md`; `kitsunox run` end to end | ⬜ |
 | 8b | Git path (parallel source) | Commits on GitHub/GitLab repos of watchlist packages → filter → full repo fetch when needed → join with npm releases. See [decision 0004](decisions/0004-git-path-parallel-to-npm.md) | ⬜ after the npm workflow |
 | 9 | Prospective labeling | Scheduled ingest + cache retention; nightly join against new `MAL-` records to grow the eval set | 🟡 hourly `kitsunox collect` (launchd) + retention running since 2026-10-27, with Stages 1–2 and tarball capture since the evening of 2026-10-27; datasets are rebuilt by hand with `eval build` |
-| 10 | Sandbox (optional) | Design doc and review **first**; then Docker runner for install hooks, no network or capture proxy | ⬜ |
+| 10 | Sandbox (optional) | Design doc and review **first**; then Docker runner for install hooks, no network or capture proxy | ⬜ Planned host (2026-10-28): the whole pipeline moves to a VM on the user's desktop, with the sandbox (Docker) inside it; not cloud (provider terms on malware, cost). The VM holds `data/` and `.env`, so: no network or capture proxy only for detonation containers, read-only input / write-only output mounts, hardened runtime (rootless Docker or gVisor), minimal read-only secrets, VM snapshots for rollback |
 | 11 | Extras (optional) | Local web viewer for reports; Claude-based analysis stage in `modules/`; second ecosystem (PyPI) | ⬜ |
 
 The eval harness (Phase 3) deliberately comes before any detection stage, so every rule lands

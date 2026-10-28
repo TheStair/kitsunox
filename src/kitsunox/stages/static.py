@@ -16,22 +16,35 @@ from typing import Final
 import httpx
 
 from kitsunox.core.interfaces import Ecosystem
-from kitsunox.core.models import PackageBatch, Record, Severity, StageDecision, VersionSnapshot
-from kitsunox.core.rules import FileMatch, FileRule, rules_fingerprint
+from kitsunox.core.models import (
+    Finding,
+    PackageBatch,
+    Record,
+    Severity,
+    StageDecision,
+    VersionSnapshot,
+)
+from kitsunox.core.rules import ArtifactRule, FileMatch, FileRule, rules_fingerprint
 from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
+from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.rules.static import RULES
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
-from kitsunox.util.http import FetchError, FetchMode, HttpFetcher, Snapshot
+from kitsunox.util.http import FetchError, FetchMode, HttpFetcher, Snapshot, TransientFetchError
 
 STAGE_ID: Final = "static"
 # 16 MB, not 2: the Shai-Hulud payload (`bun_environment.js`) is ~10 MB, and 698 of 965
 # first-release compromised samples added a file over 2 MB (2026-10-27).
 MAX_FILE_BYTES: Final = 16 * 1024 * 1024
 MAX_ARTIFACT_BYTES: Final = MAX_FILE_BYTES
+# Decision reasons for missing files, e.g. "files unavailable: ..." or "; base unavailable, will
+# retry: ...". The retry form marks a network failure, which `collect` retries.
+UNAVAILABLE: Final = "unavailable: "
+WILL_RETRY: Final = "unavailable, will retry: "
 DEFAULT_THRESHOLD: Final = Severity.MEDIUM
+ARTIFACT_RULES_BY_ECOSYSTEM: Final[dict[str, Sequence[ArtifactRule]]] = {"npm": NPM_ARTIFACT_RULES}
 
 Tree = Mapping[str, bytes]
 
@@ -44,9 +57,11 @@ class NewContent(Record):
 
 
 class Unavailable(Record):
-    """A version's files could not be read; `reason` says why (too large, fetch failed)."""
+    """A version's files could not be read; `reason` says why (too large, fetch failed).
+    `transient`: a network failure, so fetching again later may work."""
 
     reason: str
+    transient: bool = False
 
 
 def new_contents(
@@ -99,23 +114,32 @@ def analyse_batch(
     trees: Callable[[VersionSnapshot], Tree | Unavailable],
     cache: ContentCache,
     *,
+    artifact_rules: Sequence[ArtifactRule] = (),
     threshold: Severity = DEFAULT_THRESHOLD,
 ) -> PackageBatch:
     """Run Stage 2 on a batch. `trees` gives a version's extracted files (fetching as needed).
-    A version whose files are unavailable gets no findings and says why. An unavailable base
-    counts as empty: every file of the first version is then new, which costs time but can
-    only add findings."""
+    File rules see each new content once; `artifact_rules` see each version's metadata and
+    whole file tree. A version whose files are unavailable gets no findings and says why. An
+    unavailable base counts as empty: every file of the first version is then new, which costs
+    time but can only add findings."""
     base = trees(batch.base) if batch.base else None
-    base_note = f"; base unavailable: {base.reason}" if isinstance(base, Unavailable) else ""
-    missing: dict[str, str] = {}
+    base_note = ""
+    if isinstance(base, Unavailable):
+        base_note = f"; base {_unavailable(base)}"
+    missing: dict[str, Unavailable] = {}
+    by_artifact: dict[str, tuple[Finding, ...]] = {}
 
     def versions() -> Iterator[tuple[str, Tree]]:
         for candidate in batch.versions:
-            version = candidate.change.new.ref.version
-            tree = trees(candidate.change.new)
+            snapshot = candidate.change.new
+            version = snapshot.ref.version
+            tree = trees(snapshot)
             if isinstance(tree, Unavailable):
-                missing[version] = tree.reason
+                missing[version] = tree
                 continue
+            by_artifact[version] = tuple(
+                f for rule in artifact_rules for f in rule.evaluate_artifact(snapshot, tree)
+            )
             yield version, tree
 
     found: dict[str, list[tuple[str, FileMatch]]] = {}
@@ -126,10 +150,12 @@ def analyse_batch(
     updated = []
     for candidate in batch.versions:
         version = candidate.change.new.ref.version
-        findings = tuple(match.finding(path) for path, match in found.get(version, []))
+        findings = by_artifact.get(version, ()) + tuple(
+            match.finding(path) for path, match in found.get(version, [])
+        )
         flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
         if version in missing:
-            reason = f"files unavailable: {missing[version]}"
+            reason = f"files {_unavailable(missing[version])}"
         else:
             reason = f"rules: {', '.join(flagged)}" if flagged else "no signal"
         decision = StageDecision(stage=STAGE_ID, forwarded=bool(flagged), reason=reason + base_note)
@@ -142,6 +168,10 @@ def analyse_batch(
             )
         )
     return batch.model_copy(update={"versions": tuple(updated)})
+
+
+def _unavailable(missing: Unavailable) -> str:
+    return f"{WILL_RETRY if missing.transient else UNAVAILABLE}{missing.reason}"
 
 
 class ArtifactFiles:
@@ -162,7 +192,10 @@ class ArtifactFiles:
         try:
             return self.ecosystem.fetch_artifact(artifact)
         except (FetchError, ValueError) as exc:  # ValueError: integrity or archive errors
-            return Unavailable(reason=f"{type(exc).__name__}: {exc}"[:300])
+            return Unavailable(
+                reason=f"{type(exc).__name__}: {exc}"[:300],
+                transient=isinstance(exc, TransientFetchError),
+            )
 
 
 def static_run(
@@ -171,6 +204,7 @@ def static_run(
     cache: ContentCache,
     *,
     workers: int = 8,
+    artifact_rules: Sequence[ArtifactRule] = (),
 ) -> tuple[PackageBatch, ...]:
     """Stage 2 over a triaged run: reads `batches.jsonl`, writes `static.jsonl` (the same
     batches in the same order, each version with Stage 2 findings and decision). `files` must
@@ -179,7 +213,9 @@ def static_run(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         batches = tuple(
             pool.map(
-                lambda line: analyse_batch(PackageBatch.load_json(line), files, cache),
+                lambda line: analyse_batch(
+                    PackageBatch.load_json(line), files, cache, artifact_rules=artifact_rules
+                ),
                 [line for line in lines if line.strip()],
             )
         )
@@ -208,10 +244,26 @@ def record_static(
         client=client,
     )
     try:
-        files = ArtifactFiles(factory(fetcher))
+        ecosystem = factory(fetcher)
+        files = ArtifactFiles(ecosystem)
         cache = ContentCache(data.root / "cache" / "static", RULES)
-        batches = static_run(run_dir, files, cache, workers=workers)
+        batches = static_run(
+            run_dir,
+            files,
+            cache,
+            workers=workers,
+            artifact_rules=ARTIFACT_RULES_BY_ECOSYSTEM.get(ecosystem.name, ()),
+        )
     finally:
         fetcher.close()
     snapshot.save(run_dir / STATIC_SNAPSHOT)
     return batches
+
+
+def needs_retry(batches: Iterable[PackageBatch]) -> bool:
+    """Whether any version or base of a Stage 2 result failed on the network."""
+    return any(
+        c.history[-1].stage == STAGE_ID and WILL_RETRY in c.history[-1].reason
+        for b in batches
+        for c in b.versions
+    )

@@ -104,6 +104,11 @@ sequenceDiagram
 - Packuments are untrusted. Every field is type-checked, and wrong types are ignored instead of
   trusted (see `tests/fixtures/npm/packument_basic.json`). A package that raises anyway is
   recorded in `skipped.jsonl` instead of crashing the run.
+- Network failures are different from bad data. A package skipped because the network failed
+  (`transient: true` in `skipped.jsonl`) goes into the checkpoint's retry list. The next
+  chained run fetches it again. If more than 20% of a run's packages fail that way, the run
+  writes nothing (`IngestDegradedError`). See
+  [0009](../decisions/0009-network-failure-handling.md).
 - Tarballs (fetched by later stages through `NpmEcosystem.fetch_artifact`) must carry a digest.
   They're verified against `dist.integrity` (or the legacy `shasum`) and extracted **in memory**
   by `util.archive.extract_tar_gz`:

@@ -51,7 +51,7 @@ def is_registry_spec(spec: str) -> bool:
     return not _PROTOCOL.match(spec) and "/" not in spec
 
 
-def _snippet(text: str | None) -> str | None:
+def snippet(text: str | None) -> str | None:
     if text is None or len(text) <= SNIPPET_LIMIT:
         return text
     return text[:SNIPPET_LIMIT] + f"... [{len(text) - SNIPPET_LIMIT} more chars]"
@@ -61,8 +61,8 @@ def _field(path: str, *, after: str | None = None, before: str | None = None) ->
     return Evidence(
         kind=EvidenceKind.MANIFEST_FIELD,
         path=f"package.json:{path}",
-        before=_snippet(before),
-        after=_snippet(after),
+        before=snippet(before),
+        after=snippet(after),
     )
 
 
@@ -123,7 +123,7 @@ class NonRegistryDependency(BaseRule):
         old = runtime_dependencies(change.previous.manifest) if change.previous else {}
         return [
             self.finding(
-                f"Dependency `{name}` comes from `{_snippet(spec)}`.",
+                f"Dependency `{name}` comes from `{snippet(spec)}`.",
                 _field(f"dependencies.{name}", after=spec, before=old.get(name)),
             )
             for name, spec in sorted(new.items())

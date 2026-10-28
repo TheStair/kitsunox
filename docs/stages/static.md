@@ -62,6 +62,36 @@ attributed.
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
 
+### Metadata vs. tarball (npm, `ecosystems/npm/rules/artifact.py`)
+
+These rules see a version's registry metadata and its whole extracted tarball (the
+`ArtifactRule` contract in `core/rules.py`). The npm registry doesn't check that the two agree
+("manifest confusion"), and Stage 1 only reads the metadata:
+
+| Rule | Looks for | Severity |
+|---|---|---|
+| `npm.artifact.hidden-install-script` | an install hook in the tarball's `package.json` that the metadata lacks or shows differently (`npm install` runs the tarball's) | HIGH |
+| `npm.artifact.size-mismatch` | files total more than `dist.unpackedSize` by over 1 KiB and 1% (understated only: overstating gains an attacker nothing) | MEDIUM |
+
+On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
+every time, and no tarball hid an install hook. The 9 script differences were npm's own
+normalisation (a stripped `node_modules/.bin/` prefix; `install: node-gyp rebuild` added to
+the metadata for `binding.gyp` packages; a default `start`), which the rule ignores. The file
+count differed in 17 versions with identical sizes, so it is not used.
+
+On `day1` (all samples, files decrypted in memory): neither rule fired on any of 1,468 benign
+samples, and `hidden-install-script` fired on no malicious one either. A two-sided size check
+fired on 236 malicious samples, mostly shape-A follow-ons, but every one was *overstated*
+(e.g. `@tushar-br/desktop`: 47 MB declared, 13 KB in the zip). That is files missing from the
+dataset's zips, not attacker behaviour, and it is why only understatement is flagged. Neither
+rule can be validated on DataDog data: they guard against evasions the dataset doesn't contain.
+Their cost, measured on benign traffic, is zero.
+
+**Limit:** these rules only see what Stage 2 downloads. An update that understates its growth
+below 64 KiB is never routed here, so the size check catches a lie only on routed versions
+(watched, new, flagged, or still grown). Closing that would need a size signal that doesn't
+come from the publisher, e.g. the tarball's `Content-Length`. That is an open item.
+
 Five rules started at MEDIUM and were downgraded to LOW after the first evaluation, because
 on their own they fire about as often on benign releases as on malicious ones (numbers in the
 comment on each rule in `rules/static.py`). LOW findings are still recorded as evidence and

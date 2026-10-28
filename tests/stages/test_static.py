@@ -17,6 +17,7 @@ from kitsunox.core.models import (
 )
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
+from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.rules.static import RULES
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.static import (
@@ -24,11 +25,12 @@ from kitsunox.stages.static import (
     ContentCache,
     Unavailable,
     analyse_batch,
+    needs_retry,
     new_contents,
     record_static,
     static_run,
 )
-from kitsunox.util.http import FetchError
+from kitsunox.util.http import FetchError, TransientFetchError
 
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
 BASE = {"index.js": b"module.exports = 1", "README.md": b"hi"}
@@ -105,6 +107,8 @@ class FakeEcosystem:
         self.fetched.append(artifact.url)
         if "1.0.2" in artifact.url:
             raise FetchError("HTTP 404")
+        if "1.0.3" in artifact.url:
+            raise TransientFetchError("timed out")
         return BAD
 
 
@@ -116,9 +120,12 @@ def test_artifact_files_skips_oversize_and_reports_fetch_errors() -> None:
         reason="declared unpacked size 1001 bytes"
     )
     assert files(snapshot("1.0.2")) == Unavailable(reason="FetchError: HTTP 404")
+    assert files(snapshot("1.0.3")) == Unavailable(
+        reason="TransientFetchError: timed out", transient=True
+    )
     no_artifact = snapshot("1.0.1").model_copy(update={"artifact": None})
     assert files(no_artifact) == Unavailable(reason="no artifact")
-    assert len(ecosystem.fetched) == 2  # the oversize one was never downloaded
+    assert len(ecosystem.fetched) == 3  # the oversize one was never downloaded
 
 
 @pytest.mark.parametrize("base", [None, "1.0.0"])
@@ -173,3 +180,37 @@ def test_record_static_fetches_verifies_and_records(tmp_path: Path, router: Rout
     # A second pass is served from the immutable blob store, not the network.
     record_static(data, "r1", NpmEcosystem, client=router.client())
     assert router.requests == ["https://r.test/kx-1.0.1.tgz"]
+
+
+def test_artifact_rules_see_each_available_version(tmp_path: Path) -> None:
+    hidden = BAD | {"package.json": b'{"scripts": {"preinstall": "node x.js"}}'}
+    trees: dict[str, dict[str, bytes] | Unavailable] = {
+        "1.0.1": hidden,
+        "1.0.2": Unavailable(reason="gone"),
+    }
+    result = analyse_batch(
+        batch(),
+        lambda s: trees[s.ref.version],
+        ContentCache(None, RULES),
+        artifact_rules=NPM_ARTIFACT_RULES,
+    )
+    bad, gone = result.versions
+    assert "npm.artifact.hidden-install-script" in bad.history[-1].reason
+    assert bad.findings[0].rule_id == "npm.artifact.hidden-install-script"  # artifact first
+    assert gone.findings == ()
+
+
+def test_network_failures_are_marked_for_retry() -> None:
+    def files(s: VersionSnapshot) -> dict[str, bytes] | Unavailable:
+        if s.ref.version == "1.0.0":
+            return BASE
+        return Unavailable(reason="TransientFetchError: x", transient=True)
+
+    result = analyse_batch(batch(snapshot("1.0.0")), files, ContentCache(None, RULES))
+    assert result.versions[0].history[-1].reason == (
+        "files unavailable, will retry: TransientFetchError: x"
+    )
+    assert needs_retry([result])
+    assert not needs_retry(
+        [analyse_batch(batch(), lambda s: TREES[s.ref.version], ContentCache(None, RULES))]
+    )

@@ -18,6 +18,12 @@ Chained runs (`IngestRequest.chain`, used by `kitsunox collect`) continue from t
 previous run left. Their window starts `CHAIN_OVERLAP` before the previous run's `as_of`, so a
 release that reached the feed a little after it was published is not lost between runs. Because
 the feed ranges are contiguous, a chained run's window is covered by construction.
+
+Network failures (decision 0009): a package skipped because of the network is kept in the
+checkpoint's retry list and fetched again by the next run, over the window it was missed in. A run
+in which more than `MAX_TRANSIENT_FRACTION` of packages failed that way is an outage, not bad
+luck: it raises `IngestDegradedError` before anything is written, so the checkpoint stays put and
+the next run covers the whole range again.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from enum import StrEnum
 from pathlib import Path
 
 import httpx
+from pydantic import Field
 
 from kitsunox import __version__
 from kitsunox.core.interfaces import Ecosystem
@@ -44,10 +51,12 @@ from kitsunox.stages.ingest import (
     DownloadsApiPopularity,
     IngestResult,
     PopularitySource,
+    RetryItem,
     WatchlistPopularity,
     run_ingest,
     write_jsonl,
 )
+from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
 
@@ -72,10 +81,17 @@ class DataDirBusyError(RuntimeError):
     """Another Kitsunox process holds the data directory lock."""
 
 
+class IngestDegradedError(RuntimeError):
+    """Too many packages failed on the network; nothing was written."""
+
+
 # Stage 2's fetch record (tarballs) for a run; retention reads it like `snapshot.json`.
 STATIC_SNAPSHOT = "static-snapshot.json"
 CHAIN_OVERLAP = timedelta(minutes=15)
-MAX_CHAIN_GAP = timedelta(hours=48)
+# A run catches up on a gap this long (the machine was off or offline). Matches retention.
+MAX_CHAIN_GAP = timedelta(days=7)
+MAX_TRANSIENT_FRACTION = 0.2
+MIN_PACKAGES_FOR_DEGRADED = 20
 
 
 @dataclass(frozen=True)
@@ -86,6 +102,7 @@ class Checkpoint:
     cursor: int
     run_id: str | None = None
     as_of: datetime | None = None
+    retry: tuple[RetryItem, ...] = ()
 
 
 class RunManifest(Persisted):
@@ -110,6 +127,10 @@ class RunManifest(Persisted):
     feed_start_estimate: datetime | None = None
     window_covered: bool | None = None
     chained_from: str | None = None
+    retried: tuple[RetryItem, ...] = Field(
+        default=(), description="Packages carried over from earlier runs' network failures."
+    )
+    transient_skipped: int = 0
 
 
 @dataclass(frozen=True)
@@ -146,6 +167,7 @@ class DataDir:
             cursor=cursor,
             run_id=run_id if isinstance(run_id, str) else None,
             as_of=datetime.fromisoformat(as_of) if isinstance(as_of, str) else None,
+            retry=tuple(RetryItem.model_validate(item) for item in raw.get("retry") or ()),
         )
 
     def write_checkpoint(self, ecosystem: str, checkpoint: Checkpoint) -> None:
@@ -155,8 +177,9 @@ class DataDir:
             "cursor": checkpoint.cursor,
             "run_id": checkpoint.run_id,
             "as_of": checkpoint.as_of.isoformat() if checkpoint.as_of else None,
+            "retry": [item.model_dump(mode="json") for item in checkpoint.retry],
         }
-        path.write_text(json.dumps(raw) + "\n")
+        atomic_write(path, (json.dumps(raw) + "\n").encode())
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -260,6 +283,12 @@ def record_ingest(
         chained_from = _chain_parent(request, checkpoint)
         if chained_from is not None and checkpoint is not None and checkpoint.as_of is not None:
             window = Window(start=checkpoint.as_of - CHAIN_OVERLAP, end=request.as_of)
+        default_range = not explicit_since and request.until is None
+        retry = tuple(
+            item
+            for item in (checkpoint.retry if checkpoint and default_range else ())
+            if request.as_of - item.window_start <= MAX_CHAIN_GAP
+        )
         result = run_ingest(
             ecosystem,
             window,
@@ -267,9 +296,20 @@ def record_ingest(
             until=until,
             workers=request.workers,
             popularity=source,
+            retry=retry,
         )
     finally:
         fetcher.close()
+
+    transient = [s for s in result.skipped if s.transient]
+    if (
+        result.packages_seen >= MIN_PACKAGES_FOR_DEGRADED
+        and len(transient) > MAX_TRANSIENT_FRACTION * result.packages_seen
+    ):
+        raise IngestDegradedError(
+            f"{len(transient)} of {result.packages_seen} packages failed on the network "
+            f"(e.g. {transient[0].reason}); nothing written, the next run covers this range"
+        )
 
     manifest = RunManifest(
         run_id=run_id,
@@ -291,11 +331,23 @@ def record_ingest(
         feed_start_estimate=result.feed_start_estimate,
         window_covered=True if chained_from is not None else result.window_covered,
         chained_from=chained_from,
+        retried=retry,
+        transient_skipped=len(transient),
     )
     manifest = _persist(data, manifest, snapshot, result)
-    if not explicit_since and request.until is None:
+    if default_range:
+        starts = {item.name: item.window_start for item in retry}
+        carry = tuple(
+            RetryItem(
+                name=s.name,
+                cursor=s.cursor,
+                window_start=min(window.start, starts.get(s.name, window.start)),
+            )
+            for s in transient
+        )
         data.write_checkpoint(
-            ecosystem.name, Checkpoint(cursor=until, run_id=run_id, as_of=request.as_of)
+            ecosystem.name,
+            Checkpoint(cursor=until, run_id=run_id, as_of=request.as_of, retry=carry),
         )
     return manifest
 
@@ -342,6 +394,7 @@ def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> Inge
             until=manifest.cursor_until,
             workers=1,
             popularity=source,
+            retry=manifest.retried,
         )
     finally:
         fetcher.close()

@@ -162,3 +162,14 @@ Stage 0's output changed. Their `manifest.tool_version` records which code produ
 | Live Stage 2 | Run `20261028T004851Z-npm`: 1,243 versions in 2 min 20 s, 794 MB downloaded, 6 flagged, all benign on inspection. Two false-positive patterns fixed in `exfil-endpoint` v2 |
 | End to end | `pipeline` on `day1`: 86.0% / 66.0% / 0.9% benign, equal to the simulation from saved per-sample results |
 
+## 2026-10-28: Network-failure handling and artifact rules
+
+| Check | Result |
+|---|---|
+| Network skip, then back online | Retried by the next chained run over the first run's window; replay identical (`test_network_skips_are_retried_by_the_next_run`) |
+| Outage (> 20% of packages failing on the network) | `IngestDegradedError`: no run, no checkpoint change (`test_an_outage_writes_nothing`) |
+| Registry unreachable during `collect` | Logged as OFFLINE, nothing written (`test_offline_tick_writes_nothing`) |
+| Stage 2 crashed for a run | Redone by the next tick (`test_unfinished_stages_are_caught_up`) |
+| Declared vs real unpacked size, 1,069 live versions | Exact match in all |
+| Artifact rules on `day1` benign | 0 of 1,468 flagged |
+

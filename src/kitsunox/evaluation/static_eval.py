@@ -20,13 +20,15 @@ from kitsunox.core.models import ArtifactRef, Change, Severity
 from kitsunox.core.rules import RuleContext, run_rules
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
+from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
+from kitsunox.ecosystems.npm.rules.artifact import HiddenInstallScript
 from kitsunox.ecosystems.npm.rules.metadata import RULES as NPM_RULES
 from kitsunox.evaluation.datadog import RAW_URL, SAMPLE_LIMITS, ZIP_PASSWORD
 from kitsunox.evaluation.dataset import EvalSample, ExternalSampleSet
 from kitsunox.rules.static import RULES as STATIC_RULES
 from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, new_contents
 from kitsunox.stages.triage import at_least, triage
-from kitsunox.util.archive import extract_zip
+from kitsunox.util.archive import ArtifactTree, extract_zip
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
 
 Tree = Mapping[str, bytes]
@@ -90,7 +92,16 @@ class StaticRules:
         if new is None:
             self._note("new files unavailable (not forwarded)")
             return False
-        base = self._tarball(change.previous.artifact) if change.previous else {}
+        # A zip member skipped as oversize would make the size check fire on our own gap.
+        complete = not any(s.reason == "over per-file limit" for s in new.skipped)
+        rules = NPM_ARTIFACT_RULES if complete else (HiddenInstallScript(),)
+        if any(
+            at_least(f.severity, Severity.MEDIUM)
+            for rule in rules
+            for f in rule.evaluate_artifact(change.new, new)
+        ):
+            return True
+        base: Tree | None = self._tarball(change.previous.artifact) if change.previous else {}
         if base is None:
             self._note("base unavailable (all files treated as new)")
         version = change.new.ref.version
@@ -102,7 +113,7 @@ class StaticRules:
                 return True
         return False
 
-    def _new_tree(self, change: Change, sample: EvalSample) -> Tree | None:
+    def _new_tree(self, change: Change, sample: EvalSample) -> ArtifactTree | None:
         label = next((i for i in sample.label_ids if i in self.zip_blobs), None)
         if label is None:
             return self._tarball(change.new.artifact)
@@ -113,9 +124,9 @@ class StaticRules:
             include=lambda p: "/package/" in p,
             skip_oversize=True,
         )
-        return strip_to_package(tree)
+        return ArtifactTree(files=strip_to_package(tree), skipped=tree.skipped)
 
-    def _tarball(self, artifact: ArtifactRef | None) -> Tree | None:
+    def _tarball(self, artifact: ArtifactRef | None) -> ArtifactTree | None:
         if artifact is None:
             return None
         try:

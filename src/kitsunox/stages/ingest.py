@@ -1,7 +1,9 @@
 """Stage 0: turn change-feed entries into `Change` records for versions published in a window.
 
 Packages that fail (fetch errors, malformed packuments) are recorded as skipped with a reason,
-never silently dropped. Output order is fully determined by the input, regardless of how many
+never silently dropped. Skips caused by the network (`TransientFetchError`) are marked
+`transient`; chained runs fetch those packages again in the next run, over the window they were
+missed in (`RetryItem`). Output order is fully determined by the input, regardless of how many
 worker threads fetched it.
 """
 
@@ -19,7 +21,7 @@ from pydantic import ValidationError
 from kitsunox.core.interfaces import ChangeStub, Ecosystem, PackageChanges
 from kitsunox.core.models import Change, Persisted, Popularity, Record, Window
 from kitsunox.core.watchlist import WEEKLY_CUTOFF, Watchlist
-from kitsunox.util.http import FetchError
+from kitsunox.util.http import FetchError, TransientFetchError
 
 STAGE_ID = "ingest"
 
@@ -28,6 +30,16 @@ class SkippedPackage(Persisted):
     name: str
     cursor: int
     reason: str
+    transient: bool = False
+
+
+class RetryItem(Record):
+    """A package an earlier run skipped because of the network. It is fetched again, and its
+    changes are looked for from `window_start` (the start of the run that missed it)."""
+
+    name: str
+    cursor: int
+    window_start: datetime
 
 
 class IngestResult(Record):
@@ -89,12 +101,21 @@ def run_ingest(
     until: int,
     workers: int = 8,
     popularity: PopularitySource | None = None,
+    retry: Sequence[RetryItem] = (),
 ) -> IngestResult:
+    """`retry`: packages to fetch again whatever the feed says; a package both in the feed and
+    in `retry` is fetched once, over the wider window."""
     stubs = ecosystem.list_changes(since, until)
+    starts = {item.name: item.window_start for item in retry}
+    listed = {stub.name for stub in stubs}
+    stubs = stubs + [
+        ChangeStub(name=item.name, cursor=item.cursor) for item in retry if item.name not in listed
+    ]
 
     def build(stub: ChangeStub) -> PackageChanges | SkippedPackage:
+        start = min(window.start, starts.get(stub.name, window.start))
         try:
-            return ecosystem.build_changes(stub, window)
+            return ecosystem.build_changes(stub, Window(start=start, end=window.end))
         except (FetchError, ValueError, ValidationError) as exc:
             # Expected: network failures, malformed packuments (PackumentError is a ValueError).
             return _skip(stub, exc)
@@ -146,7 +167,12 @@ def _feed_start_estimate(modified: list[datetime]) -> datetime | None:
 
 def _skip(stub: ChangeStub, exc: Exception, prefix: str = "") -> SkippedPackage:
     reason = f"{prefix}{type(exc).__name__}: {exc}".splitlines()[0][:500]
-    return SkippedPackage(name=stub.name, cursor=stub.cursor, reason=reason)
+    return SkippedPackage(
+        name=stub.name,
+        cursor=stub.cursor,
+        reason=reason,
+        transient=isinstance(exc, TransientFetchError),
+    )
 
 
 def _with_popularity(

@@ -12,6 +12,7 @@ from kitsunox.core.run import (
     Checkpoint,
     DataDir,
     DataDirBusyError,
+    IngestDegradedError,
     IngestRequest,
     PopularityMode,
     RunManifest,
@@ -22,10 +23,11 @@ from kitsunox.core.run import (
 )
 from kitsunox.ecosystems.npm.registry import (
     FEED_PAGE_LIMIT,
+    REGISTRY_URL,
     REPLICATE_URL,
     NpmEcosystem,
 )
-from kitsunox.stages.ingest import read_changes
+from kitsunox.stages.ingest import RetryItem, read_changes
 
 NONE = PopularityMode.NONE
 
@@ -180,3 +182,51 @@ def test_data_dir_lock_is_exclusive(tmp_path: Path) -> None:
         pass
     with data.lock():  # released again
         pass
+
+
+def test_network_skips_are_retried_by_the_next_run(tmp_path: Path, registry: Router) -> None:
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=200&limit={FEED_PAGE_LIMIT}", {"results": []}
+    )
+    data = DataDir(tmp_path)
+    registry.offline.add(f"{REGISTRY_URL}/kx-fixture")
+    first = default_run(data, registry, AS_OF)
+    assert first.change_count == 0 and first.transient_skipped == 1
+    checkpoint = data.read_checkpoint("npm")
+    assert checkpoint is not None
+    assert checkpoint.retry == (
+        RetryItem(name="kx-fixture", cursor=150, window_start=first.window.start),
+    )
+
+    registry.offline.clear()  # back online; the feed has nothing new
+    second = default_run(data, registry, AS_OF + timedelta(hours=1), chain=True)
+    assert second.retried == checkpoint.retry
+    assert second.change_count > 0  # found over the first run's window
+    assert data.read_checkpoint("npm") == Checkpoint(
+        cursor=200, run_id=second.run_id, as_of=second.as_of
+    )
+    replayed = replay_ingest(data, NpmEcosystem, second.run_id)
+    assert changes_digest(replayed) == second.changes_sha256
+
+
+def test_stale_retries_expire(tmp_path: Path, registry: Router) -> None:
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=200&limit={FEED_PAGE_LIMIT}", {"results": []}
+    )
+    data = DataDir(tmp_path)
+    old = RetryItem(name="kx-fixture", cursor=150, window_start=AS_OF - MAX_CHAIN_GAP * 2)
+    data.write_checkpoint("npm", Checkpoint(cursor=200, run_id="r", as_of=AS_OF, retry=(old,)))
+    manifest = default_run(data, registry, AS_OF + timedelta(hours=1), chain=True)
+    assert manifest.retried == ()
+
+
+def test_an_outage_writes_nothing(
+    tmp_path: Path, registry: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("kitsunox.core.run.MIN_PACKAGES_FOR_DEGRADED", 1)
+    data = DataDir(tmp_path)
+    registry.offline.add(f"{REGISTRY_URL}/kx-fixture")  # 1 of 2 packages: over 20%
+    with pytest.raises(IngestDegradedError, match="1 of 2 packages"):
+        default_run(data, registry, AS_OF)
+    assert data.read_checkpoint("npm") is None
+    assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())

@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ from kitsunox.ecosystems.npm.registry import (
     REGISTRY_URL,
     REPLICATE_URL,
 )
+from kitsunox.util.http import HttpFetcher
 
 # Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
 # reproducibility rule. `HYPOTHESIS_PROFILE=deep` runs many more examples for a validation pass.
@@ -69,6 +71,7 @@ class Router:
 
     routes: dict[str, tuple[int, bytes]] = field(default_factory=dict)
     requests: list[str] = field(default_factory=list)
+    offline: set[str] = field(default_factory=set)  # URLs whose connection fails
 
     def add_json(self, url: str, payload: object, status: int = 200) -> None:
         self.routes[url] = (status, json.dumps(payload).encode())
@@ -79,11 +82,25 @@ class Router:
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         self.requests.append(url)
+        if url in self.offline:
+            raise httpx.ConnectError("network is unreachable", request=request)
         status, body = self.routes.get(url, (404, b'{"error":"not found"}'))
         return httpx.Response(status, content=body)
 
     def client(self) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+
+@pytest.fixture(autouse=True)
+def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fetchers built inside the code under test retry with real back-off; don't wait."""
+    original = HttpFetcher.__init__
+
+    def init(self: HttpFetcher, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("sleep", lambda seconds: None)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(HttpFetcher, "__init__", init)
 
 
 @pytest.fixture

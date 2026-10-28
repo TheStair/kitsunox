@@ -2,6 +2,51 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-28: Metadata-vs-tarball rules, and surviving network failures
+
+**Stage(s):** Stage 2 (npm artifact rules), Stage 0 and `collect` (resilience)
+**Context:** The user asked for a rule closing the "declared size is publisher-controlled" gap
+from [0008](decisions/0008-stage2-routing-and-tarball-capture.md). Then they asked for
+protection against network drops, choosing that over renting cloud compute. From Stage 5 on,
+the whole pipeline is planned to move into a VM on their desktop.
+
+### Decisions
+- **Compare metadata with the tarball, two rules** (`ecosystems/npm/rules/artifact.py`):
+  `hidden-install-script` (HIGH: an install hook the registry metadata doesn't show; npm runs
+  the tarball's) and `size-mismatch` (MEDIUM: files bigger than `dist.unpackedSize`). The first
+  is the documented "manifest confusion" weakness, found while looking at the size question.
+- **Flag understated sizes only.** Overstating doesn't help an attacker, and the two-sided
+  version fired on 236 DataDog samples, all from files missing in the dataset's zips.
+- **Network failures are retried, not skipped** ([0009](decisions/0009-network-failure-handling.md)):
+  - `TransientFetchError`, a retry list in the checkpoint, and an outage threshold that
+    writes nothing.
+  - Stage 1–2 catch-up for recent runs.
+  - A chain gap of 7 days instead of 48 hours.
+- **Not cloud, for now:** resilience is needed anyway, and the sandbox may break providers'
+  terms. The planned VM host is recorded in the roadmap.
+
+### Challenges
+- **Stage 0 turned network failures into permanent data loss.** Found by reading the error
+  path while answering the user's question. A failed packument fetch was a "skipped package",
+  and the checkpoint moved past it.
+  - **Resolution / why it worked:** transient skips are carried in the checkpoint and fetched
+    over their original window next run. Tested by `test_network_skips_are_retried_by_the_next_run`
+    (offline package, then back online) and `test_an_outage_writes_nothing`.
+- **The size rule can't catch the evasion it was asked for, in full.** A version that
+  understates its growth below 64 KiB is never downloaded, so no post-download check sees it.
+  The rule covers routed versions only. Recorded as a limit, with an untried idea: the
+  tarball's `Content-Length`, which the publisher doesn't declare.
+
+### Evaluation snapshot
+- Artifact rules on `day1`: 0 of 1,468 benign samples flagged. On live data (1,069 versions)
+  declared and real sizes matched exactly every time. No malicious sample hid an install
+  script, so there is no recall evidence either way: these rules guard against evasions the
+  dataset doesn't contain.
+
+### Open questions / next steps
+- `Content-Length` (HEAD request) as a publisher-independent growth signal for routing.
+- Stage 3 (capabilities) has started; see the next entry.
+
 ## 2026-10-27: Hybrid routing to Stage 2, tarball capture in `collect`
 
 **Stage(s):** Stage 1 forward policy, Stage 2 pipeline wiring, retention

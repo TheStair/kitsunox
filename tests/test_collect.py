@@ -40,6 +40,7 @@ def test_ticks_chain_and_prune_once_a_day(tmp_path: Path, registry: Router) -> N
     log: list[str] = []
 
     first = collect(data, now=AS_OF, log=log.append, clients=registry.client)
+    assert first is not None
     assert first.chained_from is None and first.change_count == 4
     assert not any(line.startswith(("watchlist", "labels")) for line in log)  # both fresh
     assert any(line.startswith("prune: 0 runs pruned") for line in log)
@@ -50,6 +51,7 @@ def test_ticks_chain_and_prune_once_a_day(tmp_path: Path, registry: Router) -> N
 
     log.clear()
     second = collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)
+    assert second is not None
     assert second.chained_from == first.run_id
     assert not any(line.startswith("prune") for line in log)  # pruned an hour ago
 
@@ -60,6 +62,38 @@ def test_failed_refresh_is_logged_and_ingest_still_runs(tmp_path: Path, registry
     feed_from(registry, 0)
     log: list[str] = []
     manifest = collect(data, now=AS_OF, log=log.append, clients=registry.client)
-    assert manifest.change_count == 4
+    assert manifest is not None and manifest.change_count == 4
     assert any(line.startswith("labels: FAILED") for line in log)  # OSV export is a 404 here
     assert "prune: skipped: no label set to decide which packuments to keep" in log
+
+
+def test_offline_tick_writes_nothing(tmp_path: Path, registry: Router) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    registry.offline.add(f"{REPLICATE_URL}/")
+    log: list[str] = []
+    assert collect(data, now=AS_OF, log=log.append, clients=registry.client) is None
+    assert any(line.startswith("ingest: OFFLINE") for line in log)
+    assert data.read_checkpoint("npm") is None
+
+
+def test_unfinished_stages_are_caught_up(tmp_path: Path, registry: Router) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    feed_from(registry, 200)
+    ignored: list[str] = []
+    first = collect(data, now=AS_OF, log=ignored.append, clients=registry.client)
+    assert first is not None
+    (data.run_dir(first.run_id) / "static.jsonl").unlink()  # as if Stage 2 had crashed
+
+    log: list[str] = []
+    collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)
+    assert any(line.startswith(f"stages (catch-up {first.run_id}): ") for line in log), log
+    assert (data.run_dir(first.run_id) / "static.jsonl").exists()
+
+    log.clear()  # nothing left to catch up
+    collect(data, now=AS_OF + timedelta(hours=2), log=log.append, clients=registry.client)
+    assert not any("catch-up" in line for line in log)

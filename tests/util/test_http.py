@@ -12,6 +12,7 @@ from kitsunox.util.http import (
     HttpFetcher,
     RetryPolicy,
     Snapshot,
+    TransientFetchError,
     request_key,
 )
 
@@ -93,9 +94,17 @@ def test_gives_up_after_max_attempts(tmp_path: Path) -> None:
 
     client = httpx.Client(transport=httpx.MockTransport(fail))
     fetcher = make_fetcher(tmp_path, client, retry=RetryPolicy(max_attempts=3))
-    with pytest.raises(FetchError, match="after 3 attempts: ConnectError"):
+    with pytest.raises(TransientFetchError, match="after 3 attempts: ConnectError"):
         fetcher.get(URL)
     assert fetcher.snapshot.entries == {}
+
+
+def test_only_exhausted_retries_are_transient(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"x" * 100)
+    fetcher = make_fetcher(tmp_path, router.client(), max_bytes=10)
+    with pytest.raises(FetchError) as caught:
+        fetcher.get(URL)
+    assert not isinstance(caught.value, TransientFetchError)
 
 
 def test_response_size_limit(tmp_path: Path, router: Router) -> None:

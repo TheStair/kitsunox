@@ -44,6 +44,11 @@ class FetchError(RuntimeError):
     replay miss)."""
 
 
+class TransientFetchError(FetchError):
+    """Retries ran out on network errors or retryable statuses (429, 5xx): the resource may well
+    exist, the network or server just wasn't answering. Worth trying again later."""
+
+
 SNAPSHOT_SCHEMA_VERSION: Final = 1
 
 
@@ -247,7 +252,9 @@ class HttpFetcher:
             if attempt < self.retry.max_attempts:
                 delay = min(self.retry.max_delay, self.retry.base_delay * 2 ** (attempt - 1))
                 self._sleep(max(delay, retry_after or 0.0))
-        raise FetchError(f"GET {url} failed after {self.retry.max_attempts} attempts: {last_error}")
+        raise TransientFetchError(
+            f"GET {url} failed after {self.retry.max_attempts} attempts: {last_error}"
+        )
 
     def _read_limited(self, resp: httpx.Response) -> bytes:
         chunks: list[bytes] = []

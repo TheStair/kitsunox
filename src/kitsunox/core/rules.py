@@ -12,11 +12,19 @@ Ecosystem-agnostic rules live in `rules/`; rules that read ecosystem concepts (n
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import ClassVar, Protocol
 
-from kitsunox.core.models import Change, Evidence, EvidenceKind, Finding, Record, Severity
+from kitsunox.core.models import (
+    Change,
+    Evidence,
+    EvidenceKind,
+    Finding,
+    Record,
+    Severity,
+    VersionSnapshot,
+)
 from kitsunox.util.hashing import sha256_hex
 
 
@@ -110,6 +118,21 @@ class FileRule(Protocol):
     def version(self) -> int: ...
 
     def evaluate_text(self, text: str) -> Sequence[FileMatch]: ...
+
+
+class ArtifactRule(Protocol):
+    """A rule over one version's whole package: its registry metadata and its extracted files.
+    Runs where the files are available (Stage 2), e.g. to check one against the other."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def version(self) -> int: ...
+
+    def evaluate_artifact(
+        self, snapshot: VersionSnapshot, files: Mapping[str, bytes]
+    ) -> Sequence[Finding]: ...
 
 
 def rules_fingerprint(rules: Sequence[FileRule | Rule]) -> str:

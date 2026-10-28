@@ -67,3 +67,8 @@ Stages 1 and 2 each tick and captures tarballs. They are recorded per run in
 packages. The immutable index no longer counts as a reference during garbage collection.
 Before this change, it would have kept every tarball forever.
 
+## Addendum (2026-10-28): gaps and network failures
+
+[0009](0009-network-failure-handling.md) raises the chain gap from 48 hours to 7 days, retries
+packages and tarballs that failed because of the network, and makes offline ticks write nothing.
+

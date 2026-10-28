@@ -283,6 +283,8 @@ Key invariants:
 - Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
 - A launchd agent (`local.kitsunox.collect`) runs `kitsunox collect` hourly against `data/`:
   ingest, then Stages 1 and 2, which capture tarballs (~14 GB/day) before npm deletes them.
+  Network failures are retried, never silently skipped (decision 0009): don't catch
+  `TransientFetchError` as if it were a missing package.
   Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit
   `data/state/` or delete blobs while the agent might be running. Runs older than 7 days are
   pruned and can't be replayed. See `docs/decisions/0006-scheduled-collection-and-retention.md`.
