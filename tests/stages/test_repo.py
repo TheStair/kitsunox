@@ -6,8 +6,16 @@ from pathlib import Path
 from typing import Any
 
 from conftest import Router, TarEntry, make_tar_gz
-from kitsunox.core.models import Candidate, Change, PackageVersionRef, PublishInfo, VersionSnapshot
+from kitsunox.core.models import (
+    Candidate,
+    Change,
+    PackageVersionRef,
+    PublishInfo,
+    Severity,
+    VersionSnapshot,
+)
 from kitsunox.ecosystems.npm.repo import NpmLocator, release_tags
+from kitsunox.ecosystems.npm.rules.correlate import DependencyNotInRepo, InstallScriptNotInRepo
 from kitsunox.githost.github import GitHub, GitHubRepo
 from kitsunox.rules.repo import CodeDiffersFromRepo, CodeNotInRepo, RepoCompared
 from kitsunox.stages.correlate import CorrelationContext
@@ -107,3 +115,23 @@ def test_repo_rules() -> None:
     assert found.evidence[0].path == "index.js"
     (info,) = RepoCompared().evaluate_candidate(cand, ctx(RepoComparison(unavailable="gone")))
     assert info.explanation == "No comparison: gone." and info.weight == 0
+
+
+def test_manifest_differences_and_rules() -> None:
+    package = {
+        "package.json": b'{"scripts": {"preinstall": "node setup_bun.js", "build": "tsc"},'
+        b' "dependencies": {"left-pad": "1", "evil": "1"}}'
+    }
+    repo = {"package.json": b'{"scripts": {"build": "tsc"}, "devDependencies": {"left-pad": "1"}}'}
+    differences = NpmLocator().manifest_differences(package, repo)
+    assert [(d.field, d.package, d.repo) for d in differences] == [
+        ("scripts.preinstall", "node setup_bun.js", None),
+        ("dependencies.evil", "1", None),
+    ]
+    assert NpmLocator().manifest_differences(package, {}) == ()  # no manifest in the repo
+    comparison = RepoComparison(manifest=differences)
+    cand = Candidate(change=change())
+    (hook,) = InstallScriptNotInRepo().evaluate_candidate(cand, ctx(comparison))
+    assert hook.severity == Severity.HIGH and hook.evidence[0].after == "node setup_bun.js"
+    (dep,) = DependencyNotInRepo().evaluate_candidate(cand, ctx(comparison))
+    assert dep.severity == Severity.LOW and "evil" in dep.explanation

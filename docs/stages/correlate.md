@@ -56,7 +56,12 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
 3. **Contents:** `codeload.github.com/<repo>/tar.gz/<commit>`, through the immutable index
    (once per commit, across runs and across a monorepo's packages), extracted in memory with
    only the package's directory kept. Archives over 128 MB compressed are not compared.
-4. **Compare** the release's JavaScript/TypeScript files (line endings normalised):
+4. **Manifest:** the release's `package.json` against the repository's: install hooks it has
+   that the repository's doesn't (or has differently), and runtime dependencies the
+   repository's manifest doesn't name in any section (names only: tools rewrite specs).
+   Comparable `day1` updates: hooks 53 of 57 malicious, 0 of 121 benign; dependencies 30 of 57
+   malicious, 14 of 121 benign.
+5. **Compare** the release's JavaScript/TypeScript files (line endings normalised):
    - *differing:* in the repository at the same path, different content;
    - *unexplained:* not in the repository, in a directory the repository has (the root
      always counts), with no file there of the same stem (`lib/x.js` next to `lib/x.ts` is
@@ -73,6 +78,8 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.code-differs` | a shipped code file differs from the repository's file at the same path | LOW | 2 |
 | `repo.code-not-in-repo` | shipped code files are *unexplained* (above) | LOW | 2 |
+| `npm.repo.install-script-not-in-repo` | the release's install hook isn't in the repository's `package.json` (or has another command) | HIGH | 5 |
+| `npm.repo.dependency-not-in-repo` | a runtime dependency the repository's `package.json` doesn't name in any section | LOW | 1 |
 
 ## Evaluation
 
@@ -83,6 +90,7 @@ is the malicious set; follow-on releases in parentheses.
 |---|---|---|---|
 | `pipeline+3` (Stages 1-3) | 89.7% (38.7%) | 66.0% (22.8%) | 0.8% |
 | **`pipeline+4`** (what is reported) | **91.1%** (38.7%) | **66.5%** (22.9%) | **0.9%** |
+| `pipeline+4` + manifest-vs-repo rules | **91.2%** (39.7%) | 66.5% (22.9%) | 0.9% |
 
 What Stage 4 added: 13 malicious updates (12 `@mastra/*` and `xrpl@2.14.2`, through
 `revived-with-new-dependency`) and 5 malicious new packages plus 1 follow-on release (through
@@ -97,6 +105,10 @@ score bar *instead of* the per-stage MEDIUM bars ("score ≥ 6" alone) is much m
 (0.1% / 0.6% benign) but loses 2.2 points on updates and 9.5 on new packages. Missing an
 attack costs more than a false positive, so the MEDIUM bars stay and the score orders the
 queue.
+
+The manifest-vs-repo rules add 1 malicious update and 5 follow-on releases end to end: live,
+the comparison runs only for flagged or watched versions, which are mostly reported already.
+Their value today is evidence a reviewer can check in seconds.
 
 **Repository comparison** (965 malicious, 300 sampled benign updates):
 
@@ -131,6 +143,6 @@ that cover every version: 11 malicious new packages, 0 benign.
   records whether it used `gitHead` or a tag.
 - **Monorepos over 128 MB** (compressed) and commits never pushed (HTTP 404, 15% of benign
   `gitHead`s sampled) can't be compared.
-- **Files only.** `package.json` scripts and dependencies aren't compared with the
-  repository's manifest yet, and non-JS payloads (shell scripts, binaries) aren't compared.
+- **Non-JS payloads** (shell scripts, binaries) aren't compared; `package.json` is compared for
+  install hooks and dependency names only.
 - **Network failures** leave a version uncompared; Stage 4 doesn't retry.

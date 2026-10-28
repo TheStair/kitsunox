@@ -151,4 +151,83 @@ class RevivedWithNewDependency(BaseRule):
         )
 
 
-RULES: Final = (GitHeadDropped(), KnownMalwareDependency(), RevivedWithNewDependency())
+class InstallScriptNotInRepo(BaseRule):
+    """The release's `package.json` has an install hook (`preinstall`, `install`,
+    `postinstall`) that the repository's `package.json` at the compared commit doesn't have, or
+    has with a different command. What `npm install` runs never went through git.
+
+    On `day1` (comparable updates): 53 of 57 malicious, 0 of 121 benign. Seen: Shai-Hulud 2.0's
+    `node setup_bun.js`, and `@nativescript-community/*` running `node bundle.js` where the
+    repository has `npm run setup`.
+    """
+
+    id = "npm.repo.install-script-not-in-repo"
+    severity = Severity.HIGH
+    weight = 5.0
+    title = "Install script that the repository doesn't have"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        comparison = ctx.repo
+        if comparison is None:
+            return ()
+        hooks = [d for d in comparison.manifest if d.field.startswith("scripts.")]
+        return tuple(
+            self.finding(
+                f"`npm install` runs `{d.field}`, which the repository's package.json "
+                + ("doesn't have." if d.repo is None else "has with a different command."),
+                Evidence(
+                    kind=EvidenceKind.MANIFEST_FIELD,
+                    path=f"package.json:{d.field}",
+                    before=d.repo,
+                    after=d.package,
+                ),
+            )
+            for d in hooks
+        )
+
+
+class DependencyNotInRepo(BaseRule):
+    """A runtime dependency the repository's `package.json` doesn't name in any section. Weak:
+    12% of comparable benign updates (bundlers and release scripts add dependencies), 30 of
+    57 malicious; evidence and a little weight, not a reason to report."""
+
+    id = "npm.repo.dependency-not-in-repo"
+    severity = Severity.LOW
+    weight = 1.0
+    title = "Dependency that the repository doesn't declare"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        comparison = ctx.repo
+        if comparison is None:
+            return ()
+        deps = [d for d in comparison.manifest if d.field.startswith("dependencies.")]
+        if not deps:
+            return ()
+        names = ", ".join(d.field.removeprefix("dependencies.") for d in deps[:10])
+        return (
+            self.finding(
+                f"{len(deps)} runtime dependencies are not in the repository's package.json: "
+                f"{names}" + ("..." if len(deps) > 10 else ""),
+                *(
+                    Evidence(
+                        kind=EvidenceKind.MANIFEST_FIELD,
+                        path=f"package.json:{d.field}",
+                        after=d.package,
+                    )
+                    for d in deps[:5]
+                ),
+            ),
+        )
+
+
+RULES: Final = (
+    GitHeadDropped(),
+    KnownMalwareDependency(),
+    RevivedWithNewDependency(),
+    InstallScriptNotInRepo(),
+    DependencyNotInRepo(),
+)

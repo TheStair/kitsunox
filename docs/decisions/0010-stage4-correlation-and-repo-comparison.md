@@ -60,5 +60,5 @@ Three measurements on `day1` shaped the design:
 - The comparison only helps where a commit can be found. Malicious releases mostly record no
   `gitHead` and have no tag, so the most common case is "no commit for this version", which is
   itself the `npm.provenance.githead-dropped` signal.
-- Not attempted: rebuilding packages to compare build output, `package.json` script and
-  dependency comparison with the repository's manifest (next), GitLab and other hosts.
+- Not attempted: rebuilding packages to compare build output, GitLab and other hosts.
+  (`package.json` install hooks and dependency names are compared since the same day.)

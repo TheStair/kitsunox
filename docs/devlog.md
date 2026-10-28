@@ -2,6 +2,40 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-28: Reports, manifest-vs-repo rules, and Stage 4 going live
+
+**Stage(s):** Stage 4 (correlation), Report
+**Context:** The user asked whether Stage 4 had run live, and for the `package.json`
+comparison with the repository and reporting next.
+
+### Decisions
+- **Install hooks compared with the repository's `package.json`** at the compared commit
+  (`npm.repo.install-script-not-in-repo`, HIGH): on comparable `day1` updates, 53 of 57
+  malicious and 0 of 121 benign. Dependencies the repository doesn't name anywhere
+  (`npm.repo.dependency-not-in-repo`) fire on 12% of benign, so LOW, weight 1.
+- **Reports per run, `report.json` canonical**, Markdown rendered from it (roadmap decision 4).
+  Every package string is untrusted: fences longer than any backtick run, inline escaping,
+  `https://`-only links, sanitised file names, bidi-override characters dropped. Findings of
+  the same rule are grouped (Stage 2 reports one per file). See [stages/report.md](stages/report.md).
+
+### Challenges
+- **Stage 4 hadn't run live yet.** The 12:09 tick spent 4.7 hours on catch-ups and a
+  35,275-change run, with the old code loaded, and launchd didn't fire again on its usual
+  minute after that. Started the agent's job by hand (`launchctl kickstart`).
+- **Every recent `ast.jsonl` came from the buggy Stage 3** (new packages behind placeholders):
+  a report preview on `20261028T031447Z-npm` showed 64 versions to review, many of them those
+  false flags; with Stage 3 redone, 24. The stale files were deleted under the data-dir lock,
+  so the catch-up redoes Stage 3 and then Stage 4 and the report for each run.
+- **`@types/*` set off `revived-with-new-dependency`** (4 in that hour): DefinitelyTyped's bot
+  republishes long-idle type packages, which add dependencies, without provenance. Exempted
+  when the `types` account published both versions.
+- **Placeholder webhooks in docs still match `static.exfil-endpoint` v2**
+  (`discord.com/api/webhooks/123/abc` in `@waffo/pancake-ts`). Left for Stage 2 tuning.
+
+### Open questions / next steps
+- A queue across runs; `kitsunox run` end to end.
+- Stage 2: tighten webhook-id matching for documentation placeholders.
+
 ## 2026-10-28: Stage 4 correlation, repository comparison and score
 
 **Stage(s):** Stage 4 (correlation), evaluation harness
