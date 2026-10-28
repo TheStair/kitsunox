@@ -16,10 +16,13 @@ from kitsunox.core.models import Candidate, PackageBatch, Record, Severity, Stag
 from kitsunox.core.rules import FileMatch, FileRule, rules_fingerprint
 from kitsunox.rules.static import RULES
 from kitsunox.stages.triage import at_least
+from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 
 STAGE_ID: Final = "static"
-MAX_FILE_BYTES: Final = 2 * 1024 * 1024
+# 16 MB, not 2: the Shai-Hulud payload (`bun_environment.js`) is ~10 MB, and 698 of 965
+# first-release compromised samples added a file over 2 MB (2026-10-27).
+MAX_FILE_BYTES: Final = 16 * 1024 * 1024
 DEFAULT_THRESHOLD: Final = Severity.MEDIUM
 
 Tree = Mapping[str, bytes]
@@ -69,10 +72,7 @@ class ContentCache:
             return tuple(FileMatch.model_validate(m) for m in json.loads(path.read_bytes()))
         result = analyse(content, self.rules)
         if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(f".{id(result)}.tmp")
-            tmp.write_text(json.dumps([m.model_dump(mode="json") for m in result]))
-            tmp.replace(path)
+            atomic_write(path, json.dumps([m.model_dump(mode="json") for m in result]).encode())
         return result
 
 

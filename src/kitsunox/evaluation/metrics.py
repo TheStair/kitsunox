@@ -8,6 +8,7 @@ show what the pipeline's policy does with no detection at all.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -15,14 +16,18 @@ from pydantic import Field
 
 from kitsunox.core.models import Change, Persisted, Record
 from kitsunox.core.rules import RuleContext
-from kitsunox.evaluation.dataset import EvalDataset, Label, cell_key
+from kitsunox.evaluation.dataset import EvalDataset, EvalSample, Label, cell_key
 from kitsunox.stages.triage import triage
 
 
 class Predictor(Protocol):
+    """Forward or clear one change. `sample` says where the change came from (e.g. which
+    external dataset), for predictors that need the package files. Must be thread-safe:
+    `evaluate` calls it in parallel."""
+
     name: str
 
-    def forward(self, change: Change) -> bool: ...
+    def forward(self, change: Change, sample: EvalSample) -> bool: ...
 
 
 class ForwardAll:
@@ -30,7 +35,7 @@ class ForwardAll:
 
     name = "forward-all"
 
-    def forward(self, change: Change) -> bool:
+    def forward(self, change: Change, sample: EvalSample) -> bool:
         return True
 
 
@@ -40,7 +45,7 @@ class PopularityOnly:
 
     name = "popularity-only"
 
-    def forward(self, change: Change) -> bool:
+    def forward(self, change: Change, sample: EvalSample) -> bool:
         return bool(change.popularity and change.popularity.watched)
 
 
@@ -51,7 +56,7 @@ class Triage:
     name = "stage1"
     forward_watched = True
 
-    def forward(self, change: Change) -> bool:
+    def forward(self, change: Change, sample: EvalSample) -> bool:
         return (
             triage(change, _context(change), forward_watched=self.forward_watched)
             .history[-1]
@@ -71,7 +76,7 @@ def _context(change: Change) -> RuleContext:
     return RuleContext(as_of=published or datetime(1970, 1, 1, tzinfo=UTC))
 
 
-PREDICTORS: dict[str, Callable[[], Predictor]] = {
+PREDICTORS: dict[str, Callable[[], Predictor]] = {  # need nothing but the change
     p.name: p for p in (ForwardAll, PopularityOnly, Triage, TriageRulesOnly)
 }
 
@@ -105,6 +110,8 @@ def evaluate(
     dataset_sha256: str,
     changes: Mapping[str, Change],
     predictor: Predictor,
+    *,
+    workers: int = 8,
 ) -> EvalReport:
     """Cells are keyed `<label>/<shape>[/<source>][/provisional]` (see `cell_key`), plus
     `<label>/all[/<source>]` rollups over settled samples (provisional benign labels may still
@@ -118,8 +125,9 @@ def evaluate(
         cell[0] += 1
         cell[1] += hit
 
-    for sample in dataset.samples:
-        hit = predictor.forward(changes[sample.key])
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        hits = list(pool.map(lambda s: predictor.forward(changes[s.key], s), dataset.samples))
+    for sample, hit in zip(dataset.samples, hits, strict=True):
         if hit:
             forwarded.append(sample.key)
         add(cell_key(sample), hit)

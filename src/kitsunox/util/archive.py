@@ -143,6 +143,7 @@ def extract_zip(
     limits: ExtractLimits = DEFAULT_LIMITS,
     password: bytes | None = None,
     include: Callable[[str], bool] | None = None,
+    skip_oversize: bool = False,
 ) -> ArtifactTree:
     """Extract a zip archive into memory with the same path rules and size limits as tarballs.
     Declared sizes are checked before reading, and reads are capped in case a header lies.
@@ -171,6 +172,9 @@ def extract_zip(
                 if include is not None and not include(path):
                     continue
                 if info.file_size > limits.max_file_bytes:
+                    if skip_oversize:
+                        skipped.append(SkippedEntry(info.filename, "over per-file limit"))
+                        continue
                     raise ArchiveError(f"{path}: {info.file_size} bytes exceeds per-file limit")
                 if info.compress_size and info.file_size / info.compress_size > limits.max_ratio:
                     raise ArchiveError(f"{path}: compression ratio exceeds limit")

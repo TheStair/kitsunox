@@ -90,9 +90,12 @@ class ExfilEndpoint(RegexRule):
 class SensitivePath(RegexRule):
     """Credential and secret stores a package has no business reading."""
 
+    # v2: MEDIUM -> LOW. 2026-10-27, A/B first releases: benign 2.0%/1.6%, malicious 4.0%/5.1%.
+
     id = "static.sensitive-path"
-    severity = Severity.MEDIUM
-    weight = 3.0
+    version = 2
+    severity = Severity.LOW
+    weight = 1.0
     title = "Reference to a credential or secret store"
     pattern = re.compile(
         r"\.npmrc|\.ssh/id_|\.ssh[\"'`]?\s*,\s*[\"'`]id_|\.aws/credentials|\.git-credentials"
@@ -105,9 +108,12 @@ class SensitivePath(RegexRule):
 class EnvHarvest(RegexRule):
     """The whole environment serialised or enumerated: environment variables hold CI tokens."""
 
+    # v2: MEDIUM -> LOW. 2026-10-27, A/B first releases: benign 0.9%/2.4%, malicious 3.2%/2.0%.
+
     id = "static.env-harvest"
-    severity = Severity.MEDIUM
-    weight = 3.0
+    version = 2
+    severity = Severity.LOW
+    weight = 1.0
     title = "Collects all environment variables"
     pattern = re.compile(
         r"JSON\.stringify\(\s*process\.env\s*[,)]|Object\.(?:keys|entries|values)\(\s*process\.env\s*\)"
@@ -135,9 +141,12 @@ class HardcodedIp(RegexRule):
 class EncodedBlob(RegexRule):
     """Long base64 or hex runs: packed payloads. Image and font data URIs are excluded."""
 
+    # v2: MEDIUM -> LOW. 2026-10-27, A/B first releases: benign 2.2%/2.6%, malicious 6.0%/2.7%.
+
     id = "static.encoded-blob"
-    severity = Severity.MEDIUM
-    weight = 3.0
+    version = 2
+    severity = Severity.LOW
+    weight = 1.0
     title = "Large encoded blob"
     MIN_LENGTH: ClassVar[int] = 200
     pattern = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}|(?:[0-9a-fA-F]{2}){100,}")
@@ -170,9 +179,12 @@ def _is_hex(blob: str) -> bool:
 class DynamicCode(RegexRule):
     """Code built and run at runtime, the usual way to hide a payload from static review."""
 
+    # v2: MEDIUM -> LOW. 2026-10-27, A/B first releases: benign 2.3%/2.6%, malicious 2.0%/6.0%.
+
     id = "static.dynamic-code"
-    severity = Severity.MEDIUM
-    weight = 3.0
+    version = 2
+    severity = Severity.LOW
+    weight = 1.0
     title = "Runs dynamically built code"
     pattern = re.compile(
         r"(?<![\w.$])eval\s*\(|new\s+Function\s*\(|vm\.runIn(?:New|This)?Context\s*\("
@@ -217,9 +229,13 @@ class Obfuscated(RegexRule):
 class NpmPublish(RegexRule):
     """Code that uses npm credentials or publishes packages: how npm worms spread."""
 
+    # v2: MEDIUM -> LOW. 2026-10-27, A/B first releases: benign 6.4%/8.0% (publishing tools
+    # mention NPM_TOKEN), malicious 10.9%/20.9%.
+
     id = "static.npm-publish"
-    severity = Severity.MEDIUM
-    weight = 3.0
+    version = 2
+    severity = Severity.LOW
+    weight = 1.0
     title = "Publishes to npm or uses npm tokens"
     pattern = re.compile(
         r"npm\s+publish|NPM_TOKEN|_authToken|registry\.npmjs\.org/-/(?:whoami|npm/v1/tokens)",

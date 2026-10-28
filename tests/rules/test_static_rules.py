@@ -64,7 +64,7 @@ def test_obfuscation_needs_many_identifiers() -> None:
 
 def test_binary_and_huge_files_are_skipped() -> None:
     assert analyse(b"\x00\x01eval(x)") == ()
-    assert analyse(b"eval(x)" + b" " * (3 * 1024 * 1024)) == ()
+    assert analyse(b"eval(x)" + b" " * (17 * 1024 * 1024)) == ()
 
 
 def test_matches_are_capped_per_rule() -> None:

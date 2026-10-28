@@ -14,11 +14,13 @@ from kitsunox.evaluation.harness import (
     external_store,
     label_store,
     make_dataset,
+    make_predictor,
     run_eval,
     sync_datadog,
 )
 from kitsunox.evaluation.labels import LabelSet
 from kitsunox.evaluation.metrics import ForwardAll
+from kitsunox.evaluation.static_eval import strip_to_package
 
 COMMIT = "c0ffee" + "0" * 34
 GOOD = "compromised_lib/kx-fixture/1.1.0/2026-03-02-kx-fixture-v1.1.0.zip"
@@ -133,3 +135,32 @@ def test_follow_on_releases_get_their_own_cell(
     make_dataset(data, ecosystem="npm", name="ext", built_at=when)
     report = run_eval(data, ecosystem="npm", dataset_name="ext", predictor=ForwardAll())
     assert ("malicious/A/datadog/follow-on" in report.cells) is follow_on
+
+
+def test_strip_to_package() -> None:
+    tree = {
+        "tmp/x/kx/package/index.js": b"1",
+        "tmp/x/kx/package_info-kx.json": b"{}",
+        "tmp/x/kx/package/lib/package/a.js": b"2",
+    }
+    assert strip_to_package(tree) == {"index.js": b"1", "lib/package/a.js": b"2"}
+
+
+def test_stage2_predictor_reads_files_from_the_encrypted_zip(
+    tmp_path: Path, github: Router
+) -> None:
+    data = DataDir(tmp_path)
+    when = datetime(2026, 10, 27, tzinfo=UTC)
+    limits: dict[str, int | None] = {"compromised_lib": None, "malicious_intent": 0}
+    sync_datadog(data, fetched_at=when, limits=limits, client=github.client())
+    labels = LabelSet(
+        ecosystem="npm", source="t", fetched_at=when, source_sha256="0" * 64, labels={}
+    )
+    label_store(data).save("npm", labels.id, labels)
+    make_dataset(data, ecosystem="npm", name="ext", built_at=when)
+    predictor = make_predictor(data, "npm", "stage2-rules")
+    report = run_eval(data, ecosystem="npm", dataset_name="ext", predictor=predictor)
+    # The fixture zip holds only an inert package.json, so nothing fires; the previous
+    # version's tarball isn't served by the mock, so the base counts as unavailable.
+    assert report.cells["malicious/A/datadog"].forwarded == 0
+    assert predictor.notes == {"base unavailable (all files treated as new)": 1}  # type: ignore[attr-defined]

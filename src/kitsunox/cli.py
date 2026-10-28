@@ -30,13 +30,15 @@ from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
 from kitsunox.evaluation.harness import (
+    PREDICTOR_NAMES,
     label_store,
     make_dataset,
+    make_predictor,
     run_eval,
     sync_datadog,
     sync_labels,
 )
-from kitsunox.evaluation.metrics import PREDICTORS, render_markdown
+from kitsunox.evaluation.metrics import render_markdown
 from kitsunox.stages.triage import triage_run
 
 app = typer.Typer(help="Flag likely software supply chain attacks in recent npm releases.")
@@ -270,20 +272,23 @@ def eval_build(
 def eval_run(
     name: str,
     predictor: Annotated[
-        str, typer.Option(help=f"One of: {', '.join(PREDICTORS)}.")
+        str, typer.Option(help=f"One of: {', '.join(PREDICTOR_NAMES)}.")
     ] = "popularity-only",
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
 ) -> None:
     """Score a predictor on dataset NAME and print a Markdown table."""
-    if predictor not in PREDICTORS:
+    if predictor not in PREDICTOR_NAMES:
         typer.echo(
-            f"unknown predictor {predictor!r}; choose from {', '.join(PREDICTORS)}", err=True
+            f"unknown predictor {predictor!r}; choose from {', '.join(PREDICTOR_NAMES)}", err=True
         )
         raise typer.Exit(code=2)
-    report = run_eval(
-        DataDir(data_dir), ecosystem=NPM, dataset_name=name, predictor=PREDICTORS[predictor]()
-    )
+    data = DataDir(data_dir)
+    chosen = make_predictor(data, NPM, predictor)
+    report = run_eval(data, ecosystem=NPM, dataset_name=name, predictor=chosen)
     typer.echo(render_markdown(report))
+    notes = getattr(chosen, "notes", None)
+    if notes:
+        typer.echo(f"notes: {dict(sorted(notes.items()))}")
 
 
 @app.command("collect")

@@ -12,7 +12,6 @@ later RECORD run reuses them instead of downloading again.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -27,6 +26,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from kitsunox import __version__
+from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.schema import require_schema_version
 
@@ -70,7 +70,7 @@ class Snapshot(BaseModel):
     def save(self, path: Path) -> None:
         ordered = dict(sorted(self.entries.items()))
         data = Snapshot(entries=ordered).model_dump_json(indent=2)
-        _atomic_write(path, data.encode())
+        atomic_write(path, data.encode())
 
     @classmethod
     def load(cls, path: Path) -> Snapshot:
@@ -111,7 +111,7 @@ class BlobStore:
         sha = sha256_hex(data)
         path = self._path(sha)
         if not path.exists():
-            _atomic_write(path, zstd.compress(data, level=self.level))
+            atomic_write(path, zstd.compress(data, level=self.level))
         return sha
 
     def get(self, sha: str) -> bytes:
@@ -276,7 +276,7 @@ class HttpFetcher:
     def _immutable_store(self, key: str, entry: SnapshotEntry) -> None:
         path = self._immutable_path(key)
         if path is not None:
-            _atomic_write(path, entry.model_dump_json().encode())
+            atomic_write(path, entry.model_dump_json().encode())
 
 
 def request_key(url: str, headers: Mapping[str, str] | None) -> str:
@@ -292,10 +292,3 @@ def _parse_retry_after(value: str | None) -> float | None:
         return max(0.0, float(value))
     except ValueError:
         return None
-
-
-def _atomic_write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)

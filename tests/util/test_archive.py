@@ -202,3 +202,12 @@ def test_encrypted_zip_reads_selected_members_only() -> None:
 def test_encrypted_zip_without_the_password_is_rejected(password: bytes | None) -> None:
     with pytest.raises(ArchiveError, match="decrypt"):
         extract_zip(ENCRYPTED.read_bytes(), password=password)
+
+
+def test_zip_oversize_members_can_be_skipped() -> None:
+    data = _zip({"big.bin": b"\1" * 2000, "small.js": b"x"})
+    limits = ExtractLimits(max_file_bytes=1000, max_ratio=10_000)
+    with pytest.raises(ArchiveError, match="per-file limit"):
+        extract_zip(data, limits=limits)
+    tree = extract_zip(data, limits=limits, skip_oversize=True)
+    assert list(tree) == ["small.js"] and tree.skipped[0].reason == "over per-file limit"
