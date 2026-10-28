@@ -2,6 +2,61 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-28: Stage 4 correlation, repository comparison and score
+
+**Stage(s):** Stage 4 (correlation), evaluation harness
+**Context:** The user asked to start Stage 4 after Stage 3 was verified live. Stage 4's jobs:
+combine weak signals, look up outside knowledge, and compare npm releases with their git
+repositories. Design and rejected options: [0010](decisions/0010-stage4-correlation-and-repo-comparison.md).
+
+### Decisions
+- **Repo comparison scope: flagged versions + watched updates** (the user's choice of three;
+  ~500/hour). No GitHub token or API: refs from git's smart-HTTP advertisement, archives from
+  codeload by commit, cached through the immutable index.
+- **Report on any MEDIUM+ finding, or score ≥ 6; the score orders the queue.** Measured from a
+  dump of every stage's findings for all 4,944 `day1` samples: a score bar *instead of* the
+  MEDIUM bars is far more precise (0.1% benign updates) but loses 2.2 / 9.5 points of recall, and
+  summing Stages 1-3's LOW findings to 3-5 bought almost no recall for 0.4-2.0 points of benign.
+  Each rule counts once in the score (Stage 2 reports one finding per file).
+- **Stage 4 reads every triaged version**, not only those routed to Stages 2-3: 23 of the first
+  24 missed malicious updates examined were never routed, and many had the same two LOW
+  Stage 1 findings (`dormant-revived` + `dependency.added`).
+- **Eval predictors share one collector** (`SampleFindings`) that gathers every stage's
+  findings; each predictor is a decision over it. Regression check: `pipeline+3` re-derived
+  exactly (89.7% / 66.0%, benign 0.9% / 1.2%).
+
+### Challenges
+- **"Code not in the repo" is noise for most packages.** 57% of sampled benign updates ship
+  only build output. A first rule ("package ships its sources, yet has files git lacks") missed
+  Shai-Hulud 2.0, whose `setup_bun.js` sits at the root of packages that ship `lib/`.
+  - **Resolution:** a missing file counts only if its directory is in the repository and no file
+    there shares its stem (`lib/x.js` beside `lib/x.ts` is compiled; ignored `dist/` never
+    counts).
+  - **Why it worked, partly:** 49 of 57 comparable malicious updates fire, but so do 9 of 121
+    comparable benign (generated root files, `@girs/*`), and 43 of the 49 were already flagged.
+    The rules were downgraded to LOW. Honest result: the comparison is evidence, not recall,
+    until the git path widens its reach. 543 of 965 malicious updates have no commit or tag.
+- **Known-malware by name flagged `axios`, `chalk`, `debug`** (11 benign new packages): OSV
+  records compromised *versions* of real packages. Only whole-package records count now: 11
+  malicious, 0 benign.
+- **The combination rule fired on prerelease channels** (`canary`, `experimental`, `pr-`): a
+  channel idle for years is "dormant", and its next build adds dependencies. 3 of 4 new benign
+  reports; prereleases are skipped now.
+- **A slow evaluation looked like a regex hang.** The dump sat on `@sap/generator-fiori` and
+  then on `@pilllesss/yorn` for many minutes. Timing every rule on every file found nothing over
+  a second; the time was base-tarball fetches for deleted versions. No change needed.
+
+### Evaluation snapshot
+- `pipeline+3` → `pipeline+4`: updates 89.7% → **91.1%**, new packages 66.0% → **66.5%**,
+  benign 0.8% → **0.9%** weighted (1 extra benign update; nothing lost).
+
+### Open questions / next steps
+- Repo archive volume live: estimated 5-15 GB/day (1,000 repos, 1,700+ commits for one day of
+  watched updates); measure on the first live day. Archives can be re-fetched by commit, so they
+  could be kept for less than 7 days.
+- Compare `package.json` install scripts and dependencies with the repository's manifest.
+- Reporting (Phase 8): `report.json` + Markdown, ordered by score.
+
 ## 2026-10-28: First live hours of Stage 3, two bugs
 
 **Stage(s):** Stage 3 (AST), Stage 2 (static), collection

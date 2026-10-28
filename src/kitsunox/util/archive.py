@@ -66,10 +66,15 @@ class ArtifactTree(Mapping[str, bytes]):
 
 
 def extract_tar_gz(
-    data: bytes, *, strip_components: int = 0, limits: ExtractLimits = DEFAULT_LIMITS
+    data: bytes,
+    *,
+    strip_components: int = 0,
+    limits: ExtractLimits = DEFAULT_LIMITS,
+    include: Callable[[str], bool] | None = None,
 ) -> ArtifactTree:
     """Extract a gzip-compressed tar archive into memory. `strip_components` drops leading path
-    segments (npm tarballs nest everything under `package/`)."""
+    segments (npm tarballs nest everything under `package/`). `include` selects regular files
+    by their safe path; the rest are not read (a monorepo archive, one package's directory)."""
     if len(data) > limits.max_compressed_bytes:
         raise ArchiveError(f"compressed size {len(data)} exceeds limit")
     raw = _gunzip_limited(data, limits)
@@ -93,6 +98,8 @@ def extract_tar_gz(
                     continue
                 if not member.isfile():
                     skipped.append(SkippedEntry(path, _entry_kind(member)))
+                    continue
+                if include is not None and not include(path):
                     continue
                 if member.size > limits.max_file_bytes:
                     raise ArchiveError(f"{path}: {member.size} bytes exceeds per-file limit")

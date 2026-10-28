@@ -91,8 +91,19 @@ def test_unfinished_stages_are_caught_up(tmp_path: Path, registry: Router) -> No
 
     log: list[str] = []
     collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)
-    assert any(line.startswith(f"stages (catch-up {first.run_id}): ") for line in log), log
+    assert any(
+        line.startswith(f"stages (catch-up {first.run_id} from Stage 1): ") for line in log
+    ), log
     assert (data.run_dir(first.run_id) / "static.jsonl").exists()
+    assert (data.run_dir(first.run_id) / "correlate.jsonl").exists()
+
+    (data.run_dir(first.run_id) / "correlate.jsonl").unlink()  # only Stage 4 is redone
+    log.clear()
+    collect(
+        data, now=AS_OF + timedelta(hours=1, minutes=30), log=log.append, clients=registry.client
+    )
+    (line,) = [line for line in log if "catch-up" in line]
+    assert "from Stage 4" in line and "triaged" not in line and "Stage 4" in line
 
     log.clear()  # nothing left to catch up
     collect(data, now=AS_OF + timedelta(hours=2), log=log.append, clients=registry.client)

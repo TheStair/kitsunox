@@ -146,7 +146,8 @@ def test_strip_to_package() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["stage2-rules", "stage1+2-rules", "pipeline", "stage3-rules", "pipeline+3"]
+    "name",
+    ["stage2-rules", "stage1+2-rules", "pipeline", "stage3-rules", "pipeline+3", "pipeline+4"],
 )
 def test_stage2_predictor_reads_files_from_the_encrypted_zip(
     tmp_path: Path, github: Router, name: str

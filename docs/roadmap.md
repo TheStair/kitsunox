@@ -5,7 +5,8 @@
 > changes and 0 malicious samples after label hygiene: everything malicious was taken down
 > before the run fetched it. Hourly chained collection (Phase 9) has been running since then, so the malicious set can now
 > grow. Stage 1 is done and was evaluated on DataDog samples (0007). Stage 2 runs hourly in
-> `collect` with hybrid routing (0008) and captures tarballs. Next: Stage 3 AST capabilities.
+> `collect` with hybrid routing (0008) and captures tarballs. Stages 3 (AST capabilities) and 4
+> (correlation, repo comparison, score) run there too since 2026-10-28. Next: reporting.
 
 ## Phases
 
@@ -18,7 +19,7 @@
 | 4 | Stage 1 metadata triage | Manifest-diff, install-hook, dependency, maintainer, publish-method and version-anomaly rules, each with tests and eval numbers | ✅ 8 rules; 80% / 58% first-release recall (A / B, DataDog) at 0.6% benign pass-through. See [stages/triage.md](stages/triage.md) |
 | 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | ✅ 10 rules; runs hourly in `collect`. End to end (`pipeline`): 86.0% / 66.0% (A / B) at 0.7% benign. Routing: [0008](decisions/0008-stage2-routing-and-tarball-capture.md). See [stages/static.md](stages/static.md) |
 | 6 | Stage 3 AST capabilities | tree-sitter JS/TS parsing; per-file capability sets; capability-delta rules | ✅ parser, profiles, deltas, 2 rules; runs in `collect`. Alone 80.6% A at 0.2% benign; end to end (`pipeline+3`) 89.7% / 66.0% at 0.8%. See [stages/ast.md](stages/ast.md) |
-| 7 | Stage 4 correlation | Tarball-vs-repo diff; OSV/GHSA lookups; new-dependency reputation; combination rules and final score | ⬜ |
+| 7 | Stage 4 correlation | Tarball-vs-repo diff; OSV/GHSA lookups; new-dependency reputation; combination rules and final score | ✅ first version; runs in `collect`. Repo comparison without a GitHub token, known-malware dependencies, `gitHead` provenance, one combination rule, distinct-rule score. End to end (`pipeline+4`) 91.1% / 66.5% at 0.9% benign. See [stages/correlate.md](stages/correlate.md), [0010](decisions/0010-stage4-correlation-and-repo-comparison.md). Not yet: new-dependency reputation, GHSA, manifest comparison with the repo |
 | 8 | Reporting | `report.json` → Markdown per candidate + `index.md`; `kitsunox run` end to end | ⬜ |
 | 8b | Git path (parallel source) | Commits on GitHub/GitLab repos of watchlist packages → filter → full repo fetch when needed → join with npm releases. See [decision 0004](decisions/0004-git-path-parallel-to-npm.md) | ⬜ after the npm workflow |
 | 9 | Prospective labeling | Scheduled ingest + cache retention; nightly join against new `MAL-` records to grow the eval set | 🟡 hourly `kitsunox collect` (launchd) + retention running since 2026-10-27, with Stages 1–2 and tarball capture since the evening of 2026-10-27; datasets are rebuilt by hand with `eval build` |

@@ -32,6 +32,7 @@ from kitsunox.evaluation.labels import OSV_MAX_DOWNLOAD, LabelSet, fetch_label_s
 from kitsunox.evaluation.metrics import PREDICTORS, EvalReport, Predictor, evaluate
 from kitsunox.evaluation.static_eval import (
     CodeRules,
+    Correlated,
     Pipeline,
     PipelineWithCode,
     StaticAndMetadataRules,
@@ -155,7 +156,14 @@ def make_dataset(
     return dataset, path, sha
 
 
-FILE_PREDICTORS = (StaticRules, StaticAndMetadataRules, Pipeline, CodeRules, PipelineWithCode)
+FILE_PREDICTORS = (
+    StaticRules,
+    StaticAndMetadataRules,
+    Pipeline,
+    CodeRules,
+    PipelineWithCode,
+    Correlated,
+)
 PREDICTOR_NAMES = (*PREDICTORS, *(p.name for p in FILE_PREDICTORS))
 
 

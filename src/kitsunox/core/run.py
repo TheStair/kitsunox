@@ -85,8 +85,11 @@ class IngestDegradedError(RuntimeError):
     """Too many packages failed on the network; nothing was written."""
 
 
-# Stage 2's fetch record (tarballs) for a run; retention reads it like `snapshot.json`.
+# Later stages' fetch records for a run (Stage 2: tarballs; Stage 4: repository refs and
+# archives). Retention keeps their blobs like those of `snapshot.json`.
 STATIC_SNAPSHOT = "static-snapshot.json"
+CORRELATE_SNAPSHOT = "correlate-snapshot.json"
+STAGE_SNAPSHOTS = (STATIC_SNAPSHOT, CORRELATE_SNAPSHOT)
 CHAIN_OVERLAP = timedelta(minutes=15)
 # A run catches up on a gap this long (the machine was off or offline). Matches retention.
 MAX_CHAIN_GAP = timedelta(days=7)

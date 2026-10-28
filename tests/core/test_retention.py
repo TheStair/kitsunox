@@ -8,6 +8,7 @@ import pytest
 from conftest import AS_OF, Router
 from kitsunox.core.retention import PruneReport, RetentionMarker, prune
 from kitsunox.core.run import (
+    CORRELATE_SNAPSHOT,
     STATIC_SNAPSHOT,
     DataDir,
     IngestRequest,
@@ -148,3 +149,31 @@ def test_tarballs_follow_retention(tmp_path: Path, registry: Router, labeled: bo
     assert index_count(data) == (len(urls) if labeled else 0)
     for path in data.immutable_index.rglob("*.json"):
         assert data.blobs.get(SnapshotEntry.model_validate_json(path.read_bytes()).sha256)
+
+
+def test_stage4_fetches_are_kept_with_the_run_and_damaged_index_entries_go(
+    tmp_path: Path, registry: Router
+) -> None:
+    data = DataDir(tmp_path)
+    manifest = run(data, registry)
+    run_dir = data.run_dir(manifest.run_id)
+    snapshot = Snapshot()
+    fetcher = HttpFetcher(
+        store=data.blobs,
+        snapshot=snapshot,
+        mode=FetchMode.RECORD,
+        immutable_index=data.immutable_index,
+        client=registry.client(),
+    )
+    archive = "https://codeload.github.com/o/r/tar.gz/" + "a" * 40
+    registry.add_bytes(archive, b"repo archive")
+    fetcher.get(archive, immutable=True)
+    fetcher.close()
+    snapshot.save(run_dir / CORRELATE_SNAPSHOT)
+    damaged = data.immutable_index / "zz" / "damaged.json"
+    damaged.parent.mkdir(parents=True)
+    damaged.write_bytes(b"\x17\x03\x03 not json")
+    prune_at(data, 1, set())
+    assert snapshot.entries
+    assert all(data.blobs.get(e.sha256) for e in snapshot.entries.values())
+    assert not damaged.exists()

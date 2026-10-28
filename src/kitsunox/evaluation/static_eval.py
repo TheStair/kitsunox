@@ -13,22 +13,37 @@ from __future__ import annotations
 
 import threading
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
-from kitsunox.core.models import ArtifactRef, Change, Severity
-from kitsunox.core.rules import RuleContext, run_rules
+from pydantic import Field
+
+from kitsunox.core.models import (
+    ArtifactRef,
+    Candidate,
+    Change,
+    Finding,
+    Record,
+    Severity,
+    StageDecision,
+)
+from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.install import install_entry_files
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
+from kitsunox.ecosystems.npm.repo import NpmLocator
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.artifact import HiddenInstallScript
-from kitsunox.ecosystems.npm.rules.metadata import RULES as NPM_RULES
 from kitsunox.evaluation.datadog import RAW_URL, SAMPLE_LIMITS, ZIP_PASSWORD
 from kitsunox.evaluation.dataset import EvalSample, ExternalSampleSet
+from kitsunox.evaluation.labels import label_store
+from kitsunox.githost.github import GitHub, GitHubRepo
 from kitsunox.rules.static import RULES as STATIC_RULES
 from kitsunox.stages.ast import CapabilityCache, code_change
 from kitsunox.stages.code import CODE_RULES
+from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
+from kitsunox.stages.repo import compare
+from kitsunox.stages.review import CORRELATION_RULES, NPM
 from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, new_contents
 from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import ArtifactTree, extract_zip
@@ -48,11 +63,48 @@ def strip_to_package(tree: Tree) -> dict[str, bytes]:
     return out
 
 
+class SampleFindings(Record):
+    """Every stage's findings for one sample, as the live pipeline would produce them.
+
+    `routed` is whether Stage 1 forwards the change to the file stages (any reason, decision
+    0008) and Stage 2 agrees to fetch it (declared size cap). `stage2`/`stage3` are None when
+    the file stages were not run for this predictor, or the sample's files are unavailable.
+    """
+
+    stage1: tuple[Finding, ...]
+    routed: bool
+    stage2: tuple[Finding, ...] | None = None
+    stage3: tuple[Finding, ...] | None = None
+    package: Mapping[str, bytes] | None = Field(default=None, exclude=True)
+
+    @property
+    def stage1_flagged(self) -> bool:
+        return _flags(self.stage1)
+
+    @property
+    def stage2_flagged(self) -> bool:
+        return _flags(self.stage2 or ())
+
+    @property
+    def stage3_flagged(self) -> bool:
+        return _flags(self.stage3 or ())
+
+    @property
+    def findings(self) -> tuple[Finding, ...]:
+        return self.stage1 + (self.stage2 or ()) + (self.stage3 or ())
+
+
+def _flags(findings: Sequence[Finding]) -> bool:
+    return any(at_least(f.severity, Severity.MEDIUM) for f in findings)
+
+
 class StaticRules:
-    """Stage 2 alone: forward if any new file content has a finding at MEDIUM or above."""
+    """Stage 2 alone: forward if any new file content has a finding at MEDIUM or above.
+
+    Subclasses choose which stages run (`include_stage2/3`), when the file stages are needed
+    (`needs_files`), and what is forwarded (`decide`)."""
 
     name = "stage2-rules"
-    include_stage1 = False
     include_stage2 = True
     include_stage3 = False
 
@@ -83,26 +135,35 @@ class StaticRules:
 
     def forward(self, change: Change, sample: EvalSample) -> bool:
         try:
-            return self._forward(change, sample)
+            return self.decide(change, self.collect(change, sample))
         except Exception as exc:  # hostile archives: count, never abort the evaluation
             self._note(f"error: {type(exc).__name__} (not forwarded)")
             return False
 
-    def _forward(self, change: Change, sample: EvalSample) -> bool:
-        if self.include_stage1 and any(
-            at_least(f.severity, Severity.MEDIUM)
-            for f in run_rules(NPM_RULES, change, RuleContext(as_of=_as_of(change)))
-        ):
-            return True
+    def needs_files(self, found: SampleFindings) -> bool:
+        return True
+
+    def decide(self, change: Change, found: SampleFindings) -> bool:
+        return found.stage2_flagged
+
+    def collect(self, change: Change, sample: EvalSample) -> SampleFindings:
+        candidate = triage(change, RuleContext(as_of=_as_of(change)))
+        size = change.new.artifact.unpacked_size if change.new.artifact else None
+        found = SampleFindings(
+            stage1=candidate.findings,
+            routed=candidate.history[-1].forwarded and (size is None or size <= MAX_ARTIFACT_BYTES),
+        )
+        if not self.needs_files(found):
+            return found
         new = self._new_tree(change, sample)
         if new is None:
             self._note("new files unavailable (not forwarded)")
-            return False
+            return found
         base: Tree | None = self._tarball(change.previous.artifact) if change.previous else {}
         if base is None:
             self._note("base unavailable (all files treated as new)")
-        if self.include_stage2 and self._stage2(change, new, base):
-            return True
+        stage2 = self._stage2(change, new, base) if self.include_stage2 else None
+        stage3 = None
         if self.include_stage3:
             code = code_change(
                 change.new,
@@ -111,27 +172,16 @@ class StaticRules:
                 self.capabilities,
                 install_entry_files,
             )
-            if any(
-                at_least(f.severity, Severity.MEDIUM)
-                for rule in CODE_RULES
-                for f in rule.evaluate_code(code)
-            ):
-                return True
-        return False
+            stage3 = tuple(f for rule in CODE_RULES for f in rule.evaluate_code(code))
+        return found.model_copy(update={"stage2": stage2, "stage3": stage3, "package": new})
 
-    def _stage2(self, change: Change, new: ArtifactTree, base: Tree | None) -> bool:
+    def _stage2(self, change: Change, new: ArtifactTree, base: Tree | None) -> tuple[Finding, ...]:
         # A zip member skipped as oversize would make the size check fire on our own gap.
         complete = not any(s.reason == "over per-file limit" for s in new.skipped)
         rules = NPM_ARTIFACT_RULES if complete else (HiddenInstallScript(),)
-        if any(
-            at_least(f.severity, Severity.MEDIUM)
-            for rule in rules
-            for f in rule.evaluate_artifact(change.new, new)
-        ):
-            return True
         version = change.new.ref.version
-        return any(
-            at_least(m.severity, Severity.MEDIUM)
+        return tuple(f for rule in rules for f in rule.evaluate_artifact(change.new, new)) + tuple(
+            m.finding(item.path)
             for item, content in new_contents(base or {}, [(version, new)])
             for m in self.cache.matches(item.sha256, content)
         )
@@ -166,7 +216,12 @@ class StaticAndMetadataRules(StaticRules):
     """Either stage's rules, as if Stage 2 read every release (an upper bound)."""
 
     name = "stage1+2-rules"
-    include_stage1 = True
+
+    def needs_files(self, found: SampleFindings) -> bool:
+        return not found.stage1_flagged
+
+    def decide(self, change: Change, found: SampleFindings) -> bool:
+        return found.stage1_flagged or found.stage2_flagged
 
 
 class Pipeline(StaticRules):
@@ -175,16 +230,11 @@ class Pipeline(StaticRules):
 
     name = "pipeline"
 
-    def _forward(self, change: Change, sample: EvalSample) -> bool:
-        decision = triage(change, RuleContext(as_of=_as_of(change))).history[-1]
-        if decision.forwarded and decision.reason.startswith("rules:"):
-            return True
-        if not decision.forwarded:
-            return False
-        size = change.new.artifact.unpacked_size if change.new.artifact else None
-        if size is not None and size > MAX_ARTIFACT_BYTES:
-            return False
-        return super()._forward(change, sample)
+    def needs_files(self, found: SampleFindings) -> bool:
+        return found.routed and not found.stage1_flagged
+
+    def decide(self, change: Change, found: SampleFindings) -> bool:
+        return found.stage1_flagged or found.stage2_flagged or found.stage3_flagged
 
 
 def _as_of(change: Change) -> datetime:
@@ -198,9 +248,69 @@ class CodeRules(StaticRules):
     include_stage2 = False
     include_stage3 = True
 
+    def decide(self, change: Change, found: SampleFindings) -> bool:
+        return found.stage3_flagged
+
 
 class PipelineWithCode(Pipeline):
     """`pipeline` plus Stage 3 on the same routed versions."""
 
     name = "pipeline+3"
     include_stage3 = True
+
+
+class Correlated(PipelineWithCode):
+    """End to end with Stage 4: what the pipeline would report. Stages 1-3 run on the routed
+    versions as in `pipeline+3`; Stage 4 runs on every version, as live. Known-malware records
+    count only if published by the release's publish time (later labels don't leak in), and
+    the repository comparison runs for the versions `wants_repo` picks, with repository data
+    cached under `data/eval/repos/`."""
+
+    name = "pipeline+4"
+
+    def __init__(self, data: DataDir, external: list[ExternalSampleSet]) -> None:
+        super().__init__(data, external)
+        labels_id = label_store(data).latest_id(NPM)
+        self.labels = label_store(data).load(NPM, labels_id) if labels_id else None
+        root = data.root / "eval" / "repos"
+        self.github = GitHub(
+            HttpFetcher(
+                store=BlobStore(root / "blobs"),
+                snapshot=Snapshot(),
+                mode=FetchMode.RECORD,
+                immutable_index=root / "http-immutable",
+            )
+        )
+        self.locator = NpmLocator()
+        self.refs: dict[GitHubRepo, Mapping[str, str] | None] = {}
+
+    def needs_files(self, found: SampleFindings) -> bool:
+        return found.routed
+
+    def decide(self, change: Change, found: SampleFindings) -> bool:
+        return self.correlated(change, found).history[-1].forwarded
+
+    def correlated(self, change: Change, found: SampleFindings) -> Candidate:
+        candidate = Candidate(
+            change=change,
+            findings=found.findings,
+            history=(
+                StageDecision(
+                    stage="triage",
+                    forwarded=found.routed,
+                    reason="rules: stage 1" if found.stage1_flagged else "routed",
+                ),
+                StageDecision(stage="static", forwarded=found.stage2_flagged, reason="eval"),
+                StageDecision(stage="ast", forwarded=found.stage3_flagged, reason="eval"),
+            ),
+        )
+        repo = None
+        if wants_repo(candidate) and found.package is not None:
+            try:
+                repo = compare(
+                    change, found.package, self.locator, self.github, refs_cache=self.refs
+                )
+            except FetchError as exc:
+                self._note(f"repo: {type(exc).__name__} (no comparison)")
+        ctx = CorrelationContext(as_of=_as_of(change), known_bad=self.labels, repo=repo)
+        return correlate(candidate, ctx, CORRELATION_RULES)

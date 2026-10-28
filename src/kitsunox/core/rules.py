@@ -135,6 +135,16 @@ class ArtifactRule(Protocol):
     ) -> Sequence[Finding]: ...
 
 
-def rules_fingerprint(rules: Sequence[FileRule | Rule]) -> str:
+class Versioned(Protocol):
+    """Anything with a rule id and version (every kind of rule)."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def version(self) -> int: ...
+
+
+def rules_fingerprint(rules: Sequence[Versioned]) -> str:
     """Identifies a rule set; changes whenever a rule is added, removed or re-versioned."""
     return sha256_hex("\n".join(sorted(f"{r.id}:{r.version}" for r in rules)).encode())[:16]

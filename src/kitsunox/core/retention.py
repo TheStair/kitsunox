@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from kitsunox.core.models import Persisted, Record
-from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, RunManifest
+from kitsunox.core.run import STAGE_SNAPSHOTS, DataDir, RunManifest
 from kitsunox.stages.ingest import changes_file, read_changes
 from kitsunox.util.http import Snapshot, SnapshotEntry
 
@@ -93,8 +93,9 @@ def _prune_run(
         if snap is not None and snap.artifact is not None
     }
     entries = dict(Snapshot.load(run_dir / "snapshot.json").entries)
-    if (run_dir / STATIC_SNAPSHOT).exists():
-        entries |= Snapshot.load(run_dir / STATIC_SNAPSHOT).entries
+    for name in STAGE_SNAPSHOTS:
+        if (run_dir / name).exists():
+            entries |= Snapshot.load(run_dir / name).entries
     retained = {k: e for k, e in sorted(entries.items()) if e.url in urls}
     marker = RetentionMarker(pruned_at=now, keep_days=keep_days, retained=retained)
     if plain.exists():
@@ -117,7 +118,7 @@ def _collect_garbage(data: DataDir, run_dirs: list[Path]) -> tuple[int, int]:
             referenced.update(e.sha256 for e in marker.retained.values())
         else:
             # A snapshot that fails to load raises here, before anything is deleted.
-            for name in ("snapshot.json", STATIC_SNAPSHOT):
+            for name in ("snapshot.json", *STAGE_SNAPSHOTS):
                 if name == "snapshot.json" or (run_dir / name).exists():
                     snapshot = Snapshot.load(run_dir / name)
                     referenced.update(e.sha256 for e in snapshot.entries.values())
@@ -125,7 +126,11 @@ def _collect_garbage(data: DataDir, run_dirs: list[Path]) -> tuple[int, int]:
         # Index entries go first: a crash then leaves an orphan blob (collected next time),
         # never an index entry pointing at a deleted blob.
         for path in data.immutable_index.rglob("*.json"):
-            if SnapshotEntry.model_validate_json(path.read_bytes()).sha256 not in referenced:
+            try:
+                sha = SnapshotEntry.model_validate_json(path.read_bytes()).sha256
+            except ValueError:
+                sha = None  # damaged: fetching treats it as a miss, so it can go
+            if sha not in referenced:
                 path.unlink()
 
     deleted = freed = 0

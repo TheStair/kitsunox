@@ -118,6 +118,7 @@ uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor
 uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
 uv run kitsunox static <run_id>                    # Stage 2 on a triaged run (fetches tarballs)
 uv run kitsunox ast <run_id>                       # Stage 3 on a run Stage 2 processed
+uv run kitsunox correlate <run_id>                 # Stage 4: correlation, repo comparison, score
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -135,6 +136,7 @@ src/kitsunox/
   stages/           # ingest, triage, static, ast, correlate, sandbox
   rules/            # ecosystem-agnostic rules (entropy, URLs/IPs, eval/dynamic code)
   lang/             # source-language parsers (tree-sitter JS/TS capabilities for Stage 3)
+  githost/          # git hosts (GitHub refs + archives, no API token) for Stage 4 and the git path
   evaluation/       # OSV labels, datasets built from ingest runs, predictors + metrics
   reporting/        # report rendering (Markdown/HTML), summary index
   util/             # shared helpers: HTTP + retry, hashing, diffing, entropy, logging
@@ -263,7 +265,7 @@ updating it.
 
 ---
 
-## Current focus: Stage 3 capability analysis (running in collection; tuning)
+## Current focus: Stage 4 correlation and repo comparison (running in collection; tuning)
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
 `util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor),
@@ -279,6 +281,10 @@ Stage 2 is `stages/static.py` with rules in `rules/static.py` and its eval predi
 What Stage 2 reads (new packages, grown updates, watched, flagged; a 16 MB cap) is decision 0008.
 Stage 3 is `stages/ast.py` (+ npm wiring in `stages/code.py`), parsing JS/TS with tree-sitter
 in `lang/javascript.py`; see `docs/stages/ast.md`. tree-sitter 0.26.0 crashes; it is pinned below.
+Stage 4 is `stages/correlate.py` (+ npm wiring in `stages/review.py`): it reads every triaged
+version, adds known-malware, combination and tarball-vs-repo findings (`stages/repo.py`,
+`githost/github.py`, `ecosystems/npm/repo.py`), scores, and decides what to report. See
+`docs/stages/correlate.md` and decision 0010. Eval predictor: `pipeline+4`.
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.
@@ -286,7 +292,7 @@ Key invariants:
 - Tarballs are only ever extracted with `extract_tar_gz`.
 - Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
 - A launchd agent (`local.kitsunox.collect`) runs `kitsunox collect` hourly against `data/`:
-  ingest, then Stages 1 and 2, which capture tarballs (~14 GB/day) before npm deletes them.
+  ingest, then Stages 1-4; Stage 2 captures tarballs (~14 GB/day) before npm deletes them.
   Network failures are retried, never silently skipped (decision 0009): don't catch
   `TransientFetchError` as if it were a missing package.
   Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit

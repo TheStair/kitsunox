@@ -40,6 +40,7 @@ from kitsunox.evaluation.harness import (
 from kitsunox.evaluation.labels import label_store
 from kitsunox.evaluation.metrics import render_markdown
 from kitsunox.stages.code import run_code_stage
+from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.static import record_static
 from kitsunox.stages.triage import triage_run
 
@@ -259,6 +260,28 @@ def ast_cmd(
     flagged = sum(d.forwarded for d in decisions)
     typer.echo(f"{len(batches)} batches, {len(decisions)} versions: {flagged} flagged")
     typer.echo(f"saved to {run_dir}/ast.jsonl")
+
+
+@app.command("correlate")
+def correlate_cmd(
+    run_id: str,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    workers: Annotated[int, typer.Option(help="Parallel package batches.")] = 8,
+) -> None:
+    """Stage 4: correlate a run Stage 3 has processed (known-malware lookups, comparison with
+    the source repository, score); write correlate.jsonl into the run directory."""
+    data = DataDir(data_dir)
+    run_dir = data.run_dir(run_id)
+    if not (run_dir / "ast.jsonl").exists():
+        typer.echo(f"no ast.jsonl in {run_dir}: run `kitsunox ast {run_id}` first", err=True)
+        raise typer.Exit(code=2)
+    with data.lock():
+        versions = run_correlate_stage(data, run_id, workers=workers)
+    reported = [c for c in versions if c.history[-1].forwarded]
+    typer.echo(f"{len(versions)} versions: {len(reported)} to report")
+    for c in sorted(reported, key=lambda c: -c.score)[:20]:
+        typer.echo(f"  {c.score:5.1f}  {c.change.new.ref}  {c.history[-1].reason}")
+    typer.echo(f"saved to {run_dir}/correlate.jsonl")
 
 
 @samples_app.command("datadog")

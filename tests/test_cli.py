@@ -98,6 +98,10 @@ def test_ast_needs_static_first(tmp_path: Path, router: Router) -> None:
     assert result.exit_code == 2
     runner.invoke(app, ["triage", run_id, "--data-dir", str(tmp_path)])
     runner.invoke(app, ["static", run_id, "--data-dir", str(tmp_path)])
+    assert runner.invoke(app, ["correlate", run_id, "--data-dir", str(tmp_path)]).exit_code == 2
     result = runner.invoke(app, ["ast", run_id, "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("0 batches, 0 versions: 0 flagged")
+    result = runner.invoke(app, ["correlate", run_id, "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("0 versions: 0 to report")

@@ -173,3 +173,13 @@ Stage 0's output changed. Their `manifest.tool_version` records which code produ
 | Declared vs real unpacked size, 1,069 live versions | Exact match in all |
 | Artifact rules on `day1` benign | 0 of 1,468 flagged |
 
+
+## 2026-10-28 (afternoon): Stage 3 live, cache damage, Stage 4
+
+| Check | Result |
+|---|---|
+| Stage 3 on `20261028T031447Z-npm`, before / after comparing with `change.previous` | 44 / 7 versions flagged of 1,233 read (37 were new packages behind a `0.0.0-stage` placeholder) |
+| Content cache, HTTP index and AST cache scanned for undecodable files | 1 damaged of 1.73M (a TLS record + the intended `[]`); readers now treat damage as a miss, `atomic_write` reads back |
+| Eval refactor (shared findings collector) | `pipeline+3` re-derived exactly from the dump: 89.7% / 66.0%, benign 0.9% / 1.2% |
+| Repo comparison, `day1` (965 malicious, 300 benign updates) | comparable 5.9% / 40%; flagged 49 of 57 / 9 of 121 compared; 43 of the 49 already flagged by Stages 1-3 |
+| Stage 4 known-malware lookup by name alone | 11 benign new packages hit (`axios`, `chalk`, `debug`); whole-package records only: 0 |

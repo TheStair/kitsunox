@@ -24,6 +24,7 @@ flowchart LR
     S1 -->|Candidate| S2[Stage 2<br/>Static diff heuristics]
     S2 -->|Candidate| S3[Stage 3<br/>AST capability delta]
     S3 -->|Candidate| S4[Stage 4<br/>Correlation + score]
+    S1 -.unrouted versions.-> S4
     GH -.-> S4
     OSV -.-> S4
     S4 -->|Candidate| S5[Stage 5<br/>Sandbox<br/>later, optional]
@@ -121,9 +122,13 @@ class Stage(Protocol):  # proposed: stages/ (Stage 1 is a function, stages/triag
 - **Forward vs. clear** is decided per stage by a documented policy: forward if any rule at or
   above a severity fired, or the cumulative score is past the stage threshold. Thresholds come
   from evaluation, not guesswork.
-- **Scoring** (Stage 4) is the sum of `weight` over fired findings, plus named *combination
-  rules*. For example "new network capability + new install hook" adds a bonus, and "native
-  build hook with no other signals" subtracts. Every term in the score appears in the report.
+- **Scoring** (Stage 4) is the sum of `weight` over the rules that fired, each rule counted
+  once at its largest weight (Stage 2 reports one finding per file), plus named *combination
+  rules*. Every term in the score appears in the report. Stage 4 reports any version with a
+  MEDIUM+ finding, or whose LOW findings add up to the report score, and orders the queue by
+  score. It reads every triaged version, not only those routed to Stages 2-3, so weak Stage 1
+  signals on unrouted versions can still combine. See
+  [decision 0010](decisions/0010-stage4-correlation-and-repo-comparison.md).
 - **LLM extension point:** a future stage implementing `Stage` (or rules implementing `Rule`) in
   `modules/`. It must take candidates and evidence as data and emit findings like any other
   rule. No other part of the pipeline changes.
@@ -136,7 +141,7 @@ class Stage(Protocol):  # proposed: stages/ (Stage 1 is a function, stages/triag
 | 1 Metadata | `Change` | nothing (uses snapshot) | Manifest and publish-info rules. Forward on MEDIUM+ or watched package; emit `PackageBatch` per package per run ([stages/triage.md](stages/triage.md)) |
 | 2 Static | `PackageBatch` (all versions of one package in a run + base) | tarballs (every version + base) | Each distinct file content not in the base is analysed once (cached by content hash + rule versions across runs); findings are attributed to the first version containing them. Entropy, blob, URL/IP and keyword rules |
 | 3 AST | `Candidate` | nothing new | tree-sitter parse of changed JS/TS; per-file capability sets; **capability delta** findings |
-| 4 Correlate | `Candidate` | repo archive at `gitHead`/tag; OSV; reputation of new deps | Tarball-vs-repo diff, known-bad lookups, combination rules, final score |
+| 4 Correlate | every triaged `Candidate` (Stages 2-3's version where they ran) | repo refs + archive at `gitHead`/tag (no API token); OSV labels | Tarball-vs-repo diff, known-malware dependencies, combination rules, score; report on MEDIUM+ or score ≥ `REPORT_SCORE` ([stages/correlate.md](stages/correlate.md)) |
 | 5 Sandbox | `Candidate` | n/a (offline container) | Runtime observations as findings. Design review required before any code |
 | Report | final candidates + ledger | n/a | `report.json` (canonical) → per-candidate Markdown + `index.md` |
 

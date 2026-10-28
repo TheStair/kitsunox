@@ -5,11 +5,12 @@ Each tick, in order:
 1. Rebuild the watchlist if the newest is older than `WATCHLIST_MAX_AGE` (~12 min, 1 GB).
 2. Sync OSV labels if the newest set is older than `LABELS_MAX_AGE` (~15 s, 220 MB).
 3. Record a chained ingest run continuing from the checkpoint (see `core/run.py`).
-4. Triage the run (Stage 1), run Stage 2 on its batches, then Stage 3 on the same versions.
-   Stage 2 is what captures tarballs: npm deletes malicious ones, often within hours, so they
-   are fetched in the same tick. Runs from the last `STAGES_CATCH_UP` whose stages never
-   finished, or whose Stage 2 hit network failures, are redone first (oldest first; cached
-   tarballs and results make this cheap).
+4. Triage the run (Stage 1), run Stage 2 on its batches, then Stage 3 on the same versions,
+   then Stage 4 (correlation, repository comparison, score). Stage 2 is what captures
+   tarballs: npm deletes malicious ones, often within hours, so they are fetched in the same
+   tick. Runs from the last `STAGES_CATCH_UP` with unfinished stages are resumed first, oldest
+   first, from the first stage whose output is missing (from Stage 1 if Stage 2 hit network
+   failures; cached tarballs and results make this cheap).
 5. Prune runs older than `keep_days` if the last prune is older than `PRUNE_EVERY`.
 
 Steps 1, 2, 4 and 5 are best-effort: a failure is logged, and the tick carries on with the
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -49,6 +51,7 @@ from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, 
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
 from kitsunox.stages.code import run_code_stage
+from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
 from kitsunox.util.http import FetchError
@@ -98,11 +101,11 @@ def collect(
         f"window covered: {manifest.window_covered}"
     )
 
-    def stages(run_id: str) -> Callable[[], str]:
-        return lambda: _stages(data, run_id, client)
+    def stages(run_id: str, start: int = 1) -> Callable[[], str]:
+        return lambda: _stages(data, run_id, client, start)
 
-    for run_id in _stages_pending(data, now, exclude=manifest.run_id):
-        _best_effort(f"stages (catch-up {run_id})", log, stages(run_id))
+    for run_id, start in _stages_pending(data, now, exclude=manifest.run_id):
+        _best_effort(f"stages (catch-up {run_id} from Stage {start})", log, stages(run_id, start))
     _best_effort("stages", log, stages(manifest.run_id))
 
     last_prune = _last_prune(data)
@@ -123,28 +126,60 @@ def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str
     return f"built {watchlist.id} ({len(watchlist.entries)} packages)"
 
 
-def _stages(data: DataDir, run_id: str, client: Callable[[], httpx.Client | None]) -> str:
-    """Stages 1-3 on one run. Each fetching stage gets its own client (fetchers close theirs)."""
+def _stages(
+    data: DataDir, run_id: str, client: Callable[[], httpx.Client | None], start: int = 1
+) -> str:
+    """Stages 1-4 on one run, from Stage `start` (a catch-up resumes where outputs are
+    missing). Each fetching stage gets its own client (fetchers close theirs)."""
     run_dir = data.run_dir(run_id)
-    manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
-    candidates, _ = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
-    batches = record_static(data, run_id, NpmEcosystem, client=client())
-    coded = run_code_stage(data, run_id, client=client())
-    stage3 = sum(c.history[-1].forwarded for b in coded for c in b.versions)
-    decisions = [c.history[-1] for b in batches for c in b.versions]
-    stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
-    stage2 = sum(d.forwarded for d in decisions)
-    missing = sum(d.reason.startswith("files unavailable") for d in decisions)
-    retry = " (network failures: retried next tick)" if needs_retry(batches) else ""
-    return (
-        f"{len(candidates)} triaged, {stage1} flagged by Stage 1; {len(decisions)} versions "
-        f"read by Stage 2, {stage2} flagged, {missing} without files{retry}; "
-        f"{stage3} flagged by Stage 3"
+    parts = []
+    if start <= 2:
+        manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
+        candidates, _ = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
+        batches = record_static(data, run_id, NpmEcosystem, client=client())
+        decisions = [c.history[-1] for b in batches for c in b.versions]
+        stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
+        stage2 = sum(d.forwarded for d in decisions)
+        missing = sum(d.reason.startswith("files unavailable") for d in decisions)
+        retry = " (network failures: retried next tick)" if needs_retry(batches) else ""
+        parts.append(
+            f"{len(candidates)} triaged, {stage1} flagged by Stage 1; {len(decisions)} versions "
+            f"read by Stage 2, {stage2} flagged, {missing} without files{retry}"
+        )
+    if start <= 3:
+        coded = run_code_stage(data, run_id, client=client())
+        parts.append(
+            f"{sum(c.history[-1].forwarded for b in coded for c in b.versions)} flagged by Stage 3"
+        )
+    versions = run_correlate_stage(data, run_id, client=client())
+    compared = sum(
+        any(
+            f.rule_id == "repo.compared" and "No comparison" not in f.explanation
+            for f in c.findings
+        )
+        for c in versions
     )
+    reported = sum(c.history[-1].forwarded for c in versions)
+    parts.append(f"{compared} compared with their repository, {reported} to report (Stage 4)")
+    return "; ".join(parts)
 
 
-def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[str]:
-    """Recent runs whose Stages 1-2 never finished or hit network failures, oldest first."""
+def _resume_from(run_dir: pathlib.Path) -> int | None:
+    """The first stage whose output is missing (or, for Stage 2, hit network failures)."""
+    static = run_dir / "static.jsonl"
+    if not static.exists() or needs_retry(
+        PackageBatch.load_json(line) for line in static.read_bytes().splitlines() if line.strip()
+    ):
+        return 1
+    if not (run_dir / "ast.jsonl").exists():
+        return 3
+    if not (run_dir / "correlate.jsonl").exists():
+        return 4
+    return None
+
+
+def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[tuple[str, int]]:
+    """Recent runs with unfinished stages, oldest first, with the stage to resume from."""
     runs = data.root / "runs"
     pending = []
     for run_dir in sorted(runs.iterdir()) if runs.exists() else ():
@@ -156,17 +191,9 @@ def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[str]:
         manifest = RunManifest.load_json(manifest_path.read_bytes())
         if now - manifest.as_of > STAGES_CATCH_UP:
             continue
-        static = run_dir / "static.jsonl"
-        if (
-            not static.exists()
-            or not (run_dir / "ast.jsonl").exists()
-            or needs_retry(
-                PackageBatch.load_json(line)
-                for line in static.read_bytes().splitlines()
-                if line.strip()
-            )
-        ):
-            pending.append(run_dir.name)
+        start = _resume_from(run_dir)
+        if start is not None:
+            pending.append((run_dir.name, start))
     return pending
 
 

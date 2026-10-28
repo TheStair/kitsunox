@@ -143,5 +143,6 @@ Target sizes for the first iteration: ~500 known-bad (with as many shape A as we
 | 2026-10-27 | Stage 1+2 | `day1` | **`pipeline`**, `exfil-endpoint` v2 | **86.0%** (38.0%) | **66.0%** (22.5%) | **0.7%** weighted | Webhook ids required, `requestbin.`; recall unchanged |
 | 2026-10-28 | Stage 3 | `day1` | `stage3-rules` | **80.6%** (90.4%) | 33.7% (34.4%) | **0.2%** weighted | Capability gained + install-script code. Follow-ons optimistic (base gone) |
 | 2026-10-28 | Stage 1+2+3 | `day1` | **`pipeline+3`** (end to end) | **89.7%** (38.7%) | **66.0%** (22.8%) | **0.8%** weighted | +3.7 pts on A vs `pipeline` |
+| 2026-10-28 | Stage 1-4 | `day1` | **`pipeline+4`** (what is reported) | **91.1%** (38.7%) | **66.5%** (22.9%) | **0.9%** weighted | Stage 4 over every triaged version; report on MEDIUM+ or score ≥ 6. See [stages/correlate.md](stages/correlate.md#evaluation) |
 | 2026-10-27 | Stage 1 | `day1` | baseline `popularity-only` | 21.8% | 0.0% | 13.9% weighted | |
 | 2026-10-27 | Phase 3 label fixes | `first-24h` | baseline `popularity-only` | n/a | n/a | 13.5% weighted (A 14.0%, B 0%; raw sample 33.3%) | 14,743 of 105,350 shape-A releases are watched. Before the fixes, this row read "recall 0/29", every one a label artifact |
