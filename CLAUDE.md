@@ -260,7 +260,7 @@ updating it.
 
 ---
 
-## Current focus: after Stage 1 (next: Stage 2 static heuristics)
+## Current focus: Stage 2 static heuristics (rules evaluated; pipeline wiring next)
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
 `util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor),
@@ -271,6 +271,10 @@ Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/r
 `core/rules.py`. Recall comes from DataDog samples (`kitsunox samples datadog`, kept encrypted
 under `data/eval/malware/`, never executed) and, over time, from prospective collection.
 Report follow-on releases separately (decision 0007).
+Stage 2 is `stages/static.py` with rules in `rules/static.py` and its eval predictors in
+`evaluation/static_eval.py` (`stage2-rules`, `stage1+2-rules`). See `docs/stages/static.md`. Open:
+whether Stage 2 runs on every release or only on Stage 1's forwards, a `kitsunox static`
+command, and tarball capture in `collect`.
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.

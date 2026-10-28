@@ -2,6 +2,56 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Stage 2 static heuristics, first evaluation and tuning
+
+**Stage(s):** Stage 2 static diff heuristics
+**Context:** Stage 1 misses 42% of first-release malicious packages (shape B) because their
+metadata looks normal. Stage 2 reads the code each release adds, with regular expressions only.
+
+### Decisions
+- **Analyse new file contents, not diffs of lines.** Every content (by SHA-256) that is in a
+  version of the batch but not in the base is analysed once and cached on disk by content and
+  rule fingerprint. Alternative: line diffs per file. Rejected because payloads are often
+  appended to bundled files, and a whole-file rule result is cacheable across packages.
+- **Evaluate with the DataDog files decrypted in memory only.** The package files are read from
+  the encrypted zip with `include="/package/"` and never written out.
+- **Five rules downgraded MEDIUM → LOW** (`npm-publish`, `dynamic-code`, `encoded-blob`,
+  `env-harvest`, `sensitive-path`). Each fired on 1–8% of benign releases, close to its rate on
+  malicious ones. Kept as LOW evidence for Stage 4 combination scoring instead of being
+  removed: together they may still separate the classes.
+- **File cap 2 MB → 16 MB.** See below.
+
+### Challenges
+- **First run: 19.5% recall on shape A.** Per-sample inspection showed 698 of 965 shape-A
+  samples had a new file over the 2 MB cap: the payload is appended to an existing large
+  bundle, so the file was skipped.
+  - **Resolution:** cap raised to 16 MB (Shai-Hulud's payload is ~10 MB).
+  - **Why it worked:** A recall 19.5% → 71.5% on the same dataset.
+- **Benign pass-through 11.5%.** Per-rule counts: `npm-publish` alone hit 6.4% / 8.0% of
+  benign A / B (release tooling mentions `NPM_TOKEN`).
+  - **Resolution:** the five downgrades above.
+  - **Why it worked:** 11.5% → 1.0%. Cost: B recall 74.4% → 49.9%.
+- **A 95 MB zip member aborted a 17-minute evaluation**, and a cache temp-file race crashed
+  another. Fixed with `skip_oversize`, a per-sample catch-all that counts errors in `notes`,
+  and a shared `util/files.atomic_write`. See [validation.md](validation.md).
+- **Follow-on numbers are inflated.** Stage 2 gets 84% on shape-A follow-ons vs Stage 1's 2.7%,
+  but mostly because the malicious base is gone from npm (1,542 samples), so all files count
+  as new. Recorded as optimistic, not as a win.
+
+### Evaluation snapshot
+- `stage2-rules`: A 19.5% → 71.5%, B 74.4% → 49.9%; benign 11.5% → 1.0%.
+- `stage1+2-rules` (either stage): A 91.4%, B 66.1%, benign 1.5%, vs Stage 1 alone 80.1% /
+  58.2% / 0.6%.
+
+### Open questions / next steps
+- **The union number assumes Stage 2 sees every release.** Behind the Stage 1 gate, the
+  samples only Stage 2 catches are mostly dropped first (unwatched, no metadata signal).
+  Running it on everything means ~109k tarballs a day (mean 2.1 MB, median 62 KB in the eval
+  store). Needs a decision with the user: gated, all releases, or all new packages plus gated
+  updates, possibly with a size cap from `dist.unpackedSize`.
+- Pipeline command over `batches.jsonl`, tarball capture in `collect`, content-cache hit rate.
+- Evaluation is slow (~37 min per predictor; pure-Python ZipCrypto under the GIL).
+
 ## 2026-10-27: Burst handling between Stage 1 and Stage 2
 
 **Stage(s):** Stage 1 output contract, Stage 2 design

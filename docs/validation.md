@@ -147,3 +147,14 @@ gets the same manual audit of its first matches before its numbers are trusted.
 
 Replays of runs recorded with tool 0.1.0 will no longer match under 0.2.0. This is expected:
 Stage 0's output changed. Their `manifest.tool_version` records which code produced them.
+
+## 2026-10-27 (night): Stage 2 static heuristics
+
+| Check | Result |
+|---|---|
+| Hostile archives | One DataDog zip held a 95 MB binary (`@42ailab-42plugin-linux-arm64`), which aborted the first evaluation. `extract_zip(skip_oversize=True)` now skips such members, and the Stage 2 predictor counts any per-sample exception in `notes` instead of aborting |
+| Concurrent cache writes | Two threads wrote the same cache entry through one temp name (`id()` of the shared `()` result) and one `replace` failed. Fixed by the shared `util/files.atomic_write` (pid + thread in the temp name) |
+| File-size cap | At 2 MB, 698 of 965 shape-A samples had an unanalysed new file; A recall was 19.5%. At 16 MB: 71.5% |
+| Rule precision | Five rules fired on 1–8% of benign releases at near-equal rates on malicious ones; downgraded to LOW. Benign pass-through 11.5% → 1.0% |
+| Data gaps | Base tarball unavailable for 1,542 samples (treated as all-new), sample files unavailable for 32 |
+| Runtime | ~37 min per predictor over `day1`. ZipCrypto decryption is pure Python and holds the GIL, so the 8 threads barely help |

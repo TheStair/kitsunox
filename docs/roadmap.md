@@ -4,8 +4,9 @@
 > replays npm runs, with popularity from a weekly watchlist. The first full 24h run gave 109,497
 > changes and 0 malicious samples after label hygiene: everything malicious was taken down
 > before the run fetched it. Hourly chained collection (Phase 9) has been running since then, so the malicious set can now
-> grow. Stage 1 is done and was evaluated on DataDog samples (0007). Next: Stage 2 static
-> heuristics; tarball capture at ingest is needed for it.
+> grow. Stage 1 is done and was evaluated on DataDog samples (0007). Stage 2's rules are built and
+> evaluated; how much of the stream it should see (Stage 1's forwards or every release) is the
+> next decision, then the pipeline command and tarball capture.
 
 ## Phases
 
@@ -16,7 +17,7 @@
 | 2 | Core + ingest | `core/` models and interfaces; caching HTTP client in `util/`; safe tarball extractor; npm `Ecosystem` adapter; Stage 0 produces `Change` records for a window and replays offline from the snapshot; popularity watchlist | ✅ done |
 | 3 | Evaluation harness | Eval manifest format; loader for OSV labels and DataDog samples; benign sampler; `kitsunox eval` reports per-stage recall / pass-through into `evaluation.md` | ✅ light version (OSV labels, datasets from our runs, baselines). DataDog samples deferred |
 | 4 | Stage 1 metadata triage | Manifest-diff, install-hook, dependency, maintainer, publish-method and version-anomaly rules, each with tests and eval numbers | ✅ 8 rules; 80% / 58% first-release recall (A / B, DataDog) at 0.6% benign pass-through. See [stages/triage.md](stages/triage.md) |
-| 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | ⬜ |
+| 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | 🟡 engine, 10 rules, evaluation: 71.5% / 49.9% (A / B) alone, 91.4% / 66.1% with Stage 1, at 1.0% / 1.5% benign pass-through. Pipeline command, tarball capture and the scope decision (gated vs. all releases) remain. See [stages/static.md](stages/static.md) |
 | 6 | Stage 3 AST capabilities | tree-sitter JS/TS parsing; per-file capability sets; capability-delta rules | ⬜ |
 | 7 | Stage 4 correlation | Tarball-vs-repo diff; OSV/GHSA lookups; new-dependency reputation; combination rules and final score | ⬜ |
 | 8 | Reporting | `report.json` → Markdown per candidate + `index.md`; `kitsunox run` end to end | ⬜ |
