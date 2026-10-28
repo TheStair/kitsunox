@@ -62,7 +62,10 @@ class CapabilityCache:
         digest = sha256_hex(content)
         path = self.dir / digest[:2] / f"{digest}-{language}.json" if self.dir else None
         if path is not None and path.exists():
-            return FileCapabilities.model_validate(json.loads(path.read_bytes()))
+            try:
+                return FileCapabilities.model_validate(json.loads(path.read_bytes()))
+            except ValueError:
+                pass  # a damaged entry is a miss: recompute and overwrite it
         result = analyse_source(content, language)
         if path is not None:
             atomic_write(path, result.model_dump_json().encode())
@@ -149,19 +152,27 @@ def analyse_batch(
     install_entries: InstallEntries | None = None,
     threshold: Severity = DEFAULT_THRESHOLD,
 ) -> PackageBatch:
-    """Run Stage 3 on a batch. Each version is compared with the one before it in the batch
-    (the base for the first), so a capability is attributed to the version that gained it,
-    even if a later version in the burst drops it again."""
-    before: Profile | None = None
-    install_before: Profile | None = None
+    """Run Stage 3 on a batch. Each version is compared with its `change.previous` (the base,
+    or an earlier version in the batch), so a capability is attributed to the version that
+    gained it, even if a later version in the burst drops it again. A version with no previous
+    is a new package even if the batch holds an earlier placeholder (`0.0.0-stage` before
+    `1.4.0`): npm says nothing came before it, so it gained nothing. A previous whose files
+    were unavailable leaves nothing to compare with, so `before` is None as well."""
+    profiles: dict[str, tuple[Profile, Profile | None]] = {}
     if batch.base is not None:
         base_tree = trees(batch.base)
         if not isinstance(base_tree, Unavailable):
-            before = profile(base_tree, cache)
-            install_before = _install_profile(base_tree, cache, install_entries)
+            profiles[batch.base.ref.version] = (
+                profile(base_tree, cache),
+                _install_profile(base_tree, cache, install_entries),
+            )
     updated = []
     for candidate in batch.versions:
         snapshot = candidate.change.new
+        previous = candidate.change.previous
+        before, install_before = (
+            profiles.get(previous.ref.version, (None, None)) if previous else (None, None)
+        )
         tree = trees(snapshot)
         if isinstance(tree, Unavailable):
             decision = StageDecision(
@@ -186,7 +197,7 @@ def analyse_batch(
             reason=f"rules: {', '.join(flagged)}" if flagged else "no signal",
         )
         updated.append(_with(candidate, findings, decision))
-        before, install_before = after, install
+        profiles[snapshot.ref.version] = (after, install)
     return batch.model_copy(update={"versions": tuple(updated)})
 
 

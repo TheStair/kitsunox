@@ -6,12 +6,13 @@ from hypothesis import strategies as st
 
 from conftest import PUBLISHED, Router, mal, osv_zip
 from kitsunox.core.run import DataDir
-from kitsunox.evaluation.harness import label_store, sync_labels
+from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import (
     OSV_EXPORT_URL,
     AffectedRange,
     LabelSet,
     MalwareLabel,
+    label_store,
     parse_osv_export,
 )
 

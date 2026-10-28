@@ -277,8 +277,11 @@ class HttpFetcher:
         if path is None or not path.exists():
             return None
         data = path.read_bytes()
-        require_schema_version(data, SNAPSHOT_SCHEMA_VERSION, "SnapshotEntry")
-        return SnapshotEntry.model_validate_json(data)
+        try:
+            require_schema_version(data, SNAPSHOT_SCHEMA_VERSION, "SnapshotEntry")
+            return SnapshotEntry.model_validate_json(data)
+        except ValueError:
+            return None  # a damaged index entry is a miss: fetched again and rewritten
 
     def _immutable_store(self, key: str, entry: SnapshotEntry) -> None:
         path = self._immutable_path(key)

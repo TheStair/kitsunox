@@ -95,7 +95,10 @@ class ContentCache:
     def matches(self, digest: str, content: bytes) -> tuple[FileMatch, ...]:
         path = self.dir / digest[:2] / f"{digest}.json" if self.dir else None
         if path is not None and path.exists():
-            return tuple(FileMatch.model_validate(m) for m in json.loads(path.read_bytes()))
+            try:
+                return tuple(FileMatch.model_validate(m) for m in json.loads(path.read_bytes()))
+            except ValueError:
+                pass  # a damaged entry is a miss: recompute and overwrite it
         result = analyse(content, self.rules)
         if path is not None:
             atomic_write(path, json.dumps([m.model_dump(mode="json") for m in result]).encode())

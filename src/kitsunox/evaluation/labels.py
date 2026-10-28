@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Final
 
 from kitsunox.core.models import Persisted, Record
-from kitsunox.core.store import timestamp_id
+from kitsunox.core.run import DataDir
+from kitsunox.core.store import RecordStore, timestamp_id
 from kitsunox.ecosystems.npm import semver
 from kitsunox.util.archive import ExtractLimits, extract_zip
 from kitsunox.util.hashing import sha256_hex
@@ -116,9 +117,25 @@ class LabelSet(Persisted):
         observed = tuple(m.id for m in matched if m.observes(version, published_at))
         return observed, tuple(m.id for m in matched if m.id not in observed)
 
+    def known_malware(self, name: str, as_of: datetime) -> tuple[str, ...]:
+        """Ids of records, published by `as_of`, that call *every* version of `name` malware.
+
+        Records about some versions of a real package (a compromised `chalk` release) don't
+        count: depending on `chalk` is not depending on malware. Measured on `day1` by name
+        alone, 11 benign new packages "depended on malware" (`axios`, `chalk`, `debug`)."""
+        return tuple(
+            label.id
+            for label in self.labels.get(name, ())
+            if label.all_versions and label.published <= as_of
+        )
+
     @property
     def record_count(self) -> int:
         return sum(len(v) for v in self.labels.values())
+
+
+def label_store(data: DataDir) -> RecordStore[LabelSet]:
+    return RecordStore(data.root / "labels", LabelSet)
 
 
 def fetch_label_set(fetcher: HttpFetcher, *, ecosystem: str, fetched_at: datetime) -> LabelSet:

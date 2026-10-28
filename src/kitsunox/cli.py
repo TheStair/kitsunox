@@ -31,13 +31,13 @@ from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
 from kitsunox.evaluation.harness import (
     PREDICTOR_NAMES,
-    label_store,
     make_dataset,
     make_predictor,
     run_eval,
     sync_datadog,
     sync_labels,
 )
+from kitsunox.evaluation.labels import label_store
 from kitsunox.evaluation.metrics import render_markdown
 from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.static import record_static

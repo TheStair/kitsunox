@@ -12,13 +12,12 @@ from kitsunox.evaluation.datadog import API_URL, RAW_URL, parse_sample_path
 from kitsunox.evaluation.dataset import Label, Shape
 from kitsunox.evaluation.harness import (
     external_store,
-    label_store,
     make_dataset,
     make_predictor,
     run_eval,
     sync_datadog,
 )
-from kitsunox.evaluation.labels import LabelSet
+from kitsunox.evaluation.labels import LabelSet, label_store
 from kitsunox.evaluation.metrics import ForwardAll
 from kitsunox.evaluation.static_eval import strip_to_package
 

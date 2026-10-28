@@ -2,6 +2,44 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-28: First live hours of Stage 3, two bugs
+
+**Stage(s):** Stage 3 (AST), Stage 2 (static), collection
+**Context:** Verifying Stage 3 in hourly collection before starting Stage 4. The first ticks
+with Stage 3 ran catch-ups of six earlier runs.
+
+### Challenges
+- **Stage 3 flagged 3-4% of the versions it read live, against 0.2% in evaluation.** In
+  `20261028T031447Z-npm`, 37 of the 44 flags were new packages, which `code.capability-gained`
+  is meant to skip. They had published a staged-publishing placeholder first (`dsh-xiaoqi-pet`:
+  `0.0.0-stage`, then `1.4.0`), and Stage 3 compared each version with the one before it *in the
+  batch*, so `1.4.0` "gained" everything over the empty placeholder. npm's own `previous` for
+  `1.4.0` is None. Evaluation never saw this: it builds each change against `change.previous`.
+  - **Resolution:** compare each version with its `change.previous` (base or an earlier batch
+    version); none means new package. Test:
+    `test_version_without_previous_is_new_even_after_a_placeholder`.
+  - **Why it worked:** 7 of the 44 flags remain for that run (all updates). Live rate after the
+    fix still to be confirmed over the next ticks.
+- **One catch-up failed with `UnicodeDecodeError: byte 0xf8 in position 6`.** Stage 2's code
+  hadn't changed since the same run succeeded hours earlier, so the cause was data on disk. A
+  scan of 1.73M cache and index files found one content-cache entry holding a 473-byte TLS
+  record (`17 03 03 01 d4 ...`) followed by the intended `[]`. Another thread's HTTPS request
+  had been written to the file descriptor the temp file reused. It was written at 06:49Z, during
+  Stage 2's 8-thread fetching. The Python build has the GIL, so this is a race in the threaded
+  HTTPS stack (httpx 0.28.1 / httpcore 1.0.9 / OpenSSL 3.5.9), at about 1 in 1.7M writes.
+  - **Resolution:** not chased into third-party code. Instead: `atomic_write` reads the temp
+    file back before renaming it into place (retry, then refuse), and the content cache, the
+    capability cache and the immutable HTTP index treat a damaged entry as a miss and rewrite
+    it (`test_damaged_cache_entry_is_recomputed`, `test_damaged_immutable_entry_is_refetched`,
+    `tests/util/test_files.py`). The damaged file was deleted. Blobs were already safe: the
+    store checks each blob's SHA-256 on read.
+  - **Also:** `collect` logged only the exception's type and message, which is why this took a
+    scan to find. Failures now log the innermost frames (`file:line function`).
+
+### Open questions / next steps
+- Run outputs (`write_jsonl`) are written without the read-back, after the thread pools have
+  finished; if the race shows up there, it will fail loudly on the next read.
+
 ## 2026-10-28: Stage 3 capability analysis
 
 **Stage(s):** Stage 3 (AST capabilities)

@@ -55,9 +55,12 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
 - **Profile:** a version's capabilities, the union over its files, with where each is used.
   The **install profile** covers only the files its install hooks run (`node setup.js` →
   `setup.js`; `ecosystems/npm/install.py`).
-- **Delta:** each version is compared with the previous version in the batch, or the base for
-  the first. A capability is attributed to the version that gained it, even if a later version
-  in the burst drops it.
+- **Delta:** each version is compared with its `change.previous` (the base, or an earlier
+  version in the batch). A capability is attributed to the version that gained it, even if a
+  later version in the burst drops it. A version with no previous is a new package, even when
+  the batch holds a staged-publishing placeholder before it (`0.0.0-stage`, then `1.4.0`).
+  Comparing with the placeholder made every capability "gained": 37 of the 44 versions Stage 3
+  flagged in the first live hour were such packages (fixed 2026-10-28).
 - **Rules** implement `CodeRule.evaluate_code(CodeChange)`. A version is flagged at MEDIUM
   or above.
 - **Output:** `ast.jsonl`, with the same batches in the same order, plus Stage 3 findings and a

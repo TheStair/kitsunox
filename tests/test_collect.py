@@ -7,8 +7,7 @@ from conftest import AS_OF, Router, save_watchlist
 from kitsunox.collect import collect
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL
-from kitsunox.evaluation.harness import label_store
-from kitsunox.evaluation.labels import LabelSet
+from kitsunox.evaluation.labels import LabelSet, label_store
 
 
 def save_labels(data: DataDir) -> None:

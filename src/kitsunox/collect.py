@@ -25,6 +25,8 @@ to fetch; the runs it records still carry an explicit `as_of`. The caller holds 
 from __future__ import annotations
 
 import json
+import os
+import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -44,7 +46,8 @@ from kitsunox.core.run import (
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
-from kitsunox.evaluation.harness import label_store, sync_labels
+from kitsunox.evaluation.harness import sync_labels
+from kitsunox.evaluation.labels import label_store
 from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
@@ -198,7 +201,15 @@ def _best_effort(step: str, log: Log, action: Callable[[], str]) -> None:
     try:
         log(f"{step}: {action()}")
     except Exception as exc:  # unattended: keep collecting with the previous data
-        log(f"{step}: FAILED ({type(exc).__name__}: {exc}); continuing")
+        log(f"{step}: FAILED ({type(exc).__name__}: {exc}) at {_where(exc)}; continuing")
+
+
+def _where(exc: BaseException) -> str:
+    """The innermost frames of the traceback (file:line in function), for an unattended log."""
+    frames = traceback.extract_tb(exc.__traceback__)[-3:]
+    return " < ".join(
+        f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in reversed(frames)
+    )
 
 
 def _age(record_id: str | None, now: datetime) -> timedelta:

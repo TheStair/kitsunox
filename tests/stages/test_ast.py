@@ -95,7 +95,10 @@ def test_batch_attributes_gains_to_the_version_that_made_them(tmp_path: Path) ->
         ecosystem="npm",
         name="kx",
         base=snap("1.0.0"),
-        versions=tuple(Candidate(change=Change(new=snap(v))) for v in ("1.0.1", "1.0.2", "1.0.3")),
+        versions=tuple(
+            Candidate(change=Change(new=snap(v), previous=snap(p)))
+            for v, p in (("1.0.1", "1.0.0"), ("1.0.2", "1.0.1"), ("1.0.3", "1.0.2"))
+        ),
     )
     write_jsonl(tmp_path / "static.jsonl", [batch])
     (result,) = ast_run(
@@ -108,6 +111,33 @@ def test_batch_attributes_gains_to_the_version_that_made_them(tmp_path: Path) ->
     assert not reverted.history[-1].forwarded
     assert gone.history[-1].reason == "files unavailable: gone"
     assert (tmp_path / "ast.jsonl").exists()
+
+
+def test_version_without_previous_is_new_even_after_a_placeholder() -> None:
+    """npm placeholders (`0.0.0-stage`) come before a package's first real release; that
+    release has no previous, so it is a new package, not an update of the placeholder."""
+    trees = {"0.0.0-stage": {"index.js": b""}, "1.4.0": NEW}
+    seen: list[CodeChange] = []
+
+    class Spy:
+        id = "test.spy"
+        version = 1
+
+        def evaluate_code(self, change: CodeChange) -> list[Finding]:
+            seen.append(change)
+            return []
+
+    batch = PackageBatch(
+        ecosystem="npm",
+        name="kx",
+        base=None,
+        versions=(
+            Candidate(change=Change(new=snap("0.0.0-stage"))),
+            Candidate(change=Change(new=snap("1.4.0"))),
+        ),
+    )
+    analyse_batch(batch, lambda s: trees[s.ref.version], CapabilityCache(None), [Spy()])
+    assert [c.before for c in seen] == [None, None]
 
 
 def test_install_profile_covers_only_entry_files() -> None:

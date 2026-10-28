@@ -123,6 +123,15 @@ def test_immutable_responses_are_reused_across_runs(tmp_path: Path, router: Rout
     assert request_key(URL, None) in second.snapshot.entries  # still recorded for replay
 
 
+def test_damaged_immutable_entry_is_refetched(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"tarball")
+    make_fetcher(tmp_path, router.client()).get(URL, immutable=True)
+    (entry,) = (tmp_path / "immutable").rglob("*.json")
+    entry.write_bytes(b'{"sche\xf8ma"')  # not UTF-8: seen live, 2026-10-28
+    assert make_fetcher(tmp_path, router.client()).get(URL, immutable=True).body == b"tarball"
+    assert len(router.requests) == 2
+
+
 def test_accept_header_is_part_of_the_key() -> None:
     assert request_key(URL, {"Accept": "a"}) != request_key(URL, {"accept": "b"})
     assert request_key(URL, {"User-Agent": "x"}) == request_key(URL, None)

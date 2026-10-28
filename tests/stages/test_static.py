@@ -1,5 +1,6 @@
 """Stage 2 engine: new contents, attribution across a burst, and the content cache."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -147,6 +148,15 @@ def test_cache_is_reused_and_keyed_by_rule_versions(tmp_path: Path) -> None:
         cache.matches("ab" * 32, b"different bytes, same claimed hash") == first
     )  # served from disk
     assert ContentCache(tmp_path, RULES[:1]).dir != cache.dir
+
+
+def test_damaged_cache_entry_is_recomputed(tmp_path: Path) -> None:
+    cache = ContentCache(tmp_path, RULES)
+    first = cache.matches("ab" * 32, b"eval(x)")
+    (entry,) = tmp_path.rglob("*.json")
+    entry.write_bytes(b'[{"ru\xf8le')
+    assert cache.matches("ab" * 32, b"eval(x)") == first
+    assert json.loads(entry.read_bytes())  # rewritten
 
 
 def test_record_static_fetches_verifies_and_records(tmp_path: Path, router: Router) -> None:

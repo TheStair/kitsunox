@@ -28,7 +28,7 @@ from kitsunox.evaluation.dataset import (
     iter_run_changes,
     load_sample_changes,
 )
-from kitsunox.evaluation.labels import OSV_MAX_DOWNLOAD, LabelSet, fetch_label_set
+from kitsunox.evaluation.labels import OSV_MAX_DOWNLOAD, LabelSet, fetch_label_set, label_store
 from kitsunox.evaluation.metrics import PREDICTORS, EvalReport, Predictor, evaluate
 from kitsunox.evaluation.static_eval import (
     CodeRules,
@@ -41,10 +41,6 @@ from kitsunox.stages.ingest import changes_file
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-
-
-def label_store(data: DataDir) -> RecordStore[LabelSet]:
-    return RecordStore(data.root / "labels", LabelSet)
 
 
 def dataset_store(data: DataDir) -> RecordStore[EvalDataset]:

@@ -19,6 +19,8 @@ def require_schema_version(data: str | bytes, expected: int, kind: str) -> None:
         raw = json.loads(data)
     except json.JSONDecodeError as exc:
         raise SchemaVersionError(f"{kind}: not valid JSON ({exc.msg})") from exc
+    except UnicodeDecodeError as exc:
+        raise SchemaVersionError(f"{kind}: not valid JSON (not UTF-8)") from exc
     found = raw.get("schema_version") if isinstance(raw, dict) else None
     if found != expected:
         shown = "none (unversioned)" if found is None else repr(found)
