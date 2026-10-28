@@ -31,6 +31,7 @@ user chose a hybrid between "behind the Stage 1 gate" and "every release". See
 - **Live false positives.** The first live Stage 2 run flagged 6 versions, all benign. Two were
   rule bugs: a Slack webhook placeholder in docs, and `requestbin` inside the identifier
   `OscoreRequestBinding`. `exfil-endpoint` v2 requires a webhook id and a dot after `requestbin`.
+  - **Why it worked:** `pipeline` benign pass-through 0.9% → 0.7%, recall unchanged.
 
 ### Evaluation snapshot
 - End to end (`pipeline`, `day1`): A 86.0%, B 66.0%, benign 0.9% weighted. Before (Stage 1

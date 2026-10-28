@@ -131,6 +131,7 @@ there), measured on `day1`:
 | Stage 1 rules alone | 80.1% | 2.7% | 58.2% | 21.7% | 0.6% |
 | Old gate (simulated) | 83.5% | 18.9% | 58.2% | 21.8% | 1.0% |
 | **`pipeline` (hybrid)** | **86.0%** | 38.0% | **66.0%** | 22.5% | **0.9%** |
+| **`pipeline`, `exfil-endpoint` v2** | **86.0%** | 38.0% | **66.0%** | 22.5% | **0.7%** |
 | Upper bound: Stage 2 reads everything | 91.4% | 85.4% | 66.1% | 55.6% | 1.5% |
 
 The simulation predicted the `pipeline` numbers exactly. Stage 1's routing passes 25.8% of
