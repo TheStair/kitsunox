@@ -43,6 +43,15 @@ class ReleaseSource(Record):
     how: str  # e.g. `gitHead`, `tag refs/tags/v1.2.3`
 
 
+class ManifestDifference(Record):
+    """One way the release's manifest differs from the repository's at the same commit, e.g.
+    `scripts.postinstall` present only in the release. Values are untrusted snippets."""
+
+    field: str
+    package: str | None
+    repo: str | None
+
+
 class RepoComparison(Record):
     """A release's code files against the repository at its commit. `unavailable` says why no
     comparison was made (no repository, no commit for this version, archive too large); the
@@ -57,6 +66,7 @@ class RepoComparison(Record):
     not_in_repo_count: int = 0
     unexplained: tuple[str, ...] = ()  # not in the repo, and not build output (`compare_trees`)
     unexplained_count: int = 0
+    manifest: tuple[ManifestDifference, ...] = ()
 
 
 class Locator(Protocol):
@@ -65,6 +75,10 @@ class Locator(Protocol):
     def repository(self, change: Change) -> tuple[GitHubRepo, str] | None: ...
 
     def commit(self, change: Change, refs: Mapping[str, str]) -> tuple[str, str] | None: ...
+
+    def manifest_differences(self, package: Tree, repo: Tree) -> tuple[ManifestDifference, ...]:
+        """What the release's manifest declares that the repository's doesn't."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -156,6 +170,7 @@ def compare(
         not_in_repo_count=len(trees.missing),
         unexplained=tuple(trees.unexplained[:MAX_LISTED]),
         unexplained_count=len(trees.unexplained),
+        manifest=locator.manifest_differences(package, tree),
     )
 
 

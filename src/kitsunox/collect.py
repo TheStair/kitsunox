@@ -6,11 +6,11 @@ Each tick, in order:
 2. Sync OSV labels if the newest set is older than `LABELS_MAX_AGE` (~15 s, 220 MB).
 3. Record a chained ingest run continuing from the checkpoint (see `core/run.py`).
 4. Triage the run (Stage 1), run Stage 2 on its batches, then Stage 3 on the same versions,
-   then Stage 4 (correlation, repository comparison, score). Stage 2 is what captures
-   tarballs: npm deletes malicious ones, often within hours, so they are fetched in the same
-   tick. Runs from the last `STAGES_CATCH_UP` with unfinished stages are resumed first, oldest
-   first, from the first stage whose output is missing (from Stage 1 if Stage 2 hit network
-   failures; cached tarballs and results make this cheap).
+   then Stage 4 (correlation, repository comparison, score) and the run's report. Stage 2 is
+   what captures tarballs: npm deletes malicious ones, often within hours, so they are fetched
+   in the same tick. Runs from the last `STAGES_CATCH_UP` with unfinished stages are resumed
+   first, oldest first, from the first stage whose output is missing (from Stage 1 if Stage 2
+   hit network failures; cached tarballs and results make this cheap).
 5. Prune runs older than `keep_days` if the last prune is older than `PRUNE_EVERY`.
 
 Steps 1, 2, 4 and 5 are best-effort: a failure is logged, and the tick carries on with the
@@ -50,6 +50,7 @@ from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
+from kitsunox.reporting.publish import publish_report
 from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.static import needs_retry, record_static
@@ -159,8 +160,10 @@ def _stages(
         )
         for c in versions
     )
-    reported = sum(c.history[-1].forwarded for c in versions)
-    parts.append(f"{compared} compared with their repository, {reported} to report (Stage 4)")
+    report = publish_report(data.run_dir(run_id))
+    parts.append(
+        f"{compared} compared with their repository, {report.reported} to review (report/index.md)"
+    )
     return "; ".join(parts)
 
 

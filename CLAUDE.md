@@ -119,6 +119,7 @@ uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
 uv run kitsunox static <run_id>                    # Stage 2 on a triaged run (fetches tarballs)
 uv run kitsunox ast <run_id>                       # Stage 3 on a run Stage 2 processed
 uv run kitsunox correlate <run_id>                 # Stage 4: correlation, repo comparison, score
+uv run kitsunox report <run_id>                    # report.json + Markdown queue (data/runs/<id>/report/)
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -285,6 +286,9 @@ Stage 4 is `stages/correlate.py` (+ npm wiring in `stages/review.py`): it reads 
 version, adds known-malware, combination and tarball-vs-repo findings (`stages/repo.py`,
 `githost/github.py`, `ecosystems/npm/repo.py`), scores, and decides what to report. See
 `docs/stages/correlate.md` and decision 0010. Eval predictor: `pipeline+4`.
+Reports (`reporting/`: `report.py` builds the canonical `report.json`, `markdown.py` renders it
+with all package text escaped as untrusted) are written per run by `collect`; see
+`docs/stages/report.md`.
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.

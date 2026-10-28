@@ -10,12 +10,31 @@ records which was used.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Final
 
 from kitsunox.core.models import Change
+from kitsunox.ecosystems.npm.rules.metadata import (
+    INSTALL_HOOKS,
+    runtime_dependencies,
+    scripts,
+    snippet,
+)
 from kitsunox.githost.github import GitHubRepo
+from kitsunox.stages.repo import ManifestDifference
+
+# Every dependency section a repository's manifest may list a package under: build tools move
+# entries between them (and rewrite `workspace:` specs), so only the name is compared.
+_DEPENDENCY_SECTIONS: Final = (
+    "dependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "devDependencies",
+    "bundleDependencies",
+    "bundledDependencies",
+)
 
 _SHA: Final = re.compile(r"^[0-9a-f]{40}$")
 
@@ -36,6 +55,57 @@ class NpmLocator:
             if commit is not None:
                 return commit, f"tag {tag}"
         return None
+
+    def manifest_differences(
+        self, package: Mapping[str, bytes], repo: Mapping[str, bytes]
+    ) -> tuple[ManifestDifference, ...]:
+        """Install hooks the release runs that the repository's `package.json` doesn't have
+        (or has differently), and runtime dependencies the repository's manifest doesn't name
+        anywhere. Nothing if either manifest is missing or unreadable."""
+        ours, theirs = _manifest(package), _manifest(repo)
+        if ours is None or theirs is None:
+            return ()
+        differences = []
+        repo_scripts = scripts(theirs)
+        for hook, command in sorted(scripts(ours).items()):
+            if hook in INSTALL_HOOKS and _normalised(command) != _normalised(
+                repo_scripts.get(hook, "")
+            ):
+                differences.append(
+                    ManifestDifference(
+                        field=f"scripts.{hook}",
+                        package=snippet(command),
+                        repo=snippet(repo_scripts.get(hook)),
+                    )
+                )
+        named: set[str] = set()
+        for section in _DEPENDENCY_SECTIONS:
+            listed = theirs.get(section)
+            if isinstance(listed, Mapping | list):  # bundleDependencies may be a list
+                named.update(name for name in listed if isinstance(name, str))
+        for name, spec in sorted(runtime_dependencies(ours).items()):
+            if name not in named:
+                differences.append(
+                    ManifestDifference(
+                        field=f"dependencies.{name}", package=snippet(spec), repo=None
+                    )
+                )
+        return tuple(differences)
+
+
+def _manifest(tree: Mapping[str, bytes]) -> dict[str, object] | None:
+    raw = tree.get("package.json")
+    if raw is None:
+        return None
+    try:
+        manifest = json.loads(raw)
+    except ValueError:
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _normalised(command: str) -> str:
+    return " ".join(command.replace("node_modules/.bin/", "").split())
 
 
 def release_tags(name: str, version: str) -> tuple[str, ...]:

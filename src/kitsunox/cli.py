@@ -39,6 +39,7 @@ from kitsunox.evaluation.harness import (
 )
 from kitsunox.evaluation.labels import label_store
 from kitsunox.evaluation.metrics import render_markdown
+from kitsunox.reporting.publish import publish_report
 from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.static import record_static
@@ -282,6 +283,23 @@ def correlate_cmd(
     for c in sorted(reported, key=lambda c: -c.score)[:20]:
         typer.echo(f"  {c.score:5.1f}  {c.change.new.ref}  {c.history[-1].reason}")
     typer.echo(f"saved to {run_dir}/correlate.jsonl")
+
+
+@app.command("report")
+def report_cmd(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
+    """Write a run's report from Stage 4's output: report/report.json (canonical), plus
+    report/index.md and one Markdown page per reported version."""
+    data = DataDir(data_dir)
+    run_dir = data.run_dir(run_id)
+    if not (run_dir / "correlate.jsonl").exists():
+        typer.echo(
+            f"no correlate.jsonl in {run_dir}: run `kitsunox correlate {run_id}` first", err=True
+        )
+        raise typer.Exit(code=2)
+    with data.lock():
+        report = publish_report(run_dir)
+    typer.echo(f"{report.versions} versions, {report.reported} to review")
+    typer.echo(f"saved to {run_dir}/report/index.md")
 
 
 @samples_app.command("datadog")

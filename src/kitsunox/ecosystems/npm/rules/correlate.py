@@ -9,11 +9,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Final
 
-from kitsunox.core.models import Candidate, Evidence, EvidenceKind, Finding, Severity
+from kitsunox.core.models import Candidate, Change, Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm import semver
 from kitsunox.ecosystems.npm.rules.metadata import runtime_dependencies
 from kitsunox.stages.correlate import CorrelationContext
+
+DEFINITELY_TYPED: Final = "types"  # the npm account that publishes `@types/*`
 
 
 class GitHeadDropped(BaseRule):
@@ -101,6 +103,13 @@ class KnownMalwareDependency(BaseRule):
         return findings
 
 
+def _definitely_typed(change: Change) -> bool:
+    publishers = {change.new.publish.publisher}
+    if change.previous is not None:
+        publishers.add(change.previous.publish.publisher)
+    return change.new.ref.name.startswith("@types/") and publishers == {DEFINITELY_TYPED}
+
+
 class RevivedWithNewDependency(BaseRule):
     """A package dormant for a long time (`npm.dormant-revived`) comes back with a new runtime
     dependency (`npm.dependency.added`). Each is common alone; together they are the shape of
@@ -109,6 +118,10 @@ class RevivedWithNewDependency(BaseRule):
     Prereleases are skipped: a `canary`/`experimental`/`pr-` channel can sit unused for years,
     so its next build is "revived", and new builds add dependencies. On `day1` all 3 benign
     updates this reported end to end were such builds; the malicious ones were all releases.
+    DefinitelyTyped's `@types/*` packages are skipped when the `types` account published both
+    versions: its bot republishes long-idle type packages, and they add dependencies (4 in one
+    live hour on 2026-10-28; none carry provenance to tell them apart otherwise). Abusing that
+    takes DefinitelyTyped's own publishing token.
     Caveat: the malicious ones are two campaigns (`@antv/*` and `@mastra/*` in the Shai-Hulud
     wave), so the recall figure says more about them than about takeovers in general.
     """
@@ -121,8 +134,9 @@ class RevivedWithNewDependency(BaseRule):
     def evaluate_candidate(
         self, candidate: Candidate, ctx: CorrelationContext
     ) -> Sequence[Finding]:
-        version = semver.parse(candidate.change.new.ref.version)
-        if version is None or version.is_prerelease:
+        change = candidate.change
+        version = semver.parse(change.new.ref.version)
+        if version is None or version.is_prerelease or _definitely_typed(change):
             return ()
         fired = {f.rule_id: f for f in candidate.findings}
         revived, added = fired.get("npm.dormant-revived"), fired.get("npm.dependency.added")

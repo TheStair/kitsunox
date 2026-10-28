@@ -105,3 +105,6 @@ def test_ast_needs_static_first(tmp_path: Path, router: Router) -> None:
     result = runner.invoke(app, ["correlate", run_id, "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("0 versions: 0 to report")
+    result = runner.invoke(app, ["report", run_id, "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("0 versions, 0 to review")

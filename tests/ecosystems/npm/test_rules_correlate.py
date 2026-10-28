@@ -102,3 +102,16 @@ def test_revived_with_new_dependency() -> None:
     assert not rule.evaluate_candidate(one, ctx)
     canary = both.model_copy(update={"change": cand(snap("2.0.0-canary.1"), snap("1")).change})
     assert not rule.evaluate_candidate(canary, ctx)
+    typed = both.model_copy(
+        update={
+            "change": Change(
+                new=snap("2.0.0", publisher="types").model_copy(
+                    update={
+                        "ref": PackageVersionRef(ecosystem="npm", name="@types/x", version="2.0.0")
+                    }
+                ),
+                previous=snap("1.0.0", publisher="types"),
+            )
+        }
+    )
+    assert not rule.evaluate_candidate(typed, ctx)
