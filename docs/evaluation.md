@@ -138,5 +138,7 @@ Target sizes for the first iteration: ~500 known-bad (with as many shape A as we
 | 2026-10-27 | Stage 2 | `day1` | `stage2-rules`, first set | 19.5% (31.0%) | 74.4% (67.7%) | 11.5% weighted | 2 MB file cap; 698/965 A samples had a larger new file |
 | 2026-10-27 | Stage 2 | `day1` | `stage2-rules`, tuned | **71.5%** (84.0%) | **49.9%** (50.7%) | **1.0%** weighted | 16 MB cap; five rules MEDIUM → LOW. Base gone for 1,542 samples (follow-on numbers optimistic) |
 | 2026-10-27 | Stage 2 | `day1` | `stage1+2-rules` (either) | **91.4%** (85.4%) | **66.1%** (55.6%) | **1.5%** weighted | Assumes Stage 2 sees every release, not only Stage 1's forwards. See [stages/static.md](stages/static.md#results) |
+| 2026-10-27 | Stage 1 routing | `day1` | `stage1` (rules, watched, new, grown ≥ 64 KiB) | 93.0% (59.0%) | 100% (26.9%) | 25.8% weighted | Not flags: what Stage 2 reads. Decision 0008 |
+| 2026-10-27 | Stage 1+2 | `day1` | **`pipeline`** (end to end) | **86.0%** (38.0%) | **66.0%** (22.5%) | **0.9%** weighted | Hybrid routing, 16 MB cap, `exfil-endpoint` v1. Simulation predicted it exactly |
 | 2026-10-27 | Stage 1 | `day1` | baseline `popularity-only` | 21.8% | 0.0% | 13.9% weighted | |
 | 2026-10-27 | Phase 3 label fixes | `first-24h` | baseline `popularity-only` | n/a | n/a | 13.5% weighted (A 14.0%, B 0%; raw sample 33.3%) | 14,743 of 105,350 shape-A releases are watched. Before the fixes, this row read "recall 0/29", every one a label artifact |

@@ -58,3 +58,12 @@ manifest and are kept forever (compressed). Raw bodies are only needed for:
 - The laptop must be awake. A gap under 48 hours loses nothing, because the next tick's window
   stretches back to the previous run. A longer gap loses everything before the last 24 hours,
   and the log shows "NOT chained".
+
+## Addendum (2026-10-27): tarballs
+
+Superseded in part by [0008](0008-stage2-routing-and-tarball-capture.md): `collect` now runs
+Stages 1 and 2 each tick and captures tarballs. They are recorded per run in
+`static-snapshot.json` and follow the same rules: 7 days, then pinned only for OSV-named
+packages. The immutable index no longer counts as a reference during garbage collection.
+Before this change, it would have kept every tarball forever.
+

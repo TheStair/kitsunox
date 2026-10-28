@@ -158,3 +158,7 @@ Stage 0's output changed. Their `manifest.tool_version` records which code produ
 | Rule precision | Five rules fired on 1–8% of benign releases at near-equal rates on malicious ones; downgraded to LOW. Benign pass-through 11.5% → 1.0% |
 | Data gaps | Base tarball unavailable for 1,542 samples (treated as all-new), sample files unavailable for 32 |
 | Runtime | ~37 min per predictor over `day1`. ZipCrypto decryption is pure Python and holds the GIL, so the 8 threads barely help |
+| Retention of tarballs | The immutable index counted as a GC reference, so captured tarballs would never have been deleted (~14 GB/day). Now index entries without a run reference are deleted with their blobs, and pruning pins OSV-named packages' tarballs from `static-snapshot.json`. Test: `test_tarballs_follow_retention` |
+| Live Stage 2 | Run `20261028T004851Z-npm`: 1,243 versions in 2 min 20 s, 794 MB downloaded, 6 flagged, all benign on inspection. Two false-positive patterns fixed in `exfil-endpoint` v2 |
+| End to end | `pipeline` on `day1`: 86.0% / 66.0% / 0.9% benign, equal to the simulation from saved per-sample results |
+

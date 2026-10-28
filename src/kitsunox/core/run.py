@@ -72,6 +72,8 @@ class DataDirBusyError(RuntimeError):
     """Another Kitsunox process holds the data directory lock."""
 
 
+# Stage 2's fetch record (tarballs) for a run; retention reads it like `snapshot.json`.
+STATIC_SNAPSHOT = "static-snapshot.json"
 CHAIN_OVERLAP = timedelta(minutes=15)
 MAX_CHAIN_GAP = timedelta(hours=48)
 

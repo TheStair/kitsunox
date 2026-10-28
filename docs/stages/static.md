@@ -1,8 +1,7 @@
 # Stage 2: Static diff heuristics
 
-> **Status:** engine, rules and evaluation done (2026-10-27). Not yet wired into the pipeline:
-> there is no `kitsunox static <run_id>` command and `collect` does not capture tarballs. How
-> much of the stream Stage 2 should see is an open decision (see [Results](#results)).
+> **Status:** running in the pipeline (2026-10-27). `kitsunox collect` runs it every hour, and
+> `kitsunox static <run_id>` runs it on a triaged run. Routing: [0008](../decisions/0008-stage2-routing-and-tarball-capture.md).
 
 ## Purpose
 
@@ -11,11 +10,27 @@ statistics over **new file contents only**. It catches what metadata can't, e.g.
 runs when the package is imported (42% of first-release DataDog shape-B samples have no
 metadata signal). Parsing JS properly is Stage 3.
 
+## Usage
+
+```sh
+uv run kitsunox triage <run_id>    # Stage 1: writes batches.jsonl
+uv run kitsunox static <run_id>    # Stage 2: fetches tarballs, writes static.jsonl + static-snapshot.json
+uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the pipeline flags
+```
+
 ## Input and output
 
 - **Input:** `PackageBatch` from Stage 1 (every version of one package in a run, plus the base).
+  Stage 1 routes a package here if it is flagged, watched, new, or its declared unpacked size
+  grew by 64 KiB or more (see [Routing](#routing-what-stage-2-reads)).
 - **Fetch:** each version's tarball and the base's tarball, via `Ecosystem.fetch_artifact`
-  (integrity-verified, extracted in memory by `extract_tar_gz`, never executed).
+  (integrity-verified, extracted in memory by `extract_tar_gz`, never executed). Versions that
+  declare more than 16 MB unpacked (`MAX_ARTIFACT_BYTES`) are not fetched. Tarballs go into
+  `data/blobs` (immutable, so each is downloaded once) and are recorded in the run's
+  `static-snapshot.json`.
+- **Unavailable files** (too large, fetch or integrity failure, no artifact): the version gets
+  no Stage 2 findings, and its decision says why (`files unavailable: ...`). An unavailable base
+  counts as empty, so every file is new; the decision notes it (`base unavailable: ...`).
 - **New contents:** every file content (by SHA-256) that is in some version of the batch but
   not in the base. Each is analysed once, and its findings are attributed to the first version
   that contained it. A version that adds malicious code and is reverted within the burst is
@@ -36,7 +51,7 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` | Discord/Slack webhooks, Telegram bot API, pastebins, request bins, OAST and tunnelling hosts | HIGH |
+| `static.exfil-endpoint` (v2) | Discord/Slack webhooks with an id, Telegram bot API, pastebins, request bins, OAST and tunnelling hosts | HIGH |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
 | `static.hardcoded-ip` | URLs with a public IPv4 literal | MEDIUM |
@@ -94,25 +109,73 @@ Data gaps, counted per sample: the base tarball was gone from npm for 1,542 samp
 files counted as new; mostly follow-ons, whose malicious base was taken down), and the
 sample's own files were unavailable for 32 (not forwarded).
 
-### Caveat: the union row assumes Stage 2 sees everything
+### Routing: what Stage 2 reads
 
-`stage1+2-rules` flags a sample if either stage's rules fire, so Stage 2 has to analyse every
-release, not only what Stage 1 forwards. With Stage 2 behind the Stage 1 gate (rules or
-watched), almost all malicious samples that only Stage 2 catches are dropped first: they are
-unwatched and have no metadata signal. End-to-end recall would then stay near Stage 1's.
+`stage1+2-rules` above assumes Stage 2 reads every release, which is about 114k tarballs a
+day. Behind the original Stage 1 gate (rules or watched), almost everything only Stage 2
+catches was dropped first. The user chose a hybrid. The details came from simulating routings
+on the saved per-sample results, and are recorded in
+[0008](../decisions/0008-stage2-routing-and-tarball-capture.md):
 
-Running Stage 2 on every release means fetching every tarball: about 109k releases a day plus
-bases. Evaluation tarballs have a median size of 62 KB but a mean of 2.1 MB (p90 2.8 MB), so a
-naive estimate is hundreds of GB a day. A size cap from the packument (`dist.unpackedSize`) or
-running Stage 2 on all new packages (shape B, ~4k a day, no base needed) but only on gated
-updates are cheaper options. This is an open decision.
+- every **new package** (cheap: 4k a day, 0.2 GB);
+- every **update whose declared unpacked size grew by ≥ 64 KiB** (71% of malicious updates,
+  8.3% of benign). Routing *small* updates instead added nothing: payloads make packages bigger;
+- watched and flagged packages, as before;
+- **no version over 16 MB declared** (9% of releases, 86% of bytes, mostly binaries).
+
+End to end (`pipeline` predictor: flagged by Stage 1 rules, or routed to Stage 2 and flagged
+there), measured on `day1`:
+
+| | A | A follow-on | B | B follow-on | Benign (weighted) |
+|---|---|---|---|---|---|
+| Stage 1 rules alone | 80.1% | 2.7% | 58.2% | 21.7% | 0.6% |
+| Old gate (simulated) | 83.5% | 18.9% | 58.2% | 21.8% | 1.0% |
+| **`pipeline` (hybrid)** | **86.0%** | 38.0% | **66.0%** | 22.5% | **0.9%** |
+| Upper bound: Stage 2 reads everything | 91.4% | 85.4% | 66.1% | 55.6% | 1.5% |
+
+The simulation predicted the `pipeline` numbers exactly. Stage 1's routing passes 25.8% of
+releases to Stage 2 (weighted; `stage1` predictor), about 24k versions a day after the cap.
+
+### Live trial
+
+Run `20261028T004851Z-npm` (3,687 changes, about 80 minutes of publishes):
+
+- Stage 1 forwarded 1,124 changes: 596 watched, 259 new packages, 256 grown, 13 flagged.
+- These formed 749 batches (1,243 versions).
+- Stage 2 took 2 min 20 s and downloaded 794 MB (about 14 GB a day).
+- 173 versions were over the size cap, and 1 tarball was already gone (404).
+
+Six versions were flagged, all by `exfil-endpoint` or `obfuscated`, and all looked benign on
+inspection. Two were real false-positive patterns, which v2 of `exfil-endpoint` fixes:
+
+- **A docs placeholder:** `hooks.slack.com/services/...` in `@bike4mind/cli`. Webhook URLs now
+  need an id.
+- **An identifier match:** `requestbin` inside `OscoreRequestBinding`. It now needs a dot.
+
+The rest were:
+- a Telegram bot client (`woml-cli`);
+- a tunnel-host allow-list (`agentiqa`);
+- an obfuscated asset bundle (`interboard-assets`).
+
+These are the expected cost of HIGH-recall rules; Stage 3 and Stage 4 scoring are where they
+should be separated.
 
 ## Tarball retention
 
 Tarballs fetched by the pipeline go into `data/blobs` and follow
 [0006](../decisions/0006-scheduled-collection-and-retention.md): 7 days, and indefinitely for
-packages named in OSV records (their run's snapshot pins them). Evaluation tarballs live in
-their own store and are not pruned.
+packages named in OSV records (pruning pins them from the run's `static-snapshot.json`). The
+immutable index is a fetch cache only: an entry whose blob no run references is deleted with
+the blob. Evaluation tarballs live in their own store and are not pruned.
+
+## Known limits
+
+- `dist.unpackedSize` is declared by the publisher, so an attacker can understate growth to
+  skip routing, or overstate size to skip the download. A rule comparing declared and real size
+  after download is a candidate.
+- Updates over 16 MB are seen by Stage 1 only.
+- Regular expressions don't understand code: a URL in a comment and one in a `fetch` look the
+  same. That is Stage 3's job.
 
 ## Safety
 

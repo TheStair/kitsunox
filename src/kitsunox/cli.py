@@ -39,6 +39,7 @@ from kitsunox.evaluation.harness import (
     sync_labels,
 )
 from kitsunox.evaluation.metrics import render_markdown
+from kitsunox.stages.static import record_static
 from kitsunox.stages.triage import triage_run
 
 app = typer.Typer(help="Flag likely software supply chain attacks in recent npm releases.")
@@ -199,7 +200,10 @@ def triage_cmd(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
     for candidate in candidates:
         decision = candidate.history[-1]
         if decision.forwarded:
-            key = "watched" if decision.reason == "watched package" else "rules"
+            key = next(
+                (k for k in ("rules", "unpacked size grew") if decision.reason.startswith(k)),
+                decision.reason,
+            )
             reasons[key] = reasons.get(key, 0) + 1
     forwarded = sum(reasons.values())
     typer.echo(
@@ -208,6 +212,31 @@ def triage_cmd(run_id: str, data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
     versions = sum(len(b.versions) for b in batches)
     typer.echo(f"{len(batches)} package batches for Stage 2 ({versions} versions)")
     typer.echo(f"saved to {data.run_dir(run_id)}/triage.jsonl and batches.jsonl")
+
+
+@app.command("static")
+def static_cmd(
+    run_id: str,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    workers: Annotated[int, typer.Option(help="Parallel package batches.")] = 8,
+) -> None:
+    """Stage 2: fetch the tarballs of a triaged run's batches and run the file rules; write
+    static.jsonl and the fetch record (static-snapshot.json) into the run directory."""
+    data = DataDir(data_dir)
+    run_dir = data.run_dir(run_id)
+    if not (run_dir / "batches.jsonl").exists():
+        typer.echo(f"no batches.jsonl in {run_dir}: run `kitsunox triage {run_id}` first", err=True)
+        raise typer.Exit(code=2)
+    with data.lock():
+        batches = record_static(data, run_id, NpmEcosystem, workers=workers)
+    decisions = [c.history[-1] for b in batches for c in b.versions]
+    flagged = sum(d.forwarded for d in decisions)
+    unavailable = sum(d.reason.startswith("files unavailable") for d in decisions)
+    typer.echo(
+        f"{len(batches)} batches, {len(decisions)} versions: {flagged} flagged, "
+        f"{unavailable} without files"
+    )
+    typer.echo(f"saved to {run_dir}/static.jsonl")
 
 
 @samples_app.command("datadog")

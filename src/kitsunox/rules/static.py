@@ -74,13 +74,18 @@ class RegexRule:
 class ExfilEndpoint(RegexRule):
     """Services attackers use to receive stolen data without running a server."""
 
+    # v2: webhook URLs need an id after the path (docs write `hooks.slack.com/services/...`),
+    # and `requestbin` needs a dot (it matched `OscoreRequestBinding`). Live run 2026-10-28.
+
     id = "static.exfil-endpoint"
+    version = 2
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
     pattern = re.compile(
-        r"discord(?:app)?\.com/api/webhooks/|hooks\.slack\.com/services/|api\.telegram\.org/bot"
-        r"|pastebin\.com/|paste\.ee/|hastebin\.|webhook\.site|requestbin|pipedream\.net"
+        r"discord(?:app)?\.com/api/webhooks/\d|hooks\.slack\.com/services/[A-Z0-9]"
+        r"|api\.telegram\.org/bot"
+        r"|pastebin\.com/|paste\.ee/|hastebin\.|webhook\.site|requestbin\.|pipedream\.net"
         r"|\.oast\.(?:fun|me|pro|site|live|online)|oastify\.com|burpcollaborator\.net"
         r"|interact\.sh|\.ngrok(?:-free)?\.(?:io|app)|\.trycloudflare\.com|\.serveo\.net",
         re.IGNORECASE,

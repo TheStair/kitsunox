@@ -24,8 +24,8 @@ from kitsunox.ecosystems.npm.rules.metadata import RULES as NPM_RULES
 from kitsunox.evaluation.datadog import RAW_URL, SAMPLE_LIMITS, ZIP_PASSWORD
 from kitsunox.evaluation.dataset import EvalSample, ExternalSampleSet
 from kitsunox.rules.static import RULES as STATIC_RULES
-from kitsunox.stages.static import ContentCache, new_contents
-from kitsunox.stages.triage import at_least
+from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, new_contents
+from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import extract_zip
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
 
@@ -129,10 +129,28 @@ class StaticRules:
 
 
 class StaticAndMetadataRules(StaticRules):
-    """What the pipeline flags from either stage: Stage 1 rules or Stage 2 rules."""
+    """Either stage's rules, as if Stage 2 read every release (an upper bound)."""
 
     name = "stage1+2-rules"
     include_stage1 = True
+
+
+class Pipeline(StaticRules):
+    """What the pipeline flags: Stage 1 rules, or Stage 2 rules on what Stage 1 routes to it
+    (watched, new package, grown size) and Stage 2 agrees to fetch (declared size cap)."""
+
+    name = "pipeline"
+
+    def _forward(self, change: Change, sample: EvalSample) -> bool:
+        decision = triage(change, RuleContext(as_of=_as_of(change))).history[-1]
+        if decision.forwarded and decision.reason.startswith("rules:"):
+            return True
+        if not decision.forwarded:
+            return False
+        size = change.new.artifact.unpacked_size if change.new.artifact else None
+        if size is not None and size > MAX_ARTIFACT_BYTES:
+            return False
+        return super()._forward(change, sample)
 
 
 def _as_of(change: Change) -> datetime:

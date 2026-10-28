@@ -2,6 +2,48 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-27: Hybrid routing to Stage 2, tarball capture in `collect`
+
+**Stage(s):** Stage 1 forward policy, Stage 2 pipeline wiring, retention
+**Context:** Stage 2 only adds recall if it reads code Stage 1 has no reason to forward. The
+user chose a hybrid between "behind the Stage 1 gate" and "every release". See
+[0008](decisions/0008-stage2-routing-and-tarball-capture.md).
+
+### Decisions
+- **Route by size growth, not by small size.** I had proposed adding updates *below* a size
+  limit. Simulating from the saved per-sample eval results showed that adds nothing under 5 MB:
+  malicious updates are large because the payload is added code. A growth of ≥ 64 KiB in
+  declared unpacked size routes 71% of malicious updates and 8.3% of benign ones.
+- **16 MB download cap per version.** About 10x less volume for 0.3 points of recall.
+- **Keep watched packages routed** even though DataDog shows little gain from them: its
+  samples are mostly unpopular packages, while popular-package takeovers are the
+  highest-impact attacks.
+- **Run Stages 1 and 2 inside the hourly `collect`.** Malicious tarballs are deleted quickly,
+  so they must be fetched in the same tick.
+
+### Challenges
+- **Retention would never have deleted a tarball.** Garbage collection treated every
+  immutable-index entry as a live reference, and tarballs are fetched as immutable. Found while
+  checking how captured tarballs would be pruned, before the hourly agent picked up the change.
+  - **Resolution:** the index is now a cache: entries whose blob no run references are deleted
+    first, then the blobs. Pruning pins OSV-named packages' tarballs from `static-snapshot.json`.
+  - **Why it worked:** `test_tarballs_follow_retention` (labeled and unlabeled cases).
+- **Live false positives.** The first live Stage 2 run flagged 6 versions, all benign. Two were
+  rule bugs: a Slack webhook placeholder in docs, and `requestbin` inside the identifier
+  `OscoreRequestBinding`. `exfil-endpoint` v2 requires a webhook id and a dot after `requestbin`.
+
+### Evaluation snapshot
+- End to end (`pipeline`, `day1`): A 86.0%, B 66.0%, benign 0.9% weighted. Before (Stage 1
+  rules alone): 80.1% / 58.2% / 0.6%. The old gate would have given 83.5% / 58.2% / 1.0%.
+- Simulation and real run agreed to the decimal, so the per-sample reports are a reliable,
+  fast way to compare routings.
+
+### Open questions / next steps
+- Disk: about 14 GB/day of tarballs, about 100 GB at steady state (263 GB free).
+- `dist.unpackedSize` is publisher-declared; compare it with the real size after download.
+- Content-cache hit rate across hourly runs is still unmeasured.
+- Next stage: Stage 3 (AST capabilities), after asking.
+
 ## 2026-10-27: Stage 2 static heuristics, first evaluation and tuning
 
 **Stage(s):** Stage 2 static diff heuristics

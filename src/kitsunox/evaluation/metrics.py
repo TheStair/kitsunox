@@ -50,25 +50,31 @@ class PopularityOnly:
 
 
 class Triage:
-    """Stage 1 with its forward policy: rules at MEDIUM or above, or a watched package. Rules
-    only see the change, so the `as_of` they get is the release's own publish time."""
+    """Stage 1 with its forward policy: rules at MEDIUM or above, a watched package, or a code
+    route to Stage 2 (new package, grown size). Pass-through here is the share of releases
+    whose tarballs Stage 2 fetches. Rules only see the change, so the `as_of` they get is the
+    release's own publish time."""
 
     name = "stage1"
     forward_watched = True
+    route_code = True
 
     def forward(self, change: Change, sample: EvalSample) -> bool:
-        return (
-            triage(change, _context(change), forward_watched=self.forward_watched)
-            .history[-1]
-            .forwarded
-        )
+        decision = triage(
+            change,
+            _context(change),
+            forward_watched=self.forward_watched,
+            route_code=self.route_code,
+        ).history[-1]
+        return decision.forwarded
 
 
 class TriageRulesOnly(Triage):
-    """Stage 1 rules without the popularity half: what the rules catch on their own."""
+    """Stage 1 rules alone: what Stage 1 flags by itself."""
 
     name = "stage1-rules"
     forward_watched = False
+    route_code = False
 
 
 def _context(change: Change) -> RuleContext:

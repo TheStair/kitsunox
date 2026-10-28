@@ -5,11 +5,15 @@ Each tick, in order:
 1. Rebuild the watchlist if the newest is older than `WATCHLIST_MAX_AGE` (~12 min, 1 GB).
 2. Sync OSV labels if the newest set is older than `LABELS_MAX_AGE` (~15 s, 220 MB).
 3. Record a chained ingest run continuing from the checkpoint (see `core/run.py`).
-4. Prune runs older than `keep_days` if the last prune is older than `PRUNE_EVERY`.
+4. Triage the run (Stage 1) and run Stage 2 on its batches. This is what captures tarballs:
+   npm deletes malicious ones, often within hours, so they are fetched in the same tick.
+5. Prune runs older than `keep_days` if the last prune is older than `PRUNE_EVERY`.
 
-Steps 1, 2 and 4 are best-effort: a failure is logged, and the tick carries on with the previous
-watchlist or label set, because a missed ingest is lost data while a stale list is not. A failed
-ingest fails the tick, and the checkpoint is not advanced, so the next tick covers the gap.
+Steps 1, 2, 4 and 5 are best-effort: a failure is logged, and the tick carries on with the
+previous watchlist or label set, because a missed ingest is lost data while a stale list is not.
+A failed step 4 can be redone with `kitsunox triage` and `kitsunox static` (minus any tarball
+deleted meanwhile). A failed ingest fails the tick, and the checkpoint is not advanced, so the
+next tick covers the gap.
 
 This module only wires existing pieces together. It may read the clock, since it decides *when*
 to fetch; the runs it records still carry an explicit `as_of`. The caller holds `DataDir.lock()`.
@@ -24,11 +28,14 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from kitsunox.core.retention import prune
+from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import DataDir, IngestRequest, RunManifest, record_ingest, record_watchlist
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
 from kitsunox.evaluation.harness import label_store, sync_labels
+from kitsunox.stages.static import record_static
+from kitsunox.stages.triage import triage_run
 
 WATCHLIST_MAX_AGE = timedelta(days=7)
 LABELS_MAX_AGE = timedelta(hours=20)
@@ -66,6 +73,8 @@ def collect(
         f"{manifest.skipped_count} skipped, {chain}, window covered: {manifest.window_covered}"
     )
 
+    _best_effort("stages", log, lambda: _stages(data, manifest, client()))
+
     last_prune = _last_prune(data)
     if last_prune is None or now - last_prune > PRUNE_EVERY:
         _best_effort("prune", log, lambda: _prune(data, now, keep_days))
@@ -82,6 +91,19 @@ def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str
         client=client,
     )
     return f"built {watchlist.id} ({len(watchlist.entries)} packages)"
+
+
+def _stages(data: DataDir, manifest: RunManifest, client: httpx.Client | None) -> str:
+    candidates, _ = triage_run(data.run_dir(manifest.run_id), RuleContext(as_of=manifest.as_of))
+    batches = record_static(data, manifest.run_id, NpmEcosystem, client=client)
+    decisions = [c.history[-1] for b in batches for c in b.versions]
+    stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
+    stage2 = sum(d.forwarded for d in decisions)
+    missing = sum(d.reason.startswith("files unavailable") for d in decisions)
+    return (
+        f"{len(candidates)} triaged, {stage1} flagged by Stage 1; {len(decisions)} versions "
+        f"read by Stage 2, {stage2} flagged, {missing} without files"
+    )
 
 
 def _labels(data: DataDir, now: datetime, client: httpx.Client | None) -> str:

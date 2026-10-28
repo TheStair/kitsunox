@@ -30,7 +30,7 @@ from kitsunox.evaluation.dataset import (
 )
 from kitsunox.evaluation.labels import OSV_MAX_DOWNLOAD, LabelSet, fetch_label_set
 from kitsunox.evaluation.metrics import PREDICTORS, EvalReport, Predictor, evaluate
-from kitsunox.evaluation.static_eval import StaticAndMetadataRules, StaticRules
+from kitsunox.evaluation.static_eval import Pipeline, StaticAndMetadataRules, StaticRules
 from kitsunox.stages.ingest import changes_file
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
 
@@ -153,14 +153,14 @@ def make_dataset(
     return dataset, path, sha
 
 
-PREDICTOR_NAMES = (*PREDICTORS, StaticRules.name, StaticAndMetadataRules.name)
+PREDICTOR_NAMES = (*PREDICTORS, StaticRules.name, StaticAndMetadataRules.name, Pipeline.name)
 
 
 def make_predictor(data: DataDir, ecosystem: str, name: str) -> Predictor:
     """Predictors by name. Stage 2 ones need the data directory to find package files."""
     if name in PREDICTORS:
         return PREDICTORS[name]()
-    for cls in (StaticRules, StaticAndMetadataRules):
+    for cls in (StaticRules, StaticAndMetadataRules, Pipeline):
         if cls.name == name:
             return cls(data, _external_sets(data, ecosystem))
     raise KeyError(name)

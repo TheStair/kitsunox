@@ -116,6 +116,7 @@ uv run kitsunox data prune --keep-days 7           # retention (takes the data-d
 uv run kitsunox samples datadog --intent 2000      # DataDog malware samples (encrypted, metadata only)
 uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor stage1-rules
 uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
+uv run kitsunox static <run_id>                    # Stage 2 on a triaged run (fetches tarballs)
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -260,7 +261,7 @@ updating it.
 
 ---
 
-## Current focus: Stage 2 static heuristics (rules evaluated; pipeline wiring next)
+## Current focus: Stage 2 running in collection (next: Stage 3 AST, after asking)
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
 `util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor),
@@ -272,16 +273,16 @@ Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/r
 under `data/eval/malware/`, never executed) and, over time, from prospective collection.
 Report follow-on releases separately (decision 0007).
 Stage 2 is `stages/static.py` with rules in `rules/static.py` and its eval predictors in
-`evaluation/static_eval.py` (`stage2-rules`, `stage1+2-rules`). See `docs/stages/static.md`. Open:
-whether Stage 2 runs on every release or only on Stage 1's forwards, a `kitsunox static`
-command, and tarball capture in `collect`.
+`evaluation/static_eval.py`. The end-to-end predictor is `pipeline`. See `docs/stages/static.md`.
+What Stage 2 reads (new packages, grown updates, watched, flagged; a 16 MB cap) is decision 0008.
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.
 - Analysis never reads the clock; it uses the run's `as_of`.
 - Tarballs are only ever extracted with `extract_tar_gz`.
 - Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
-- A launchd agent (`local.kitsunox.collect`) runs `kitsunox collect` hourly against `data/`.
+- A launchd agent (`local.kitsunox.collect`) runs `kitsunox collect` hourly against `data/`:
+  ingest, then Stages 1 and 2, which capture tarballs (~14 GB/day) before npm deletes them.
   Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit
   `data/state/` or delete blobs while the agent might be running. Runs older than 7 days are
   pruned and can't be replayed. See `docs/decisions/0006-scheduled-collection-and-retention.md`.

@@ -14,6 +14,8 @@ B64 = "QUJD" * 50 + "ZGVm0123XYZ" * 5  # >200 chars, mixed case and digits
         ('post("https://discord.com/api/webhooks/1/abc")', "static.exfil-endpoint"),
         ("fetch('https://api.telegram.org/botTOKEN/sendMessage')", "static.exfil-endpoint"),
         ("x.oastify.com", "static.exfil-endpoint"),
+        ("post('https://hooks.slack.com/services/T0ABC/B0DEF/xyz')", "static.exfil-endpoint"),
+        ("https://requestbin.net/r/abc", "static.exfil-endpoint"),
         ("readFileSync(home + '/.npmrc')", "static.sensitive-path"),
         ("path.join(os.homedir(), '.ssh/id_rsa')", "static.sensitive-path"),
         ("send(JSON.stringify(process.env))", "static.env-harvest"),
@@ -42,6 +44,8 @@ def test_rule_fires(text: str, rule: str) -> None:
         f'url("data:image/png;base64,{B64}")',  # embedded image
         "a" * 400,  # not base64-like
         "const env = process.env.NODE_ENV",
+        "// Webhook URL (https://hooks.slack.com/services/...)",  # docs placeholder
+        "type OscoreRequestBinding = {}",  # identifier, not the service
     ],
 )
 def test_benign_lookalikes_do_not_fire(text: str) -> None:

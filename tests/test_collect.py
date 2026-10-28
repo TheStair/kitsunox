@@ -43,6 +43,10 @@ def test_ticks_chain_and_prune_once_a_day(tmp_path: Path, registry: Router) -> N
     assert first.chained_from is None and first.change_count == 4
     assert not any(line.startswith(("watchlist", "labels")) for line in log)  # both fresh
     assert any(line.startswith("prune: 0 runs pruned") for line in log)
+    # Stages 1 and 2 ran on the new run; the mock serves no tarballs, so Stage 2 has no files.
+    stages = next(line for line in log if line.startswith("stages: "))
+    assert stages.startswith("stages: 4 triaged"), stages
+    assert (data.run_dir(first.run_id) / "static.jsonl").exists()
 
     log.clear()
     second = collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)

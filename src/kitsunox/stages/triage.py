@@ -1,9 +1,16 @@
 """Stage 1: metadata triage.
 
 Runs the metadata rules on every change from Stage 0 and decides which ones go on to the
-tarball stages. Forward policy (roadmap decision 3): a change is forwarded if any finding is at
-least `threshold` severity, or the package is watched (popular enough to always look at). The
-decision and its reason are recorded on the candidate, so per-stage metrics can be computed.
+tarball stages. A change is forwarded, in this order of reasons, if:
+
+1. any finding is at least `threshold` severity (it is *flagged*: Stage 1 alone would report it);
+2. the package is watched (popular enough to always look at; roadmap decision 3);
+3. it is a new package (no previous version: small, and no base tarball to fetch);
+4. its declared unpacked size grew by at least `MIN_GROWTH_BYTES`, or a size is unknown.
+
+Reasons 3 and 4 route code to Stage 2 that has no metadata signal (the "hybrid" policy chosen
+on 2026-10-27; numbers in `docs/stages/static.md`). The decision and its reason are recorded on
+the candidate, so per-stage metrics can be computed.
 
 Forwarded work is handed to Stage 2 as `PackageBatch`es: one per package per run, holding every
 version of that package in the run (also the unflagged ones: they are cheap once the package is
@@ -17,7 +24,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
-from kitsunox.core.models import Candidate, Change, PackageBatch, Severity, StageDecision
+from kitsunox.core.models import (
+    Candidate,
+    Change,
+    PackageBatch,
+    Severity,
+    StageDecision,
+    VersionSnapshot,
+)
 from kitsunox.core.rules import Rule, RuleContext, run_rules
 from kitsunox.ecosystems.npm.rules.metadata import RULES as NPM_RULES
 from kitsunox.stages.ingest import changes_file, read_changes, write_jsonl
@@ -25,6 +39,9 @@ from kitsunox.stages.ingest import changes_file, read_changes, write_jsonl
 STAGE_ID: Final = "triage"
 SEVERITY_ORDER: Final = tuple(Severity)
 DEFAULT_THRESHOLD: Final = Severity.MEDIUM
+# Payloads are added code: 71% of malicious updates (DataDog, first releases) grew by at least
+# 64 KiB of declared unpacked size, against 8% of benign ones (2026-10-27).
+MIN_GROWTH_BYTES: Final = 64 * 1024
 RULES_BY_ECOSYSTEM: Final[dict[str, Sequence[Rule]]] = {"npm": NPM_RULES}
 
 
@@ -38,19 +55,38 @@ def triage(
     *,
     threshold: Severity = DEFAULT_THRESHOLD,
     forward_watched: bool = True,
+    route_code: bool = True,
 ) -> Candidate:
+    """`route_code=False` turns off reasons 3 and 4 (Stage 1 measured on its own)."""
     findings = run_rules(RULES_BY_ECOSYSTEM[change.new.ref.ecosystem], change, ctx)
     flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
     watched = bool(change.popularity and change.popularity.watched)
     if flagged:
-        decision = StageDecision(
-            stage=STAGE_ID, forwarded=True, reason=f"rules: {', '.join(flagged)}"
-        )
+        reason: str | None = f"rules: {', '.join(flagged)}"
     elif watched and forward_watched:
-        decision = StageDecision(stage=STAGE_ID, forwarded=True, reason="watched package")
+        reason = "watched package"
     else:
-        decision = StageDecision(stage=STAGE_ID, forwarded=False, reason="no signal")
+        reason = code_route(change) if route_code else None
+    decision = StageDecision(
+        stage=STAGE_ID, forwarded=reason is not None, reason=reason or "no signal"
+    )
     return Candidate(change=change, findings=findings, history=(decision,))
+
+
+def code_route(change: Change) -> str | None:
+    """Why a change with no metadata signal should still have its code read, if it should."""
+    if change.previous is None:
+        return "new package"
+    new, old = _unpacked_size(change.new), _unpacked_size(change.previous)
+    if new is None or old is None:
+        return "unpacked size unknown"
+    if new - old >= MIN_GROWTH_BYTES:
+        return f"unpacked size grew by {new - old} bytes"
+    return None
+
+
+def _unpacked_size(snapshot: VersionSnapshot) -> int | None:
+    return snapshot.artifact.unpacked_size if snapshot.artifact else None
 
 
 def batch_forwarded(candidates: Sequence[Candidate]) -> tuple[PackageBatch, ...]:

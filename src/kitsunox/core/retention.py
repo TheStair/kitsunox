@@ -5,15 +5,18 @@ needs the bodies; prospective labeling only needs the Change records, plus the r
 anything that turns out to be malicious. So for each run older than `keep_days`:
 
 1. **Pin** the packument blobs of packages that appear in the newest label set (any OSV record
-   for that name). These are the bodies a later analysis of a malicious sample needs.
+   for that name), and the tarballs Stage 2 fetched for them (`static-snapshot.json`). These are
+   what a later analysis of a malicious sample needs: npm deletes malicious tarballs.
 2. Write `retention.json` with the pinned snapshot entries. The run can no longer be replayed
    (`replay_ingest` refuses it with a clear message), but `snapshot.json` stays as a record of
    what was fetched.
 3. **Compress** `changes.jsonl` to `changes.jsonl.zst` (about 10x smaller).
 
-Then **collect garbage**: delete every blob that no unpruned run's snapshot, no pruned run's
-pinned set, and no immutable-index entry references. Callers must hold `DataDir.lock()`: a run
-that is still recording has blobs no snapshot references yet.
+Then **collect garbage**: delete every immutable-index entry and every blob that no unpruned
+run's snapshots and no pruned run's pinned set reference. The immutable index is only a
+cross-run fetch cache (every hit is also recorded in the fetching run's snapshot), so it must not
+keep tarballs alive by itself: at ~14 GB of tarballs a day it would fill the disk. Callers must
+hold `DataDir.lock()`: a run that is still recording has blobs no snapshot references yet.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from kitsunox.core.models import Persisted, Record
-from kitsunox.core.run import DataDir, RunManifest
+from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, RunManifest
 from kitsunox.stages.ingest import changes_file, read_changes
 from kitsunox.util.http import Snapshot, SnapshotEntry
 
@@ -79,11 +82,20 @@ def _prune_run(
 ) -> int:
     # changes_file, not changes.jsonl: after a crash between compressing and writing the
     # marker, only the .zst exists, and the retry must still pin from it.
-    names = {c.new.ref.name for c in read_changes(changes_file(run_dir))}
+    changes = read_changes(changes_file(run_dir))
     plain = run_dir / "changes.jsonl"
-    urls = {metadata_url(name) for name in names if name in pinned_names}
-    snapshot = Snapshot.load(run_dir / "snapshot.json")
-    retained = {k: e for k, e in sorted(snapshot.entries.items()) if e.url in urls}
+    urls = {metadata_url(c.new.ref.name) for c in changes if c.new.ref.name in pinned_names}
+    urls |= {
+        snap.artifact.url
+        for c in changes
+        if c.new.ref.name in pinned_names
+        for snap in (c.new, c.previous)
+        if snap is not None and snap.artifact is not None
+    }
+    entries = dict(Snapshot.load(run_dir / "snapshot.json").entries)
+    if (run_dir / STATIC_SNAPSHOT).exists():
+        entries |= Snapshot.load(run_dir / STATIC_SNAPSHOT).entries
+    retained = {k: e for k, e in sorted(entries.items()) if e.url in urls}
     marker = RetentionMarker(pruned_at=now, keep_days=keep_days, retained=retained)
     if plain.exists():
         packed = run_dir / "changes.jsonl.zst"
@@ -105,11 +117,16 @@ def _collect_garbage(data: DataDir, run_dirs: list[Path]) -> tuple[int, int]:
             referenced.update(e.sha256 for e in marker.retained.values())
         else:
             # A snapshot that fails to load raises here, before anything is deleted.
-            snapshot = Snapshot.load(run_dir / "snapshot.json")
-            referenced.update(e.sha256 for e in snapshot.entries.values())
+            for name in ("snapshot.json", STATIC_SNAPSHOT):
+                if name == "snapshot.json" or (run_dir / name).exists():
+                    snapshot = Snapshot.load(run_dir / name)
+                    referenced.update(e.sha256 for e in snapshot.entries.values())
     if data.immutable_index.exists():
+        # Index entries go first: a crash then leaves an orphan blob (collected next time),
+        # never an index entry pointing at a deleted blob.
         for path in data.immutable_index.rglob("*.json"):
-            referenced.add(SnapshotEntry.model_validate_json(path.read_bytes()).sha256)
+            if SnapshotEntry.model_validate_json(path.read_bytes()).sha256 not in referenced:
+                path.unlink()
 
     deleted = freed = 0
     blob_root = data.root / "blobs"

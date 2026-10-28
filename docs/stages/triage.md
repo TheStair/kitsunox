@@ -14,7 +14,7 @@ beyond Stage 0's fetches: a full day (109,497 changes) triages in 44 s.
 ```sh
 uv run kitsunox triage <run_id>                          # writes runs/<run_id>/triage.jsonl
 uv run kitsunox eval run <dataset> --predictor stage1-rules   # rules only
-uv run kitsunox eval run <dataset> --predictor stage1         # rules + watched packages
+uv run kitsunox eval run <dataset> --predictor stage1         # full forward policy (what reaches Stage 2)
 ```
 
 ## Contract
@@ -23,8 +23,18 @@ uv run kitsunox eval run <dataset> --predictor stage1         # rules + watched 
 - **Rules** implement `core.rules.Rule`: `evaluate(change, ctx) -> findings`. `RuleContext`
   carries `as_of` and nothing else; rules never read the clock, network or environment. Each
   finding records the rule id and version.
-- **Forward policy:** forward if any finding is MEDIUM or above, or the package is watched.
-  LOW findings are kept for scoring (Stage 4) but don't forward on their own.
+- **Forward policy** (the reason is recorded, first match wins):
+  1. `rules: ...`: any finding is MEDIUM or above. The change is *flagged*: Stage 1 alone would
+     report it.
+  2. `watched package`.
+  3. `new package`: no previous version.
+  4. `unpacked size grew by N bytes`: declared `dist.unpackedSize` grew by at least 64 KiB
+     (`MIN_GROWTH_BYTES`), or `unpacked size unknown` (6 of 110k updates).
+
+  Reasons 3 and 4 were added on 2026-10-27 (the "hybrid" policy): they don't flag anything,
+  they send code that has no metadata signal to Stage 2. LOW findings are kept for scoring
+  (Stage 4) but don't forward on their own. See [static.md](static.md#routing-what-stage-2-reads)
+  for the numbers behind the routing.
 - **Handoff to Stage 2: `PackageBatch`** (`runs/<id>/batches.jsonl`). There is one batch per
   package per run. It holds every version of that package in the run, oldest first, plus the
   base (the earliest version's previous version). Unflagged sibling versions are included too.

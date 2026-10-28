@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from kitsunox.core.models import (
+    ArtifactRef,
     Change,
     PackageVersionRef,
     Popularity,
@@ -25,18 +26,25 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     SuspiciousVersion,
     UnfamiliarPublisher,
 )
-from kitsunox.stages.triage import batch_forwarded, triage
+from kitsunox.stages.triage import MIN_GROWTH_BYTES, batch_forwarded, code_route, triage
 
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
 CTX = RuleContext(as_of=T0)
 
 
-def snap(version: str, manifest: dict[str, Any] | None = None, **publish: Any) -> VersionSnapshot:
+def snap(
+    version: str,
+    manifest: dict[str, Any] | None = None,
+    *,
+    size: int | None = 1000,
+    **publish: Any,
+) -> VersionSnapshot:
     publish.setdefault("published_at", T0)
     return VersionSnapshot(
         ref=PackageVersionRef(ecosystem="npm", name="kx", version=version),
         publish=PublishInfo(**publish),
         manifest=manifest or {},
+        artifact=ArtifactRef(url=f"https://r.test/kx-{version}.tgz", unpacked_size=size),
     )
 
 
@@ -188,6 +196,17 @@ def test_triage_forward_policy() -> None:
     assert not triage(low_only, CTX).history[-1].forwarded  # LOW findings alone don't forward
 
 
+def test_code_routes_send_quiet_changes_to_stage2() -> None:
+    assert code_route(change(snap("1"))) == "new package"
+    grown = change(snap("2", size=1000 + MIN_GROWTH_BYTES), snap("1"))
+    assert code_route(grown) == f"unpacked size grew by {MIN_GROWTH_BYTES} bytes"
+    assert code_route(change(snap("2", size=1000 + MIN_GROWTH_BYTES - 1), snap("1"))) is None
+    assert code_route(change(snap("2"), snap("1", size=None))) == "unpacked size unknown"
+    decision = triage(grown, CTX).history[-1]
+    assert decision.forwarded and decision.reason.startswith("unpacked size grew")
+    assert not triage(grown, CTX, route_code=False).history[-1].forwarded
+
+
 def test_batches_keep_every_version_including_a_reverted_malicious_one() -> None:
     base = snap("1.0.0", published_at=T0)
     bad = snap(
@@ -208,14 +227,10 @@ def test_batches_include_unflagged_siblings_and_drop_quiet_packages() -> None:
     sibling = triage(
         change(snap("2.0.1", published_at=T0 + timedelta(hours=1)), snap("2.0.0")), CTX
     )
+    other = PackageVersionRef(ecosystem="npm", name="other", version="2")
+    quiet_change = change(snap("2"), snap("1"))
     quiet = triage(
-        Change(
-            new=VersionSnapshot(
-                ref=PackageVersionRef(ecosystem="npm", name="other", version="1"),
-                publish=PublishInfo(published_at=T0),
-                manifest={},
-            )
-        ),
+        quiet_change.model_copy(update={"new": quiet_change.new.model_copy(update={"ref": other})}),
         CTX,
     )
     (batch,) = batch_forwarded([sibling, quiet, flagged])

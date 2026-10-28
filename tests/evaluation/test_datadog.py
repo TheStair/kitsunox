@@ -146,8 +146,9 @@ def test_strip_to_package() -> None:
     assert strip_to_package(tree) == {"index.js": b"1", "lib/package/a.js": b"2"}
 
 
+@pytest.mark.parametrize("name", ["stage2-rules", "stage1+2-rules", "pipeline"])
 def test_stage2_predictor_reads_files_from_the_encrypted_zip(
-    tmp_path: Path, github: Router
+    tmp_path: Path, github: Router, name: str
 ) -> None:
     data = DataDir(tmp_path)
     when = datetime(2026, 10, 27, tzinfo=UTC)
@@ -158,9 +159,12 @@ def test_stage2_predictor_reads_files_from_the_encrypted_zip(
     )
     label_store(data).save("npm", labels.id, labels)
     make_dataset(data, ecosystem="npm", name="ext", built_at=when)
-    predictor = make_predictor(data, "npm", "stage2-rules")
+    predictor = make_predictor(data, "npm", name)
     report = run_eval(data, ecosystem="npm", dataset_name="ext", predictor=predictor)
     # The fixture zip holds only an inert package.json, so nothing fires; the previous
     # version's tarball isn't served by the mock, so the base counts as unavailable.
     assert report.cells["malicious/A/datadog"].forwarded == 0
-    assert predictor.notes == {"base unavailable (all files treated as new)": 1}  # type: ignore[attr-defined]
+    notes = predictor.notes  # type: ignore[attr-defined]
+    assert notes == {"base unavailable (all files treated as new)": 1} or (
+        name == "pipeline" and not notes  # not routed to Stage 2 at all
+    )
