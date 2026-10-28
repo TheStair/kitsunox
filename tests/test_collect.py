@@ -48,6 +48,7 @@ def test_ticks_chain_and_prune_once_a_day(tmp_path: Path, registry: Router) -> N
     stages = next(line for line in log if line.startswith("stages: "))
     assert stages.startswith("stages: 4 triaged"), stages
     assert (data.run_dir(first.run_id) / "static.jsonl").exists()
+    assert (data.run_dir(first.run_id) / "ast.jsonl").exists()
 
     log.clear()
     second = collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)

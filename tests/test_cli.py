@@ -90,3 +90,14 @@ def test_static_needs_triage_first(tmp_path: Path, router: Router) -> None:
     result = runner.invoke(app, ["static", run_id, "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("0 batches, 0 versions")
+
+
+def test_ast_needs_static_first(tmp_path: Path, router: Router) -> None:
+    run_id = recorded_run(tmp_path, router)
+    result = runner.invoke(app, ["ast", run_id, "--data-dir", str(tmp_path)])
+    assert result.exit_code == 2
+    runner.invoke(app, ["triage", run_id, "--data-dir", str(tmp_path)])
+    runner.invoke(app, ["static", run_id, "--data-dir", str(tmp_path)])
+    result = runner.invoke(app, ["ast", run_id, "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("0 batches, 0 versions: 0 flagged")

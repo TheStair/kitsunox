@@ -2,6 +2,53 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-28: Stage 3 capability analysis
+
+**Stage(s):** Stage 3 (AST capabilities)
+**Context:** The user asked to start Stage 3 after the resilience work. Stage 2's regular
+expressions can't tell a URL in a comment from a network call; a parse can.
+
+### Decisions
+- **tree-sitter queries with name filters in the query** (`#any-of?`), so Python only sees
+  relevant nodes; per-file results cached by content hash, language and extractor version.
+- **Capabilities per version, compared with the previous version in the batch.** The gain is
+  attributed to the version that made it, even if the burst reverts it. This is the same burst
+  contract as Stage 2.
+- **Same input as Stage 2, no narrowing.** Measured cost: about 760 MB of distinct JS/TS per
+  hourly run parses in 81 s on 8 threads. Narrowing would repeat the recall loss in 0008.
+- **Two rules, chosen from measured signal rates** (see [stages/ast.md](stages/ast.md)):
+  - `code.capability-gained`: updates only. New packages "gain" everything, and 34% of benign
+    new packages would fire.
+  - `npm.install-script-code`: profiles the files an install hook runs. That covers an
+    unchanged `node setup.js` whose `setup.js` changed, which Stage 1 can't see.
+- **`env-all` means the whole environment as a value.** Reading `process.env.HOME`, or
+  destructuring `{HOME}`, doesn't count. Gaining `env-all` is the strongest single signal:
+  0.2% of benign updates vs 70.9% of malicious ones.
+
+### Challenges
+- **tree-sitter 0.26.0 corrupts the heap.** The cost measurement segfaulted inside Python's
+  GC.
+  - First cause found: a `Parser` shared across threads (bus error). Fixed with per-thread
+    parsers.
+  - The segfault remained single-threaded. I bisected it to one 14 KB TypeScript file from a
+    live run. Parsing alone was fine, but using nodes from query matches crashed it (the
+    symptom moved with allocation timing).
+  - The same script passes on 0.25.2, so the pin is `<0.26` with a comment in
+    `pyproject.toml`.
+  - **Why it worked:** the minimal repro crashes on 0.26.0 and passes on 0.25.2, and the full
+    run over 53,503 files completes.
+
+### Evaluation snapshot
+- `stage3-rules`: A 80.6%, B 33.7%, benign 0.2%.
+- End to end: `pipeline` 86.0% / 66.0% / 0.7% → `pipeline+3` **89.7% / 66.0% / 0.8%**.
+
+### Open questions / next steps
+- Stage 3 adds nothing on new packages yet. Candidates: capability *combinations* in the
+  main entry file, or obfuscation measured on the AST.
+- No data flow: `const m = "child_process"; require(m)` reads as `dynamic-require`.
+- Stage 4 (correlation and scoring) is next. Many LOW findings across stages are waiting to
+  be combined.
+
 ## 2026-10-28: Metadata-vs-tarball rules, and surviving network failures
 
 **Stage(s):** Stage 2 (npm artifact rules), Stage 0 and `collect` (resilience)

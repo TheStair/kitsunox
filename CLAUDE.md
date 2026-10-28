@@ -117,6 +117,7 @@ uv run kitsunox samples datadog --intent 2000      # DataDog malware samples (en
 uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor stage1-rules
 uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
 uv run kitsunox static <run_id>                    # Stage 2 on a triaged run (fetches tarballs)
+uv run kitsunox ast <run_id>                       # Stage 3 on a run Stage 2 processed
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -133,6 +134,7 @@ src/kitsunox/
       rules/        # rules that depend on npm concepts (package.json scripts, npm maintainers)
   stages/           # ingest, triage, static, ast, correlate, sandbox
   rules/            # ecosystem-agnostic rules (entropy, URLs/IPs, eval/dynamic code)
+  lang/             # source-language parsers (tree-sitter JS/TS capabilities for Stage 3)
   evaluation/       # OSV labels, datasets built from ingest runs, predictors + metrics
   reporting/        # report rendering (Markdown/HTML), summary index
   util/             # shared helpers: HTTP + retry, hashing, diffing, entropy, logging
@@ -261,7 +263,7 @@ updating it.
 
 ---
 
-## Current focus: Stage 2 running in collection (next: Stage 3 AST, after asking)
+## Current focus: Stage 3 capability analysis (running in collection; tuning)
 
 Stage 0 (ingest) is implemented: `core/models.py`, `core/interfaces.py`, `core/run.py`,
 `util/http.py` (snapshot fetcher), `util/archive.py` (safe in-memory extractor),
@@ -275,6 +277,8 @@ Report follow-on releases separately (decision 0007).
 Stage 2 is `stages/static.py` with rules in `rules/static.py` and its eval predictors in
 `evaluation/static_eval.py`. The end-to-end predictor is `pipeline`. See `docs/stages/static.md`.
 What Stage 2 reads (new packages, grown updates, watched, flagged; a 16 MB cap) is decision 0008.
+Stage 3 is `stages/ast.py` (+ npm wiring in `stages/code.py`), parsing JS/TS with tree-sitter
+in `lang/javascript.py`; see `docs/stages/ast.md`. tree-sitter 0.26.0 crashes; it is pinned below.
 
 Key invariants:
 - All network access goes through `HttpFetcher`, so runs stay replayable.

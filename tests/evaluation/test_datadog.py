@@ -146,7 +146,9 @@ def test_strip_to_package() -> None:
     assert strip_to_package(tree) == {"index.js": b"1", "lib/package/a.js": b"2"}
 
 
-@pytest.mark.parametrize("name", ["stage2-rules", "stage1+2-rules", "pipeline"])
+@pytest.mark.parametrize(
+    "name", ["stage2-rules", "stage1+2-rules", "pipeline", "stage3-rules", "pipeline+3"]
+)
 def test_stage2_predictor_reads_files_from_the_encrypted_zip(
     tmp_path: Path, github: Router, name: str
 ) -> None:
@@ -166,5 +168,5 @@ def test_stage2_predictor_reads_files_from_the_encrypted_zip(
     assert report.cells["malicious/A/datadog"].forwarded == 0
     notes = predictor.notes  # type: ignore[attr-defined]
     assert notes == {"base unavailable (all files treated as new)": 1} or (
-        name == "pipeline" and not notes  # not routed to Stage 2 at all
+        name.startswith("pipeline") and not notes  # not routed to Stage 2 at all
     )

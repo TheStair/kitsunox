@@ -5,10 +5,11 @@ Each tick, in order:
 1. Rebuild the watchlist if the newest is older than `WATCHLIST_MAX_AGE` (~12 min, 1 GB).
 2. Sync OSV labels if the newest set is older than `LABELS_MAX_AGE` (~15 s, 220 MB).
 3. Record a chained ingest run continuing from the checkpoint (see `core/run.py`).
-4. Triage the run (Stage 1) and run Stage 2 on its batches. This is what captures tarballs:
-   npm deletes malicious ones, often within hours, so they are fetched in the same tick. Runs
-   from the last `STAGES_CATCH_UP` whose stages never finished, or whose Stage 2 hit network
-   failures, are redone first (oldest first; cached tarballs and results make this cheap).
+4. Triage the run (Stage 1), run Stage 2 on its batches, then Stage 3 on the same versions.
+   Stage 2 is what captures tarballs: npm deletes malicious ones, often within hours, so they
+   are fetched in the same tick. Runs from the last `STAGES_CATCH_UP` whose stages never
+   finished, or whose Stage 2 hit network failures, are redone first (oldest first; cached
+   tarballs and results make this cheap).
 5. Prune runs older than `keep_days` if the last prune is older than `PRUNE_EVERY`.
 
 Steps 1, 2, 4 and 5 are best-effort: a failure is logged, and the tick carries on with the
@@ -44,6 +45,7 @@ from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
 from kitsunox.evaluation.harness import label_store, sync_labels
+from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
 from kitsunox.util.http import FetchError
@@ -94,7 +96,7 @@ def collect(
     )
 
     def stages(run_id: str) -> Callable[[], str]:
-        return lambda: _stages(data, run_id, client())
+        return lambda: _stages(data, run_id, client)
 
     for run_id in _stages_pending(data, now, exclude=manifest.run_id):
         _best_effort(f"stages (catch-up {run_id})", log, stages(run_id))
@@ -118,11 +120,14 @@ def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str
     return f"built {watchlist.id} ({len(watchlist.entries)} packages)"
 
 
-def _stages(data: DataDir, run_id: str, client: httpx.Client | None) -> str:
+def _stages(data: DataDir, run_id: str, client: Callable[[], httpx.Client | None]) -> str:
+    """Stages 1-3 on one run. Each fetching stage gets its own client (fetchers close theirs)."""
     run_dir = data.run_dir(run_id)
     manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
     candidates, _ = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
-    batches = record_static(data, run_id, NpmEcosystem, client=client)
+    batches = record_static(data, run_id, NpmEcosystem, client=client())
+    coded = run_code_stage(data, run_id, client=client())
+    stage3 = sum(c.history[-1].forwarded for b in coded for c in b.versions)
     decisions = [c.history[-1] for b in batches for c in b.versions]
     stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
     stage2 = sum(d.forwarded for d in decisions)
@@ -130,7 +135,8 @@ def _stages(data: DataDir, run_id: str, client: httpx.Client | None) -> str:
     retry = " (network failures: retried next tick)" if needs_retry(batches) else ""
     return (
         f"{len(candidates)} triaged, {stage1} flagged by Stage 1; {len(decisions)} versions "
-        f"read by Stage 2, {stage2} flagged, {missing} without files{retry}"
+        f"read by Stage 2, {stage2} flagged, {missing} without files{retry}; "
+        f"{stage3} flagged by Stage 3"
     )
 
 
@@ -148,10 +154,14 @@ def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[str]:
         if now - manifest.as_of > STAGES_CATCH_UP:
             continue
         static = run_dir / "static.jsonl"
-        if not static.exists() or needs_retry(
-            PackageBatch.load_json(line)
-            for line in static.read_bytes().splitlines()
-            if line.strip()
+        if (
+            not static.exists()
+            or not (run_dir / "ast.jsonl").exists()
+            or needs_retry(
+                PackageBatch.load_json(line)
+                for line in static.read_bytes().splitlines()
+                if line.strip()
+            )
         ):
             pending.append(run_dir.name)
     return pending

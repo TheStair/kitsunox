@@ -39,6 +39,7 @@ from kitsunox.evaluation.harness import (
     sync_labels,
 )
 from kitsunox.evaluation.metrics import render_markdown
+from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.static import record_static
 from kitsunox.stages.triage import triage_run
 
@@ -237,6 +238,27 @@ def static_cmd(
         f"{unavailable} without files"
     )
     typer.echo(f"saved to {run_dir}/static.jsonl")
+
+
+@app.command("ast")
+def ast_cmd(
+    run_id: str,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    workers: Annotated[int, typer.Option(help="Parallel package batches.")] = 8,
+) -> None:
+    """Stage 3: parse the JS/TS of a run Stage 2 has processed and compare capabilities with
+    the previous version; write ast.jsonl into the run directory."""
+    data = DataDir(data_dir)
+    run_dir = data.run_dir(run_id)
+    if not (run_dir / "static.jsonl").exists():
+        typer.echo(f"no static.jsonl in {run_dir}: run `kitsunox static {run_id}` first", err=True)
+        raise typer.Exit(code=2)
+    with data.lock():
+        batches = run_code_stage(data, run_id, workers=workers)
+    decisions = [c.history[-1] for b in batches for c in b.versions]
+    flagged = sum(d.forwarded for d in decisions)
+    typer.echo(f"{len(batches)} batches, {len(decisions)} versions: {flagged} flagged")
+    typer.echo(f"saved to {run_dir}/ast.jsonl")
 
 
 @samples_app.command("datadog")

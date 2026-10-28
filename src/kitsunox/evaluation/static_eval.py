@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from kitsunox.core.models import ArtifactRef, Change, Severity
 from kitsunox.core.rules import RuleContext, run_rules
 from kitsunox.core.run import DataDir
+from kitsunox.ecosystems.npm.install import install_entry_files
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.artifact import HiddenInstallScript
@@ -26,6 +27,8 @@ from kitsunox.ecosystems.npm.rules.metadata import RULES as NPM_RULES
 from kitsunox.evaluation.datadog import RAW_URL, SAMPLE_LIMITS, ZIP_PASSWORD
 from kitsunox.evaluation.dataset import EvalSample, ExternalSampleSet
 from kitsunox.rules.static import RULES as STATIC_RULES
+from kitsunox.stages.ast import CapabilityCache, code_change
+from kitsunox.stages.code import CODE_RULES
 from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, new_contents
 from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import ArtifactTree, extract_zip
@@ -50,6 +53,8 @@ class StaticRules:
 
     name = "stage2-rules"
     include_stage1 = False
+    include_stage2 = True
+    include_stage3 = False
 
     def __init__(self, data: DataDir, external: list[ExternalSampleSet]) -> None:
         root = data.root / "eval" / "tarballs"
@@ -62,6 +67,7 @@ class StaticRules:
             )
         )
         self.cache = ContentCache(data.root / "cache" / "static", STATIC_RULES)
+        self.capabilities = CapabilityCache(data.root / "cache" / "ast")
         self.malware = BlobStore(data.root / "eval" / "malware" / "blobs")
         self.zip_blobs: dict[str, str] = {}
         for sample_set in external:
@@ -92,6 +98,28 @@ class StaticRules:
         if new is None:
             self._note("new files unavailable (not forwarded)")
             return False
+        base: Tree | None = self._tarball(change.previous.artifact) if change.previous else {}
+        if base is None:
+            self._note("base unavailable (all files treated as new)")
+        if self.include_stage2 and self._stage2(change, new, base):
+            return True
+        if self.include_stage3:
+            code = code_change(
+                change.new,
+                new,
+                base if change.previous else None,
+                self.capabilities,
+                install_entry_files,
+            )
+            if any(
+                at_least(f.severity, Severity.MEDIUM)
+                for rule in CODE_RULES
+                for f in rule.evaluate_code(code)
+            ):
+                return True
+        return False
+
+    def _stage2(self, change: Change, new: ArtifactTree, base: Tree | None) -> bool:
         # A zip member skipped as oversize would make the size check fire on our own gap.
         complete = not any(s.reason == "over per-file limit" for s in new.skipped)
         rules = NPM_ARTIFACT_RULES if complete else (HiddenInstallScript(),)
@@ -101,17 +129,12 @@ class StaticRules:
             for f in rule.evaluate_artifact(change.new, new)
         ):
             return True
-        base: Tree | None = self._tarball(change.previous.artifact) if change.previous else {}
-        if base is None:
-            self._note("base unavailable (all files treated as new)")
         version = change.new.ref.version
-        for item, content in new_contents(base or {}, [(version, new)]):
-            if any(
-                at_least(m.severity, Severity.MEDIUM)
-                for m in self.cache.matches(item.sha256, content)
-            ):
-                return True
-        return False
+        return any(
+            at_least(m.severity, Severity.MEDIUM)
+            for item, content in new_contents(base or {}, [(version, new)])
+            for m in self.cache.matches(item.sha256, content)
+        )
 
     def _new_tree(self, change: Change, sample: EvalSample) -> ArtifactTree | None:
         label = next((i for i in sample.label_ids if i in self.zip_blobs), None)
@@ -166,3 +189,18 @@ class Pipeline(StaticRules):
 
 def _as_of(change: Change) -> datetime:
     return change.new.publish.published_at or datetime(1970, 1, 1, tzinfo=UTC)
+
+
+class CodeRules(StaticRules):
+    """Stage 3 rules alone, as if Stage 3 read every release."""
+
+    name = "stage3-rules"
+    include_stage2 = False
+    include_stage3 = True
+
+
+class PipelineWithCode(Pipeline):
+    """`pipeline` plus Stage 3 on the same routed versions."""
+
+    name = "pipeline+3"
+    include_stage3 = True
