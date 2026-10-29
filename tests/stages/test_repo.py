@@ -90,14 +90,66 @@ def test_compare_end_to_end(tmp_path: Path, router: Router) -> None:
     router.add_bytes(REFS_URL, pkt(f"{T} refs/tags/v1.2.3\n") + b"0000")
     router.add_bytes(
         f"https://codeload.github.com/o/r/tar.gz/{T}",
-        make_tar_gz([TarEntry(f"r-{T}/index.js", b"good"), TarEntry(f"r-{T}/util.js", b"u")]),
+        make_tar_gz(
+            [
+                TarEntry(f"r-{T}/package.json", b'{"name": "@s/kx"}'),
+                TarEntry(f"r-{T}/index.js", b"good"),
+                TarEntry(f"r-{T}/util.js", b"u"),
+            ]
+        ),
     )
     package: Mapping[str, bytes] = {"index.js": b"evil", "util.js": b"u"}
     result = compare(change(), package, NpmLocator(), github(tmp_path, router))
     assert result.source is not None and result.source.how == "tag v1.2.3"
+    assert result.source.directory == ""
     assert (result.code_files, result.identical, result.differing) == (2, 1, ("index.js",))
     missing = compare(change("2.0.0"), package, NpmLocator(), github(tmp_path, router))
     assert missing.unavailable == "no commit or tag for this version"
+
+
+def test_compare_finds_the_package_in_a_monorepo(tmp_path: Path, router: Router) -> None:
+    """No `repository.directory`: the root manifest is the workspace's, not the package's."""
+    router.add_bytes(REFS_URL, pkt(f"{T} refs/tags/v1.2.3\n") + b"0000")
+    root = b'{"name": "workspace", "private": true}'
+    router.add_bytes(
+        f"https://codeload.github.com/o/r/tar.gz/{T}",
+        make_tar_gz(
+            [
+                TarEntry(f"r-{T}/package.json", root),
+                TarEntry(f"r-{T}/node_modules/kx/package.json", b'{"name": "@s/kx"}'),
+                TarEntry(
+                    f"r-{T}/packages/kx/package.json",
+                    b'{"name": "@s/kx", "scripts": {"postinstall": "node install.js"}}',
+                ),
+                TarEntry(f"r-{T}/packages/kx/install.js", b"fetch()"),
+            ]
+        ),
+    )
+    package: Mapping[str, bytes] = {
+        "package.json": b'{"name": "@s/kx", "scripts": {"postinstall": "node install.js"}}',
+        "install.js": b"fetch()",
+    }
+    result = compare(change(), package, NpmLocator(), github(tmp_path, router))
+    assert result.source is not None and result.source.directory == "packages/kx"
+    assert (result.identical, result.manifest) == (1, ())
+    renamed = change().model_copy(
+        update={
+            "new": change().new.model_copy(
+                update={"ref": PackageVersionRef(ecosystem="npm", name="other", version="1.2.3")}
+            )
+        }
+    )
+    missing = compare(renamed, package, NpmLocator(), github(tmp_path, router))
+    assert missing.unavailable == "the repository has no manifest for this package"
+
+
+def test_a_renamed_package_keeps_a_plain_root_manifest() -> None:
+    """A fork or rename: no manifest has the release's name, and the root isn't a workspace."""
+    locator = NpmLocator()
+    assert locator.package_directory(change(), {"package.json": b'{"name": "old"}'}) == ""
+    workspace = {"package.json": b'{"name": "old", "workspaces": ["packages/*"]}'}
+    assert locator.package_directory(change(), workspace) is None
+    assert locator.package_directory(change(), {"index.js": b""}) is None
 
 
 def ctx(comparison: RepoComparison) -> CorrelationContext:

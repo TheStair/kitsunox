@@ -48,7 +48,14 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
 ## Repository comparison (`stages/repo.py`)
 
 1. **Repository and directory:** the normalised `repository` URL (GitHub only) and
-   `repository.directory` for monorepos (`ecosystems/npm/repo.py`).
+   `repository.directory` for monorepos (`ecosystems/npm/repo.py`). When a release doesn't
+   set `repository.directory`, the package is the repository's `package.json` with the
+   release's `name`: the root's if it matches, else the shallowest (outside `node_modules/`).
+   If none matches, the root manifest still counts unless it is a workspace (`workspaces`, or
+   `private: true`): forks and renamed packages keep the old name. Otherwise there is no
+   comparison. (Until `repo.compared` v2, such releases were
+   compared with the monorepo's root manifest, which made Playwright's, `workerd`'s and taro's
+   install hooks look absent from git; see the devlog, 2026-10-29.)
 2. **Commit:** `gitHead` if recorded; otherwise a release tag: `v1.2.3`, `1.2.3`,
    `name@1.2.3`, `short@1.2.3`, `name@v1.2.3`, `short-v1.2.3`, `short@v1.2.3`. Tags come from the
    smart-HTTP ref advertisement (`<repo>.git/info/refs?service=git-upload-pack`), the same data
@@ -59,8 +66,9 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
 4. **Manifest:** the release's `package.json` against the repository's: install hooks it has
    that the repository's doesn't (or has differently), and runtime dependencies the
    repository's manifest doesn't name in any section (names only: tools rewrite specs).
-   Comparable `day1` updates: hooks 53 of 57 malicious, 0 of 121 benign; dependencies 30 of 57
-   malicious, 14 of 121 benign.
+   Comparable `day1` updates: hooks 51 of 55 malicious, 0 of 116 benign; dependencies 7 of 55
+   malicious, 2 of 116 benign (before `repo.compared` v2: hooks 53/57 and 0/121, dependencies
+   30/57 and 14/121, inflated by root-manifest comparisons).
 5. **Compare** the release's JavaScript/TypeScript files (line endings normalised):
    - *differing:* in the repository at the same path, different content;
    - *unexplained:* not in the repository, in a directory the repository has (the root
@@ -117,11 +125,13 @@ Their value today is evidence a reviewer can check in seconds.
 | no GitHub repository | 237 | 46 |
 | repository gone | 114 | 22 |
 | no `gitHead` and no tag for the version | 543 | 75 |
-| archive unavailable (404, too large) or directory empty | 14 | 30 |
-| **compared** (by `gitHead` / by tag) | **57** (33 / 24) | **121** (63 / 58) |
-| differing or unexplained code | 49 | 9 |
+| archive unavailable (404, too large) or directory empty | 15 | 30 |
+| no manifest for the package (monorepo root only, v2) | 1 | 5 |
+| **compared** (by `gitHead` / by tag) | **55** (32 / 23) | **116** (59 / 57) |
+| differing or unexplained code | 48 | 3 |
 
-43 of the 49 malicious hits were already flagged by Stages 1-3; the other 6 (`@voiceflow/*`,
+Table as of `repo.compared` v2 (2026-10-29). Under v1, which compared monorepo packages with
+the root manifest: 57 and 121 compared, 49 and 9 hits. The text below is from v1: 43 of the 49 malicious hits were already flagged by Stages 1-3; the other 6 (`@voiceflow/*`,
 Shai-Hulud 2.0's `setup_bun.js`) are neither watched nor flagged, so live Stage 4 wouldn't
 compare them. Benign hits were generated files at the package root (`@girs/*` bindings,
 `index.cjs` bundles). Hence LOW: 3% of benign updates at MEDIUM would triple the pipeline's

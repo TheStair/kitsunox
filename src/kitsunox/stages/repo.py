@@ -76,6 +76,11 @@ class Locator(Protocol):
 
     def commit(self, change: Change, refs: Mapping[str, str]) -> tuple[str, str] | None: ...
 
+    def package_directory(self, change: Change, repo: Tree) -> str | None:
+        """Where the release's package is in a repository whose release didn't say: the
+        directory of its manifest, or None if the repository has none for it."""
+        ...
+
     def manifest_differences(self, package: Tree, repo: Tree) -> tuple[ManifestDifference, ...]:
         """What the release's manifest declares that the repository's doesn't."""
         ...
@@ -153,11 +158,21 @@ def compare(
     commit, how = found
     source = ReleaseSource(repo=str(repo), directory=directory, commit=commit, how=how)
     try:
-        tree = github.archive(repo, commit, directory=directory)
+        tree: Tree = github.archive(repo, commit, directory=directory)
     except TransientFetchError:
         raise
     except (FetchError, ValueError) as exc:  # e.g. HTTP 404 (commit never pushed), size limits
         return RepoComparison(source=source, unavailable=f"archive: {exc}"[:300])
+    if not directory:
+        found_in = locator.package_directory(change, tree)
+        if found_in is None:
+            return RepoComparison(
+                source=source, unavailable="the repository has no manifest for this package"
+            )
+        if found_in:
+            prefix = f"{found_in}/"
+            tree = {p.removeprefix(prefix): c for p, c in tree.items() if p.startswith(prefix)}
+            source = source.model_copy(update={"directory": found_in})
     if not tree:
         return RepoComparison(source=source, unavailable=f"directory {directory!r} is empty")
     trees = compare_trees(package, tree)

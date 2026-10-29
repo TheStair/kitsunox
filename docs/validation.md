@@ -183,3 +183,14 @@ Stage 0's output changed. Their `manifest.tool_version` records which code produ
 | Eval refactor (shared findings collector) | `pipeline+3` re-derived exactly from the dump: 89.7% / 66.0%, benign 0.9% / 1.2% |
 | Repo comparison, `day1` (965 malicious, 300 benign updates) | comparable 5.9% / 40%; flagged 49 of 57 / 9 of 121 compared; 43 of the 49 already flagged by Stages 1-3 |
 | Stage 4 known-malware lookup by name alone | 11 benign new packages hit (`axios`, `chalk`, `debug`); whole-package records only: 0 |
+
+
+## 2026-10-29: First live Stage 4 run
+
+| Check | Result |
+|---|---|
+| Catch-up of `20261027T210847Z-npm` (109,497 versions) from Stage 3 | No failure; Stage 3 ~3.7 h, Stage 4 ~7.5 h; 5,637 versions compared with their repository; 1,759 reported (1.6%: 468 HIGH, 1,231 MEDIUM, 60 on score) |
+| Fetch volume of that Stage 4 | 2,142 GitHub archives, 31 GB (estimate was 5–15 GB/day); 1,634 ref advertisements, 0.3 GB |
+| `npm.repo.install-script-not-in-repo` live hits | 43 (16 packages), all compared with a monorepo's root manifest. With `repo.compared` v2: 13 packages match their own manifest's hooks, 1 not comparable, 2 still fire accurately (`bun`, `@kilocode/cli`: hooks added by release scripts) |
+| Repo comparison re-measured with v2 (`day1`, same samples) | compared 55 / 116; hooks 51 / 0; code 48 / 3; dependencies 7 / 2 (v1: 57 / 121; 53 / 0; 49 / 9; 30 / 14) |
+

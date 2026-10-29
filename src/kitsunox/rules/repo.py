@@ -1,14 +1,15 @@
 """Stage 4 rules over the tarball-vs-repo comparison (`stages/repo.py`), ecosystem-agnostic.
 
-Severities and weights come from `day1` (2026-10-28; 965 malicious and 300 benign updates):
+Severities and weights come from `day1` (2026-10-28; 965 malicious and 300 benign updates;
+re-measured 2026-10-29 after `repo.compared` v2 found monorepo packages' own directories):
 
 | | Malicious | Benign |
 |---|---|---|
-| comparable (repository + commit + archive) | 57 (5.9%) | 121 (40%) |
-| `code-differs` or `code-not-in-repo` | 49 of 57 | 9 of 121 |
-| ... and not already flagged by Stages 1-3 | 6, none watched | |
+| comparable (repository + commit + archive) | 55 (5.7%) | 116 (39%) |
+| `code-differs` or `code-not-in-repo` | 48 of 55 | 3 of 116 (v1: 9 of 121) |
+| ... and not already flagged by Stages 1-3 (v1) | 6, none watched | |
 
-At 3% of all benign updates, MEDIUM would triple the pipeline's false positives, and the six
+At 3% of all benign updates (v1), MEDIUM would triple the pipeline's false positives, and the six
 extra malicious updates aren't ones Stage 4 compares live (`wants_repo`). So both rules are
 LOW: evidence in the report, and weight in the score that orders the review queue. Benign hits
 were mostly generated files at the package root (`@girs/*` bindings, `index.cjs` bundles).
@@ -37,6 +38,7 @@ class RepoCompared(BaseRule):
     """What the comparison found, or why there was none. Context for the reviewer; not scored."""
 
     id = "repo.compared"
+    version = 2  # v2: a release without `repository.directory` is compared with its own manifest
     severity = Severity.INFO
     weight = 0.0
     title = "Compared with the source repository"

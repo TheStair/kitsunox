@@ -56,6 +56,31 @@ class NpmLocator:
                 return commit, f"tag {tag}"
         return None
 
+    def package_directory(self, change: Change, repo: Mapping[str, bytes]) -> str | None:
+        """The directory of the repository's `package.json` named like the release: the root's
+        if it matches, else the shallowest. Monorepos often don't set `repository.directory`,
+        and their root manifest (a private workspace) says nothing about one package's scripts
+        or dependencies: comparing with it reported Playwright's install hooks as missing from
+        git. With no name match, the root still counts unless it is a workspace: forks and
+        renamed packages (`wdio-web-reporter` from `wdio-spec-reporter`) keep their repository's
+        manifest under the old name."""
+        manifests = sorted(
+            (
+                path.removesuffix("package.json").rstrip("/")
+                for path in repo
+                if path.rpartition("/")[2] == "package.json" and "node_modules/" not in path
+            ),
+            key=lambda directory: (directory.count("/") + bool(directory), directory),
+        )
+        for directory in manifests:
+            manifest = _manifest(repo, f"{directory}/package.json" if directory else "")
+            if manifest is not None and manifest.get("name") == change.new.ref.name:
+                return directory
+        root = _manifest(repo)
+        if root is None or "workspaces" in root or root.get("private") is True:
+            return None
+        return ""
+
     def manifest_differences(
         self, package: Mapping[str, bytes], repo: Mapping[str, bytes]
     ) -> tuple[ManifestDifference, ...]:
@@ -93,8 +118,8 @@ class NpmLocator:
         return tuple(differences)
 
 
-def _manifest(tree: Mapping[str, bytes]) -> dict[str, object] | None:
-    raw = tree.get("package.json")
+def _manifest(tree: Mapping[str, bytes], path: str = "") -> dict[str, object] | None:
+    raw = tree.get(path or "package.json")
     if raw is None:
         return None
     try:

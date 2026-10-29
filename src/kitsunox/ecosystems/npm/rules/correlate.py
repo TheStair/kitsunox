@@ -156,7 +156,7 @@ class InstallScriptNotInRepo(BaseRule):
     `postinstall`) that the repository's `package.json` at the compared commit doesn't have, or
     has with a different command. What `npm install` runs never went through git.
 
-    On `day1` (comparable updates): 53 of 57 malicious, 0 of 121 benign. Seen: Shai-Hulud 2.0's
+    On `day1` (comparable updates): 51 of 55 malicious, 0 of 116 benign. Seen: Shai-Hulud 2.0's
     `node setup_bun.js`, and `@nativescript-community/*` running `node bundle.js` where the
     repository has `npm run setup`.
     """
@@ -190,8 +190,9 @@ class InstallScriptNotInRepo(BaseRule):
 
 class DependencyNotInRepo(BaseRule):
     """A runtime dependency the repository's `package.json` doesn't name in any section. Weak:
-    12% of comparable benign updates (bundlers and release scripts add dependencies), 30 of
-    57 malicious; evidence and a little weight, not a reason to report."""
+    2 of 116 comparable benign updates, 7 of 55 malicious (before `repo.compared` v2, which
+    stopped comparing monorepo packages with the root manifest: 14 of 121 and 30 of 57);
+    evidence and a little weight, not a reason to report."""
 
     id = "npm.repo.dependency-not-in-repo"
     severity = Severity.LOW
