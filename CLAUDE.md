@@ -113,6 +113,7 @@ uv run kitsunox ingest replay <run_id>             # offline replay; must print 
 uv run kitsunox labels sync                        # OSV malware labels (~220 MB)
 uv run kitsunox collect                            # hourly tick: refresh lists, chained ingest, prune
 uv run kitsunox data prune --keep-days 7           # retention (takes the data-dir lock)
+                                                   # --keep-repo-days N: Stage 4 archives (default = keep-days)
 uv run kitsunox samples datadog --intent 2000      # DataDog malware samples (encrypted, metadata only)
 uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor stage1-rules
 uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
@@ -301,7 +302,8 @@ Key invariants:
   `TransientFetchError` as if it were a missing package.
   Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit
   `data/state/` or delete blobs while the agent might be running. Runs older than 7 days are
-  pruned and can't be replayed. See `docs/decisions/0006-scheduled-collection-and-retention.md`.
+  pruned and can't be replayed. Stage 4's GitHub archives (~30 GB/day) have their own
+  `--keep-repo-days` (default 7; this laptop's agent uses 2). See `docs/decisions/0006-scheduled-collection-and-retention.md`.
 - Validation results live in `docs/validation.md`. Add a new dated section after significant
   changes.
 

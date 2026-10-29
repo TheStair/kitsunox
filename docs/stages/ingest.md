@@ -29,7 +29,7 @@ uv run kitsunox ingest record --chain
 
 # Unattended: what the hourly launchd agent runs (watchlist/labels refresh, chained run, prune)
 uv run kitsunox collect
-uv run kitsunox data prune --keep-days 7
+uv run kitsunox data prune --keep-days 7    # --keep-repo-days N: GitHub archives (Stage 4) sooner
 ```
 
 **Scheduling.** Install the agent with:

@@ -39,11 +39,14 @@ No stage failed. The report put 1,759 versions (1.6%) up for review: 468 HIGH, 1
   day dominate: `MaterializeInc/materialize` (2.6 GB, 40 commits), `lightdash/lightdash`,
   `stacksjs/stx`. Capping archives at 32 MB would save 23 GB (75%) but skip 313 archives
   (15%). At 7-day retention this volume needs ~217 GB; 168 GB are free.
-  - **Resolution:** none yet. This is a scope choice for the user (a size cap, shorter
-    retention for repository archives, or both).
+  - **Resolution:** the user chose shorter retention for repository archives only, not a size
+    cap (a cap would skip 15% of comparisons, biased toward big popular monorepos). New option
+    `--keep-repo-days` (default 7, same as runs); this laptop's agent uses 2 until collection
+    moves to a VM with more disk in the next day or two. Test:
+    `test_repository_archives_can_go_before_the_run`. See the 0006 addendum.
 
 ### Open questions / next steps
-- Choose how to bound repository archive volume (above) before disk runs short (days).
+- On the VM, install the agent without `--keep-repo-days` (7 days).
 - Reports list each release separately: 27 `@lightdash/cli` versions were 27 entries. Group by
   package in the queue.
 - Re-run Stage 4 on the runs this tick correlated with the old comparison (delete their

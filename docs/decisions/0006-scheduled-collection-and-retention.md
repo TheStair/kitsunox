@@ -72,3 +72,12 @@ Before this change, it would have kept every tarball forever.
 [0009](0009-network-failure-handling.md) raises the chain gap from 48 hours to 7 days, retries
 packages and tarballs that failed because of the network, and makes offline ticks write nothing.
 
+## Addendum (2026-10-29): repository archives
+
+Stage 4's GitHub archives turned out to be ~31 GB a day (one live day, 2,142 archives,
+dominated by monorepos that release many times a day), which at 7 days is more than this
+machine's free disk. They get their own setting, `--keep-repo-days` on `collect`,
+`data prune` and `schedule plist`: the default stays `--keep-days` (7), and the local laptop
+agent uses 2 until collection moves to a VM with room. A run older than that keeps everything
+else, but its Stage 4 can no longer be replayed from cache: the archives would be fetched again
+(they are immutable by commit, so the result is the same unless the repository is gone).

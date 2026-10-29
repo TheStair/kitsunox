@@ -119,6 +119,9 @@ class BlobStore:
             atomic_write(path, zstd.compress(data, level=self.level))
         return sha
 
+    def exists(self, sha: str) -> bool:
+        return self._path(sha).exists()
+
     def get(self, sha: str) -> bytes:
         data = zstd.decompress(self._path(sha).read_bytes())
         if sha256_hex(data) != sha:

@@ -29,6 +29,7 @@ REPO_LIMITS: Final = ExtractLimits(
     max_file_bytes=64 * 1024 * 1024,
     max_files=300_000,
 )
+ARCHIVE_PREFIX: Final = "https://codeload.github.com/"
 _REPO_URL: Final = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 _SHA: Final = re.compile(r"^[0-9a-f]{40}$")
 
@@ -79,6 +80,12 @@ def parse_ref_advertisement(body: bytes) -> dict[str, str]:
     return refs | peeled
 
 
+def is_archive_url(url: str) -> bool:
+    """A repository archive (what `GitHub.archive` fetches): the bulk of Stage 4's downloads,
+    which retention may keep for less time than the rest of a run."""
+    return url.startswith(ARCHIVE_PREFIX)
+
+
 class GitHub:
     def __init__(self, fetcher: HttpFetcher, *, limits: ExtractLimits = REPO_LIMITS) -> None:
         self.fetcher = fetcher
@@ -98,7 +105,7 @@ class GitHub:
         """The files at `commit`, or only those under `directory` (paths relative to it)."""
         if not _SHA.match(commit):
             raise ValueError(f"not a full commit id: {commit!r}")
-        url = f"https://codeload.github.com/{repo}/tar.gz/{commit}"
+        url = f"{ARCHIVE_PREFIX}{repo}/tar.gz/{commit}"
         response = self.fetcher.get(url, immutable=True)
         if not response.ok:
             raise FetchError(f"{url}: HTTP {response.status}")

@@ -144,6 +144,9 @@ that cover every version: 11 malicious new packages, 0 benign.
 
 ## Known limits
 
+- **Volume.** The first live day (`20261027T210847Z-npm`) downloaded 2,142 archives, 31 GB,
+  and Stage 4 took ~7.5 hours for 109k versions. Archives can be kept for less time than the
+  run (`--keep-repo-days`, decision 0006 addendum).
 - **Reach.** The comparison needs a GitHub repository and a commit. Most malicious updates
   record no `gitHead` and have no tag for the malicious version, so they get "no commit or tag
   for this version" (which `githead-dropped` already scores). It works best for the case it was

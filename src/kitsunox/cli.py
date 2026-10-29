@@ -39,6 +39,7 @@ from kitsunox.evaluation.harness import (
 )
 from kitsunox.evaluation.labels import label_store
 from kitsunox.evaluation.metrics import render_markdown
+from kitsunox.githost.github import is_archive_url
 from kitsunox.reporting.publish import publish_report
 from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.review import run_correlate_stage
@@ -387,6 +388,12 @@ def eval_run(
 def collect_cmd(
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
     keep_days: Annotated[int, typer.Option(min=1)] = DEFAULT_KEEP_DAYS,
+    keep_repo_days: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Keep Stage 4's repository archives this long (default: KEEP_DAYS)."
+        ),
+    ] = None,
 ) -> None:
     """One unattended collection tick: refresh watchlist/labels when stale, record a chained
     ingest run, prune old runs. Exits 0 without doing anything if another tick is running."""
@@ -398,7 +405,13 @@ def collect_cmd(
     try:
         with data.lock():
             log("collect: start")
-            collect(data, now=datetime.now(UTC), keep_days=keep_days, log=log)
+            collect(
+                data,
+                now=datetime.now(UTC),
+                keep_days=keep_days,
+                keep_repo_days=keep_repo_days,
+                log=log,
+            )
             log("collect: done")
     except DataDirBusyError as exc:
         log(f"collect: skipped, {exc}")
@@ -408,6 +421,12 @@ def collect_cmd(
 def data_prune(
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
     keep_days: Annotated[int, typer.Option(min=1)] = DEFAULT_KEEP_DAYS,
+    keep_repo_days: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Keep Stage 4's repository archives this long (default: KEEP_DAYS)."
+        ),
+    ] = None,
 ) -> None:
     """Drop HTTP bodies of runs older than KEEP_DAYS (they can no longer be replayed), keeping
     packuments of packages with OSV malware records, and compress their changes."""
@@ -425,6 +444,8 @@ def data_prune(
                 keep_days=keep_days,
                 pinned_names=labels.labels.keys(),
                 metadata_url=packument_url,
+                keep_archive_days=keep_repo_days,
+                is_archive=is_archive_url,
             )
     except DataDirBusyError as exc:
         typer.echo(str(exc), err=True)
@@ -439,6 +460,12 @@ def data_prune(
 def schedule_plist(
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
     interval_minutes: Annotated[int, typer.Option(min=10)] = 60,
+    keep_repo_days: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Keep Stage 4's repository archives this long (default: KEEP_DAYS)."
+        ),
+    ] = None,
 ) -> None:
     """Print a launchd agent that runs `kitsunox collect` every INTERVAL_MINUTES. Install it
     with: kitsunox schedule plist > ~/Library/LaunchAgents/local.kitsunox.collect.plist &&
@@ -463,6 +490,7 @@ def schedule_plist(
             "collect",
             "--data-dir",
             str(data),
+            *(["--keep-repo-days", str(keep_repo_days)] if keep_repo_days else []),
         ],
         "WorkingDirectory": str(project),
         "StartInterval": interval_minutes * 60,

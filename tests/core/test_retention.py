@@ -19,6 +19,7 @@ from kitsunox.core.run import (
     replay_ingest,
 )
 from kitsunox.ecosystems.npm.registry import REGISTRY_URL, NpmEcosystem, packument_url
+from kitsunox.githost.github import is_archive_url
 from kitsunox.stages.ingest import changes_file, read_changes
 from kitsunox.util.http import FetchMode, HttpFetcher, Snapshot, SnapshotEntry
 
@@ -177,3 +178,43 @@ def test_stage4_fetches_are_kept_with_the_run_and_damaged_index_entries_go(
     assert snapshot.entries
     assert all(data.blobs.get(e.sha256) for e in snapshot.entries.values())
     assert not damaged.exists()
+
+
+def test_repository_archives_can_go_before_the_run(tmp_path: Path, registry: Router) -> None:
+    data = DataDir(tmp_path)
+    manifest = run(data, registry)
+    snapshot = Snapshot()
+    fetcher = HttpFetcher(
+        store=data.blobs,
+        snapshot=snapshot,
+        mode=FetchMode.RECORD,
+        immutable_index=data.immutable_index,
+        client=registry.client(),
+    )
+    archive = "https://codeload.github.com/o/r/tar.gz/" + "a" * 40
+    refs = "https://github.com/o/r.git/info/refs?service=git-upload-pack"
+    registry.add_bytes(archive, b"repo archive")
+    registry.add_bytes(refs, b"0000")
+    fetcher.get(archive, immutable=True)
+    fetcher.get(refs)
+    fetcher.close()
+    snapshot.save(data.run_dir(manifest.run_id) / CORRELATE_SNAPSHOT)
+    entries = snapshot.entries.values()
+
+    def prune_archives(days: int) -> None:
+        prune(
+            data,
+            now=AS_OF + timedelta(days=days),
+            keep_days=7,
+            pinned_names=set(),
+            metadata_url=packument_url,
+            keep_archive_days=2,
+            is_archive=is_archive_url,
+        )
+
+    prune_archives(1)
+    assert all(data.blobs.exists(e.sha256) for e in entries)
+    prune_archives(3)  # the run is kept; its archive isn't
+    assert {e.url: data.blobs.exists(e.sha256) for e in entries} == {archive: False, refs: True}
+    assert not list(data.immutable_index.rglob("*.json"))
+    assert (data.run_dir(manifest.run_id) / "changes.jsonl").exists()  # not pruned

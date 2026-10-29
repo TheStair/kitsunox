@@ -11,7 +11,8 @@ Each tick, in order:
    in the same tick. Runs from the last `STAGES_CATCH_UP` with unfinished stages are resumed
    first, oldest first, from the first stage whose output is missing (from Stage 1 if Stage 2
    hit network failures; cached tarballs and results make this cheap).
-5. Prune runs older than `keep_days` if the last prune is older than `PRUNE_EVERY`.
+5. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same)
+   if the last prune is older than `PRUNE_EVERY`.
 
 Steps 1, 2, 4 and 5 are best-effort: a failure is logged, and the tick carries on with the
 previous watchlist or label set, because a missed ingest is lost data while a stale list is not.
@@ -50,6 +51,7 @@ from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
+from kitsunox.githost.github import is_archive_url
 from kitsunox.reporting.publish import publish_report
 from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.review import run_correlate_stage
@@ -72,6 +74,7 @@ def collect(
     *,
     now: datetime,
     keep_days: int = DEFAULT_KEEP_DAYS,
+    keep_repo_days: int | None = None,
     log: Log,
     clients: Callable[[], httpx.Client] | None = None,
 ) -> RunManifest | None:
@@ -111,7 +114,7 @@ def collect(
 
     last_prune = _last_prune(data)
     if last_prune is None or now - last_prune > PRUNE_EVERY:
-        _best_effort("prune", log, lambda: _prune(data, now, keep_days))
+        _best_effort("prune", log, lambda: _prune(data, now, keep_days, keep_repo_days))
     return manifest
 
 
@@ -205,7 +208,7 @@ def _labels(data: DataDir, now: datetime, client: httpx.Client | None) -> str:
     return f"synced {labels.id} ({labels.record_count} records)"
 
 
-def _prune(data: DataDir, now: datetime, keep_days: int) -> str:
+def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | None) -> str:
     store = label_store(data)
     labels_id = store.latest_id(NPM)
     if labels_id is None:
@@ -217,6 +220,8 @@ def _prune(data: DataDir, now: datetime, keep_days: int) -> str:
         keep_days=keep_days,
         pinned_names=labels.labels.keys(),
         metadata_url=packument_url,
+        keep_archive_days=keep_repo_days,
+        is_archive=is_archive_url,
     )
     path = data.root / "state" / "prune.json"
     path.parent.mkdir(parents=True, exist_ok=True)
