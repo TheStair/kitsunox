@@ -49,9 +49,10 @@ No stage failed. The report put 1,759 versions (1.6%) up for review: 468 HIGH, 1
 - On the VM, install the agent without `--keep-repo-days` (7 days).
 - Reports list each release separately: 27 `@lightdash/cli` versions were 27 entries. Group by
   package in the queue.
-- Re-run Stage 4 on the runs this tick correlated with the old comparison (delete their
-  `correlate.jsonl` under `DataDir.lock()` once the tick ends). Archives are cached, so this
-  is cheaper than the first pass.
+- Re-run Stage 4 (`kitsunox correlate` + `report`) on the runs correlated with `repo.compared`
+  v1: `20261027T210847Z-npm` through `20261028T171425Z-npm`. Deferred by the user until after
+  the move to the VM: it holds the data lock for hours, and ticks skip meanwhile. They are past
+  the 48-hour catch-up window, so it must be done by hand.
 
 ## 2026-10-28: Reports, manifest-vs-repo rules, and Stage 4 going live
 
