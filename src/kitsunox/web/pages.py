@@ -72,6 +72,7 @@ def failure(status: int, title: str, message: str) -> Page:
 # ----------------------------------------------------------------------------- queue
 
 
+MAX_PACKAGE_VERSIONS: Final = 50  # versions one package-wide verdict covers (the server's cap)
 VERDICT_LABELS: Final = {
     "malicious": "Malicious",
     "inconclusive": "Inconclusive",
@@ -99,6 +100,27 @@ def verdict_form(token: str, run_id: str, rank: int, back: str, *, note: bool) -
         for kind in KINDS
     )
     return f'<form method="post" action="/verdict" class="verdict">{hidden}{text}{buttons}</form>'
+
+
+def package_form(token: str, entry: QueueEntry) -> str:
+    """One verdict on every listed version of a queue entry's package (each `entry` field is
+    `run:rank`; the server checks they are all this package)."""
+    fields = [("token", token), ("back", "/")] + [
+        ("entry", f"{v.run_id}:{v.rank}") for v in entry.versions[:MAX_PACKAGE_VERSIONS]
+    ]
+    hidden = "".join(
+        f'<input type="hidden" name="{name}" value="{plain(value)}">' for name, value in fields
+    )
+    buttons = "".join(
+        f'<button type="submit" name="verdict" value="{kind}" class="v-{kind}">'
+        f"{VERDICT_LABELS[kind]}</button>"
+        for kind in KINDS
+    )
+    count = min(len(entry.versions), MAX_PACKAGE_VERSIONS)
+    return (
+        f'<form method="post" action="/verdict" class="verdict package">{hidden}'
+        f'<span class="note">All {count} versions:</span>{buttons}</form>'
+    )
 
 
 def reopen_form(token: str, record: VerdictRecord, back: str) -> str:
@@ -203,8 +225,9 @@ def _queue_row(entry: QueueEntry, token: str | None = None) -> str:
         form = verdict_form(token, v.run_id, v.rank, "/", note=False) if token and href else ""
         versions.append(f'<li>{shown} <span class="note">{v.score:g}</span>{form}</li>')
     rules = "".join(f"<li><code>{esc(r.rule_id)}</code> ({r.versions})</li>" for r in entry.rules)
+    whole = package_form(token, entry) if token and len(entry.versions) > 1 else ""
     return (
-        f'<tr><td class="num">{entry.rank}</td><td>{esc(entry.name)}</td>'
+        f'<tr><td class="num">{entry.rank}</td><td>{esc(entry.name)}{whole}</td>'
         f'<td class="num">{entry.score:g}</td><td>{_severity(entry.severity)}</td>'
         f'<td><ul class="flat">{"".join(versions)}</ul></td>'
         f'<td><ul class="flat">{rules}</ul></td><td>{_yes(entry.watched)}</td>'

@@ -19,7 +19,12 @@ from kitsunox.core.models import Candidate, Change, Evidence, EvidenceKind, Find
 from kitsunox.core.rules import BaseRule
 from kitsunox.core.watchlist import Watchlist
 from kitsunox.ecosystems.npm import semver
-from kitsunox.ecosystems.npm.rules.metadata import is_registry_spec, runtime_dependencies
+from kitsunox.ecosystems.npm.rules.metadata import (
+    is_registry_spec,
+    only_version_changed,
+    runtime_dependencies,
+    scripts,
+)
 from kitsunox.stages.correlate import (
     NOT_EVALUATED,
     CorrelationContext,
@@ -503,10 +508,15 @@ class InstallScriptNotInRepo(BaseRule):
     in the repository byte for byte, and a build script there holds the command) went through
     git after all; it is an INFO note naming that file. First VM day: `@nutui/nutui-react-taro`
     (`scripts/build-taro.mjs`), reported HIGH through this rule.
+
+    v3: a hook the previous release shipped too (the same command, its own version string
+    aside) is LOW: it isn't new in this release, so it isn't a stolen token's addition. On the
+    first VM days that was every `@pulumi/*` hit (60 reported versions; Pulumi's code generator
+    writes the hook). The first release that adds such a hook still fires HIGH.
     """
 
     id = "npm.repo.install-script-not-in-repo"
-    version = 2
+    version = 3
     severity = Severity.HIGH
     weight = 5.0
     title = "Install script that the repository doesn't have"
@@ -518,16 +528,38 @@ class InstallScriptNotInRepo(BaseRule):
         if comparison is None:
             return ()
         hooks = [d for d in comparison.manifest if d.field.startswith("scripts.")]
-        return tuple(_hook_finding(self, d) for d in hooks)
+        return tuple(_hook_finding(self, d, candidate.change) for d in hooks)
 
 
-def _hook_finding(rule: BaseRule, d: ManifestDifference) -> Finding:
+def _shipped_before(change: Change, field: str) -> bool:
+    """The previous release had this hook with the same command (its version aside)."""
+    previous = change.previous
+    if previous is None:
+        return False
+    hook = field.removeprefix("scripts.")
+    old, new = scripts(previous.manifest).get(hook), scripts(change.new.manifest).get(hook)
+    if old is None or new is None:
+        return False
+    return old == new or only_version_changed(
+        old, new, previous.ref.version, change.new.ref.version
+    )
+
+
+def _hook_finding(rule: BaseRule, d: ManifestDifference, change: Change) -> Finding:
     evidence = Evidence(
         kind=EvidenceKind.MANIFEST_FIELD,
         path=f"package.json:{d.field}",
         before=d.repo,
         after=d.package,
     )
+    if _shipped_before(change, d.field):
+        return rule.finding(
+            f"`npm install` runs `{d.field}`, which the repository's package.json doesn't "
+            "have; the previous release shipped the same hook, so it isn't new here.",
+            evidence,
+            severity=Severity.LOW,
+            weight=1.0,
+        )
     if d.built_by is not None:
         return rule.finding(
             f"`npm install` runs `{d.field}`, which the repository's package.json doesn't "

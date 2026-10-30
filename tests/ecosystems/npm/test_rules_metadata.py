@@ -145,6 +145,14 @@ def test_publish_method_downgrade(old: dict[str, Any], new: dict[str, Any], fire
     assert bool(PublishMethodDowngrade().evaluate(c, CTX)) is fires
 
 
+def test_a_downgrade_is_high_only_for_a_watched_package() -> None:
+    new, old = snap("2", publisher="mallory"), snap("1", trusted_publisher="github")
+    (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
+    (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
+    assert (watched.severity, watched.weight) == (Severity.HIGH, 5.0)
+    assert (small.severity, small.weight) == (Severity.MEDIUM, 3.0)
+
+
 def test_unfamiliar_publisher() -> None:
     old = snap("1", publisher="alice", maintainers=("alice", "bob"))
     assert UnfamiliarPublisher().evaluate(change(snap("2", publisher="bob"), old), CTX) == []

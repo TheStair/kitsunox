@@ -26,6 +26,7 @@ from kitsunox.rules.repo import CodeDiffersFromRepo, CodeNotInRepo, RepoCompared
 from kitsunox.stages.correlate import CorrelationContext
 from kitsunox.stages.repo import (
     ARCHIVES_IN_MEMORY,
+    ManifestDifference,
     RepoComparison,
     RepoMemory,
     compare,
@@ -306,3 +307,20 @@ def test_archives_are_extracted_a_few_at_a_time_and_a_bad_one_once(
     )
     assert first.unavailable == second.unavailable == "archive: archive too large"
     assert calls == 1
+
+
+def test_a_hook_the_previous_release_shipped_too_is_low() -> None:
+    """v3: Pulumi's generated `install` hook is in every release and in no repository."""
+    hook = {"install": "node scripts/install-pulumi-plugin.js resource command 1.3.0"}
+    new = change("1.3.0", scripts=hook)
+    previous = change(
+        "1.2.9", scripts={"install": "node scripts/install-pulumi-plugin.js resource command 1.2.9"}
+    ).new
+    diff = ManifestDifference(field="scripts.install", package=hook["install"], repo=None)
+    comparison = RepoComparison(manifest=(diff,))
+    repeated = Candidate(change=new.model_copy(update={"previous": previous}))
+    (low,) = InstallScriptNotInRepo().evaluate_candidate(repeated, ctx(comparison))
+    assert (low.severity, low.weight) == (Severity.LOW, 1.0) and "isn't new here" in low.explanation
+    first = Candidate(change=new.model_copy(update={"previous": change("1.2.9").new}))
+    (high,) = InstallScriptNotInRepo().evaluate_candidate(first, ctx(comparison))
+    assert high.severity is Severity.HIGH  # the release that adds the hook still fires

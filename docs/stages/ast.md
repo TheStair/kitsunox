@@ -73,7 +73,7 @@ is the malicious set.
 
 | Rule | Fires when | Severity | Benign (updates / new) | Malicious (updates / new) |
 |---|---|---|---|---|
-| `code.capability-gained` | an update's code gains capabilities. MEDIUM if it gains `env-all` or `dynamic-code`, or `network` together with `process`, `env-all` or `dynamic-code` | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
+| `code.capability-gained` (v2) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code`, or `network` together with `process`, `env-all` or `dynamic-code` | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 
 New packages get no `capability-gained` finding: with no previous version everything is
@@ -82,6 +82,17 @@ scripts run.
 
 `npm.install-script-code` also covers a case Stage 1 cannot see: the command stays
 `node setup.js` and only `setup.js` changes.
+
+`code.capability-gained` v2 (2026-10-30): gaining `env-all` alone is LOW (it was MEDIUM).
+Apps that start reading `process.env` were the commonest MEDIUM-only report on the first live
+days (about 170 of 396), and on `vm-day1` all 35 malicious samples reported through this rule
+alone had gained `dynamic-code`. `env-all` with `network` is still MEDIUM.
+
+**Inline install code** (2026-10-30): the code a hook passes to `node -e`, `--eval`, `-p` or
+`--print` is profiled as `package.json#scripts.<hook>.js`
+(`ecosystems.npm.install.install_sources`), so the install-code rules read it. Before, an
+inline hook named no file and its code went unread (`dependencykfeg`: a one-line DNS
+exfiltration of the working directory).
 
 **`npm.install-script-changed`** (MEDIUM, weight 3; 2026-10-30) compares the files the install
 hooks name with the previous version's, byte for byte, and puts the changed lines in the

@@ -30,7 +30,7 @@ from kitsunox.core.models import (
 )
 from kitsunox.core.rules import RuleContext, rules_fingerprint
 from kitsunox.core.run import DataDir
-from kitsunox.ecosystems.npm.install import install_entry_files
+from kitsunox.ecosystems.npm.install import install_sources
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.repo import NpmLocator
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
@@ -45,7 +45,7 @@ from kitsunox.stages.code import CODE_RULES
 from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
 from kitsunox.stages.repo import compare
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
-from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, new_contents
+from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, content_matches, new_contents
 from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import ArtifactTree, extract_zip
 from kitsunox.util.http import (
@@ -181,7 +181,7 @@ class StaticRules:
                 new,
                 base if change.previous else None,
                 self.capabilities,
-                install_entry_files,
+                install_sources,
                 change.previous.ref.version if change.previous else None,
             )
             stage3 = tuple(f for rule in CODE_RULES for f in rule.evaluate_code(code))
@@ -195,7 +195,7 @@ class StaticRules:
         return tuple(f for rule in rules for f in rule.evaluate_artifact(change.new, new)) + tuple(
             m.finding(item.path)
             for item, content in new_contents(base or {}, [(version, new)])
-            for m in self.cache.matches(item.sha256, content)
+            for m in content_matches(item, content, base, self.cache)
         )
 
     def _new_tree(self, change: Change, sample: EvalSample) -> ArtifactTree | None:

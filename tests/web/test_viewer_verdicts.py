@@ -174,3 +174,35 @@ def test_read_only_and_remote_servers_have_no_token(library: Library) -> None:
         assert server.token is None
     with make_server(library.root, "127.0.0.1", 0) as server:
         assert server.token is not None and len(server.token) >= 40
+
+
+def test_one_verdict_covers_every_listed_version_of_a_package(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    report = make_report(
+        RUN,
+        report_entry(1, "kx", "1.0.2", 9, Severity.HIGH),
+        report_entry(2, "kx", "1.0.1", 8, Severity.HIGH),
+        report_entry(3, "other", "2.0.0", 7, Severity.MEDIUM),
+    )
+    run_dir = data.run_dir(RUN)
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(run_manifest(RUN).model_dump_json())
+    write_report(run_dir, report)
+    queue = build_queue(data, "npm", days=7)
+    assert queue is not None
+    write_queue(data, queue)
+    library = Library(tmp_path)
+    assert "All 2 versions:" in pages.queue_page(library, TOKEN).html
+
+    def send(entries: list[str], verdict: str = "benign") -> int:
+        body = urlencode([("token", TOKEN), ("verdict", verdict)] + [("entry", e) for e in entries])
+        form = Form(body.encode(), True)
+        return route(library, "POST", "/verdict", token=TOKEN, form=form).status
+
+    assert send([f"{RUN}:1", f"{RUN}:3"]) == 400  # two packages: refused, nothing recorded
+    assert send([f"{RUN}:1", f"{RUN}:1"]) == 400  # repeated
+    assert send(["../x:1"]) == 400
+    assert read_verdicts(tmp_path, "npm") == []
+    assert send([f"{RUN}:1", f"{RUN}:2"]) == 303
+    assert sorted(r.version for r in read_verdicts(tmp_path, "npm")) == ["1.0.1", "1.0.2"]
+    assert "kx" not in pages.queue_page(library, TOKEN).html.split("Packages to review")[1]

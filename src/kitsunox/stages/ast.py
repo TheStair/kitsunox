@@ -146,14 +146,16 @@ class CodeRule(Protocol):
     def evaluate_code(self, change: CodeChange) -> Sequence[Finding]: ...
 
 
-InstallEntries = Callable[[Tree], frozenset[str]]
+# What an install script runs, as path -> code: the files its command names, and code it passes
+# inline (an ecosystem's choice of virtual path). `ecosystems.npm.install.install_sources`.
+InstallEntries = Callable[[Tree], Mapping[str, bytes]]
 MAX_INSTALL_FILE_BYTES: Final = 256 * 1024  # of each install file kept for the diff
 
 
 def install_files(tree: Tree, install_entries: InstallEntries | None) -> dict[str, bytes]:
-    """The files `tree`'s install hooks name, cut at MAX_INSTALL_FILE_BYTES."""
-    entries = install_entries(tree) if install_entries else frozenset()
-    return {path: bytes(tree[path][:MAX_INSTALL_FILE_BYTES]) for path in sorted(entries)}
+    """The code `tree`'s install hooks run, each cut at MAX_INSTALL_FILE_BYTES."""
+    sources = install_entries(tree) if install_entries else {}
+    return {path: bytes(sources[path][:MAX_INSTALL_FILE_BYTES]) for path in sorted(sources)}
 
 
 def analyse_batch(
@@ -249,8 +251,8 @@ def code_change(
 def _install_profile(
     tree: Tree, cache: CapabilityCache, install_entries: InstallEntries | None
 ) -> Profile | None:
-    entries = install_entries(tree) if install_entries else frozenset()
-    return profile(tree, cache, paths=entries) if entries else None
+    sources = install_entries(tree) if install_entries else {}
+    return profile(sources, cache) if sources else None
 
 
 def _with(

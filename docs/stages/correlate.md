@@ -209,7 +209,14 @@ dependency's packument.
 
 - **Report** a version when any finding is MEDIUM or above, or its score reaches
   `REPORT_SCORE` (6). The first keeps recall at least that of Stages 1-3 together; the second
-  lets LOW findings add up.
+  lets LOW findings add up. Since 2026-10-30 a MEDIUM finding from a rule in `WEAK_ALONE` only
+  reports through the score or beside another MEDIUM: today that is
+  `npm.publish-method.downgrade` on an unwatched package (MEDIUM, weight 3). On `vm-day1` no
+  malicious sample was reported by it alone; on the first live days it was the commonest
+  reason for a report. Measured before choosing it: "HIGH or score 6" for every rule would have
+  lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
+  install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
+  alone.
 - **Score:** the sum over the rules that fired, each counted once at its largest weight
   (Stage 2 reports a finding per matching file), INFO excluded. The CLI lists reported
   versions by score.
@@ -257,7 +264,7 @@ dependency's packument.
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.code-differs` | a shipped code file differs from the repository's file at the same path | LOW | 2 |
 | `repo.code-not-in-repo` | shipped code files are *unexplained* (above). Since `STAGE_VERSION` 6 a file whose content is elsewhere in the repository, byte for byte, is explained (a build copied it) | LOW | 2 |
-| `npm.repo.install-script-not-in-repo` (v2) | the release's install hook isn't in the repository's `package.json` (or has another command). INFO instead when the repository's build writes it (`ManifestDifference.built_by`): every package file the command names is in the repository byte for byte, and another repository file holds the command (the release's version may be a placeholder there). First VM day: `@nutui/nutui-react-taro` (`scripts/build-taro.mjs`) and `@opencode/cli` (`script/pack.ts`); `@pulumi/*` still fire, since Pulumi's code generator, not the repository, writes their hook. With `repository.directory` only that directory is searched | HIGH | 5 |
+| `npm.repo.install-script-not-in-repo` (v2) | the release's install hook isn't in the repository's `package.json` (or has another command). INFO instead when the repository's build writes it (`ManifestDifference.built_by`): every package file the command names is in the repository byte for byte, and another repository file holds the command (the release's version may be a placeholder there). First VM day: `@nutui/nutui-react-taro` (`scripts/build-taro.mjs`) and `@opencode/cli` (`script/pack.ts`); `@pulumi/*` still fire, since Pulumi's code generator, not the repository, writes their hook. With `repository.directory` only that directory is searched. v3: LOW, weight 1, when the previous release shipped the same hook (its version string aside), so a generated hook that is in every release (`@pulumi/*`) stops counting; the release that adds a hook still fires HIGH | HIGH | 5 |
 | `npm.repo.dependency-not-in-repo` | a runtime dependency the repository's `package.json` doesn't name in any section | LOW | 1 |
 
 ## Evaluation

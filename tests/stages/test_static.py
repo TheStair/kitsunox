@@ -14,6 +14,7 @@ from kitsunox.core.models import (
     PackageBatch,
     PackageVersionRef,
     PublishInfo,
+    Severity,
     VersionSnapshot,
 )
 from kitsunox.core.run import DataDir
@@ -224,3 +225,37 @@ def test_network_failures_are_marked_for_retry() -> None:
     assert not needs_retry(
         [analyse_batch(batch(), lambda s: TREES[s.ref.version], ContentCache(None, RULES))]
     )
+
+
+def test_a_match_the_previous_version_had_is_low_and_says_so(tmp_path: Path) -> None:
+    """A changed file is matched whole: its old matches would fire again every release."""
+    hook = b"post('https://discord.com/api/webhooks/1093847562019384756/x')\n"
+    trees = {
+        "1.0.0": {"lib/x.js": hook, "README.md": b"see https://webhook.site/abc"},
+        "1.0.1": {
+            "lib/x.js": hook + b"// a change elsewhere in the file\n",
+            "README.md": b"see https://webhook.site/abc today",  # docs: never runs
+            "lib/new.js": b"fetch('https://webhook.site/0b1c2d3e')",  # new: stays HIGH
+        },
+    }
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: trees[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    by_path = {
+        f.evidence[0].path: f for f in result.findings if f.rule_id == "static.exfil-endpoint"
+    }
+    assert by_path["lib/new.js"].severity is Severity.HIGH
+    old = by_path["lib/x.js"]
+    assert (old.severity, old.weight) == (Severity.LOW, 1.0)
+    assert old.explanation.endswith("not new in this release.")
+    docs = by_path["README.md"]
+    assert docs.severity is Severity.LOW  # in the previous README too, and docs anyway
+    fresh = {"1.0.0": {}, "1.0.1": {"docs/guide.md": b"curl https://webhook.site/x"}}
+    (only_docs,) = analyse_batch(
+        one, lambda s: fresh[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    (finding,) = only_docs.findings
+    assert finding.severity is Severity.LOW and "doesn't run" in finding.explanation

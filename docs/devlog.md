@@ -2,6 +2,67 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-30 (night): A precision pass from the first live reviews
+
+**Stage(s):** Stage 1 (`npm.publish-method.downgrade`), Stage 2 (not-new and docs-only
+matches), Stage 3 (`code.capability-gained`, inline install code, constant code), Stage 4
+(report policy, `npm.repo.install-script-not-in-repo`), viewer
+**Context:** Reviewing the queue by hand: 31 benign for 5 malicious and 4 inconclusive. The
+owner: "the more manual review required, the more likely the human will make mistakes". The
+queue held 1,687 reported versions over about two days.
+
+### How it was measured
+- **Live:** which rules put each queued version there; then Stage 2 re-run (current code) on
+  every reported entry from its run's captured tarballs, read-only, and the report policy
+  applied to the result (`kitsunox-scratch/session-scripts/policy/`).
+- **Eval:** `pipeline+4` on `vm-day1` with every sample's final findings dumped, so each
+  candidate change could be simulated offline before being written, then one real run with
+  all of them.
+
+### Decisions (each measured; rejected ones below)
+- **Stage 2: a match the previous version's file already had is LOW, weight 1**, and says
+  so; an `exfil-endpoint` match only in a file that never runs (docs, `.d.ts`, source maps,
+  tests) is LOW too. A changed file was matched whole, so a Telegram bot's endpoint or an
+  obfuscated commercial build fired again on every release. Live: -15% of reports on its own
+  (136 obfuscated, 93 exfil-endpoint). Eval: -8 malicious, all follow-on releases of a series
+  whose first malicious release is still reported (`esoftplay`).
+- **`code.capability-gained` v2:** gaining `env-all` alone is LOW. All 35 malicious samples it
+  reported alone had gained `dynamic-code`; about 170 live reports were apps starting to read
+  `process.env`.
+- **Constant code isn't dynamic code** (extractor v2): `eval`/`Function`/`new Function` with
+  only short constant strings (120 characters at most). `Function("return this")` was the
+  commonest live `dynamic-code`. A long constant can be a payload (`calculatorscool346` passes
+  obfuscator output to `Function` as one literal), so it still counts.
+- **`npm.publish-method.downgrade` v2:** HIGH for watched packages, MEDIUM weight 3 otherwise,
+  and then it doesn't report alone (`correlate.WEAK_ALONE`). 0 malicious lost.
+- **`npm.repo.install-script-not-in-repo` v3:** LOW, weight 1, when the previous release
+  shipped the same hook (Pulumi's generated hooks).
+- **Inline install code is read** (`install_sources`): a `node -e` hook's code is profiled as
+  `package.json#scripts.<hook>.js`. `dependencykfeg`'s whole payload was such a one-liner.
+- **Package-wide verdicts in the viewer:** one click for every listed version of a package
+  (at most 50, all checked to be the same package).
+
+### Rejected after measuring
+- "HIGH or score 6" for every rule: -202 malicious (`npm.install-script-code` alone catches
+  85, new packages' install hooks 29). Only the unwatched downgrade became weak-alone.
+- Capping LOW findings' share of the score at 2: -93 more malicious for -2 benign.
+- `exfil-endpoint` HIGH only beside secrets or install-time code: -35 malicious, 0 benign.
+- An install hook HIGH only when Stage 3 finds its code risky: -28 malicious, 0 benign.
+- `revived-with-new-dependency` weak-alone: it alone catches `xrpl@2.14.2` (April 2025).
+
+### Evaluation snapshot
+- **`pipeline+4` on `vm-day1`, all of it: malicious 2,503 -> 2,496 (72.7% -> 72.5%), benign
+  24 -> 20 (-17%).** Lost: 8 follow-on releases (above). Gained: `tnactgfds@0.30.5`. The eval's
+  1,500 benign samples are too few to show the live effect; on the queue's two days the
+  re-analysis gives 1,769 -> 1,160 reported versions (-34%), before the constant-code change.
+
+### Open questions / next steps
+- A version of a package with a malicious verdict should report its later releases whatever
+  they score (the follow-ons the not-new rule hides); that needs verdicts in Stage 4's context,
+  recorded per run for replay.
+- `code.capability-gained` on ajv-style code generation (`new Function(names.self, ...)`) is the
+  next largest live source.
+
 ## 2026-10-30 (evening): Reviewer verdicts in the viewer
 
 **Stage(s):** report, queue, viewer, notifications

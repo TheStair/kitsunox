@@ -77,6 +77,16 @@ def test_report_on_severity_or_score() -> None:
     assert medium.forwarded and medium.reason == "score 0.5; medium: m"
 
 
+def test_an_unwatched_downgrade_alone_is_not_reported() -> None:
+    weak = finding("npm.publish-method.downgrade", Severity.MEDIUM, 3.0)
+    assert not decide([weak]).forwarded
+    assert decide([weak, finding("m", Severity.MEDIUM, 1.0)]).forwarded
+    assert decide(
+        [weak, finding("a", Severity.LOW, 2.0), finding("b", Severity.LOW, 1.0)]
+    ).forwarded
+    assert decide([finding("npm.publish-method.downgrade", Severity.HIGH, 5.0)]).forwarded
+
+
 class Echo:
     """Adds a LOW finding naming how many findings it saw."""
 

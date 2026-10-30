@@ -86,6 +86,8 @@ MAX_CONNECTIONS: Final = 32
 _NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
 _PORT: Final = re.compile(r":[0-9]{1,5}")
 MAX_FORM_BYTES: Final = 16 * 1024
+MAX_ENTRIES: Final = 50  # versions one form may give a verdict (`pages.package_form`)
+_ENTRY: Final = re.compile(r"([0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}):([1-9][0-9]{0,8})")
 FORM_TYPE: Final = "application/x-www-form-urlencoded"
 _BACK: Final = re.compile(
     r"/(?:runs/[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}/entries/[1-9][0-9]{0,8}"
@@ -178,6 +180,24 @@ def _page(library: Library, parts: list[str], token: str | None = None) -> Page 
             return None
 
 
+def _targets(
+    fields: dict[str, list[str]], one: Callable[[str], str | None]
+) -> list[tuple[str, int]]:
+    """The entries a form names: `run` and `rank`, or up to MAX_ENTRIES `entry` fields
+    (`run:rank`, each once); [] if malformed."""
+    if "entry" in fields:
+        if "run" in fields or "rank" in fields or len(fields["entry"]) > MAX_ENTRIES:
+            return []
+        parsed = [_ENTRY.fullmatch(value) for value in fields["entry"]]
+        if not all(parsed) or len(set(fields["entry"])) != len(fields["entry"]):
+            return []
+        return [(m.group(1), int(m.group(2))) for m in parsed if m]
+    run, rank = one("run") or "", one("rank") or ""
+    if not RUN_ID.fullmatch(run) or not _NUMBER.fullmatch(rank):
+        return []
+    return [(run, int(rank))]
+
+
 def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
     """Record one verdict from a viewer form, then send the reviewer back (303)."""
     if form is None or not form.same_origin:
@@ -186,7 +206,10 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
         return _html(failure(415, "Unsupported", "Send the form as the page does."))
     try:
         fields = parse_qs(
-            form.body.decode("utf-8"), keep_blank_values=True, strict_parsing=True, max_num_fields=8
+            form.body.decode("utf-8"),
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=MAX_ENTRIES + 8,
         )
     except UnicodeDecodeError, ValueError:
         return _html(failure(400, "Bad request", "The form could not be read."))
@@ -198,25 +221,31 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
     given = one("token") or ""
     if not hmac.compare_digest(given.encode(), token.encode()):
         return _html(failure(403, "Forbidden", "This form is from an older viewer; reload it."))
-    run, rank, verdict = one("run") or "", one("rank") or "", one("verdict") or ""
-    note = one("note") or ""
-    if not RUN_ID.fullmatch(run) or not _NUMBER.fullmatch(rank) or verdict not in VERDICTS:
+    verdict, note = one("verdict") or "", one("note") or ""
+    targets = _targets(fields, one)
+    if not targets or verdict not in VERDICTS:
         return _html(failure(400, "Bad request", "The form names no verdict on an entry."))
     if len(note) > MAX_NOTE_CHARS:
         return _html(failure(400, "Bad request", f"A note is at most {MAX_NOTE_CHARS} characters."))
-    report = library.report(run)
-    entry = (
-        next((e for e in report.entries if e.rank == int(rank)), None)
-        if isinstance(report, Report)
-        else None
-    )
-    if not isinstance(report, Report) or entry is None:
-        return _html(not_found("That run or entry is not on disk any more."))
-    record = verdict_record(
-        report, entry, VERDICTS[verdict], by=OWNER, note=note, at=datetime.now(UTC)
-    )
+    records = []
+    now = datetime.now(UTC)
+    for run, rank in targets:
+        report = library.report(run)
+        entry = (
+            next((e for e in report.entries if e.rank == rank), None)
+            if isinstance(report, Report)
+            else None
+        )
+        if not isinstance(report, Report) or entry is None:
+            return _html(not_found("That run or entry is not on disk any more."))
+        records.append(
+            verdict_record(report, entry, VERDICTS[verdict], by=OWNER, note=note, at=now)
+        )
+    if len({r.name for r in records}) > 1:
+        return _html(failure(400, "Bad request", "One form gives a verdict on one package."))
     try:
-        library.record_verdict(record)
+        for record in records:
+            library.record_verdict(record)
     except OSError as exc:
         message = f"The verdict could not be written ({type(exc).__name__})."
         return _html(failure(500, "Not saved", message))

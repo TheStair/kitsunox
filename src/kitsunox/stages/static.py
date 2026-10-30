@@ -3,11 +3,19 @@
 See `docs/stages/static.md`. For a `PackageBatch`, every file content (by SHA-256) that is in
 some version but not in the base is analysed once, through a content-addressed cache, and its
 findings are attributed to the first version that contained it.
+
+A changed file is matched whole, so its old matches would fire again on every release (a
+Telegram bot's `api.telegram.org/bot` in every version of the bot). A match the base version's
+file at the same path already had (same rule, same explanation up to numbers) is LOW, weight 1,
+and says so; an `exfil-endpoint` match only in a file that never runs (documentation, type
+declarations, source maps, tests) is LOW too (`_demoted`). Nothing is dropped: the evidence
+stays for the reviewer and for scoring with other signals.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -105,6 +113,59 @@ class ContentCache:
         return result
 
 
+# Files npm ships that never run: documentation, type declarations, source maps, tests.
+NON_EXECUTING: Final = re.compile(
+    r"(?:^|/)(?:readme|changelog|license|contributing|history|security)[^/]*$"
+    r"|\.(?:md|markdown|mdx|txt|rst|d\.ts|d\.mts|d\.cts|map)$"
+    r"|(?:^|/)(?:docs?|examples?|test|tests|__tests__|fixtures?)/",
+    re.IGNORECASE,
+)
+_NUMBER: Final = re.compile(r"[0-9]+")
+PREVIOUS_NOTE: Final = " Also in the previous version's file: not new in this release."
+DOCS_NOTE: Final = " Only in a file that doesn't run (documentation, types, a source map or tests)."
+
+
+def _key(match: FileMatch) -> tuple[str, str]:
+    """A match's identity across versions: its rule and explanation, numbers aside (`3235
+    obfuscator-style identifiers` and `3301 ...` are the same finding)."""
+    return (match.rule_id, _NUMBER.sub("#", match.explanation))
+
+
+def _demoted(match: FileMatch, path: str, before: frozenset[tuple[str, str]]) -> FileMatch:
+    if match.severity in (Severity.INFO, Severity.LOW):
+        return match
+    if _key(match) in before:
+        note = PREVIOUS_NOTE
+    elif match.rule_id == "static.exfil-endpoint" and NON_EXECUTING.search(path):
+        note = DOCS_NOTE
+    else:
+        return match
+    return match.model_copy(
+        update={
+            "severity": Severity.LOW,
+            "weight": min(match.weight, 1.0),
+            "explanation": match.explanation + note,
+        }
+    )
+
+
+def _base_keys(base: Tree | None, path: str, cache: ContentCache) -> frozenset[tuple[str, str]]:
+    """What the base version's file at `path` matched (nothing if it had no such file)."""
+    content = (base or {}).get(path)
+    if content is None:
+        return frozenset()
+    return frozenset(_key(m) for m in cache.matches(sha256_hex(content), content))
+
+
+def content_matches(
+    item: NewContent, content: bytes, base: Tree | None, cache: ContentCache
+) -> list[FileMatch]:
+    """A new content's matches as Stage 2 reports them (`_demoted` against the base)."""
+    matches = cache.matches(item.sha256, content)
+    before = _base_keys(base, item.path, cache) if matches else frozenset()
+    return [_demoted(m, item.path, before) for m in matches]
+
+
 def analyse(content: bytes, rules: Sequence[FileRule] = RULES) -> tuple[FileMatch, ...]:
     if len(content) > MAX_FILE_BYTES or b"\x00" in content[:8192]:
         return ()  # too large for regex triage, or binary
@@ -148,7 +209,7 @@ def analyse_batch(
     found: dict[str, list[tuple[str, FileMatch]]] = {}
     base_tree = None if isinstance(base, Unavailable) else base
     for item, content in new_contents(base_tree, versions()):
-        for match in cache.matches(item.sha256, content):
+        for match in content_matches(item, content, base_tree, cache):
             found.setdefault(item.first_version, []).append((item.path, match))
     updated = []
     for candidate in batch.versions:

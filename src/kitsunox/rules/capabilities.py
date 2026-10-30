@@ -27,8 +27,12 @@ from kitsunox.stages.ast import CodeChange, Profile
 
 C = Capability
 # Gaining one of these alone is worth a look; network together with one of these is the shape of
-# exfiltration or a downloader.
-STRONG: Final = frozenset({C.ENV_ALL, C.DYNAMIC_CODE})
+# exfiltration or a downloader. v2 (2026-10-30): `env-all` alone is no longer MEDIUM. On the
+# first VM days it was the commonest sole reason to report (about 170 of 396 MEDIUM-only
+# reports: apps that start reading `process.env`), and on `vm-day1` none of the 35 malicious
+# samples reported through this rule alone had gained it without `dynamic-code`. Gaining
+# `env-all` together with `network` stays MEDIUM (`WITH_NETWORK`).
+STRONG: Final = frozenset({C.DYNAMIC_CODE})
 WITH_NETWORK: Final = frozenset({C.ENV_ALL, C.PROCESS, C.DYNAMIC_CODE})
 EVIDENCE_PER_CAPABILITY: Final = 2
 
@@ -53,6 +57,7 @@ class CapabilityGained(BaseRule):
     """An update's code can do something the previous version's couldn't."""
 
     id = "code.capability-gained"
+    version = 2
     severity = Severity.LOW
     weight = 1.0
     title = "Code gained capabilities"

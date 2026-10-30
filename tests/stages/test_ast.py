@@ -12,8 +12,8 @@ from kitsunox.core.models import (
     Severity,
     VersionSnapshot,
 )
-from kitsunox.ecosystems.npm.install import install_entry_files
-from kitsunox.lang.javascript import Capability
+from kitsunox.ecosystems.npm.install import install_sources
+from kitsunox.lang.javascript import EXTRACTOR_VERSION, Capability
 from kitsunox.stages.ast import (
     CapabilityCache,
     CodeChange,
@@ -48,7 +48,8 @@ def test_cache_serves_repeat_contents(tmp_path: Path) -> None:
     cache = CapabilityCache(tmp_path)
     first = cache.get(b"fetch(u)", "javascript")
     (path,) = tmp_path.rglob("*.json")
-    assert path.name.endswith("-javascript.json") and path.parent.parent.name == "v1"
+    assert path.name.endswith("-javascript.json")
+    assert path.parent.parent.name == f"v{EXTRACTOR_VERSION}"  # a new extractor: a new cache
     assert cache.get(b"fetch(u)", "javascript") == first
     assert cache.get(b"fetch(u)", "typescript") == first.model_copy(
         update={"language": "typescript"}
@@ -156,7 +157,7 @@ def test_install_profile_covers_only_entry_files() -> None:
         ecosystem="npm", name="kx", base=None, versions=(Candidate(change=Change(new=snap("1"))),)
     )
     analyse_batch(
-        batch, lambda s: files, CapabilityCache(None), [Spy()], install_entries=install_entry_files
+        batch, lambda s: files, CapabilityCache(None), [Spy()], install_entries=install_sources
     )
     (change,) = seen
     assert change.before is None

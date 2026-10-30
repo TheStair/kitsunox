@@ -256,9 +256,22 @@ def unevaluated(candidates: Iterable[Candidate]) -> int:
     )
 
 
+# MEDIUM findings that don't report a version on their own, only through the score or beside
+# another MEDIUM: an unwatched package published by hand after CI releases (242 versions in two
+# live days, almost all a maintainer's own manual publish; 0 malicious `vm-day1` samples
+# reported by it alone).
+WEAK_ALONE: Final = frozenset({"npm.publish-method.downgrade"})
+
+
+def _severe(finding: Finding) -> bool:
+    if not at_least(finding.severity, REPORT_SEVERITY):
+        return False
+    return finding.rule_id not in WEAK_ALONE or at_least(finding.severity, Severity.HIGH)
+
+
 def decide(findings: Sequence[Finding], *, report_score: float = REPORT_SCORE) -> StageDecision:
     total = score(findings)
-    severe = sorted({f.rule_id for f in findings if at_least(f.severity, REPORT_SEVERITY)})
+    severe = sorted({f.rule_id for f in findings if _severe(f)})
     if severe:
         reason = f"score {total:g}; {REPORT_SEVERITY.value}: {', '.join(severe)}"
     else:

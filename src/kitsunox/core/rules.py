@@ -58,12 +58,13 @@ class BaseRule:
         explanation: str,
         *evidence: Evidence,
         severity: Severity | None = None,
+        weight: float | None = None,
     ) -> Finding:
         return Finding(
             rule_id=self.id,
             rule_version=self.version,
             severity=severity or self.severity,
-            weight=self.weight,
+            weight=self.weight if weight is None else weight,
             title=self.title,
             explanation=explanation,
             evidence=evidence,

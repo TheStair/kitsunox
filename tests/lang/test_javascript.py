@@ -103,3 +103,21 @@ def test_parsers_are_safe_across_threads() -> None:
     with ThreadPoolExecutor(8) as pool:
         results = list(pool.map(lambda s: analyse_source(s, "javascript"), sources))
     assert all(r.capabilities == {C.NETWORK} for r in results)
+
+
+@pytest.mark.parametrize(
+    ("code", "dynamic"),
+    [
+        (b'var g = Function("return this")();', False),  # bundlers' route to the global object
+        (b"new Function('return this;')", False),
+        (b'eval("a" + "b")', False),
+        (b"Function()", False),
+        (b"eval(atob(x))", True),
+        (b"new Function(`return ${arg}`)", True),
+        (b'new Function("a", body)', True),
+        (b'Function("p", "' + b"x" * 200 + b'")', True),  # a long constant can be a payload
+    ],
+)
+def test_constant_code_is_not_dynamic(code: bytes, dynamic: bool) -> None:
+    uses = analyse_source(code, "javascript").uses
+    assert any(u.capability is Capability.DYNAMIC_CODE for u in uses) is dynamic

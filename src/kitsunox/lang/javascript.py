@@ -32,7 +32,10 @@ import tree_sitter_typescript as tsts
 from kitsunox.core.models import Record
 
 # Bump whenever extraction changes: it keys the on-disk cache (`stages/ast.py`).
-EXTRACTOR_VERSION: Final = 1
+# 2: `eval`, `Function(...)` and `new Function(...)` whose every argument is a short constant
+#    string are not dynamic code (`_constant_code`).
+EXTRACTOR_VERSION: Final = 2
+MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
 MAX_EVIDENCE: Final = 3  # per capability per file
@@ -225,6 +228,8 @@ def _uses(query: ts.Query, root: ts.Node) -> Iterator[tuple[Capability, str, ts.
             yield from _call(match)
         elif "new" in match:
             name = _text(match["ctor"][0])
+            if name == "Function" and _constant_code(match["new"][0]):
+                continue
             if name in CONSTRUCTORS:
                 yield CONSTRUCTORS[name], f"new {name}", match["new"][0]
         elif "import" in match:
@@ -249,7 +254,26 @@ def _call(match: dict[str, list[ts.Node]]) -> Iterator[tuple[Capability, str, ts
         if capability is not None:
             yield capability, specifier, node
     elif name in GLOBAL_CALLS:
+        if GLOBAL_CALLS[name] is Capability.DYNAMIC_CODE and _constant_code(node):
+            return
         yield GLOBAL_CALLS[name], name, node
+
+
+def _constant_code(node: ts.Node) -> bool:
+    """`eval` or `Function` given only short constant strings (or nothing): the code is in the
+    file as written, so it hides nothing. `Function("return this")()`, bundlers' way to the global
+    object, was the commonest `dynamic-code` on the first live days (66 of 216 reports that
+    `code.capability-gained` made alone). A variable, a call or a template with a substitution
+    still counts."""
+    arguments = node.child_by_field_name("arguments")
+    if arguments is None:
+        return False
+    values = [fold_string(c) for c in arguments.named_children if c.type != "comment"]
+    if any(v is None for v in values):
+        return False
+    # A long constant can be a payload: obfuscator output is often passed to `Function` as one
+    # literal (`calculatorscool346`), so only short code is let through.
+    return sum(len(v or "") for v in values) <= MAX_CONSTANT_CODE
 
 
 def _member(match: dict[str, list[ts.Node]]) -> Iterator[tuple[Capability, str, ts.Node]]:

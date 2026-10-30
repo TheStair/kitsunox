@@ -27,3 +27,19 @@ def test_missing_or_hostile_manifests() -> None:
     assert install_entry_files({"package.json": b"[]"}) == frozenset()
     assert install_entry_files({"package.json": b"{"}) == frozenset()
     assert install_entry_files(tree({"install": "node-gyp rebuild"})) == frozenset()
+
+
+def test_install_sources_include_inline_code() -> None:
+    from kitsunox.ecosystems.npm.install import install_sources
+
+    scripts = {
+        "preinstall": 'node -e "require(\\"https\\").get(u)"',
+        "install": "node setup.js && node --eval 'console.log(1)'",
+        "postinstall": "echo done",
+    }
+    files = {"package.json": json.dumps({"scripts": scripts}).encode(), "setup.js": b"x()"}
+    assert install_sources(files) == {
+        "setup.js": b"x()",
+        "package.json#scripts.install.js": b"console.log(1)",
+        "package.json#scripts.preinstall.js": b'require("https").get(u)',
+    }

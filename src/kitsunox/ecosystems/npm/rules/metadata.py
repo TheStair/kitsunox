@@ -66,6 +66,10 @@ def _field(path: str, *, after: str | None = None, before: str | None = None) ->
     )
 
 
+def _watched(change: Change) -> bool:
+    return bool(change.popularity and change.popularity.watched)
+
+
 def has_install_hook(manifest: Mapping[str, object]) -> bool:
     """The manifest declares a non-empty `preinstall`, `install` or `postinstall`."""
     declared = scripts(manifest)
@@ -179,9 +183,17 @@ class DependencyAdded(BaseRule):
 class PublishMethodDowngrade(BaseRule):
     """The previous release was published with trusted publishing (OIDC from CI) or carried a
     provenance attestation, and this one has neither. Typical of a stolen token being used from
-    an attacker's machine instead of the project's CI."""
+    an attacker's machine instead of the project's CI.
+
+    v2: HIGH for a watched (popular) package; MEDIUM, weight 3, otherwise, and then it doesn't
+    report a version alone (`correlate.WEAK_ALONE`). Alone it was the commonest
+    reason for HIGH on the first VM days (242 reported versions), almost all small packages
+    whose maintainer sometimes publishes by hand. On `vm-day1` no malicious sample lost its
+    report by this (the compromises it catches alone, `axios@1.14.1` and `@nx/*`, are watched);
+    one benign one is cleared."""
 
     id = "npm.publish-method.downgrade"
+    version = 2
     severity = Severity.HIGH
     weight = 5.0
     title = "Published without the CI provenance the previous release had"
@@ -206,6 +218,8 @@ class PublishMethodDowngrade(BaseRule):
                     before=before,
                     after=f"publisher={new.publisher}",
                 ),
+                severity=None if _watched(change) else Severity.MEDIUM,
+                weight=None if _watched(change) else 3.0,
             )
         ]
 

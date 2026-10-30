@@ -35,6 +35,17 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   not in the base. Each is analysed once, and its findings are attributed to the first version
   that contained it. A version that adds malicious code and is reverted within the burst is
   still analysed.
+- **Not new, or never run** (2026-10-30, `static.content_matches`): a changed file is matched
+  whole, so its old matches would fire again every release (a Telegram bot's
+  `api.telegram.org/bot`, an obfuscated commercial build, in every version). A match the base
+  version's file at the same path already had (same rule, same explanation with numbers
+  aside) is LOW, weight 1, and says "Also in the previous version's file". An
+  `exfil-endpoint` match only in a file that never runs (`NON_EXECUTING`: README and other
+  docs, `.md`, `.d.ts`, source maps, `docs/`, `examples/`, `test/`) is LOW as well. Findings
+  are kept, so a reviewer still sees them and they still add to the score. On `vm-day1` it
+  cost 8 malicious samples, all follow-on releases of a series whose first malicious release is
+  still reported (`esoftplay@0.0.142-m`, then 0.0.152 and others with the same Telegram
+  exfiltration), for 3 benign.
 - **Output:** the batch's candidates with Stage 2 findings and a `StageDecision`. A batch is
   forwarded if any finding is MEDIUM or above.
 
