@@ -281,3 +281,17 @@ def test_a_summary_is_due_once_a_day_and_a_crash_post_once_a_day() -> None:
     assert crash_due(NotifyState(), now)
     assert not crash_due(NotifyState(crash_posted=now - timedelta(hours=23)), now)
     assert crash_due(NotifyState(crash_posted=now - timedelta(days=1)), now)
+
+
+def test_the_daily_summary_carries_the_verdict_tally() -> None:
+    from kitsunox.reporting.verdicts import verdict_record
+
+    a = report("a", entry(1, "evil-pkg", "1.0.3", 14, Severity.HIGH))
+    at = datetime(2026, 10, 29, 12, tzinfo=UTC)
+    earlier = verdict_record(a, a.entries[0], "malicious", by="owner", at=at - timedelta(days=2))
+    benign = verdict_record(a, a.entries[0], "benign", by="owner", at=at)
+    other = earlier.model_copy(update={"name": "other", "at": at})
+    content = render_daily(DAY, ticks_of_a_day(), [a], [earlier, other])
+    assert "**Verified malicious: 2** (+1 that day); inconclusive 0, benign 0." in content
+    flipped = render_daily(DAY, ticks_of_a_day(), [a], [earlier, benign])
+    assert "**Verified malicious: 0** (+0 that day); inconclusive 0, benign 1." in flipped

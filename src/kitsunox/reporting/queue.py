@@ -10,14 +10,19 @@ A run's `report.json` lists reported *versions*. Across runs that has two proble
   earliest run on a tie): a later run may have known more, and a missed attack costs more than
   a false positive. (Evaluation datasets keep the earliest sighting; that is about labels.)
 
-The queue is a pure function of the reports it reads: `as_of` is the newest report's, never the
-clock, and the output is sorted, so the same reports always give the same bytes. It is written
+Versions a reviewer has given a verdict (`reporting.verdicts`: malicious, inconclusive, benign)
+are left out; the counts say how many, and the verdict tally rides along.
+
+The queue is a pure function of the reports and the verdict log it reads: `as_of` is the newest
+report's, never the clock, and the output is sorted, so the same files always give the same
+bytes. It is written
 to `data/queue/queue.json` (canonical) and `data/queue/index.md`, whose version links point at
 each run's per-version pages. Package strings are untrusted and go through `markdown.text`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +34,7 @@ from kitsunox.core.models import Persisted, Record, Severity
 from kitsunox.core.run import DataDir, RunManifest
 from kitsunox.reporting.markdown import page_name, text
 from kitsunox.reporting.report import REPORT_DIR, Report, ReportEntry
+from kitsunox.reporting.verdicts import VerdictRecord, current, read_verdicts, tally
 from kitsunox.util.files import atomic_write
 
 QUEUE_DIR: Final = "queue"
@@ -74,9 +80,19 @@ class Queue(Persisted):
     versions: int
     by_severity: dict[str, int] = Field(description="Packages by their highest severity.")
     entries: tuple[QueueEntry, ...]
+    reviewed: int = Field(default=0, description="Versions left out: a verdict was recorded.")
+    verdicts: dict[str, int] = Field(
+        default_factory=dict, description="Versions per verdict, over the whole verdict log."
+    )
 
 
-def build_queue(data: DataDir, ecosystem: str, *, days: int) -> Queue | None:
+def build_queue(
+    data: DataDir,
+    ecosystem: str,
+    *,
+    days: int,
+    reviewed: Mapping[tuple[str, str], VerdictRecord] | None = None,
+) -> Queue | None:
     """The queue over reports from the last `days` before the newest one; None if no run of
     `ecosystem` has a report yet. The window is chosen from the runs' small manifests, then
     the reports inside it are read one at a time: runs (and their reports) outlive pruning, so
@@ -88,6 +104,8 @@ def build_queue(data: DataDir, ecosystem: str, *, days: int) -> Queue | None:
     since = as_of - timedelta(days=days)
     window = [(moment, run_id) for moment, run_id in runs if moment > since]
 
+    verdicts = reviewed if reviewed is not None else current(read_verdicts(data.root, ecosystem))
+    left_out: set[tuple[str, str]] = set()
     best: dict[tuple[str, str], _Sighting] = {}
     read, skipped = [], []
     for _, run_id in window:  # earliest first: a tie keeps the earliest sighting
@@ -100,8 +118,11 @@ def build_queue(data: DataDir, ecosystem: str, *, days: int) -> Queue | None:
             continue
         read.append(run_id)
         for entry in report.entries:
-            sighting = _Sighting.of(report.run_id, entry)
             key = (entry.name, entry.version)
+            if key in verdicts:
+                left_out.add(key)
+                continue
+            sighting = _Sighting.of(report.run_id, entry)
             if key not in best or sighting.strength > best[key].strength:
                 best[key] = sighting
     by_package: dict[str, list[_Sighting]] = {}
@@ -124,6 +145,8 @@ def build_queue(data: DataDir, ecosystem: str, *, days: int) -> Queue | None:
         versions=sum(len(e.versions) for e in entries),
         by_severity=dict(sorted(by_severity.items())),
         entries=entries,
+        reviewed=len(left_out),
+        verdicts=tally(verdicts),
     )
 
 
@@ -149,6 +172,13 @@ def render_queue(queue: Queue) -> str:
             for s, n in sorted(queue.by_severity.items(), key=lambda kv: _desc(kv[0]))
         )
         lines += [f"Packages by highest severity: {counts}.", ""]
+    if queue.reviewed or any(queue.verdicts.values()):
+        counts = ", ".join(f"{n} {kind}" for kind, n in queue.verdicts.items())
+        lines += [
+            f"{queue.reviewed} reported versions already have a verdict and are left out. "
+            f"Verdicts so far: {counts}.",
+            "",
+        ]
     if queue.skipped:
         lines += [f"Unreadable reports, left out: {', '.join(map(text, queue.skipped))}.", ""]
     if not queue.entries:

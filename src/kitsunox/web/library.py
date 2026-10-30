@@ -1,4 +1,5 @@
-"""Read-only access to a data directory's reports and review queue.
+"""Access to a data directory's reports, review queue and reviewer verdicts. Everything is
+read-only except the verdict log, which `record_verdict` appends to (`reporting.verdicts`).
 
 Request paths never reach the filesystem: a run id from a URL is matched against `RUN_ID` and
 then looked up among the names actually listed in `runs/`, and only that listed name is used to
@@ -26,6 +27,13 @@ from typing import Final
 from kitsunox.core.models import Persisted
 from kitsunox.reporting.queue import QUEUE_DIR, Queue
 from kitsunox.reporting.report import REPORT_DIR, Report
+from kitsunox.reporting.verdicts import (
+    VerdictRecord,
+    append_verdict,
+    current,
+    read_verdicts,
+    verdicts_path,
+)
 from kitsunox.util.schema import SchemaVersionError
 
 RUN_ID: Final = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}")
@@ -76,6 +84,15 @@ class RunSummary:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class Verdicts:
+    log: tuple[VerdictRecord, ...]  # oldest first
+    now: dict[tuple[str, str], VerdictRecord]  # (name, version) -> its verdict, if any
+
+    def history(self, name: str, version: str) -> list[VerdictRecord]:
+        return [r for r in self.log if r.key == (name, version)]
+
+
 class Library:
     """The reports and queue under one data directory. Safe to share between threads."""
 
@@ -85,6 +102,7 @@ class Library:
         self._reports: OrderedDict[Path, tuple[_Signature, Report | LoadError]] = OrderedDict()
         self._summaries: dict[Path, tuple[_Signature, RunSummary | LoadError]] = {}
         self._queue: tuple[_Signature, Queue | LoadError] | None = None
+        self._verdicts: dict[str, tuple[_Signature, Verdicts]] = {}
 
     @property
     def queue_path(self) -> Path:
@@ -147,6 +165,23 @@ class Library:
         with self._lock:
             self._queue = (signature, loaded)
         return loaded
+
+    def verdicts(self, ecosystem: str = "npm") -> Verdicts:
+        """The ecosystem's verdict log and each version's verdict now."""
+        path = verdicts_path(self.root, ecosystem)
+        signature = _signature(path)
+        with self._lock:
+            cached = self._verdicts.get(ecosystem)
+            if cached is not None and cached[0] == signature:
+                return cached[1]
+        records = tuple(read_verdicts(self.root, ecosystem))
+        loaded = Verdicts(records, current(records))
+        with self._lock:
+            self._verdicts[ecosystem] = (signature, loaded)
+        return loaded
+
+    def record_verdict(self, record: VerdictRecord) -> None:
+        append_verdict(self.root, record)
 
     def _report_at(self, path: Path) -> Report | LoadError:
         signature = _signature(path)

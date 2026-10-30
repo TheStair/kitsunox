@@ -37,7 +37,7 @@ RUN = "20261029T210500Z-npm"
 UNREPORTED = "20261029T190500Z-npm"
 CSP = (
     "default-src 'none'; style-src 'self'; img-src 'none'; frame-ancestors 'none'; "
-    "base-uri 'none'; form-action 'none'"
+    "base-uri 'none'; form-action 'self'"
 )
 
 
@@ -277,8 +277,8 @@ def test_live_head_has_no_body_and_post_is_refused(live: ViewerServer) -> None:
     head = request(live, "HEAD", "/")
     assert head.status == 200 and head.read() == b""
     assert int(head.getheader("Content-Length") or 0) > 0
-    post = request(live, "POST", "/", {"Content-Length": "0"})
-    assert post.status == 405 and post.getheader("Allow") == "GET, HEAD"
+    post = request(live, "POST", "/", {"Content-Length": "0"})  # only /verdict takes a POST
+    assert post.status == 405 and post.getheader("Allow") == "GET, HEAD, POST"
     assert_security_headers(post)
 
 

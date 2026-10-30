@@ -123,10 +123,13 @@ def page(title: str, body: str, crumbs: Sequence[tuple[str | None, str]] = ()) -
         "</head>\n"
         "<body>\n"
         '<header><nav aria-label="Main"><a class="brand" href="/">Kitsunox</a> '
-        '<a href="/">Review queue</a> <a href="/runs">Runs</a></nav></header>\n'
+        '<a href="/">Review queue</a> <a href="/verdicts/malicious">Malicious</a> '
+        '<a href="/verdicts/inconclusive">Inconclusive</a> <a href="/verdicts/benign">Benign</a> '
+        '<a href="/runs">Runs</a></nav></header>\n'
         f"<main>\n{trail}\n{body}\n</main>\n"
-        "<footer><p>Local, read-only viewer. Text from packages is untrusted: it is shown "
-        "escaped, with hidden characters removed and only plain https links.</p></footer>\n"
+        "<footer><p>Local viewer: it writes nothing but reviewers' verdicts. Text from "
+        "packages is untrusted: it is shown escaped, with hidden characters removed and only "
+        "plain https links.</p></footer>\n"
         "</body>\n"
         "</html>\n"
     )

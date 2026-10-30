@@ -42,6 +42,7 @@ from kitsunox.core.models import Persisted, Record, Severity
 from kitsunox.core.run import RunManifest
 from kitsunox.reporting.markdown import strip_controls
 from kitsunox.reporting.report import Report, ReportEntry
+from kitsunox.reporting.verdicts import VerdictRecord, current, tally
 from kitsunox.util.files import atomic_write
 
 WEBHOOK_ENV: Final = "KITSUNOX_DISCORD_WEBHOOK"
@@ -173,9 +174,15 @@ def crash_due(state: NotifyState, now: datetime) -> bool:
     return state.crash_posted is None or now - state.crash_posted >= CRASH_EVERY
 
 
-def render_daily(day: date, ticks: Sequence[TickRecord], reports: Sequence[Report]) -> str:
-    """The day's ticks and reports. A version two overlapping runs both reported counts once,
-    at its highest score."""
+def render_daily(
+    day: date,
+    ticks: Sequence[TickRecord],
+    reports: Sequence[Report],
+    verdicts: Sequence[VerdictRecord] = (),
+) -> str:
+    """The day's ticks and reports, and reviewers' verdicts (the running tally, and how many
+    were recorded that day). A version two overlapping runs both reported counts once, at its
+    highest score."""
     today = [t for t in ticks if t.started.date() == day]
     runs = [t for t in today if t.run_id is not None]
     crashed = [t for t in today if t.crashed]
@@ -207,6 +214,15 @@ def render_daily(day: date, ticks: Sequence[TickRecord], reports: Sequence[Repor
         top = _top_packages(list(best.values()))
         if top:
             lines.append(f"Top: {top}")
+    if verdicts:
+        now = current(verdicts)
+        counts = tally(now)
+        that_day = Counter(r.verdict for r in now.values() if r.at.date() == day)
+        lines.append(
+            f"**Verified malicious: {counts['malicious']:,}** "
+            f"(+{that_day['malicious']} that day); inconclusive {counts['inconclusive']:,}, "
+            f"benign {counts['benign']:,}."
+        )
     gaps = [t for t in runs if t.chained is False]
     if gaps:
         lines.append(f"**{len(gaps)} runs NOT chained** (coverage gap).")

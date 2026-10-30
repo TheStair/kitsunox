@@ -297,3 +297,33 @@ def test_view_serves_on_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     result = runner.invoke(app, ["view", "--data-dir", str(tmp_path), "--port", "0"])
     assert result.exit_code == 0, result.output
     assert calls == [(tmp_path, "127.0.0.1", 0, False)]
+
+
+def test_verdict_records_from_the_shell_and_verdicts_lists_them(tmp_path: Path) -> None:
+    from conftest import make_report, report_entry, run_manifest
+    from kitsunox.core.models import Severity
+    from kitsunox.reporting.report import write_report
+
+    run_id = "20261029T210500Z-npm"
+    run_dir = DataDir(tmp_path).run_dir(run_id)
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(run_manifest(run_id).model_dump_json())
+    write_report(
+        run_dir, make_report(run_id, report_entry(1, "evil-pkg", "1.0.3", 14, Severity.HIGH))
+    )
+    args = ["--data-dir", str(tmp_path)]
+    result = runner.invoke(
+        app, ["verdict", run_id, "1", "malicious", "--note", "exfil", "--by", "claude", *args]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "evil-pkg@1.0.3: malicious (by claude)"
+    listed = runner.invoke(app, ["verdicts", *args])
+    assert listed.stdout.splitlines()[0] == "1 malicious, 0 inconclusive, 0 benign"
+    assert "evil-pkg@1.0.3 (claude," in listed.stdout and listed.stdout.rstrip().endswith(": exfil")
+    for bad in (
+        ["verdict", run_id, "1", "evil", *args],
+        ["verdict", run_id, "9", "benign", *args],
+        ["verdict", "20261029T000000Z-npm", "1", "benign", *args],
+        ["verdict", run_id, "1", "benign", "--by", "Bad Name", *args],
+    ):
+        assert runner.invoke(app, bad).exit_code == 2

@@ -168,7 +168,7 @@ ALLOWED_ATTRS = frozenset(
 )
 INTERNAL_HREF = re.compile(
     r"/(?:runs(?:/[0-9]{8}T[0-9]{6}Z-[a-z0-9]+(?:/entries/[0-9]+)?)?"
-    r"|runs/page/[0-9]+|static/style\.css)?"
+    r"|runs/page/[0-9]+|static/style\.css|verdicts/(?:malicious|inconclusive|benign))?"
 )
 
 

@@ -68,6 +68,15 @@ from kitsunox.notify import (
 from kitsunox.reporting.publish import publish_report
 from kitsunox.reporting.queue import build_queue, write_queue
 from kitsunox.reporting.report import REPORT_DIR, Report
+from kitsunox.reporting.verdicts import (
+    OWNER,
+    VERDICTS,
+    append_verdict,
+    current,
+    read_verdicts,
+    tally,
+    verdict_record,
+)
 from kitsunox.sandbox.results import prune_sandbox
 from kitsunox.sandbox.select import DEFAULT_CAP
 from kitsunox.stages.code import run_code_stage
@@ -492,12 +501,17 @@ def view_cmd(
         bool,
         typer.Option(
             "--allow-remote",
-            help="Allow one specific non-loopback address. There is no login and no TLS.",
+            help="Allow one specific non-loopback address. There is no login and no TLS, so "
+            "verdicts can't be recorded there.",
         ),
     ] = False,
+    read_only: Annotated[
+        bool, typer.Option("--read-only", help="Show no verdict forms and record nothing.")
+    ] = False,
 ) -> None:
-    """Browse the review queue and run reports in a local web page (read-only; safe to run
-    beside `collect`, it takes no lock). Ctrl-C stops it."""
+    """Browse the review queue and run reports in a local web page, and record reviewers'
+    verdicts (malicious, inconclusive, benign). Safe to run beside `collect`: it takes no lock
+    and writes only the verdict log. Ctrl-C stops it."""
     from kitsunox.web import RemoteBindRefusedError, serve  # http.server only when needed
 
     try:
@@ -506,11 +520,64 @@ def view_cmd(
             host,
             port,
             allow_remote=allow_remote,
+            read_only=read_only,
             announce=lambda url: typer.echo(f"serving {data_dir} at {url} (Ctrl-C to stop)"),
         )
     except (RemoteBindRefusedError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
+
+
+@app.command("verdict")
+def verdict_cmd(
+    run_id: str,
+    rank: Annotated[int, typer.Argument(min=1)],
+    verdict: Annotated[str, typer.Argument(help="malicious, inconclusive, benign or reopened.")],
+    note: Annotated[str, typer.Option(help="Why (shown with the verdict).")] = "",
+    by: Annotated[str, typer.Option(help="Who records it (a-z, 0-9, _ and -).")] = OWNER,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+) -> None:
+    """Record a verdict on entry RANK of run RUN_ID's report, as the viewer does: the version
+    leaves the review queue and is listed under its verdict."""
+    parsed = VERDICTS.get(verdict)
+    if parsed is None:
+        typer.echo("verdict must be malicious, inconclusive, benign or reopened", err=True)
+        raise typer.Exit(code=2)
+    data = DataDir(data_dir)
+    try:
+        report = Report.load_json((data.run_dir(run_id) / REPORT_DIR / "report.json").read_bytes())
+    except (OSError, ValueError) as exc:
+        typer.echo(f"no readable report for run {run_id} ({type(exc).__name__})", err=True)
+        raise typer.Exit(code=2) from exc
+    entry = next((e for e in report.entries if e.rank == rank), None)
+    if entry is None:
+        typer.echo(f"run {run_id} has no entry {rank}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        record = verdict_record(report, entry, parsed, by=by, note=note, at=datetime.now(UTC))
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    append_verdict(data.root, record)
+    typer.echo(f"{entry.name}@{entry.version}: {parsed} (by {by})")
+
+
+@app.command("verdicts")
+def verdicts_cmd(
+    kind: Annotated[str | None, typer.Argument(help="Only this verdict.")] = None,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+) -> None:
+    """The versions reviewers have given a verdict, most recent first, and the tally."""
+    now = current(read_verdicts(DataDir(data_dir).root, NPM))
+    counts = tally(now)
+    typer.echo(", ".join(f"{n} {k}" for k, n in counts.items()))
+    for record in sorted(now.values(), key=lambda r: r.at, reverse=True):
+        if kind is None or record.verdict == kind:
+            note = f": {record.note}" if record.note else ""
+            typer.echo(
+                f"{record.verdict:12} {record.name}@{record.version} ({record.by}, "
+                f"{record.at:%Y-%m-%d %H:%M}){note}"
+            )
 
 
 @samples_app.command("datadog")
@@ -701,7 +768,8 @@ def _post_daily(data: DataDir, webhook: str | None, log: Callable[[str], None]) 
             reports.append(Report.load_json(path.read_bytes()))
         except OSError, ValueError:  # pruned, damaged or another schema: left out
             continue
-    if post_update(webhook, render_daily(day, ticks, reports), log):
+    verdicts = read_verdicts(data.root, NPM)
+    if post_update(webhook, render_daily(day, ticks, reports, verdicts), log):
         try:
             save_state(state_dir, state.model_copy(update={"daily_posted": day}))
         except OSError as exc:

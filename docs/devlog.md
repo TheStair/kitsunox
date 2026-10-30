@@ -2,6 +2,33 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-30 (evening): Reviewer verdicts in the viewer
+
+**Stage(s):** report, queue, viewer, notifications
+**Context:** The owner wants to review a reported version, mark it malicious, inconclusive or
+benign, have it leave the queue and land on its verdict's page, and keep a running tally of
+verified malicious releases. The viewer was read-only. Decision
+[0015](decisions/0015-reviewer-verdicts.md).
+
+### Decisions
+- **Per-version verdicts in an append-only log** (`reporting/verdicts.py`,
+  `data/verdicts/npm.jsonl`): last record wins, `reopened` returns a version to the queue,
+  every record copies the entry as reviewed so it outlives the run's 7 days.
+- **The queue leaves reviewed versions out** (`build_queue`; the viewer filters again at
+  render time so a click takes effect at once) and carries the tally; so do the queue page and
+  the daily Discord summary ("Verified malicious: N (+M that day)").
+- **One write in the viewer, `POST /verdict`:** per-start `secrets` token in its own forms,
+  `Origin`/`Sec-Fetch-Site` checks, 16 KiB urlencoded body, each field once; the package and
+  version come from the report on disk by run id and rank; the redirect must be one of the
+  viewer's pages; CSP `form-action 'self'`. No token (no forms, no POST) off loopback or with
+  `--read-only`.
+- **`kitsunox verdict` / `kitsunox verdicts`** record and list from a shell; `--by` names the
+  reviewer, so an analyst's verdicts (mine are `claude`) are told apart from the owner's.
+
+### Open questions / next steps
+- Verified verdicts are live labels: turning them into evaluation samples (what the rules
+  caught against what was verified) is the obvious next use.
+
 ## 2026-10-30 (afternoon): Reviewing the top live results; full previous releases; install-script diffs; daily Discord summary
 
 **Stage(s):** Stage 0 (diff base), Stage 1 (`npm.install-hook`, routing), Stage 3

@@ -111,3 +111,17 @@ pre {
 
 details { margin: 1.5rem 0; }
 summary { cursor: pointer; }
+
+/* Reviewer verdicts */
+.tally { background: var(--panel); border: 1px solid var(--line); padding: 0.5rem 0.75rem; }
+.review { border: 1px solid var(--line); background: var(--panel); padding: 0.25rem 1rem 0.75rem; }
+.review h2 { margin-top: 0.5rem; }
+form.verdict { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; align-items: flex-end; margin: 0.25rem 0 0.25rem 0.5rem; }
+.review form.verdict { display: flex; margin-left: 0; }
+form.verdict label { display: flex; flex-direction: column; width: 100%; font-size: 0.875rem; }
+form.verdict textarea { font: inherit; width: 100%; max-width: 40rem; }
+form.verdict button { font: inherit; font-size: 0.8rem; padding: 0.1rem 0.5rem; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); color: var(--fg); cursor: pointer; }
+.review form.verdict button { font-size: 0.95rem; padding: 0.25rem 0.75rem; }
+button.v-malicious, .verdict-now.v-malicious strong { color: var(--high); }
+button.v-inconclusive, .verdict-now.v-inconclusive strong { color: var(--medium); }
+button.v-benign, .verdict-now.v-benign strong { color: var(--low); }

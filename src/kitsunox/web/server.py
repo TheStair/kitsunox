@@ -13,9 +13,16 @@
   so `%2e%2e`, `..`, NUL or absolute forms simply match nothing (404). Run ids are then looked
   up among the runs actually on disk (`Library.find_run`).
 - **Headers on every response:** a Content-Security-Policy that allows only the one stylesheet
-  (no script, no inline style, no images, no frames, no forms), `nosniff`, no referrer.
-- Only GET and HEAD, HTTP/1.0 and 1.1 (HTTP/0.9 has no headers, so it is refused). The handler
-  never writes to the data directory and never fetches.
+  (no script, no inline style, no images, no frames; forms only to this viewer), `nosniff`, no
+  referrer.
+- GET and HEAD, HTTP/1.0 and 1.1 (HTTP/0.9 has no headers, so it is refused). The handler never
+  fetches. **One write:** `POST /verdict` appends a reviewer's verdict to the verdict log
+  (`reporting.verdicts`). It needs the token this server made at start (`secrets`, in every
+  form it serves; a page on another site can't read it), an `Origin` naming this viewer when
+  the browser sends one, and `Sec-Fetch-Site: same-origin` when sent; the body is a small
+  urlencoded form. The package and version come from the run's report on disk, looked up by
+  run id and rank, never from the form. A server listening on a non-loopback address
+  (`--allow-remote`: no login) or started `read_only` has no token and refuses every POST.
 - **Slow or many clients:** each connection has an idle timeout and a total deadline (both
   `REQUEST_TIMEOUT_SECONDS`), after which its socket is shut down; at most `MAX_CONNECTIONS`
   are served at once, and the rest get a 503 and are closed.
@@ -26,28 +33,43 @@
 from __future__ import annotations
 
 import contextlib
+import hmac
 import ipaddress
 import re
+import secrets
 import socket
 import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import Any, Final, cast
+from urllib.parse import parse_qs
 
+from kitsunox.reporting.report import Report
+from kitsunox.reporting.verdicts import MAX_NOTE_CHARS, OWNER, VERDICTS, verdict_record
 from kitsunox.web.html import STYLESHEET
 from kitsunox.web.library import RUN_ID, Library
-from kitsunox.web.pages import Page, entry_page, failure, not_found, queue_page, run_page, runs_page
+from kitsunox.web.pages import (
+    Page,
+    entry_page,
+    failure,
+    not_found,
+    queue_page,
+    run_page,
+    runs_page,
+    verdicts_page,
+)
 
 SECURITY_HEADERS: Final = (
     (
         "Content-Security-Policy",
         "default-src 'none'; style-src 'self'; img-src 'none'; frame-ancestors 'none'; "
-        "base-uri 'none'; form-action 'none'",
+        "base-uri 'none'; form-action 'self'",
     ),
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
@@ -63,6 +85,22 @@ REQUEST_TIMEOUT_SECONDS: Final = 30
 MAX_CONNECTIONS: Final = 32
 _NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
 _PORT: Final = re.compile(r":[0-9]{1,5}")
+MAX_FORM_BYTES: Final = 16 * 1024
+FORM_TYPE: Final = "application/x-www-form-urlencoded"
+_BACK: Final = re.compile(
+    r"/(?:runs/[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}/entries/[1-9][0-9]{0,8}"
+    r"|verdicts/(?:malicious|inconclusive|benign))?"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Form:
+    """A POST as `route` sees it: the body, and whether the request came from this viewer's
+    own pages (`Origin` and `Sec-Fetch-Site`, when the browser sent them)."""
+
+    body: bytes
+    same_origin: bool
+    content_type: str | None = FORM_TYPE
 
 
 class RemoteBindRefusedError(ValueError):
@@ -93,26 +131,39 @@ def _busy() -> bytes:
     return f"HTTP/1.0 503 Service Unavailable\r\n{head}Connection: close\r\n\r\n".encode() + body
 
 
-def route(library: Library, method: str, target: str) -> Response:
-    """The response for one request. `target` is the raw request target, never decoded."""
-    if method not in ("GET", "HEAD"):
-        page = failure(405, "Method not allowed", "This viewer is read-only: GET and HEAD only.")
-        return Response(405, HTML, page.html.encode(), (("Allow", "GET, HEAD"),))
+def route(
+    library: Library,
+    method: str,
+    target: str,
+    *,
+    token: str | None = None,
+    form: Form | None = None,
+) -> Response:
+    """The response for one request. `target` is the raw request target, never decoded.
+    `token`: the server's form token (None: read-only)."""
     if not target.startswith("/"):
         return _html(failure(400, "Bad request", "Only paths are accepted."))
     path = target.split("?", 1)[0].split("#", 1)[0]
+    if method == "POST" and path == "/verdict" and token is not None:
+        return _post_verdict(library, token, form)
+    if method not in ("GET", "HEAD"):
+        allowed = "GET, HEAD, POST" if token is not None else "GET, HEAD"
+        page = failure(405, "Method not allowed", "Only pages, and verdicts at /verdict.")
+        return Response(405, HTML, page.html.encode(), (("Allow", allowed),))
     if path == STYLESHEET:
         return Response(200, CSS, stylesheet())
     if len(path) > 1 and path.endswith("/"):
         path = path[:-1]
-    found = _page(library, path.split("/")[1:])
+    found = _page(library, path.split("/")[1:], token)
     return _html(found if found is not None else not_found())
 
 
-def _page(library: Library, parts: list[str]) -> Page | None:
+def _page(library: Library, parts: list[str], token: str | None = None) -> Page | None:
     match parts:
         case [""]:
-            return queue_page(library)
+            return queue_page(library, token)
+        case ["verdicts", kind]:
+            return verdicts_page(library, kind, token)
         case ["runs"]:
             return runs_page(library)
         case ["runs", "page", number] if _NUMBER.fullmatch(number):
@@ -122,9 +173,57 @@ def _page(library: Library, parts: list[str]) -> Page | None:
         case ["runs", run_id, "entries", rank] if RUN_ID.fullmatch(run_id) and _NUMBER.fullmatch(
             rank
         ):
-            return entry_page(library, run_id, int(rank))
+            return entry_page(library, run_id, int(rank), token)
         case _:
             return None
+
+
+def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
+    """Record one verdict from a viewer form, then send the reviewer back (303)."""
+    if form is None or not form.same_origin:
+        return _html(failure(403, "Forbidden", "Verdicts come from this viewer's own pages."))
+    if (form.content_type or "").split(";", 1)[0].strip().lower() != FORM_TYPE:
+        return _html(failure(415, "Unsupported", "Send the form as the page does."))
+    try:
+        fields = parse_qs(
+            form.body.decode("utf-8"), keep_blank_values=True, strict_parsing=True, max_num_fields=8
+        )
+    except UnicodeDecodeError, ValueError:
+        return _html(failure(400, "Bad request", "The form could not be read."))
+
+    def one(name: str) -> str | None:
+        values = fields.get(name, [])
+        return values[0] if len(values) == 1 else None
+
+    given = one("token") or ""
+    if not hmac.compare_digest(given.encode(), token.encode()):
+        return _html(failure(403, "Forbidden", "This form is from an older viewer; reload it."))
+    run, rank, verdict = one("run") or "", one("rank") or "", one("verdict") or ""
+    note = one("note") or ""
+    if not RUN_ID.fullmatch(run) or not _NUMBER.fullmatch(rank) or verdict not in VERDICTS:
+        return _html(failure(400, "Bad request", "The form names no verdict on an entry."))
+    if len(note) > MAX_NOTE_CHARS:
+        return _html(failure(400, "Bad request", f"A note is at most {MAX_NOTE_CHARS} characters."))
+    report = library.report(run)
+    entry = (
+        next((e for e in report.entries if e.rank == int(rank)), None)
+        if isinstance(report, Report)
+        else None
+    )
+    if not isinstance(report, Report) or entry is None:
+        return _html(not_found("That run or entry is not on disk any more."))
+    record = verdict_record(
+        report, entry, VERDICTS[verdict], by=OWNER, note=note, at=datetime.now(UTC)
+    )
+    try:
+        library.record_verdict(record)
+    except OSError as exc:
+        message = f"The verdict could not be written ({type(exc).__name__})."
+        return _html(failure(500, "Not saved", message))
+    back = one("back") or "/"
+    if not _BACK.fullmatch(back):
+        back = "/"
+    return Response(303, HTML, b"", (("Location", back),))
 
 
 # ----------------------------------------------------------------------------- hosts
@@ -192,9 +291,16 @@ def host_allowed(header: str | None, allowed: frozenset[str]) -> bool:
 class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], library: Library, allowed: frozenset[str]):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        library: Library,
+        allowed: frozenset[str],
+        token: str | None = None,
+    ):
         self.library = library
         self.allowed = allowed
+        self.token = token  # None: read-only
         self.deadline: float = REQUEST_TIMEOUT_SECONDS
         self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         if ":" in address[0]:
@@ -301,13 +407,37 @@ class ViewerHandler(BaseHTTPRequestHandler):
             page = failure(400, "Bad request", "The Host header doesn't name this viewer.")
             self._send(_html(page))
             return
+        form = None
+        if self.command == "POST":
+            form = self._form(hosts[0])
+            if form is None:
+                return
         try:
-            response = route(server.library, self.command, self.path)
+            response = route(server.library, self.command, self.path, token=server.token, form=form)
         except Exception as exc:  # a page must never show a traceback
             self.log_error("error rendering a page: %s", type(exc).__name__)
             page = failure(500, "Error", "This page could not be rendered.")
             response = _html(page)
         self._send(response)
+
+    def _form(self, host: str) -> Form | None:
+        """The POST body (at most MAX_FORM_BYTES; else a 413 is sent and None returned) and
+        whether the browser says it came from this viewer."""
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        if not 0 <= length <= MAX_FORM_BYTES:
+            self.close_connection = True
+            self._send(_html(failure(413, "Too large", "A verdict form is small.")))
+            return None
+        body = self.rfile.read(length)
+        origin = self.headers.get("Origin")
+        site = self.headers.get("Sec-Fetch-Site")
+        same = (origin is None or origin.strip().lower() == f"http://{host.strip().lower()}") and (
+            site is None or site.strip().lower() == "same-origin"
+        )
+        return Form(body, same, self.headers.get("Content-Type"))
 
     def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
         """Errors raised by `http.server` itself (malformed request, unknown method, line too
@@ -336,12 +466,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
 
 def make_server(
-    data_dir: Path, host: str = "127.0.0.1", port: int = 8000, *, allow_remote: bool = False
+    data_dir: Path,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    *,
+    allow_remote: bool = False,
+    read_only: bool = False,
 ) -> ViewerServer:
     """A server for `data_dir`, bound but not yet serving. Port 0 picks a free port.
 
     `host` is checked before binding and the address it resolved to after: a name such as `0`
-    or `0.0` passes the first check but binds every interface."""
+    or `0.0` passes the first check but binds every interface. Verdicts can be recorded only
+    on a loopback address and without `read_only`."""
     check_bind_host(host, allow_remote=allow_remote)
     server = ViewerServer((host.strip("[]"), port), Library(data_dir), allowed_hosts(host))
     bound = server.bound_address
@@ -357,6 +493,8 @@ def make_server(
             f"refusing to listen on {host!r}: it binds {bound}, not a loopback address."
         )
     server.allowed = server.allowed | allowed_hosts(str(bound))
+    if not read_only and bound.is_loopback:
+        server.token = secrets.token_urlsafe(32)
     return server
 
 
@@ -366,12 +504,15 @@ def serve(
     port: int = 8000,
     *,
     allow_remote: bool = False,
+    read_only: bool = False,
     announce: Callable[[str], None] | None = None,
 ) -> None:
     """Serve the viewer until interrupted (Ctrl-C). `announce` gets the URL once listening.
     Raises `RemoteBindRefusedError` for a host it may not listen on, `OSError` if the port
     can't be bound."""
-    with make_server(data_dir, host, port, allow_remote=allow_remote) as server:
+    with make_server(
+        data_dir, host, port, allow_remote=allow_remote, read_only=read_only
+    ) as server:
         if announce is not None:
             announce(server.url)
         with contextlib.suppress(KeyboardInterrupt):

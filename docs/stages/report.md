@@ -118,7 +118,7 @@ HIGH finding. It surfaced two noise sources, both fixed or recorded:
 
 ## Not yet
 
-- Reviewer verdicts (cleared / confirmed) carried across runs, so a cleared package leaves the
-  queue until something new fires.
+- (Done 2026-10-30: reviewer verdicts, per version, in the viewer and `kitsunox verdict`; see
+  [viewer.md](../viewer.md#reviewing) and decision 0015.)
 - Exported HTML files. The local web viewer ([viewer.md](../viewer.md), `kitsunox view`) renders
   the same `report.json` and `queue.json` in a browser.

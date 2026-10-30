@@ -1,8 +1,13 @@
 """The viewer's pages, rendered from a `Library` as complete HTML documents.
 
-Rendering is a pure function of the files read: no clock, and everything in a fixed order
-(the queue's and reports' own ranks, runs newest first by id, severities highest first), so
-the same files always give the same bytes. All package text goes through `web.html`.
+Rendering is a pure function of the files read (and, for forms, the server's token): no
+clock, and everything in a fixed order (the queue's and reports' own ranks, runs newest first by
+id, severities highest first), so the same files always give the same bytes. All package text
+goes through `web.html`.
+
+With a `token` (the server is writable), the queue and entry pages carry verdict forms that
+post to `/verdict` (`web.server`); without one they are read-only. A version with a verdict
+leaves the queue at once and is listed on its verdict's page (`verdicts_page`).
 """
 
 from __future__ import annotations
@@ -15,8 +20,19 @@ from typing import Final
 from kitsunox.core.models import Evidence, Finding, Severity
 from kitsunox.reporting.queue import Queue, QueueEntry
 from kitsunox.reporting.report import Report, ReportEntry, stage_of
-from kitsunox.web.html import block, error_box, esc, internal, link, page, warning_box, when
-from kitsunox.web.library import RUN_ID, Library, LoadError, RunSummary
+from kitsunox.reporting.verdicts import KINDS, MAX_NOTE_CHARS, VerdictRecord
+from kitsunox.web.html import (
+    block,
+    error_box,
+    esc,
+    internal,
+    link,
+    page,
+    plain,
+    warning_box,
+    when,
+)
+from kitsunox.web.library import RUN_ID, Library, LoadError, RunSummary, Verdicts
 
 RUNS_PER_PAGE: Final = 50
 MAX_EVIDENCE_PER_GROUP: Final = 50
@@ -56,7 +72,65 @@ def failure(status: int, title: str, message: str) -> Page:
 # ----------------------------------------------------------------------------- queue
 
 
-def queue_page(library: Library) -> Page:
+VERDICT_LABELS: Final = {
+    "malicious": "Malicious",
+    "inconclusive": "Inconclusive",
+    "benign": "Benign",
+    "reopened": "Reopened",
+}
+
+
+def verdict_form(token: str, run_id: str, rank: int, back: str, *, note: bool) -> str:
+    """Buttons recording a verdict on entry `rank` of `run_id` (the server takes the package
+    and version from that report, never from the form)."""
+    hidden = "".join(
+        f'<input type="hidden" name="{name}" value="{plain(value)}">'
+        for name, value in (("token", token), ("run", run_id), ("rank", str(rank)), ("back", back))
+    )
+    text = (
+        f'<label>Note <textarea name="note" maxlength="{MAX_NOTE_CHARS}" rows="3">'
+        "</textarea></label>"
+        if note
+        else ""
+    )
+    buttons = "".join(
+        f'<button type="submit" name="verdict" value="{kind}" class="v-{kind}">'
+        f"{VERDICT_LABELS[kind]}</button>"
+        for kind in KINDS
+    )
+    return f'<form method="post" action="/verdict" class="verdict">{hidden}{text}{buttons}</form>'
+
+
+def reopen_form(token: str, record: VerdictRecord, back: str) -> str:
+    hidden = "".join(
+        f'<input type="hidden" name="{name}" value="{plain(value)}">'
+        for name, value in (
+            ("token", token),
+            ("run", record.run_id),
+            ("rank", str(record.rank)),
+            ("back", back),
+        )
+    )
+    return (
+        f'<form method="post" action="/verdict" class="verdict">{hidden}'
+        '<button type="submit" name="verdict" value="reopened">Back to the queue</button></form>'
+    )
+
+
+def _tally(verdicts: Verdicts) -> str:
+    counts = {kind: 0 for kind in KINDS}
+    for record in verdicts.now.values():
+        counts[record.verdict] = counts.get(record.verdict, 0) + 1
+    items = ", ".join(
+        f"{internal(f'/verdicts/{kind}', VERDICT_LABELS[kind])}: {counts[kind]}" for kind in KINDS
+    )
+    return (
+        f'<p class="tally"><strong>Verified malicious: {counts["malicious"]}</strong>. '
+        f"Reviewed: {items}.</p>"
+    )
+
+
+def queue_page(library: Library, token: str | None = None) -> Page:
     queue = library.queue()
     crumbs: Crumbs = [(None, "Review queue")]
     if queue is None:
@@ -69,12 +143,32 @@ def queue_page(library: Library) -> Page:
         return Page(200, page("Review queue", body, crumbs))
     if isinstance(queue, LoadError):
         return Page(200, page("Review queue", _load_error("Review queue", queue), crumbs))
-    return Page(200, page(f"Review queue ({queue.ecosystem})", _queue_body(queue), crumbs))
+    verdicts = library.verdicts(queue.ecosystem)
+    body = _queue_body(_unreviewed(queue, verdicts), verdicts, token)
+    return Page(200, page(f"Review queue ({queue.ecosystem})", body, crumbs))
 
 
-def _queue_body(queue: Queue) -> str:
+def _unreviewed(queue: Queue, verdicts: Verdicts) -> Queue:
+    """The queue without versions that have a verdict now (recorded since `collect` built
+    it); a package with none left is dropped. Ranks stay the queue's."""
+    entries = []
+    for entry in queue.entries:
+        left = tuple(v for v in entry.versions if (entry.name, v.version) not in verdicts.now)
+        if left:
+            entries.append(entry.model_copy(update={"versions": left}))
+    return queue.model_copy(
+        update={
+            "entries": tuple(entries),
+            "packages": len(entries),
+            "versions": sum(len(e.versions) for e in entries),
+        }
+    )
+
+
+def _queue_body(queue: Queue, verdicts: Verdicts, token: str | None) -> str:
     parts = [
         f"<h1>Review queue ({esc(queue.ecosystem)})</h1>",
+        _tally(verdicts),
         f"<p>Reports from {when(queue.since)} to {when(queue.as_of)} ({len(queue.runs)} runs): "
         f"<strong>{queue.packages} packages to review</strong> ({queue.versions} versions), "
         "highest score first. Each version links to its entry in the run that reported it "
@@ -88,7 +182,7 @@ def _queue_body(queue: Queue) -> str:
     if not queue.entries:
         parts.append("<p>Nothing to review.</p>")
         return "\n".join(parts)
-    rows = "\n".join(_queue_row(e) for e in queue.entries)
+    rows = "\n".join(_queue_row(e, token) for e in queue.entries)
     parts.append(
         "<table>\n<caption>Packages to review</caption>\n<thead><tr>"
         '<th scope="col">#</th><th scope="col">Package</th><th scope="col">Score</th>'
@@ -100,13 +194,14 @@ def _queue_body(queue: Queue) -> str:
     return "\n".join(parts)
 
 
-def _queue_row(entry: QueueEntry) -> str:
+def _queue_row(entry: QueueEntry, token: str | None = None) -> str:
     versions = []
     for v in entry.versions:
         label = esc(v.version)
         href = entry_href(v.run_id, v.rank)
         shown = internal(href, label) if href else label
-        versions.append(f'<li>{shown} <span class="note">{v.score:g}</span></li>')
+        form = verdict_form(token, v.run_id, v.rank, "/", note=False) if token and href else ""
+        versions.append(f'<li>{shown} <span class="note">{v.score:g}</span>{form}</li>')
     rules = "".join(f"<li><code>{esc(r.rule_id)}</code> ({r.versions})</li>" for r in entry.rules)
     return (
         f'<tr><td class="num">{entry.rank}</td><td>{esc(entry.name)}</td>'
@@ -248,7 +343,7 @@ def _report_row(run_id: str, entry: ReportEntry) -> str:
 # ----------------------------------------------------------------------------- one entry
 
 
-def entry_page(library: Library, run_id: str, rank: int) -> Page | None:
+def entry_page(library: Library, run_id: str, rank: int, token: str | None = None) -> Page | None:
     report = library.report(run_id)
     if report is None:
         return None
@@ -270,9 +365,89 @@ def entry_page(library: Library, run_id: str, rank: int) -> Page | None:
         after = ranked[index + 1]
         neighbours.append(f"<li>{_entry_link(run_id, after, 'Next')}</li>")
     pager = f'<nav aria-label="Entries"><ul class="pager">{"".join(neighbours)}</ul></nav>'
-    body = "\n".join([_entry_body(entry), pager if neighbours else ""])
+    review = _review(library.verdicts(report.ecosystem), run_id, entry, token)
+    body = "\n".join([review, _entry_body(entry), pager if neighbours else ""])
     title = f"{entry.name}@{entry.version}"
     return Page(200, page(title, body, [*crumbs, (None, f"#{entry.rank}")]))
+
+
+def _review(verdicts: Verdicts, run_id: str, entry: ReportEntry, token: str | None) -> str:
+    """The version's verdict and history, and the form to record one."""
+    back = f"/runs/{run_id}/entries/{entry.rank}"
+    now = verdicts.now.get((entry.name, entry.version))
+    parts = ['<section class="review" aria-label="Review">', "<h2>Review</h2>"]
+    if now is not None:
+        parts.append(
+            f'<p class="verdict-now v-{now.verdict}"><strong>{VERDICT_LABELS[now.verdict]}</strong>'
+            f" ({esc(now.by)}, {when(now.at)}). Not in the review queue.</p>"
+        )
+    else:
+        parts.append("<p>No verdict yet: this version is in the review queue.</p>")
+    if token:
+        parts.append(verdict_form(token, run_id, entry.rank, back, note=True))
+        if now is not None:
+            parts.append(reopen_form(token, now, back))
+    history = verdicts.history(entry.name, entry.version)
+    if history:
+        items = "".join(
+            f"<li>{when(r.at)}: {VERDICT_LABELS[r.verdict]} ({esc(r.by)})"
+            + (f"<br>{esc(r.note)}" if r.note else "")
+            + "</li>"
+            for r in reversed(history)
+        )
+        parts.append(
+            f"<details><summary>History ({len(history)})</summary><ul>{items}</ul></details>"
+        )
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def verdicts_page(library: Library, kind: str, token: str | None = None) -> Page | None:
+    """Every version whose verdict is `kind` now, most recent verdict first."""
+    if kind not in KINDS:
+        return None
+    verdicts = library.verdicts()
+    records = sorted(
+        (r for r in verdicts.now.values() if r.verdict == kind),
+        key=lambda r: (r.at, r.name, r.version),
+        reverse=True,
+    )
+    label = VERDICT_LABELS[kind]
+    crumbs: Crumbs = [("/", "Review queue"), (None, label)]
+    parts = [f"<h1>{label} ({len(records)})</h1>", _tally(verdicts)]
+    if not records:
+        parts.append("<p>None yet.</p>")
+        return Page(200, page(label, "\n".join(parts), crumbs))
+    rows = "\n".join(_verdict_row(library, r, token, f"/verdicts/{kind}") for r in records)
+    parts.append(
+        f"<table>\n<caption>{label} versions</caption>\n<thead><tr>"
+        '<th scope="col">Package</th><th scope="col">Score</th><th scope="col">Severity</th>'
+        '<th scope="col">Rules</th><th scope="col">Published</th><th scope="col">Verdict</th>'
+        '<th scope="col">Note</th><th scope="col"></th>'
+        f"</tr></thead>\n<tbody>\n{rows}\n</tbody>\n</table>"
+    )
+    return Page(200, page(label, "\n".join(parts), crumbs))
+
+
+def _verdict_row(library: Library, record: VerdictRecord, token: str | None, back: str) -> str:
+    label = f"{esc(record.name)}@{esc(record.version)}"
+    href = entry_href(record.run_id, record.rank)
+    kept = href is not None and library.find_run(record.run_id) is not None
+    shown = (
+        internal(href, label)
+        if href and kept
+        else f'{label} <span class="note">(run pruned)</span>'
+    )
+    rules = "".join(f"<li><code>{esc(r)}</code></li>" for r in record.rules[:6])
+    reopen = reopen_form(token, record, back) if token and kept else ""
+    return (
+        f'<tr><td>{shown}</td><td class="num">{record.score:g}</td>'
+        f"<td>{esc(record.severity)}</td>"
+        f'<td><ul class="flat">{rules}</ul></td>'
+        f"<td>{when(record.published_at)} by {esc(record.publisher or 'unknown')}</td>"
+        f"<td>{when(record.at)} ({esc(record.by)})</td><td>{esc(record.note)}</td>"
+        f"<td>{reopen}</td></tr>"
+    )
 
 
 def _entry_link(run_id: str, entry: ReportEntry, word: str) -> str:
