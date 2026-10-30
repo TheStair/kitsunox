@@ -8,6 +8,7 @@ import pytest
 from conftest import TarEntry, make_tar_gz
 from kitsunox.util.archive import (
     ArchiveError,
+    ArchiveLimitError,
     ExtractLimits,
     extract_tar_gz,
     extract_zip,
@@ -84,17 +85,36 @@ def test_decompression_bomb_rejected() -> None:
 
 
 @pytest.mark.parametrize(
-    ("limits", "message"),
+    ("limits", "message", "kind"),
     [
-        (ExtractLimits(max_files=2), "entries"),
-        (ExtractLimits(max_file_bytes=10), "per-file limit"),
-        (ExtractLimits(max_compressed_bytes=10), "compressed size"),
+        (ExtractLimits(max_files=2), "entries", "files"),
+        (ExtractLimits(max_file_bytes=10), "per-file limit", "file"),
+        (ExtractLimits(max_compressed_bytes=10), "compressed size", "compressed"),
+        (ExtractLimits(max_total_bytes=1024), "decompressed size", "total"),
+        (ExtractLimits(max_ratio=2), "decompressed size", "ratio"),
     ],
 )
-def test_limits(limits: ExtractLimits, message: str) -> None:
+def test_limits(limits: ExtractLimits, message: str, kind: str) -> None:
     data = make_tar_gz([TarEntry(f"package/{i}.js", b"x" * 100) for i in range(3)])
-    with pytest.raises(ArchiveError, match=message):
+    with pytest.raises(ArchiveLimitError, match=message) as caught:
         extract_tar_gz(data, limits=limits)
+    assert isinstance(caught.value, ArchiveError) and caught.value.limit == kind
+
+
+def test_tar_file_modes_are_kept() -> None:
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tar:
+        for name, mode in (
+            ("package/run.sh", 0o755),
+            ("package/a.js", 0o644),
+            ("package/s", 0o4711),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = 1, mode
+            tar.addfile(info, io.BytesIO(b"x"))
+    tree = extract_tar_gz(gzip.compress(raw.getvalue()), strip_components=1)
+    assert dict(tree.modes) == {"run.sh": 0o755, "a.js": 0o644, "s": 0o4711}
+    assert extract_zip(_zip({"a.js": b"x"})).modes == {}
 
 
 def test_trailing_gzip_member_rejected() -> None:

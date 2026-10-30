@@ -28,10 +28,15 @@ uv run kitsunox eval run <dataset> --predictor stage1         # full forward pol
      report it.
   2. `watched package`.
   3. `new package`: no previous version.
-  4. `unpacked size grew by N bytes`: declared `dist.unpackedSize` grew by at least 64 KiB
+  4. `install hook` (2026-10-30): the release has a `preinstall`, `install` or `postinstall`,
+     so Stage 3 can compare the files the hook runs with the previous version's
+     (`npm.install-script-changed`). A hook's command can stay word for word the same while the
+     file it runs changes. First VM day: 2,251 of 101,232 updates (2.2%) had a hook, 1,440 of
+     them not forwarded before.
+  5. `unpacked size grew by N bytes`: declared `dist.unpackedSize` grew by at least 64 KiB
      (`MIN_GROWTH_BYTES`), or `unpacked size unknown` (6 of 110k updates).
 
-  Reasons 3 and 4 were added on 2026-10-27 (the "hybrid" policy): they don't flag anything,
+  Reasons 3 and 5 were added on 2026-10-27 (the "hybrid" policy): they don't flag anything,
   they send code that has no metadata signal to Stage 2. LOW findings are kept for scoring
   (Stage 4) but don't forward on their own. See [static.md](static.md#routing-what-stage-2-reads)
   for the numbers behind the routing.
@@ -71,7 +76,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 
 | Rule | Sev. | Fires on benign | Recall, shape A | Recall, shape B | Caught by this rule only (A / B) |
 |---|---|---|---|---|---|
-| `npm.install-hook`: `preinstall`/`install`/`postinstall` added or changed (new package: present) | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
+| `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
 | `npm.publish-method.downgrade`: previous release had trusted publishing or provenance, this one has neither | HIGH | 0.18% | 15.4% | n/a | 107 / n/a |
 | `npm.dependency.non-registry`: new dependency from git/URL/GitHub shorthand/`file:` | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious`: major ≥ 90, CalVer exempt (v2) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |

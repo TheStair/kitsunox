@@ -1,11 +1,15 @@
 """End-to-end Stage 0 record/replay against a mocked npm registry."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from conftest import AS_OF, Router, save_watchlist
+from kitsunox.core import run as run_module
+from kitsunox.core.interfaces import DIFF_BASE
 from kitsunox.core.run import (
     CHAIN_OVERLAP,
     MAX_CHAIN_GAP,
@@ -27,6 +31,7 @@ from kitsunox.ecosystems.npm.registry import (
     REPLICATE_URL,
     NpmEcosystem,
 )
+from kitsunox.stages import ingest as ingest_module
 from kitsunox.stages.ingest import RetryItem, read_changes
 
 NONE = PopularityMode.NONE
@@ -230,3 +235,26 @@ def test_an_outage_writes_nothing(
         default_run(data, registry, AS_OF)
     assert data.read_checkpoint("npm") is None
     assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())
+
+
+def test_a_replay_uses_the_diff_base_rule_its_run_was_recorded_with(
+    tmp_path: Path, registry: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = DataDir(tmp_path)
+    manifest = record(data, registry, NONE)
+    assert manifest.diff_base == DIFF_BASE == 2
+    path = data.run_dir(manifest.run_id) / "manifest.json"
+    raw = json.loads(path.read_text())
+    del raw["diff_base"]  # written before the rule was recorded
+    path.write_text(json.dumps(raw))
+    assert RunManifest.load_json(path.read_bytes()).diff_base == 1
+    seen: list[int] = []
+    real = ingest_module.run_ingest
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["diff_base"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "run_ingest", spy)
+    replay_ingest(data, NpmEcosystem, manifest.run_id)
+    assert seen == [1]

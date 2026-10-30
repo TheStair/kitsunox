@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Final
 
 from kitsunox.core.models import Change
+from kitsunox.ecosystems.npm.install import files_named
 from kitsunox.ecosystems.npm.rules.metadata import (
     INSTALL_HOOKS,
     runtime_dependencies,
@@ -82,16 +83,21 @@ class NpmLocator:
         return ""
 
     def manifest_differences(
-        self, package: Mapping[str, bytes], repo: Mapping[str, bytes]
+        self,
+        package: Mapping[str, bytes],
+        repo: Mapping[str, bytes],
+        whole: Mapping[str, bytes] | None = None,
     ) -> tuple[ManifestDifference, ...]:
         """Install hooks the release runs that the repository's `package.json` doesn't have
         (or has differently), and runtime dependencies the repository's manifest doesn't name
-        anywhere. Nothing if either manifest is missing or unreadable."""
+        anywhere. Nothing if either manifest is missing or unreadable. A hook difference says
+        which repository file writes the hook, if one does (`built_by`)."""
         ours, theirs = _manifest(package), _manifest(repo)
         if ours is None or theirs is None:
             return ()
         differences = []
         repo_scripts = scripts(theirs)
+        version = ours.get("version")
         for hook, command in sorted(scripts(ours).items()):
             if hook in INSTALL_HOOKS and _normalised(command) != _normalised(
                 repo_scripts.get(hook, "")
@@ -101,6 +107,12 @@ class NpmLocator:
                         field=f"scripts.{hook}",
                         package=snippet(command),
                         repo=snippet(repo_scripts.get(hook)),
+                        built_by=built_by(
+                            command,
+                            version if isinstance(version, str) else "",
+                            package,
+                            whole if whole is not None else repo,
+                        ),
                     )
                 )
         named: set[str] = set()
@@ -116,6 +128,45 @@ class NpmLocator:
                     )
                 )
         return tuple(differences)
+
+
+MAX_SEARCHED_BYTES: Final = 1024 * 1024  # repository files searched for a hook's command
+
+
+def built_by(
+    command: str, version: str, package: Mapping[str, bytes], repo: Mapping[str, bytes]
+) -> str | None:
+    """The repository file that writes this install hook into the release's manifest, if
+    there is one: the hook runs at least one package file, every such file is in the
+    repository byte for byte (any path; line endings normalised), and a repository file
+    other than those holds the command, with the release's version as a placeholder there
+    (`${VERSION}`). Then the hook went through git, though not as the manifest's text.
+    `nutui-react`'s `scripts/build-taro.mjs` adds `node postinstall.js` and copies
+    `scripts/postinstall.js`. An inline command (`node -e ...`) names no file and never
+    qualifies."""
+    named = sorted(files_named(command, package))
+    if not named:
+        return None
+    contents = {_content(data) for data in repo.values()}
+    if any(_content(package[path]) not in contents for path in named):
+        return None
+    shipped = {_content(package[path]) for path in named}
+    parts = [p.strip() for p in (command.split(version) if version else [command])]
+    parts = [p for p in parts if p] or [command.strip()]
+    for path in sorted(repo):
+        data = repo[path]
+        if len(data) > MAX_SEARCHED_BYTES or path.endswith("package.json"):
+            continue
+        if _content(data) in shipped:
+            continue
+        text = data.decode("utf-8", "replace")
+        if all(part in text for part in parts):
+            return path
+    return None
+
+
+def _content(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n")
 
 
 def _manifest(tree: Mapping[str, bytes], path: str = "") -> dict[str, object] | None:

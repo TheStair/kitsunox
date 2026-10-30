@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Final
 from urllib.parse import quote
 
-from kitsunox.core.interfaces import ChangeStub, DownloadCounts, PackageChanges
+from kitsunox.core.interfaces import DIFF_BASE, ChangeStub, DownloadCounts, PackageChanges
 from kitsunox.core.models import ArtifactRef, Window
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM, Packument
 from kitsunox.util.archive import ArtifactTree, extract_tar_gz
@@ -81,12 +81,14 @@ class NpmEcosystem:
             raise FetchError(f"packument {name}: HTTP {response.status}")
         return Packument(response.json(), expected_name=name)
 
-    def build_changes(self, stub: ChangeStub, window: Window) -> PackageChanges:
+    def build_changes(
+        self, stub: ChangeStub, window: Window, *, diff_base: int = DIFF_BASE
+    ) -> PackageChanges:
         packument = self.packument(stub.name)
         if packument is None:
             return PackageChanges()
         return PackageChanges(
-            changes=tuple(packument.changes_in(window, feed_seq=stub.cursor)),
+            changes=tuple(packument.changes_in(window, feed_seq=stub.cursor, diff_base=diff_base)),
             modified_at=packument.modified_at,
         )
 

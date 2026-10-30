@@ -6,9 +6,13 @@ tarball stages. A change is forwarded, in this order of reasons, if:
 1. any finding is at least `threshold` severity (it is *flagged*: Stage 1 alone would report it);
 2. the package is watched (popular enough to always look at; roadmap decision 3);
 3. it is a new package (no previous version: small, and no base tarball to fetch);
-4. its declared unpacked size grew by at least `MIN_GROWTH_BYTES`, or a size is unknown.
+4. it has an install hook, so Stage 3 can compare the files the hook runs with the previous
+   version's (`npm.install-script-changed`): a hook can stay word for word the same while the
+   file it runs changes. 2.2% of updates on the first VM day, 1,440 of them not forwarded
+   before;
+5. its declared unpacked size grew by at least `MIN_GROWTH_BYTES`, or a size is unknown.
 
-Reasons 3 and 4 route code to Stage 2 that has no metadata signal (the "hybrid" policy chosen
+Reasons 3 to 5 route code to Stage 2 that has no metadata signal (the "hybrid" policy chosen
 on 2026-10-27; numbers in `docs/stages/static.md`). The decision and its reason are recorded on
 the candidate, so per-stage metrics can be computed.
 
@@ -34,6 +38,7 @@ from kitsunox.core.models import (
 )
 from kitsunox.core.rules import Rule, RuleContext, run_rules
 from kitsunox.ecosystems.npm.rules.metadata import RULES as NPM_RULES
+from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.stages.ingest import changes_file, read_changes, write_jsonl
 
 STAGE_ID: Final = "triage"
@@ -57,7 +62,7 @@ def triage(
     forward_watched: bool = True,
     route_code: bool = True,
 ) -> Candidate:
-    """`route_code=False` turns off reasons 3 and 4 (Stage 1 measured on its own)."""
+    """`route_code=False` turns off reasons 3 to 5 (Stage 1 measured on its own)."""
     findings = run_rules(RULES_BY_ECOSYSTEM[change.new.ref.ecosystem], change, ctx)
     flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
     watched = bool(change.popularity and change.popularity.watched)
@@ -77,6 +82,8 @@ def code_route(change: Change) -> str | None:
     """Why a change with no metadata signal should still have its code read, if it should."""
     if change.previous is None:
         return "new package"
+    if has_install_hook(change.new.manifest):
+        return "install hook"
     new, old = _unpacked_size(change.new), _unpacked_size(change.previous)
     if new is None or old is None:
         return "unpacked size unknown"

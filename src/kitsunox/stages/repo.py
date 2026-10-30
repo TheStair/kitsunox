@@ -20,12 +20,14 @@ questions (`ReleaseSource`); the comparison itself is not.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import threading
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Final, Protocol
 
 from kitsunox.core.models import Change, Record
-from kitsunox.githost.github import GitHub, GitHubRepo
+from kitsunox.githost.github import ARCHIVE_PREFIX, GitHub, GitHubRepo
 from kitsunox.lang.javascript import language_for
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import FetchError, TransientFetchError
@@ -50,15 +52,24 @@ class ManifestDifference(Record):
     field: str
     package: str | None
     repo: str | None
+    # For an install hook: a repository file that writes it into the release's manifest (a
+    # build script), when the files the hook runs are in the repository byte for byte.
+    built_by: str | None = None
 
 
 class RepoComparison(Record):
     """A release's code files against the repository at its commit. `unavailable` says why no
     comparison was made (no repository, no commit for this version, archive too large); the
-    lists are then empty. Paths are sorted and capped at `MAX_LISTED`; counts are not."""
+    lists are then empty. `transient`: a repository request failed on the network
+    (`TransientFetchError`), so trying again may work; Stage 4 retries those (`correlate_run`).
+    `files_transient`: the release's own files failed on the network instead; Stage 2 owns
+    those and redoes the run on the next tick, so Stage 4 doesn't retry them. Paths are sorted
+    and capped at `MAX_LISTED`; counts are not."""
 
     source: ReleaseSource | None = None
     unavailable: str | None = None
+    transient: bool = False
+    files_transient: bool = False
     code_files: int = 0
     identical: int = 0
     differing: tuple[str, ...] = ()
@@ -81,8 +92,12 @@ class Locator(Protocol):
         directory of its manifest, or None if the repository has none for it."""
         ...
 
-    def manifest_differences(self, package: Tree, repo: Tree) -> tuple[ManifestDifference, ...]:
-        """What the release's manifest declares that the repository's doesn't."""
+    def manifest_differences(
+        self, package: Tree, repo: Tree, whole: Tree | None = None
+    ) -> tuple[ManifestDifference, ...]:
+        """What the release's manifest declares that the repository's doesn't. `repo` is the
+        package's directory; `whole` the repository (a monorepo's build scripts sit outside the
+        package's directory)."""
         ...
 
 
@@ -95,12 +110,15 @@ class TreeComparison:
     unexplained: list[str]
 
 
-def compare_trees(package: Tree, repo: Tree) -> TreeComparison:
+def compare_trees(package: Tree, repo: Tree, whole: Tree | None = None) -> TreeComparison:
     """The package's JavaScript/TypeScript files against the repository (line endings
     normalised). A missing file is *unexplained* when its directory is in the repository (the
     root always is) and no file there shares its stem: `lib/x.js` next to `lib/x.ts` is compiled
     output, and `dist/` that git ignores is build output, but a new `setup_bun.js` at the root
-    is neither."""
+    is neither. A missing file whose content is somewhere in the repository (`whole`, else
+    `repo`), byte for byte, is explained: a build copied it there (`nutui-react` ships its
+    `scripts/postinstall.js` as `postinstall.js`)."""
+    contents = {_normalised(content) for content in (whole if whole is not None else repo).values()}
     directories: dict[str, set[str]] = {}
     for path in repo:
         directory, _, name = path.rpartition("/")
@@ -117,7 +135,11 @@ def compare_trees(package: Tree, repo: Tree) -> TreeComparison:
         missing.append(path)
         directory, _, name = path.rpartition("/")
         stems = directories.get(directory)
-        if stems is not None and _stem(name) not in stems:
+        if (
+            stems is not None
+            and _stem(name) not in stems
+            and _normalised(package[path]) not in contents
+        ):
             unexplained.append(path)
     return TreeComparison(len(code), identical, differing, missing, unexplained)
 
@@ -130,6 +152,179 @@ def _normalised(content: bytes) -> str:
     return sha256_hex(content.replace(b"\r\n", b"\n"))
 
 
+@dataclass(frozen=True)
+class NetworkRequests:
+    """What one pass of repository lookups asked of the network: how many distinct requests it
+    sent, and the label and error of each that failed there (`TransientFetchError`), sorted.
+    Requests the fetcher answered from its snapshot or immutable index, and requests refused
+    because they had already failed in the pass, are not counted."""
+
+    sent: int = 0
+    errors: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def failed(self) -> int:
+        return len(self.errors)
+
+
+@dataclass(frozen=True)
+class _Request:
+    """One repository request: its refs (`commit` None) or its archive at a commit."""
+
+    repo: GitHubRepo
+    commit: str | None = None
+
+    @property
+    def label(self) -> str:
+        if self.commit is None:
+            return f"{self.repo} refs"
+        return f"{self.repo}@{self.commit[:12]} archive"
+
+
+class RepoNetworkError(TransientFetchError):
+    """A repository request failed on the network, now or earlier in the pass. The message
+    names the request, not the error, so every version that needed it reads the same whichever
+    worker thread asked first; the error itself is in `RepoMemory.requests()`."""
+
+    def __init__(self, request: _Request) -> None:
+        super().__init__(f"{request.label} unavailable")
+
+
+# The URLs `GitHub.refs` and `GitHub.archive` request, to ask the fetcher whether it already
+# holds them. If they drift from `githost/github.py`, cached requests just fail fast again;
+# `test_a_cached_archive_is_never_refused` notices.
+def _refs_url(repo: GitHubRepo) -> str:
+    return f"https://github.com/{repo}.git/info/refs?service=git-upload-pack"
+
+
+def _archive_url(repo: GitHubRepo, commit: str) -> str:
+    return f"{ARCHIVE_PREFIX}{repo}/tar.gz/{commit}"
+
+
+ARCHIVES_IN_MEMORY: Final = 3
+
+
+class RepoMemory:
+    """What the lookups of one Stage 4 run share about repositories, across worker threads.
+    Each request (a repository's refs, or its archive at one commit) goes to the network at
+    most once per pass, whatever the number of workers or versions that need it:
+
+    - **One thread at a time per request:** versions needing a request another worker is
+      sending wait for it, then use its response (refs are kept for the run, archives come
+      from the fetcher's snapshot) or its failure.
+    - **Failures, kept for one pass, per request:** once a request raised
+      `TransientFetchError`, the versions that need it fail at once with the same
+      `RepoNetworkError`, instead of each paying `HttpFetcher`'s back-off again during an
+      outage. Other commits of the same repository are unaffected, and a response the fetcher
+      already holds is always served. `new_pass()` forgets the failures, so a retry pass goes
+      back to the network.
+    - **Rejections, kept for the run:** a request the fetcher rejects without recording a
+      response (a body over its size limit, a bad redirect) or whose archive can't be read
+      raises the same `FetchError` or `ValueError` text for every version that needs it, instead
+      of each downloading or extracting it again. Those are permanent, so a retry pass doesn't
+      repeat them.
+    - **At most `ARCHIVES_IN_MEMORY` archives extracted at once**, across threads: an
+      extracted repository can hold up to 1 GB (`REPO_LIMITS`), and eight workers each
+      holding one, with allocator fragmentation on top, took Stage 4 on a 110k-version run to
+      18 GB on 2026-10-30. Downloads stay parallel; `archive` holds a slot from extraction
+      until the caller is done with the tree.
+    """
+
+    def __init__(self, refs: dict[GitHubRepo, Mapping[str, str] | None] | None = None) -> None:
+        self._lock = threading.Lock()
+        self._refs = refs if refs is not None else {}
+        self._request_locks: dict[_Request, threading.Lock] = {}
+        self._sent: set[_Request] = set()
+        self._failed: dict[_Request, str] = {}
+        self._rejected: dict[_Request, FetchError | ValueError] = {}
+        self._unreadable: dict[tuple[_Request, str], ValueError] = {}
+        self._slots = threading.BoundedSemaphore(ARCHIVES_IN_MEMORY)
+
+    def new_pass(self) -> None:
+        with self._lock:
+            self._sent.clear()
+            self._failed.clear()
+
+    def requests(self) -> NetworkRequests:
+        """The current pass's network requests (since `new_pass`, or the start)."""
+        with self._lock:
+            errors = sorted((request.label, error) for request, error in self._failed.items())
+            return NetworkRequests(sent=len(self._sent), errors=tuple(errors))
+
+    def refs(self, github: GitHub, repo: GitHubRepo) -> Mapping[str, str] | None:
+        request = _Request(repo)
+        with self._request_lock(request):
+            with self._lock:
+                if repo in self._refs:
+                    return self._refs[repo]
+            if github.fetcher.needs_network(_refs_url(repo)):
+                refs = self._send(request, lambda: github.refs(repo))
+            else:
+                refs = github.refs(repo)
+            with self._lock:
+                self._refs[repo] = refs
+            return refs
+
+    @contextmanager
+    def archive(
+        self, github: GitHub, repo: GitHubRepo, commit: str, directory: str
+    ) -> Iterator[Tree]:
+        """The tree at `commit` (under `directory`), held in one of the extraction slots
+        until the `with` block ends."""
+        url = _archive_url(repo, commit)
+        request = _Request(repo, commit)
+        body = self._archive_body(github, url, request)
+        with self._lock:
+            unreadable = self._unreadable.get((request, directory))
+        if unreadable is not None:
+            raise ValueError(str(unreadable))  # the same text for every version
+        with self._slots:
+            try:
+                tree = github.extract(body, directory=directory)
+            except ValueError as exc:
+                with self._lock:
+                    self._unreadable[(request, directory)] = exc
+                raise
+            del body
+            yield tree
+
+    def _archive_body(self, github: GitHub, url: str, request: _Request) -> bytes:
+        def fetch() -> bytes:
+            return github.archive_body(request.repo, request.commit or "")
+
+        if github.fetcher.needs_network(url, immutable=True):
+            with self._request_lock(request):
+                if github.fetcher.needs_network(url, immutable=True):  # nobody fetched it since
+                    return self._send(request, fetch)
+        return fetch()  # from the fetcher's snapshot or immutable index, in parallel
+
+    def _request_lock(self, request: _Request) -> threading.Lock:
+        with self._lock:
+            return self._request_locks.setdefault(request, threading.Lock())
+
+    def _send[T](self, request: _Request, fetch: Callable[[], T]) -> T:
+        """`fetch` goes to the network for `request`; the caller holds its lock."""
+        with self._lock:
+            refused = request in self._failed
+            rejected = self._rejected.get(request)
+            if not refused and rejected is None:
+                self._sent.add(request)
+        if refused:
+            raise RepoNetworkError(request)
+        if rejected is not None:
+            raise type(rejected)(str(rejected))  # the same text for every version
+        try:
+            return fetch()
+        except TransientFetchError as exc:
+            with self._lock:
+                self._failed[request] = str(exc)[:300]
+            raise RepoNetworkError(request) from exc
+        except (FetchError, ValueError) as exc:
+            with self._lock:
+                self._rejected[request] = exc
+            raise
+
+
 def compare(
     change: Change,
     package: Tree,
@@ -137,19 +332,18 @@ def compare(
     github: GitHub,
     *,
     refs_cache: dict[GitHubRepo, Mapping[str, str] | None] | None = None,
+    memory: RepoMemory | None = None,
 ) -> RepoComparison:
-    """Compare one release with its repository. Network failures (`TransientFetchError`)
-    propagate, so the caller decides what they mean; everything else becomes `unavailable`."""
+    """Compare one release with its repository. Network failures (`RepoNetworkError`, a
+    `TransientFetchError`) propagate, so the caller decides what they mean; everything else
+    becomes `unavailable`. `memory` is shared across calls (Stage 4); `refs_cache` alone just
+    reuses refs."""
+    memory = memory if memory is not None else RepoMemory(refs_cache)
     located = locator.repository(change)
     if located is None:
         return RepoComparison(unavailable="no GitHub repository")
     repo, directory = located
-    if refs_cache is not None and repo in refs_cache:
-        refs = refs_cache[repo]
-    else:
-        refs = github.refs(repo)
-        if refs_cache is not None:
-            refs_cache[repo] = refs
+    refs = memory.refs(github, repo)
     if refs is None:
         return RepoComparison(unavailable=f"repository {repo} not found")
     found = locator.commit(change, refs)
@@ -157,12 +351,25 @@ def compare(
         return RepoComparison(unavailable="no commit or tag for this version")
     commit, how = found
     source = ReleaseSource(repo=str(repo), directory=directory, commit=commit, how=how)
-    try:
-        tree: Tree = github.archive(repo, commit, directory=directory)
-    except TransientFetchError:
-        raise
-    except (FetchError, ValueError) as exc:  # e.g. HTTP 404 (commit never pushed), size limits
-        return RepoComparison(source=source, unavailable=f"archive: {exc}"[:300])
+    with ExitStack() as held:  # the extraction slot, until the comparison is done
+        try:
+            tree = held.enter_context(memory.archive(github, repo, commit, directory))
+        except TransientFetchError:
+            raise
+        except (FetchError, ValueError) as exc:  # e.g. HTTP 404 (never pushed), size limits
+            return RepoComparison(source=source, unavailable=f"archive: {exc}"[:300])
+        return _compare_tree(change, package, locator, source, directory, tree)
+
+
+def _compare_tree(
+    change: Change,
+    package: Tree,
+    locator: Locator,
+    source: ReleaseSource,
+    directory: str,
+    tree: Tree,
+) -> RepoComparison:
+    whole = tree
     if not directory:
         found_in = locator.package_directory(change, tree)
         if found_in is None:
@@ -175,7 +382,7 @@ def compare(
             source = source.model_copy(update={"directory": found_in})
     if not tree:
         return RepoComparison(source=source, unavailable=f"directory {directory!r} is empty")
-    trees = compare_trees(package, tree)
+    trees = compare_trees(package, tree, whole)
     return RepoComparison(
         source=source,
         code_files=trees.code_files,
@@ -185,7 +392,7 @@ def compare(
         not_in_repo_count=len(trees.missing),
         unexplained=tuple(trees.unexplained[:MAX_LISTED]),
         unexplained_count=len(trees.unexplained),
-        manifest=locator.manifest_differences(package, tree),
+        manifest=locator.manifest_differences(package, tree, whole),
     )
 
 

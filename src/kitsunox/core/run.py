@@ -43,7 +43,7 @@ import httpx
 from pydantic import Field
 
 from kitsunox import __version__
-from kitsunox.core.interfaces import Ecosystem
+from kitsunox.core.interfaces import DIFF_BASE, Ecosystem
 from kitsunox.core.models import Persisted, Window
 from kitsunox.core.store import RecordStore
 from kitsunox.core.watchlist import Watchlist, build_watchlist
@@ -86,10 +86,12 @@ class IngestDegradedError(RuntimeError):
 
 
 # Later stages' fetch records for a run (Stage 2: tarballs; Stage 4: repository refs and
-# archives). Retention keeps their blobs like those of `snapshot.json`.
+# archives; Stage 5: the offline bundles' dependency packuments and tarballs). Retention keeps
+# their blobs like those of `snapshot.json`.
 STATIC_SNAPSHOT = "static-snapshot.json"
 CORRELATE_SNAPSHOT = "correlate-snapshot.json"
-STAGE_SNAPSHOTS = (STATIC_SNAPSHOT, CORRELATE_SNAPSHOT)
+SANDBOX_SNAPSHOT = "sandbox-snapshot.json"
+STAGE_SNAPSHOTS = (STATIC_SNAPSHOT, CORRELATE_SNAPSHOT, SANDBOX_SNAPSHOT)
 CHAIN_OVERLAP = timedelta(minutes=15)
 # A run catches up on a gap this long (the machine was off or offline). Matches retention.
 MAX_CHAIN_GAP = timedelta(days=7)
@@ -134,6 +136,11 @@ class RunManifest(Persisted):
         default=(), description="Packages carried over from earlier runs' network failures."
     )
     transient_skipped: int = 0
+    diff_base: int = Field(
+        default=1,
+        description="How Stage 0 chose each release's diff base (`interfaces.DIFF_BASE`); "
+        "runs recorded before it was recorded used rule 1.",
+    )
 
 
 @dataclass(frozen=True)
@@ -300,6 +307,7 @@ def record_ingest(
             workers=request.workers,
             popularity=source,
             retry=retry,
+            diff_base=DIFF_BASE,
         )
     finally:
         fetcher.close()
@@ -336,6 +344,7 @@ def record_ingest(
         chained_from=chained_from,
         retried=retry,
         transient_skipped=len(transient),
+        diff_base=DIFF_BASE,
     )
     manifest = _persist(data, manifest, snapshot, result)
     if default_range:
@@ -398,6 +407,7 @@ def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> Inge
             workers=1,
             popularity=source,
             retry=manifest.retried,
+            diff_base=manifest.diff_base,
         )
     finally:
         fetcher.close()

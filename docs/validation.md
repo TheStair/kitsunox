@@ -194,3 +194,23 @@ Stage 0's output changed. Their `manifest.tool_version` records which code produ
 | `npm.repo.install-script-not-in-repo` live hits | 43 (16 packages), all compared with a monorepo's root manifest. With `repo.compared` v2: 13 packages match their own manifest's hooks, 1 not comparable, 2 still fire accurately (`bun`, `@kilocode/cli`: hooks added by release scripts) |
 | Repo comparison re-measured with v2 (`day1`, same samples) | compared 55 / 116; hooks 51 / 0; code 48 / 3; dependencies 7 / 2 (v1: 57 / 121; 53 / 0; 49 / 9; 30 / 14) |
 
+
+## 2026-10-30: First VM day (4 vCPUs, 30 GB RAM)
+
+Run `20261029T221803Z-npm`, a 24-hour catch-up window, timed from its files and
+`journalctl --user -u kitsunox-collect`; memory sampled every 30 s
+(`ps -o rss`, `free -m`).
+
+| Check | Result |
+|---|---|
+| First tick, Stage 0 | Watchlist 36 min (63,563 packages), labels 12 s (222,568 records), ingest 43 min: 110,084 changes, 0 skipped |
+| Stages 1-3 on 110,084 versions | Stage 1 under 1 min; Stage 2 71 min; Stage 3 85 min (the laptop: Stage 3 ~3.7 h on 109,497) |
+| Stage 4, holding the run in memory | OOM-killed after 3 h 09 min at 21.6 GB anon RSS (kernel log) |
+| Stage 4 input streamed (`RunVersions`, `LineFile`), alone | Index 12 s, one pass 22 s, 0.12 GB peak RSS |
+| Stage 4 resumed, streamed, archives not yet slotted | 3 h 07 min with every archive already cached by the killed attempt; 18.5 GB peak RSS; 6,739 compared with their repository, 984 reported (0.9%: 336 HIGH, 590 MEDIUM, 58 LOW), 2,202 GitHub requests, 0 failed; 628 dependency names looked up |
+| What makes a reported version HIGH | `static.exfil-endpoint` alone 128, `npm.publish-method.downgrade` alone 125, install hook with or without `install-script-not-in-repo` 80 |
+| `npm.dependency.known-malware` live | 1 hit: `victor-nest-resource` adds `fs`, `child_process`, `path`, `util` (OSV lists npm's `fs` and `http` as malware). On `vm-day1`, 20 malicious samples and 2 benign add a dependency named like a Node built-in; kept |
+| `npm.publish-method.downgrade` with the publisher's history (packuments) | 120 of 127 live hits: that account had published the package by hand before; 57 since the package's first CI release. That second reading as a filter would lose 7 of 149 malicious samples (`axios@1.14.1`, five `@nx/*`, `synckit`); not adopted |
+| `static.exfil-endpoint` forms on `vm-day1` (1,176 malicious, 5 benign samples) | Telegram only with a literal bot token and tunnels only as a concrete host would drop 30 malicious (29 caught by nothing else) and 4 benign; not adopted. ngrok region hosts only: 9 live reported versions, but 11 malicious samples (`stage2-rules` 2,169 -> 2,158 forwarded; the first scan missed 2-letter labels); not adopted |
+| Stage 5 bundles for the run's reported versions with install hooks (154; 78 more not captured) | Bundle format 2, 4 workers: 123 offline-installable (102 complete, 25 without dependencies, 4 of the complete predict network); 12 incomplete only because one dependency file was over 64 MiB (native CLIs: bun, opencode, `@square/cli`). After letting a file take the unpacked cap: **135 of 154 (87.7%)**; still out: 10 over a cap (8 unpacked, `@opencode/cli` x6), 4 with an unresolved dependency (2 not on the registry, 1 a remote URL, 1 for another platform), 1 with a dependency shrinkwrap. p50 / p90 / max: 127 / 230 / 642 packages, 14 / 63 / 126 MB `.tgz`, 10 / 24 / 45 s; 2.8 GB fetched once for all 154; 4.3 GB peak RSS |
+| Ticks after the catch-up (bounded Stage 4: archive and packument slots) | 11:30-12:13 UTC, 23,807 changes: 43 min, 196 to review, available memory never under 20.7 GB of 30.7 (old code: 5.5 GB); systemd cgroup peak 16 GB, page cache included. Hourly ticks of ~5,000 changes since: 8-10 min, cgroup peak 6-7 GB. The queue held 1,119 packages (1,568 versions) from 7 runs at 14:43 |

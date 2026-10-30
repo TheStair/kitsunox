@@ -142,7 +142,7 @@ class Stage(Protocol):  # proposed: stages/ (Stage 1 is a function, stages/triag
 | 2 Static | `PackageBatch` (all versions of one package in a run + base) | tarballs (every version + base) | Each distinct file content not in the base is analysed once (cached by content hash + rule versions across runs); findings are attributed to the first version containing them. Entropy, blob, URL/IP and keyword rules |
 | 3 AST | `Candidate` | nothing new | tree-sitter parse of changed JS/TS; per-file capability sets; **capability delta** findings |
 | 4 Correlate | every triaged `Candidate` (Stages 2-3's version where they ran) | repo refs + archive at `gitHead`/tag (no API token); OSV labels | Tarball-vs-repo diff, known-malware dependencies, combination rules, score; report on MEDIUM+ or score ≥ `REPORT_SCORE` ([stages/correlate.md](stages/correlate.md)) |
-| 5 Sandbox | `Candidate` | n/a (offline container) | Runtime observations as findings. Design review required before any code |
+| 5 Sandbox | `Candidate` | n/a (offline container) | Runtime observations as findings. Design review required before any code: proposed in [stages/sandbox.md](stages/sandbox.md), [0012](decisions/0012-sandbox-design.md) |
 | Report | final candidates + ledger | n/a | `report.json` (canonical) → per-candidate Markdown + `index.md` |
 
 Ingest volume, measured once on 2026-10-27: about 6,000 distinct packages changed in roughly

@@ -88,6 +88,20 @@ def test_retries_with_backoff_and_retry_after(tmp_path: Path) -> None:
     assert sleeps == [1.0, 7.0]
 
 
+def test_retry_after_is_capped_by_max_delay(tmp_path: Path) -> None:
+    responses = iter(
+        [
+            httpx.Response(429, headers={"Retry-After": "86400"}),  # a day: honoured up to 30 s
+            httpx.Response(200, content=b"ok"),
+        ]
+    )
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: next(responses)))
+    sleeps: list[float] = []
+    fetcher = make_fetcher(tmp_path, client, sleeps=sleeps, retry=RetryPolicy(max_delay=30.0))
+    assert fetcher.get(URL).body == b"ok"
+    assert sleeps == [30.0]
+
+
 def test_gives_up_after_max_attempts(tmp_path: Path) -> None:
     def fail(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")
@@ -121,6 +135,25 @@ def test_immutable_responses_are_reused_across_runs(tmp_path: Path, router: Rout
     assert second.get(URL, immutable=True).body == b"tarball"
     assert len(router.requests) == 1
     assert request_key(URL, None) in second.snapshot.entries  # still recorded for replay
+
+
+def test_needs_network_says_whether_get_would_send(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"tarball")
+    other = "https://registry.example/other"
+    router.add_bytes(other, b"mutable")
+    first = make_fetcher(tmp_path, router.client())
+    assert first.needs_network(URL, immutable=True) and first.needs_network(other)
+    first.get(URL, immutable=True)
+    first.get(other)
+    assert not first.needs_network(URL) and not first.needs_network(other)  # this run's snapshot
+    assert first.needs_network(other, headers={"Accept": "x"})  # another request
+    second = make_fetcher(tmp_path, router.client())
+    assert not second.needs_network(URL, immutable=True)  # the immutable index holds it
+    assert second.needs_network(URL)  # not asked as immutable, so `get` would send it
+    assert second.needs_network(other, immutable=True)  # never stored in the index
+    replay = make_fetcher(tmp_path, router.client(), mode=FetchMode.REPLAY)
+    assert not replay.needs_network("https://registry.example/missing")  # a miss, not a request
+    assert len(router.requests) == 2  # asking never fetches
 
 
 def test_damaged_immutable_entry_is_refetched(tmp_path: Path, router: Router) -> None:

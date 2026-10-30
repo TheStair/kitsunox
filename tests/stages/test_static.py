@@ -37,7 +37,7 @@ T0 = datetime(2026, 10, 1, tzinfo=UTC)
 BASE = {"index.js": b"module.exports = 1", "README.md": b"hi"}
 BAD = {
     "index.js": b"module.exports = 1",
-    "lib/x.js": b"post('https://discord.com/api/webhooks/1/x')",
+    "lib/x.js": b"post('https://discord.com/api/webhooks/1093847562019384756/x')",
     "README.md": b"hi",
 }
 CLEAN = {"index.js": b"module.exports = 2", "README.md": b"hi"}

@@ -4,7 +4,8 @@ Nothing is written to disk and nothing is executed: the result is a read-only ma
 normalized relative paths to file bytes. Entries that aren't regular files (symlinks, hardlinks,
 devices, FIFOs) and entries with unsafe paths are not extracted; they're reported in `skipped`
 because their presence can itself be a signal. Size, file-count and compression-ratio limits guard
-against archive bombs.
+against archive bombs. A tarball's regular files also keep their permission bits (`modes`), so
+a repacked copy can keep a script executable; zips report none.
 
 Parser differentials: a strict tar reader stops at the end-of-archive marker or the first invalid
 header, but lenient readers keep going, so an attacker can hide entries that some installer sees
@@ -22,10 +23,22 @@ import zipfile
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 class ArchiveError(ValueError):
     """The archive is malformed or exceeds a safety limit."""
+
+
+class ArchiveLimitError(ArchiveError):
+    """The archive exceeds one of its `ExtractLimits`; `limit` names which, for a caller whose
+    limits are a budget (a bundle's remaining bytes and files) rather than a safety bound."""
+
+    def __init__(
+        self, message: str, limit: Literal["compressed", "total", "ratio", "file", "files"]
+    ) -> None:
+        super().__init__(message)
+        self.limit = limit
 
 
 @dataclass(frozen=True)
@@ -54,6 +67,8 @@ class ArtifactTree(Mapping[str, bytes]):
     skipped: tuple[SkippedEntry, ...] = ()
     duplicates: tuple[str, ...] = field(default=())
     anomalies: tuple[str, ...] = field(default=())
+    # Each extracted tar file's permission bits (`mode & 0o7777`), by the same path as `files`.
+    modes: Mapping[str, int] = field(default_factory=dict)
 
     def __getitem__(self, path: str) -> bytes:
         return self.files[path]
@@ -76,11 +91,12 @@ def extract_tar_gz(
     segments (npm tarballs nest everything under `package/`). `include` selects regular files
     by their safe path; the rest are not read (a monorepo archive, one package's directory)."""
     if len(data) > limits.max_compressed_bytes:
-        raise ArchiveError(f"compressed size {len(data)} exceeds limit")
+        raise ArchiveLimitError(f"compressed size {len(data)} exceeds limit", "compressed")
     raw = _gunzip_limited(data, limits)
 
     strict_count = _strict_member_count(raw)
     files: dict[str, bytes] = {}
+    modes: dict[str, int] = {}
     skipped: list[SkippedEntry] = []
     duplicates: list[str] = []
     lenient_count = 0
@@ -89,7 +105,7 @@ def extract_tar_gz(
             for count, member in enumerate(tar, start=1):
                 lenient_count = count
                 if count > limits.max_files:
-                    raise ArchiveError(f"more than {limits.max_files} entries")
+                    raise ArchiveLimitError(f"more than {limits.max_files} entries", "files")
                 if member.isdir():
                     continue  # directories are implied by file paths; nothing to extract
                 path = safe_relative_path(member.name, strip_components)
@@ -102,7 +118,8 @@ def extract_tar_gz(
                 if include is not None and not include(path):
                     continue
                 if member.size > limits.max_file_bytes:
-                    raise ArchiveError(f"{path}: {member.size} bytes exceeds per-file limit")
+                    message = f"{path}: {member.size} bytes exceeds per-file limit"
+                    raise ArchiveLimitError(message, "file")
                 handle = tar.extractfile(member)
                 if handle is None:
                     skipped.append(SkippedEntry(path, "unreadable"))
@@ -110,6 +127,7 @@ def extract_tar_gz(
                 if path in files:
                     duplicates.append(path)
                 files[path] = handle.read()
+                modes[path] = member.mode & 0o7777
             end_offset = tar.offset
     except tarfile.TarError as exc:
         raise ArchiveError(f"malformed tar: {exc}") from exc
@@ -127,6 +145,7 @@ def extract_tar_gz(
         skipped=tuple(skipped),
         duplicates=tuple(duplicates),
         anomalies=tuple(anomalies),
+        modes=modes,
     )
 
 
@@ -159,7 +178,7 @@ def extract_zip(
     `infected`-encrypted zips. `include` selects members by their safe path, so that only the
     files needed are ever decrypted."""
     if len(data) > limits.max_compressed_bytes:
-        raise ArchiveError(f"compressed size {len(data)} exceeds limit")
+        raise ArchiveLimitError(f"compressed size {len(data)} exceeds limit", "compressed")
     files: dict[str, bytes] = {}
     skipped: list[SkippedEntry] = []
     duplicates: list[str] = []
@@ -168,7 +187,7 @@ def extract_zip(
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             infos = archive.infolist()
             if len(infos) > limits.max_files:
-                raise ArchiveError(f"more than {limits.max_files} entries")
+                raise ArchiveLimitError(f"more than {limits.max_files} entries", "files")
             for info in infos:
                 if info.is_dir():
                     continue
@@ -182,16 +201,18 @@ def extract_zip(
                     if skip_oversize:
                         skipped.append(SkippedEntry(info.filename, "over per-file limit"))
                         continue
-                    raise ArchiveError(f"{path}: {info.file_size} bytes exceeds per-file limit")
+                    message = f"{path}: {info.file_size} bytes exceeds per-file limit"
+                    raise ArchiveLimitError(message, "file")
                 if info.compress_size and info.file_size / info.compress_size > limits.max_ratio:
-                    raise ArchiveError(f"{path}: compression ratio exceeds limit")
+                    raise ArchiveLimitError(f"{path}: compression ratio exceeds limit", "ratio")
                 with archive.open(info, pwd=password) as handle:
                     content = handle.read(limits.max_file_bytes + 1)
                 if len(content) > limits.max_file_bytes:
-                    raise ArchiveError(f"{path}: exceeds per-file limit")
+                    raise ArchiveLimitError(f"{path}: exceeds per-file limit", "file")
                 total += len(content)
                 if total > limits.max_total_bytes:
-                    raise ArchiveError(f"decompressed size exceeds {limits.max_total_bytes} bytes")
+                    message = f"decompressed size exceeds {limits.max_total_bytes} bytes"
+                    raise ArchiveLimitError(message, "total")
                 if path in files:
                     duplicates.append(path)
                 files[path] = content
@@ -219,14 +240,16 @@ def safe_relative_path(name: str, strip_components: int = 0) -> str | None:
 
 
 def _gunzip_limited(data: bytes, limits: ExtractLimits) -> bytes:
-    cap = min(limits.max_total_bytes, max(len(data), 1) * limits.max_ratio)
+    by_ratio = max(len(data), 1) * limits.max_ratio
+    cap = min(limits.max_total_bytes, by_ratio)
     decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
     try:
         out = decompressor.decompress(data, cap + 1)
     except zlib.error as exc:
         raise ArchiveError(f"malformed gzip: {exc}") from exc
     if len(out) > cap or decompressor.unconsumed_tail:
-        raise ArchiveError(f"decompressed size exceeds limit ({cap} bytes)")
+        limit: Literal["total", "ratio"] = "ratio" if by_ratio < limits.max_total_bytes else "total"
+        raise ArchiveLimitError(f"decompressed size exceeds limit ({cap} bytes)", limit)
     if not decompressor.eof:
         raise ArchiveError("truncated gzip stream")
     if decompressor.unused_data:

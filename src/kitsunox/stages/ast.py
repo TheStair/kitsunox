@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 import httpx
+from pydantic import Field
 
 from kitsunox.core.models import (
     Candidate,
@@ -124,6 +125,11 @@ class CodeChange(Record):
     after: Profile
     install: Profile | None = None
     install_before: Profile | None = None
+    # The files the install hooks name (`InstallEntries`), for diffing: path -> bytes, each cut
+    # at MAX_INSTALL_FILE_BYTES. `install_files_before` is None when there is no base.
+    install_files: dict[str, bytes] = Field(default_factory=dict)
+    install_files_before: dict[str, bytes] | None = None
+    previous_version: str | None = None
 
     @property
     def added(self) -> frozenset[Capability]:
@@ -141,6 +147,13 @@ class CodeRule(Protocol):
 
 
 InstallEntries = Callable[[Tree], frozenset[str]]
+MAX_INSTALL_FILE_BYTES: Final = 256 * 1024  # of each install file kept for the diff
+
+
+def install_files(tree: Tree, install_entries: InstallEntries | None) -> dict[str, bytes]:
+    """The files `tree`'s install hooks name, cut at MAX_INSTALL_FILE_BYTES."""
+    entries = install_entries(tree) if install_entries else frozenset()
+    return {path: bytes(tree[path][:MAX_INSTALL_FILE_BYTES]) for path in sorted(entries)}
 
 
 def analyse_batch(
@@ -158,20 +171,23 @@ def analyse_batch(
     is a new package even if the batch holds an earlier placeholder (`0.0.0-stage` before
     `1.4.0`): npm says nothing came before it, so it gained nothing. A previous whose files
     were unavailable leaves nothing to compare with, so `before` is None as well."""
-    profiles: dict[str, tuple[Profile, Profile | None]] = {}
+    profiles: dict[str, tuple[Profile, Profile | None, dict[str, bytes]]] = {}
     if batch.base is not None:
         base_tree = trees(batch.base)
         if not isinstance(base_tree, Unavailable):
             profiles[batch.base.ref.version] = (
                 profile(base_tree, cache),
                 _install_profile(base_tree, cache, install_entries),
+                install_files(base_tree, install_entries),
             )
     updated = []
     for candidate in batch.versions:
         snapshot = candidate.change.new
         previous = candidate.change.previous
-        before, install_before = (
-            profiles.get(previous.ref.version, (None, None)) if previous else (None, None)
+        before, install_before, files_before = (
+            profiles.get(previous.ref.version, (None, None, None))
+            if previous
+            else (None, None, None)
         )
         tree = trees(snapshot)
         if isinstance(tree, Unavailable):
@@ -182,12 +198,16 @@ def analyse_batch(
             continue
         after = profile(tree, cache)
         install = _install_profile(tree, cache, install_entries)
+        files = install_files(tree, install_entries)
         change = CodeChange(
             snapshot=snapshot,
             before=before,
             after=after,
             install=install,
             install_before=install_before,
+            install_files=files,
+            install_files_before=files_before,
+            previous_version=previous.ref.version if previous else None,
         )
         findings = tuple(f for rule in rules for f in rule.evaluate_code(change))
         flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
@@ -197,7 +217,7 @@ def analyse_batch(
             reason=f"rules: {', '.join(flagged)}" if flagged else "no signal",
         )
         updated.append(_with(candidate, findings, decision))
-        profiles[snapshot.ref.version] = (after, install)
+        profiles[snapshot.ref.version] = (after, install, files)
     return batch.model_copy(update={"versions": tuple(updated)})
 
 
@@ -207,6 +227,7 @@ def code_change(
     base_tree: Tree | None,
     cache: CapabilityCache,
     install_entries: InstallEntries | None = None,
+    previous_version: str | None = None,
 ) -> CodeChange:
     """The `CodeChange` for one version against one base (evaluation uses this directly)."""
     return CodeChange(
@@ -217,6 +238,11 @@ def code_change(
         install_before=(
             _install_profile(base_tree, cache, install_entries) if base_tree is not None else None
         ),
+        install_files=install_files(tree, install_entries),
+        install_files_before=(
+            install_files(base_tree, install_entries) if base_tree is not None else None
+        ),
+        previous_version=previous_version,
     )
 
 

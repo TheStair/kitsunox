@@ -34,10 +34,14 @@ def install_commands(files: Mapping[str, bytes]) -> dict[str, str]:
 
 def install_entry_files(files: Mapping[str, bytes]) -> frozenset[str]:
     """Package files named in an install hook's command line."""
+    return frozenset().union(*(files_named(c, files) for c in install_commands(files).values()))
+
+
+def files_named(command: str, files: Mapping[str, bytes]) -> frozenset[str]:
+    """Files of `files` named on one command line."""
     found = set()
-    for command in install_commands(files).values():
-        for token in _TOKEN.split(command):
-            path = token.strip("'\"").removeprefix("./")
-            if path in files:
-                found.add(path)
+    for token in _TOKEN.split(command):
+        path = token.strip("'\"").removeprefix("./")
+        if path in files:
+            found.add(path)
     return frozenset(found)

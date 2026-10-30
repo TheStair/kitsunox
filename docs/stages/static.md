@@ -51,7 +51,10 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v2) | Discord/Slack webhooks with an id, Telegram bot API, pastebins, request bins, OAST and tunnelling hosts | HIGH |
+| `static.exfil-endpoint` (v3) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts | HIGH |
+| `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
+| `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
+| `static.function-require` | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor` | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
 | `static.hardcoded-ip` | URLs with a public IPv4 literal | MEDIUM |
@@ -166,6 +169,93 @@ there), measured on `day1`:
 
 The simulation predicted the `pipeline` numbers exactly. Stage 1's routing passes 25.8% of
 releases to Stage 2 (weighted; `stage1` predictor), about 24k versions a day after the cap.
+
+### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
+
+v3 requires real-looking webhook ids: a 17-20-digit Discord snowflake (every real webhook in
+the DataDog samples has 19 digits), upper-case Slack `T…/B…` ids, and no repeated or
+counting-up ids. Measured before adopting it:
+
+- **v3 alone:** benign flags 11 → 10, but malicious shape B 1,006 → 963. The 43 lost samples
+  (42 also lost end to end through `pipeline+3`) are a `chai-as-*` typosquat family whose
+  only Stage 2 match was a Slack placeholder (`/services/xxx/xxx/xxx`) in a bundled notifier
+  template; v2 matched it because its `[A-Z0-9]` was case-insensitive. Losing 42 attacks for
+  one benign package (`@zerodot/discord`) is the wrong trade.
+- **Adopted:** v3 plus `static.webhook-placeholder` (MEDIUM, weight 3) for exactly what v2
+  matched and v3 rejects. Stage 2 flags the same samples as v2 (0 differences out of 4,943),
+  and placeholder findings now say what they are and score 3 instead of 5.
+
+### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
+
+On `20261029T221803Z-npm`, 128 reported versions were HIGH through this rule alone, and live
+benign code mostly matched it as `api.telegram.org/bot${token}`, a bare `".trycloudflare.com"`
+or a list of ngrok's region hosts. Measured on `vm-day1`'s 1,181 samples with a match:
+
+- **Telegram only with a literal bot token, tunnels only as a concrete host:** 30 malicious
+  samples no longer match, 29 of them caught by nothing else, against 4 benign. Rejected:
+  malware builds the URL from a variable just as often as benign code does.
+- **ngrok's region hosts only** (`ap`, `au`, `eu`, `in`, `jp`, `sa`, `us` before
+  `.ngrok.io`; nobody can register them as a tunnel): would clear 9 live reported versions
+  (6 packages), and was briefly adopted as v4. The `stage2-rules` evaluation then lost 11
+  malicious samples (2,169 -> 2,158 forwarded; `gina`, `cro-pricing`, `edgeone`, ...) that
+  carry such lists and nothing else Stage 2 sees. The per-sample scan that said "no sample has
+  one" only counted host labels of 3 or more characters. Reverted to v3.
+
+### Hidden URLs and code handed `require` (2026-10-30, `vm-day1`)
+
+The 43 samples above (pino clones named `chai-as-*`, `chai-await-*`, `aligners`,
+`argon-web3-chain`, `core-pino`, ...; all new packages, no install hook except `js-prettier`)
+were caught by Stage 2 only through the Slack placeholder in a template they copied. Read
+statically, what they do is a remote loader, in two variants:
+
+- **28 samples** (`lib/caller.js` or `lib/initializeCaller.js`, called from `main`, or
+  spawned detached by it; in `loading-session` the loader is missing from the sample): a URL
+  stored as base64 (`atob("aHR0cHM6Ly9...")`, dressed up as
+  `process.env.DEV_API_KEY`), fetched with axios, and the response run with
+  `new Function.constructor("require", body)(require)`. The hosts are JSON bins
+  (`jsonkeeper.com`, `npoint.io`, `jsonsilo.com`, `mocki.io`, `jsonstorage.net`).
+- **14 samples** (`lib/writer.js`): strings hex-encoded behind a small decoder (`require`,
+  `axios`, `post` and the URL), `{...process.env}` plus host name, user and MAC addresses
+  posted (mostly to a `*.vercel.app` host), and the response passed to `eval`.
+- **1** (`jsonlogbundler`) has neither: it runs `npm install` of a second package at runtime.
+
+Neither variant matched a MEDIUM rule: `dynamic-code` is LOW and its pattern misses
+`Function.constructor(`; `env-harvest` misses a spread with more keys. Two general rules were
+added rather than a family signature:
+
+- **`static.encoded-url`**: a whole string literal that decodes (base64, URL-safe base64 or
+  hex) to printable `http(s)://` / `ws(s)://` text. Code has no reason to hide an address it
+  means to use. The literal must be the whole string, so the same bytes inside a longer blob
+  (inline source maps, SVG data URIs) don't count; a scan without that condition matched
+  28 benign samples, all of them such blobs. The finding shows the decoded URL.
+- **`static.function-require`**: `Function("require", ...)`, including `Function.constructor`
+  and `new (Function.constructor)(...)`. Runtime-compiled code that is given the module
+  loader can load `child_process` or `https` itself; that is what a second-stage loader needs.
+
+Measured on `vm-day1` (before = the rules without these two):
+
+| Predictor | A | A follow-on | B | B follow-on | Benign A / B (flagged) |
+|---|---|---|---|---|---|
+| `stage2-rules`, before | 71.5% | 84.0% | 49.9% | 50.7% | 8 / 3 |
+| `stage2-rules`, after | 71.6% | 84.0% | **52.4%** | **53.9%** | 8 / 3 |
+| `pipeline+3`, before | 89.4% | 29.5% | 66.0% | 22.8% | 5 / 14 |
+| `pipeline+3`, after | 89.4% | 29.5% | **67.6%** | 22.8% | 5 / 14 |
+
+- **End to end: 15 more first releases caught (597 → 612), no benign added.** The 43 were
+  already forwarded through the placeholder; the gain is other families with the same
+  loader: `encoded-url` alone 9 (`tailwindcss-setfavicon`, `vite-support-kit`,
+  `vite-ts-icon`, `terminalcolor256`, `graphflowx`, ...), `function-require` alone 5
+  (`alpha-replicator`, `express-session-handler`, `mongos-api`, `tw-modern-ui`,
+  `vite-plugin-chunk-chop`), both 1 (`vite-enhancer-config`).
+- **Of the 43, `encoded-url` matches 42 and `function-require` 27.** `webhook-placeholder`
+  is now the only Stage 2 catch for one of them (`jsonlogbundler`), against one benign
+  package (`@zerodot/discord`); whether it stays MEDIUM is open.
+- **Stage 2 alone: +58 samples (1 A, 22 B, 35 B follow-on), no benign sample added and none
+  lost.** Of the 1,500 provisional benign samples, neither rule fires on a forwarded one that
+  wasn't already forwarded. The live day is the larger benign test; an encoded-URL literal in
+  benign code (a config test, an obfuscated telemetry endpoint) is the expected false positive.
+- `function-require` uses possessive quantifiers: the first version backtracked quadratically
+  on `Function` followed by a long whitespace run (a stall a package could cause).
 
 ### Live trial
 

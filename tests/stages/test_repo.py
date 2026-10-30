@@ -1,9 +1,14 @@
 """Tarball-vs-repo comparison: locating the commit, comparing trees, and the rules over it."""
 
+import threading
+import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from conftest import Router, TarEntry, make_tar_gz
 from kitsunox.core.models import (
@@ -19,7 +24,14 @@ from kitsunox.ecosystems.npm.rules.correlate import DependencyNotInRepo, Install
 from kitsunox.githost.github import GitHub, GitHubRepo
 from kitsunox.rules.repo import CodeDiffersFromRepo, CodeNotInRepo, RepoCompared
 from kitsunox.stages.correlate import CorrelationContext
-from kitsunox.stages.repo import RepoComparison, compare, compare_trees
+from kitsunox.stages.repo import (
+    ARCHIVES_IN_MEMORY,
+    RepoComparison,
+    RepoMemory,
+    compare,
+    compare_trees,
+)
+from kitsunox.util.archive import ArtifactTree
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
 
 A, T = "a" * 40, "c" * 40
@@ -187,3 +199,110 @@ def test_manifest_differences_and_rules() -> None:
     assert hook.severity == Severity.HIGH and hook.evidence[0].after == "node setup_bun.js"
     (dep,) = DependencyNotInRepo().evaluate_candidate(cand, ctx(comparison))
     assert dep.severity == Severity.LOW and "evil" in dep.explanation
+
+
+def test_a_hook_the_repository_build_writes_is_a_note() -> None:
+    """`nutui-react`: the build script adds `node postinstall.js` and copies
+    `scripts/postinstall.js`; neither is in the repository's package.json."""
+    hook = b"try { require('child_process').execSync('stats') } catch (e) {}\n"
+    package = {
+        "package.json": b'{"version": "3.0.24", "scripts": {"postinstall": "node postinstall.js"}}',
+        "postinstall.js": hook,
+    }
+    build = b"pkg.scripts = {postinstall: 'node postinstall.js'}\ncopy('scripts/postinstall.js')\n"
+    repo = {"package.json": b"{}", "scripts/postinstall.js": hook, "scripts/build.mjs": build}
+    (diff,) = NpmLocator().manifest_differences(package, repo)
+    assert diff.built_by == "scripts/build.mjs"
+    (note,) = InstallScriptNotInRepo().evaluate_candidate(
+        Candidate(change=change()), ctx(RepoComparison(manifest=(diff,)))
+    )
+    assert (
+        note.severity == Severity.INFO
+        and "`scripts/build.mjs` holds the command" in note.explanation
+    )
+    assert compare_trees(package, repo).unexplained == []  # the copied file is in the repo
+
+    # The file it runs isn't the repository's: not built there, whatever a script says.
+    changed = {**package, "postinstall.js": hook + b"fetch('https://evil.example')\n"}
+    (diff,) = NpmLocator().manifest_differences(changed, repo)
+    assert diff.built_by is None
+    assert compare_trees(changed, repo).unexplained == ["postinstall.js"]
+    # No repository file holds the command (only the hook file itself, which doesn't count).
+    (diff,) = NpmLocator().manifest_differences(
+        package, {k: v for k, v in repo.items() if k != "scripts/build.mjs"}
+    )
+    assert diff.built_by is None
+    # An inline command names no file.
+    inline = {"package.json": b'{"scripts": {"postinstall": "node -e x"}}'}
+    (diff,) = NpmLocator().manifest_differences(
+        inline, {"package.json": b"{}", "b.sh": b"node -e x"}
+    )
+    assert diff.built_by is None
+
+
+def test_a_versioned_hook_command_matches_its_placeholder_in_the_build() -> None:
+    package = {
+        "package.json": b'{"version": "1.3.0",'
+        b' "scripts": {"install": "node i.js resource x 1.3.0"}}',
+        "i.js": b"install()",
+    }
+    repo = {
+        "package.json": b"{}",
+        "i.js": b"install()",
+        "Makefile": b'"node i.js resource x ${VERSION}"',
+    }
+    (diff,) = NpmLocator().manifest_differences(package, repo)
+    assert diff.built_by == "Makefile"
+
+
+def test_archives_are_extracted_a_few_at_a_time_and_a_bad_one_once(
+    tmp_path: Path, router: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router.add_bytes(REFS_URL, pkt(f"{T} refs/tags/v1.2.3\n") + b"0000")
+    router.add_bytes(
+        f"https://codeload.github.com/o/r/tar.gz/{T}",
+        make_tar_gz([TarEntry(f"r-{T}/package.json", b"{}"), TarEntry(f"r-{T}/a.js", b"a")]),
+    )
+    client = github(tmp_path, router)
+    memory = RepoMemory()
+    inside, most = 0, 0
+    lock = threading.Lock()
+    real = GitHub.extract
+
+    def extract(self: GitHub, body: bytes, *, directory: str = "") -> ArtifactTree:
+        nonlocal inside, most
+        with lock:
+            inside += 1
+            most = max(most, inside)
+        time.sleep(0.02)
+        try:
+            return real(self, body, directory=directory)
+        finally:
+            with lock:
+                inside -= 1
+
+    monkeypatch.setattr(GitHub, "extract", extract)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: compare(change(), {"a.js": b"a"}, NpmLocator(), client, memory=memory),
+                range(16),
+            )
+        )
+    assert all(r.identical == 1 for r in results)
+    assert 1 <= most <= ARCHIVES_IN_MEMORY
+
+    calls = 0
+
+    def unreadable(self: GitHub, body: bytes, *, directory: str = "") -> ArtifactTree:
+        nonlocal calls
+        calls += 1
+        raise ValueError("archive too large")
+
+    monkeypatch.setattr(GitHub, "extract", unreadable)
+    memory = RepoMemory()
+    first, second = (
+        compare(change(), {"a.js": b"a"}, NpmLocator(), client, memory=memory) for _ in range(2)
+    )
+    assert first.unavailable == second.unavailable == "archive: archive too large"
+    assert calls == 1

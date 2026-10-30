@@ -66,11 +66,29 @@ def _field(path: str, *, after: str | None = None, before: str | None = None) ->
     )
 
 
+def has_install_hook(manifest: Mapping[str, object]) -> bool:
+    """The manifest declares a non-empty `preinstall`, `install` or `postinstall`."""
+    declared = scripts(manifest)
+    return any(declared.get(hook, "").strip() for hook in INSTALL_HOOKS)
+
+
+def only_version_changed(old: str, new: str, old_version: str, new_version: str) -> bool:
+    """`new` is `old` with its own version string swapped for the new one, as generated
+    commands do (`@pulumi/*`: `node scripts/install-pulumi-plugin.js resource command 1.3.0`).
+    What the command runs is diffed in Stage 3 (`npm.install-script-changed`)."""
+    return bool(old_version) and old_version in old and old.replace(old_version, new_version) == new
+
+
 class InstallHook(BaseRule):
     """An install-time script is new or changed. The most common way npm malware runs: it
-    executes on `npm install`, before any code imports the package."""
+    executes on `npm install`, before any code imports the package.
+
+    v2: a command whose only change is its own version string is not "changed" (39 of 52
+    changed commands on the first VM day, all generated: `@pulumi/*`). Its files are compared
+    in Stage 3, where every update with an install hook now goes (`triage.code_route`)."""
 
     id = "npm.install-hook"
+    version = 2
     severity = Severity.HIGH
     weight = 5.0
     title = "Install script added or changed"
@@ -98,7 +116,9 @@ class InstallHook(BaseRule):
                         _field(f"scripts.{hook}", after=new[hook]),
                     )
                 )
-            elif old[hook] != new[hook]:
+            elif old[hook] != new[hook] and not only_version_changed(
+                old[hook], new[hook], previous.ref.version, change.new.ref.version
+            ):
                 findings.append(
                     self.finding(
                         f"`{hook}` script changed since {previous.ref.version}.",

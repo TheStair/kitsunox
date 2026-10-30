@@ -8,8 +8,13 @@ that render HTML. So:
 
 - code and evidence go in fenced blocks whose fence is longer than any backtick run inside;
 - inline text has HTML and Markdown control characters escaped, and newlines flattened;
-- links are emitted only for `https://` URLs without spaces or angle brackets, in `<...>`
-  form; anything else is shown as escaped text.
+- hidden characters (controls, bidi, zero-width, variation selectors, private use: see
+  `util.text`) are removed from both, with a bold "[N hidden characters removed]" after the
+  text or block, which package text can't forge because its `*` and `[` are escaped;
+- links are emitted only for URLs `util.text.safe_url` accepts (plain ASCII `https://`, no
+  user info, no quotes, spaces, controls or backslashes), in `<...>` form; anything else is
+  shown as an inline code span marked "(not linked)", so renderers that autolink bare URLs
+  can't make it clickable.
 """
 
 from __future__ import annotations
@@ -22,36 +27,66 @@ from typing import Final
 from kitsunox.core.models import Evidence, Finding
 from kitsunox.reporting.report import Report, ReportEntry
 from kitsunox.util.files import atomic_write
+from kitsunox.util.text import hidden_note, safe_url, strip_hidden
 
 MAX_EVIDENCE_PER_FINDING: Final = 5
-_CONTROL: Final = re.compile(r"[\x00-\x08\x0b-\x1f\x7f‪-‮⁦-⁩]")
 _SPECIAL: Final = re.compile(r"([\\`*_{}\[\]()#+!|~>-])")
-_SAFE_URL: Final = re.compile(r"^https://[^\s<>\"'`]+$")
+
+
+def strip_controls(value: str) -> str:
+    """Drop hidden characters: controls (except tab and newline), bidi, zero-width, variation
+    selectors, private use and the rest of `util.text.is_hidden`. No marker."""
+    return strip_hidden(value)[0]
+
+
+def hidden_flag(count: int) -> str:
+    """The Markdown marker for `count` (at least one) removed characters."""
+    return "**" + _SPECIAL.sub(r"\\\1", hidden_note(count)) + "**"
 
 
 def text(value: object) -> str:
-    """Inline, untrusted: one line, HTML neutralised, Markdown punctuation escaped. Also drops
-    control and bidirectional-override characters, which can make text read differently from
-    what it is."""
-    flat = " ".join(_CONTROL.sub("", str(value)).split())
+    """Inline, untrusted: one line, HTML neutralised, Markdown punctuation escaped. Hidden
+    characters, which can make text read differently from what it is, are dropped and
+    flagged."""
+    clean, removed = strip_hidden(str(value))
+    flat = " ".join(clean.split())
     flat = flat.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return _SPECIAL.sub(r"\\\1", flat)
+    escaped = _SPECIAL.sub(r"\\\1", flat)
+    if not removed:
+        return escaped
+    return f"{escaped} {hidden_flag(removed)}" if escaped else hidden_flag(removed)
 
 
 def code(value: str, language: str = "") -> str:
-    """A fenced block that `value` cannot close."""
-    clean = _CONTROL.sub("", value)
+    """A fenced block that `value` cannot close; hidden characters dropped and flagged after
+    the block."""
+    clean, removed = strip_hidden(value)
     longest = max((len(run) for run in re.findall(r"`+", clean)), default=0)
     fence = "`" * max(3, longest + 1)
-    return f"{fence}{language}\n{clean}\n{fence}"
+    block = f"{fence}{language}\n{clean}\n{fence}"
+    return f"{block}\n\n{hidden_flag(removed)}" if removed else block
 
 
 def link(url: str | None, label: str) -> str:
+    """A link if `safe_url` accepts `url`. Otherwise the URL as an inline code span marked
+    "(not linked)": as plain text, renderers that autolink bare URLs (GitHub, linkify
+    previews) would still make `https://www.npmjs.com@evil.example/` clickable, but they never
+    autolink inside code. The span's fence is longer than any backtick run inside, hidden
+    characters are dropped and flagged, and `|` is written `\\|` (these links sit in table
+    cells, where an unescaped pipe would end the cell even inside code)."""
     if url is None:
         return "n/a"
-    if not _SAFE_URL.match(url):
-        return text(url)
-    return f"[{text(label)}](<{url}>)"
+    safe = safe_url(url)
+    if safe is not None:
+        return f"[{text(label)}](<{safe}>)"
+    clean, removed = strip_hidden(url)
+    flat = " ".join(clean.split()).replace("|", "\\|")
+    flag = f" {hidden_flag(removed)}" if removed else ""
+    if not flat:
+        return f"(empty URL, not linked){flag}"
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", flat)), default=0) + 1)
+    pad = " " if flat[0] == "`" or flat[-1] == "`" else ""
+    return f"{fence}{pad}{flat}{pad}{fence} (not linked){flag}"
 
 
 def _when(moment: datetime | None) -> str:
@@ -76,6 +111,23 @@ def render_index(report: Report) -> str:
     if report.by_severity:
         counts = ", ".join(f"{n} {text(s)}" for s, n in report.by_severity.items())
         lines += [f"By highest severity: {counts}.", ""]
+    uncompared, outage = report.network_uncompared()
+    if uncompared:
+        why = " (most lookups failed, so retries were skipped as an outage)" if outage else ""
+        lines += [
+            f"**{uncompared:,} versions were not compared with their repository**: network "
+            f"failures{why}. Their scores lack the repository evidence.",
+            "",
+        ]
+    failed, outage = report.dependency_network_failures()
+    if failed:
+        why = " (most failed, so retries were skipped as an outage)" if outage else ""
+        lines += [
+            f"**{failed:,} dependency lookups failed**: network failures{why}. The versions "
+            "adding those dependencies were not checked for their age and accounts.",
+            "",
+        ]
+    lines += _stage5_line(report)
     if not report.entries:
         return "\n".join([*lines, "Nothing to review in this run.", ""])
     lines += [
@@ -90,6 +142,26 @@ def render_index(report: Report) -> str:
             f"| {'yes' if entry.watched else ''} |"
         )
     return "\n".join([*lines, ""])
+
+
+def _stage5_line(report: Report) -> list[str]:
+    """What Stage 5 did with the run's reported versions; `sandbox.json` is our own output, but
+    its counts are read defensively (a non-integer shows as 0)."""
+    counts = report.sandbox.get("counts")
+    if not isinstance(counts, dict):
+        return []
+
+    def n(key: str) -> int:
+        value = counts.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    hooks = n("selected") + n("deferred")
+    return [
+        f"Stage 5 (package-analysis, airgapped): {hooks:,} of {n('reported'):,} reported "
+        f"versions have install hooks; {n('analysed'):,} analysed, {n('pending'):,} awaiting "
+        f"analysis, {n('deferred'):,} over the cap.",
+        "",
+    ]
 
 
 def render_entry(entry: ReportEntry) -> str:
@@ -170,7 +242,8 @@ def _evidence(evidence: Evidence) -> list[str]:
         where += f", line {evidence.line_start}"
     lines = [f"- {where}"]
     if evidence.snippet:
-        lines += ["", code(evidence.snippet)]
+        diff = evidence.snippet.startswith("@@ ")  # changed lines (npm.install-script-changed)
+        lines += ["", code(evidence.snippet, "diff" if diff else "")]
     if evidence.before is not None or evidence.after is not None:
         lines += ["", code(f"before: {evidence.before}\nafter:  {evidence.after}")]
     return lines

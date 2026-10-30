@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Final, Protocol
 
 from pydantic import Field
 
@@ -42,6 +42,13 @@ class DownloadCounts(Record):
     counts: dict[str, int | None]
 
 
+# How Stage 0 picks the version a release is diffed against. Recorded per run
+# (`RunManifest.diff_base`), so a replay uses the rule its run was recorded with.
+# 1: the highest earlier semver below it (else the latest earlier release).
+# 2: the same, passing over a partial publish (npm: `Packument.previous_version`).
+DIFF_BASE: Final = 2
+
+
 class Ecosystem(Protocol):
     """Everything ecosystem-specific that Stage 0 and artifact-reading stages need."""
 
@@ -56,9 +63,11 @@ class Ecosystem(Protocol):
         name."""
         ...
 
-    def build_changes(self, stub: ChangeStub, window: Window) -> PackageChanges:
+    def build_changes(
+        self, stub: ChangeStub, window: Window, *, diff_base: int = DIFF_BASE
+    ) -> PackageChanges:
         """One Change per version of `stub.name` published inside `window`, each paired with the
-        version it should be diffed against."""
+        version it should be diffed against (chosen by rule `diff_base`)."""
         ...
 
     def download_counts(self, names: Sequence[str], as_of: datetime) -> DownloadCounts:

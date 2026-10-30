@@ -1,15 +1,21 @@
 import json
 import plistlib
-from datetime import UTC, datetime
+import shutil
+import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
+import pytest
 from typer.testing import CliRunner
 
-from conftest import Router
-from kitsunox import __version__
+from conftest import AS_OF, Router
+from kitsunox import __version__, cli
 from kitsunox.cli import app
+from kitsunox.collect import SANDBOX_RESULTS_ENV
 from kitsunox.core.run import DataDir, IngestRequest, PopularityMode, record_ingest
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL, NpmEcosystem
+from kitsunox.notify import Tick, TickRecord, append_tick, read_ticks
 
 runner = CliRunner()
 
@@ -61,6 +67,53 @@ def test_schedule_plist_runs_collect(tmp_path: Path) -> None:
     assert agent["StartInterval"] == 3600
 
 
+def test_schedule_refuses_paths_that_break_unit_files(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["schedule", "systemd", "--data-dir", str(tmp_path / "a\nExecStartPre=/bin/true")]
+    )
+    assert result.exit_code == 2 and "unsupported path" in result.output
+
+
+def test_schedule_systemd_runs_collect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "pro ject$x"  # only ExecStart= quotes and expands `$`
+    project.mkdir()
+    monkeypatch.chdir(project)
+    data, units = tmp_path / "da ta%", tmp_path / "units"
+    result = runner.invoke(
+        app,
+        [
+            "schedule",
+            "systemd",
+            "--data-dir",
+            str(data),
+            "--unit-dir",
+            str(units),
+            "--keep-repo-days",
+            "4",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    service = (units / "kitsunox-collect.service").read_text()
+    exec_start = next(line for line in service.splitlines() if line.startswith("ExecStart="))
+    # Quoted for systemd: the space would split the argument, `%` would be a specifier.
+    escaped = str(data.resolve()).replace("%", "%%")
+    assert exec_start.endswith(f'collect --data-dir "{escaped}" --keep-repo-days 4')
+    assert "Type=oneshot" in service
+    assert f"WorkingDirectory={project.resolve()}\n" in service  # literal, no quotes
+    assert f"StandardOutput=append:{escaped}/logs/collect.log\n" in service
+    if shutil.which("systemd-analyze"):
+        verify = subprocess.run(  # noqa: S603 - fixed argv, our own generated files
+            ["systemd-analyze", "--user", "verify", *sorted(map(str, units.iterdir()))],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert verify.returncode == 0, verify.stderr
+    timer = (units / "kitsunox-collect.timer").read_text()
+    assert "OnUnitActiveSec=60min" in timer
+    assert "WantedBy=timers.target" in timer
+
+
 def test_prune_needs_labels(tmp_path: Path) -> None:
     result = runner.invoke(app, ["data", "prune", "--data-dir", str(tmp_path)])
     assert result.exit_code == 2
@@ -108,3 +161,139 @@ def test_ast_needs_static_first(tmp_path: Path, router: Router) -> None:
     result = runner.invoke(app, ["report", run_id, "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("0 versions, 0 to review")
+
+
+def test_sandbox_needs_stage4_and_a_results_directory(
+    tmp_path: Path, router: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(SANDBOX_RESULTS_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)  # no .env
+    data = tmp_path / "data"
+    run_id = recorded_run(data, router)
+    args = ["sandbox", run_id, "--data-dir", str(data)]
+    assert runner.invoke(app, args).exit_code == 2  # no correlate.jsonl
+    (data / "runs" / run_id / "correlate.jsonl").write_text("")
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("0 of 0 reported versions have install hooks")
+    assert "nothing exported" in result.stdout
+    missing = runner.invoke(app, [*args, "--results", str(tmp_path / "absent")])
+    assert missing.exit_code == 2 and "not a directory" in missing.output
+    results = tmp_path / "results"
+    results.mkdir()
+    monkeypatch.setenv(SANDBOX_RESULTS_ENV, str(results))
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "export: 0 jobs in " in result.stdout
+    replayed = runner.invoke(app, [*args, "--replay"])
+    assert replayed.exit_code == 0 and "export:" not in replayed.stdout
+    with DataDir(data).lock():
+        assert runner.invoke(app, args).exit_code == 2
+
+
+def test_collect_posts_a_daily_summary_and_a_crash_once_a_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    posted: list[tuple[str | None, str]] = []
+
+    def post(url: str | None, content: str, log: object) -> bool:
+        posted.append((url, content))
+        return url is not None
+
+    monkeypatch.setattr(cli, "post_update", post)
+    monkeypatch.setenv("KITSUNOX_DISCORD_WEBHOOK", "https://discord.com/api/webhooks/1/x")
+    monkeypatch.setattr(cli, "collect", lambda data, **_: Tick(manifest=None))
+    args = ["collect", "--data-dir", str(tmp_path)]
+    state = tmp_path / "state"
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert posted == []  # no tick ran yesterday: nothing to summarise
+    assert len(read_ticks(state)) == 1
+
+    result = runner.invoke(app, [*args, "--notify-each-tick"])
+    ((_, content),) = posted
+    assert "nothing written" in content  # the old per-tick update, on request
+
+    posted.clear()  # a tick logged yesterday: today's first tick posts that day's summary
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    record = TickRecord(started=yesterday, minutes=9, run_id="r", versions=5000, reports=("r",))
+    append_tick(state, record)  # run r's report is gone (pruned): the summary goes without it
+    runner.invoke(app, args)
+    ((_, content),) = posted
+    assert content.startswith(f"**Kitsunox** daily summary for {yesterday:%Y-%m-%d}")
+    posted.clear()
+    runner.invoke(app, args)
+    assert posted == []  # posted once
+
+    def crash(data: DataDir, **_: object) -> Tick:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(cli, "collect", crash)
+    result = runner.invoke(app, args)
+    assert isinstance(result.exception, ValueError)  # still fails loudly for systemd
+    ((_, content),) = posted
+    assert "crashed" in content and "ValueError" in content and "boom" not in content
+    assert read_ticks(state)[-1].crashed is not None
+    posted.clear()
+    runner.invoke(app, args)
+    assert posted == []  # a crash loop posts once a day
+
+    monkeypatch.setattr(cli, "collect", lambda data, **_: Tick(manifest=None))
+    monkeypatch.delenv("KITSUNOX_DISCORD_WEBHOOK")  # an unreadable .env turns posts off
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_bytes(b"KITSUNOX_DISCORD_WEBHOOK=\xff\n")
+    result = runner.invoke(app, [*args, "--notify-each-tick"])
+    assert result.exit_code == 0, result.output
+    assert "notify: off, .env unreadable (UnicodeDecodeError)" in result.output
+    assert [url for url, _ in posted] == [None]
+
+    posted.clear()
+    with DataDir(tmp_path).lock():
+        runner.invoke(app, [*args, "--notify-each-tick"])
+    assert posted == []  # a skipped tick is silent
+
+
+def test_run_does_the_whole_pipeline(
+    tmp_path: Path, registry: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_client = httpx.Client
+    monkeypatch.setattr(  # every client the stages make talks to the mock registry
+        httpx,
+        "Client",
+        lambda *a, **kw: real_client(transport=httpx.MockTransport(registry.handler)),
+    )
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=0&limit={FEED_PAGE_LIMIT}",
+        {"results": [{"seq": 150, "id": "kx-fixture"}]},
+    )
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=150&limit={FEED_PAGE_LIMIT}", {"results": []}
+    )
+    args = ["run", "--data-dir", str(tmp_path), "--since-seq", "0", "--until-seq", "200"]
+    result = runner.invoke(
+        app, [*args, "--as-of", f"{AS_OF:%Y-%m-%dT%H:%M:%S}", "--popularity", "none"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "changes:  4" in result.stdout
+    assert "stages:   4 triaged" in result.stdout
+    (run_dir,) = (tmp_path / "runs").iterdir()
+    assert (run_dir / "report" / "report.json").exists()
+    assert DataDir(tmp_path).read_checkpoint("npm") is None  # an explicit range moves nothing
+
+
+def test_view_refuses_every_interface(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["view", "--data-dir", str(tmp_path), "--host", "0.0.0.0"])  # noqa: S104 - refused
+    assert result.exit_code == 2
+    assert "error:" in result.output
+
+
+def test_view_serves_on_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def fake_serve(data_dir: Path, host: str, port: int, **kwargs: object) -> None:
+        calls.append((data_dir, host, port, kwargs["allow_remote"]))
+
+    monkeypatch.setattr("kitsunox.web.serve", fake_serve)
+    result = runner.invoke(app, ["view", "--data-dir", str(tmp_path), "--port", "0"])
+    assert result.exit_code == 0, result.output
+    assert calls == [(tmp_path, "127.0.0.1", 0, False)]

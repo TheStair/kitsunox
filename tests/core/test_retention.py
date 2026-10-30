@@ -9,6 +9,7 @@ from conftest import AS_OF, Router
 from kitsunox.core.retention import PruneReport, RetentionMarker, prune
 from kitsunox.core.run import (
     CORRELATE_SNAPSHOT,
+    SANDBOX_SNAPSHOT,
     STATIC_SNAPSHOT,
     DataDir,
     IngestRequest,
@@ -178,6 +179,24 @@ def test_stage4_fetches_are_kept_with_the_run_and_damaged_index_entries_go(
     assert snapshot.entries
     assert all(data.blobs.get(e.sha256) for e in snapshot.entries.values())
     assert not damaged.exists()
+
+
+def test_stage5_bundle_fetches_are_kept_with_the_run(tmp_path: Path, registry: Router) -> None:
+    # A bundle is rebuilt from these on replay: losing them makes the recorded key unreproducible.
+    data = DataDir(tmp_path)
+    manifest = run(data, registry)
+    snapshot = Snapshot()
+    fetcher = HttpFetcher(
+        store=data.blobs, snapshot=snapshot, mode=FetchMode.RECORD, client=registry.client()
+    )
+    dependency = "https://registry.npmjs.org/dep/-/dep-1.0.0.tgz"
+    registry.add_bytes(dependency, b"dependency tarball")
+    fetcher.get(dependency)
+    fetcher.close()
+    snapshot.save(data.run_dir(manifest.run_id) / SANDBOX_SNAPSHOT)
+    prune_at(data, 1, set())
+    assert snapshot.entries
+    assert all(data.blobs.get(e.sha256) for e in snapshot.entries.values())
 
 
 def test_repository_archives_can_go_before_the_run(tmp_path: Path, registry: Router) -> None:

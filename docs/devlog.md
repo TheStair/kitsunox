@@ -2,6 +2,697 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-30 (afternoon): Reviewing the top live results; full previous releases; install-script diffs; daily Discord summary
+
+**Stage(s):** Stage 0 (diff base), Stage 1 (`npm.install-hook`, routing), Stage 3
+(`npm.install-script-changed`), Stage 2 (`exfil-endpoint` v4 reverted), notifications
+**Context:** The owner asked for a manual check of the first VM day's top results, starting with
+rank 1, `@nutui/nutui-react-taro@3.0.24-cpp-beta.4` (score 20), and then for two fixes it
+pointed to: compare consecutive full releases, not a partial one; and diff an install script's
+file rather than its command (`@pulumi/docker-build`). Also: one Discord post a day.
+
+### What the top results were (every file read as data, nothing run)
+- **#1 `@nutui/nutui-react-taro@3.0.24-cpp-beta.4`: benign, scored through a partial publish.**
+  `beta.3` (26 minutes earlier) shipped 166 files of the 5,215 in `beta.2` and `beta.4`,
+  without the UMD bundle and without `postinstall.js`. Against `beta.2`, `beta.4` has the same
+  `package.json` (bar the version) and the same files; the code change is a 3-line popup-layout
+  fix that matches the changelog. Per rule:
+  - `npm.install-hook`, `npm.dependency.added`, `code.capability-gained`: true against `beta.3`,
+    false against `beta.2` (the postinstall and the `@jmfe` dependency shipped in every release
+    since `3.0.21-cpp`, May 2026; the `eval` is lottie-web's, in the UMD bundle `beta.3` lacked).
+  - `npm.repo.install-script-not-in-repo`, `npm.repo.dependency-not-in-repo`,
+    `repo.code-not-in-repo`: true to their wording, false in substance. The repo's build
+    script (`scripts/build-taro.mjs`, lines 517-537) adds the hook and the dependency and copies
+    `scripts/postinstall.js`, byte-identical to the shipped file.
+  - `npm.install-script-code`, `static.dynamic-code`, `static.npm-publish`: accurate and benign.
+  - **One real concern, for the maintainers:** the postinstall runs `npm-usage-stats` from the
+    optional dependency `@jmfe/npm-usage-stats-tool@latest`, which isn't on the public registry
+    (404; no public `@jmfe` packages; whether the npm org is claimed couldn't be checked behind
+    Cloudflare). If someone else held that scope on npm, every install of the package's
+    `latest` (this beta) would run their code. Today the optional dependency is skipped and the
+    hook does nothing.
+- **#5 `@pcb-dp/qa-commons@1.0.0`: a true positive.** A new package whose postinstall POSTs the
+  hostname, home directory, platform and CI provider to a `webhook.site` URL ("Authorized Test
+  Package"): a dependency-confusion probe. All three findings accurate.
+- **#2 `open-walnut`**: a native-binary launcher; the postinstall fetches its own
+  `@open-walnut/<platform>` package from the configured registry, checked against its sha512.
+  Benign. **#3 `@odintest/astryxdesign-react`**: a copy of Meta's `@astryxdesign` under another
+  scope (`repository` says `facebook/astryx`), no provenance; its install code only prints a
+  hint. Benign code, unverifiable origin.
+
+### Decisions
+- **Diff base 2: a partial publish isn't a diff base** (`Packument.previous_version`). A
+  candidate with under a quarter of the files (`dist.fileCount`, else `dist.unpackedSize`) of
+  both the new version and the release before it is passed over, at most 3 in a row. "Both" is
+  the safety: a release only smaller than the new one is kept, so a bloated malicious release
+  can't push its diff base back to an older version that already had its install script. The
+  rule is recorded per run (`RunManifest.diff_base`, 1 for older runs) and replay uses the run's,
+  so old runs still replay identically. First VM day: 41 of 101,232 updates get another base
+  (13 reported), `nutui` among them.
+  - Alternatives: a minimum file count or "has `main`" (needs the tarball, which Stage 0 doesn't
+    read); comparing with several earlier releases (more Stage 2-3 work for every version).
+- **`npm.install-hook` v2: a command that changed only its own version string isn't changed.**
+  `@pulumi/*` generate `node scripts/install-pulumi-plugin.js resource command <version>`, so
+  every release "changed" its hook: 39 of the 52 changed commands on the first VM day.
+- **Every update with an install hook goes to the tarball stages** (Stage 1 reason 4). Before,
+  an update whose hook was word for word the same reached Stage 3 only when watched or grown, so
+  a changed `setup.js` behind an unchanged `node setup.js` went unread in 1,440 of 2,251 hook
+  updates (64%).
+- **`npm.install-script-changed` (Stage 3, MEDIUM 3):** the files the hooks name, compared byte
+  for byte with the previous version's; the evidence is the changed lines as a unified diff,
+  rendered as a `diff` block in reports. A file whose only change is its own version string
+  doesn't count. First VM day: 47 of the 601 hook updates with both tarballs captured (7.8%);
+  not `@pulumi/*`, whose install file didn't change.
+- **Discord: one summary a day** (decision 0011 addendum), on the first tick of each UTC day,
+  from a tick log in `data/state/ticks.jsonl` and the day's reports; crashes at most once a day;
+  `--notify-each-tick` keeps the old post.
+
+### Challenges
+- **`difflib` is quadratic on repeated, unjunked lines:** 20,000 lines cycling 150 values took
+  45 s, and an attacker chooses an install file's lines. Files over 2,000 lines are reported
+  changed without a diff (0.06 s worst case at 2,000).
+- **The v4 revert** (entry below): a scan of mine missed 2-letter host labels.
+
+### Evaluation snapshot
+- **`pipeline+4` on `vm-day1`: A 90.9% -> 96.4%, A follow-on 29.5% -> 71.7%, B 67.8% ->
+  69.0%, B follow-on 22.9% -> 55.3%; benign 1.1% -> 1.4% weighted (22 -> 24 of 1,500).** The
+  baseline report is from 2026-10-29, so the `chai-*` rules are in the difference too. Of the 621
+  malicious samples gained, 611 are updates with an install hook: mostly worm follow-ons whose
+  hook was the previous malicious release's word for word, so Stage 1 never forwarded their
+  code. The routing change is most of the gain. The 2 benign added are `glimmervoid`
+  prereleases (a `bot${token}` Telegram reference, now read). Lost: `shoal-cli@0.4.3`, whose
+  only catch was a `console.log` banner that changed only its version (`npm.install-hook` v2's
+  intent). Peak 13.8 GB, 24 min.
+
+### Open questions / next steps
+- **Done the same day (owner's go-ahead): a hook the repository's build writes is a note.**
+  `npm.repo.install-script-not-in-repo` v2 is INFO when every package file the hook names is in
+  the repository byte for byte and another repository file holds the command (the version may
+  be a placeholder); `repo.code-not-in-repo` accepts a file whose content is elsewhere in the
+  repository. Stage 4 `STAGE_VERSION` 6. Re-run on the first VM day's 41 reported hits: 3
+  cleared (`nutui` by `scripts/build-taro.mjs`, `@opencode/cli` x2 by `script/pack.ts`); the
+  `@pulumi/*` ones still fire, because Pulumi's code generator writes their hook and nothing in
+  their repositories mentions it. A repository that ships more than `REPO_LIMITS` allows
+  (`bun`, over 50,000 files) isn't compared at all, as before.
+- Whether to tell JD (`jdf2e/nutui-react`) about the unpublished `@jmfe` optional dependency.
+- `npm.install-script-changed` alone scores 3, below the report threshold: whether a changed
+  install file should be HIGH like a changed command, after a few live days of its rate.
+
+## 2026-10-30 (late morning): Stage 5 downloads the tarballs no earlier stage captured; Stage 5 memory bounded
+
+**Stage(s):** Stage 5 (package-analysis export)
+**Context:** 78 of the first VM day's 984 reported versions had no captured tarball, so
+Stage 5 could only say `sandbox.not-run` for them (entry below). The owner decided Stage 5
+should download them, and that the bundle caps go up only if that doesn't risk memory later.
+
+### Decisions
+- **Stage 5 downloads a reported version's tarball when no earlier stage captured it**
+  (`stages/sandbox.py: _download`). Only a live call with a results root downloads, only
+  plain `https://registry.npmjs.org/` URLs, highest score first, through the stage's recording
+  fetcher (`sandbox-snapshot.json` plus the immutable index), within the call's download
+  budget. Nothing is run: the tarball is read for `package.json` and `binding.gyp`, as before.
+  Stage 5 now reads tarballs up to 128 MiB (the export's limit) and 512 MiB unpacked
+  (`spool.TARBALL_LIMITS`) instead of Stage 2's 16 MB.
+  - Outcomes that leave nothing usable are recorded in `sandbox.json` (`tarballs`). "pending:
+    the tarball is not downloaded yet (retried)" (budget or network) makes the run stale, so
+    the next live call renders it again. "tarball download failed" (404, size limit, refused
+    redirect) isn't tried again. A replay that misses the snapshot gives the recorded reason,
+    or "infra-error: the tarball could not be read from the run's snapshot".
+  - Alternatives: let Stage 2 fetch big tarballs without parsing them (it would still not
+    cover the 21 versions Stage 1 passed over), or select on the registry metadata's scripts
+    (manifest confusion: the tarball is what npm runs).
+  - Estimate for the first VM day: 78 downloads, 3.65 GiB unpacked declared (p50 27 MiB,
+    max 301 MiB), none over 512 MiB, so likely one or two calls' budget.
+- **The bundle caps stay where they are.** Raising the unpacked cap (for `@opencode/cli`)
+  raises what one bundle holds in memory, inside a tick that also runs Stage 4 at up to
+  ~18 GB. Instead, memory was taken out of the stage:
+  - `_render` streamed its input. It used to parse all of `correlate.jsonl` into objects, which
+    for a 110k-version catch-up is the ~4 GB that OOM-killed Stage 4. Now it keeps only the
+    reported versions (`CandidateFile`).
+  - Built bundles wait on disk (`data/sandbox/staging/<run>/`, removed when the call ends),
+    and the export writes one job at a time. Before, up to `cap` (30) bundles and tarballs of
+    up to 128 MiB each were held until the end of the call: up to ~7.5 GB.
+- `STAGE_VERSION` stays 8 (bumped earlier the same day, nothing exported yet).
+
+### Tests
+`test_stage5_downloads_a_tarball_no_earlier_stage_captured`,
+`test_a_download_over_the_budget_or_offline_waits_for_the_next_call`,
+`test_a_failed_download_is_recorded_and_not_tried_again`,
+`test_a_refused_download_is_not_tried_again`, `test_without_a_results_root_nothing_is_downloaded`,
+`test_a_non_registry_tarball_url_is_never_downloaded`,
+`test_a_replay_without_the_recorded_download_says_so`. The Stage 5 test world now routes every
+call through a mock registry, so no test can reach npm.
+
+### Open questions / next steps
+- After the first live Stage 5 call: download volume and time, and how many of the 78 have
+  install hooks.
+
+## 2026-10-30 (morning): First VM day measured; bundle per-file limit; three rules checked against live data
+
+**Stage(s):** Stage 4 (review of live hits), Stage 2 (`static.exfil-endpoint`), Stage 5 bundles
+**Context:** The catch-up Stage 4 of `20261029T221803Z-npm` (110,084 versions) finished at
+09:37 UTC: 984 reported. With a full live day in hand, I measured what the night's work had
+left open (bundle completeness, the tick's time and memory) and went through what makes the
+336 HIGH entries HIGH. Numbers are in [validation.md](validation.md).
+
+### Decisions
+- **A dependency file may take the bundle's whole unpacked cap** (`BundleCaps.extract_limits`,
+  and what is left of it in `fetch_dependencies`). On the live run 12 of 154 bundles were
+  `incomplete` only because one file was over `extract_tar_gz`'s default 64 MiB: the native
+  binaries of bun, opencode and `@square/cli`. Those CLIs ship their binary through a
+  platform package that a postinstall checks, which is the behaviour the sandbox should see.
+  Memory is unchanged: a bundle already peaks at the unpacked cap. Offline-installable went
+  from 123 to 135 of 154 (87.7%). Stage 5 `STAGE_VERSION` 8. Test:
+  `test_one_dependency_file_may_take_what_is_left_of_the_unpacked_cap`.
+- **`static.exfil-endpoint` v4 (ngrok's region hosts are not tunnels): adopted, then
+  reverted.** `eu.ngrok.io` and its siblings are ngrok's own servers; 9 live reported versions
+  (6 packages) had only those. My per-sample scan said no `vm-day1` sample had one, but it only
+  counted host labels of 3 or more characters. The confirming `stage2-rules` run lost 11
+  malicious samples (`gina`, `cro-pricing`, `edgeone`, ...) caught only through such lists.
+  Back to v3; `test_tunnel_suffixes_and_region_hosts_still_count` keeps them firing.
+- **Kept as they are, after measuring:**
+  - `npm.dependency.known-malware` on `fs`. OSV lists npm's `fs` and `http` names as malware.
+    The one live hit (`victor-nest-resource`) adds `fs`, `child_process`, `path` and `util`.
+    On `vm-day1`, 20 malicious samples and 2 benign add a dependency named like a Node
+    built-in, so it is a malware habit, not noise.
+  - `npm.publish-method.downgrade`, the commonest sole reason for HIGH (125 entries). In 120
+    of 127 live hits the account had published the package by hand before, in 57 even after
+    the package's first CI release. Firing only when it hadn't would clear those 57 but lose 7
+    of 149 malicious samples, among them `axios@1.14.1` and five `@nx/*` releases. A stolen
+    token of a maintainer who sometimes publishes by hand looks exactly like that.
+  - `static.exfil-endpoint`'s Telegram and tunnel forms. Live benign code mostly has
+    `api.telegram.org/bot${token}` or a bare `".trycloudflare.com"`. But requiring a literal
+    bot token or a concrete tunnel host would drop 30 malicious samples (29 caught by nothing
+    else) to clear 4 benign.
+
+### Challenges
+- **`pkill -f measure.py` killed its own shell** (the pattern was on its command line too;
+  exit 144). Use `pgrep -af` first, or a pattern the shell's command line doesn't contain.
+- **The eval's malicious packuments aren't in a snapshot.** DataDog ships each sample's
+  packument inside its encrypted zip; the history probe reads only that `package_info` member
+  (JSON), as the importer does.
+
+### Evaluation snapshot
+- **The bounded Stage 4 holds in a live tick.** The first tick on the slotted code (11:30-12:13
+  UTC, 23,807 changes, 43 min) never took available memory below 20.7 GB of 30.7; the old
+  code's catch-up took it to 5.5 GB. Hourly ticks since: 8-10 min, 6-7 GB cgroup peak.
+- `stage2-rules` with v4: 2,169 -> 2,158 forwarded (11 malicious lost, 0 gained), so v4 was
+  reverted; the report on disk is v3's again. (A first run was stopped at 22 min to leave RAM
+  for the tick, then rerun at 15:53 UTC: 35 min, 5.4 GB peak.)
+
+### Open questions / next steps
+- Whether 984 reported versions a day (336 HIGH) is a queue a reviewer can work. They are
+  767 packages, which the cross-run queue groups. The two biggest HIGH sources were checked and
+  kept; a precision pass needs labels on live entries, which arrive with OSV over the next
+  days.
+- (Decided the same day, entry above: Stage 5 downloads them.) 78 of the 984 reported
+  versions have no captured tarball, so Stage 5 can only say `sandbox.not-run` for them. 57 were over Stage 2's 16 MB cap (platform binaries, e.g.
+  `@builder.io/buildercode-*` at 114-160 MB), and 21 were reported by Stage 4's dependency
+  rules after Stage 1 passed them over. Whether Stage 5 should fetch those tarballs itself
+  (a download, nothing run) is a question for the owner: it adds disk and bandwidth for
+  versions that mostly ship a binary.
+- `@opencode/cli`: 6 of the 10 over-cap bundles. Its platform binaries take it past 512 MiB
+  unpacked. Raising the cap is a disk and memory question for the owner.
+
+## 2026-10-30: Stage 4 OOM-killed on the first VM day; streaming Stage 4; Stage 5 wired in
+
+**Stage(s):** Stage 4 correlation, report, Stage 5 (package-analysis export/import), retention
+**Context:** The VM's first tick (run `20261029T221803Z-npm`, a 24-hour catch-up window:
+110,084 changes) finished Stages 0-3 and then died in Stage 4. The same session also finished
+Stage 5's airgap-only export and offline dependency bundles (decision
+[0014](decisions/0014-stage5-uses-ossf-package-analysis.md),
+[proposal](proposals/offline-dependency-bundle.md)), which still had no CLI or `collect` hook.
+
+### Decisions
+- **Stage 4 streams its input and output** (`stages/correlate.py`: `RunVersions`,
+  `CandidateFile`; `util/files.py`: `LineFile`). It keeps each line's offset and length and
+  parses a version again whenever a pass needs it: the dependency plan (two passes, updates
+  first), the repository lookups, retries, and the final pass, which writes `correlate.jsonl`
+  in windows of 2,048 versions. Only the repository comparisons and dependency records stay
+  in memory. `correlate_run` returns the output file read on demand, so callers keep
+  iterating it as before. `build_report` now keeps only the reported versions.
+  Alternatives: a smaller worker pool or `MALLOC_ARENA_MAX` (they trim the margin, not the
+  4 GB of objects); or splitting runs into smaller windows (the catch-up window is decided by
+  downtime, so it can always be large). Streaming is the change that bounds memory.
+- **Stage 5 wiring.** New command `kitsunox sandbox <run> [--results DIR] [--cap N] [--replay]`.
+  `collect` runs Stage 5 after the reports, on each run whose stages ran that tick, only when
+  `KITSUNOX_SANDBOX_RESULTS` (environment or `.env`; not a secret) names a results root.
+  Without one it skips Stage 5, so nothing is exported until the owner sets up the airgapped
+  VM. The daily prune (and `kitsunox data prune`) now drops pruned runs' exports and cached
+  results no run refers to (`sandbox/results.py: prune_sandbox`).
+- **Reports include Stage 5.** Once Stage 5 has rendered a run, the report takes each reported
+  version from `sandbox.jsonl`: Stage 5's findings appear as "Stage 5: sandbox" and count in
+  the score, so an analysed package moves up the queue when its results arrive. The reason
+  shown stays Stage 4's. After every live Stage 5 call, the reports of the run and of every
+  earlier run it refreshed are rebuilt. `Report.sandbox` (network and counts) is a new field
+  with a default, so reports written before still load and no schema bump is needed.
+- **`sandbox-snapshot.json` is a retained stage snapshot** (`core/run.py: STAGE_SNAPSHOTS`).
+  Before this, the daily prune would have deleted the dependency tarballs of live runs'
+  bundles, so their replay would have read `BUNDLE_UNREPRODUCIBLE`. Stage 5's own tarball
+  index still reads only the Stage 2 and 4 snapshots (`spool.TARBALL_SNAPSHOTS`): its own
+  snapshot exists only after a first rendering, and reading it would let a replay see what
+  the live call didn't.
+
+### Challenges
+- **The OOM kill.** The kernel log: `Out of memory: Killed process 19547 (kitsunox) ...
+  anon-rss:21624156kB` at 00:24 local. It took the terminal and the session's agents with it,
+  because I had started that tick from the session's shell. Measured on the run's own files:
+  `triage.jsonl` is 810 MB (7.2 KiB a line) and becomes 33 KiB of objects a line (x4.6, so
+  3.75 GB for 110k versions). `ast.jsonl` (380 MB) was held as objects too, and so were the
+  raw lines and the output. Eight threads extracting repository archives added transient peaks
+  on top. The next timer tick (old code) resumed the same catch-up and reached 20 GB.
+  - **Resolution:** streaming Stage 4 (above). The scheduled tick then running had loaded the
+    old code, so it kept going; the next tick loads the new code.
+  - **Why it worked:** on `20261029T221803Z-npm`, indexing both files takes 12 s and one full
+    pass over all 110,084 versions 22 s, at **0.12 GB peak RSS** (was about 4 GB of
+    candidate objects alone). Output is unchanged: the new
+    `test_run_streams_in_order_across_write_windows` checks order across window boundaries
+    and that a version in two batches takes the later one, and the existing Stage 4 tests
+    pass unchanged.
+  - **But streaming alone did not bound a live tick.** The restarted tick (streaming code,
+    sampled every 30 s) sat at 7 GB in the dependency lookups, dropped to 2.4 GB, then
+    climbed to **18 GB** while comparing repositories (all archives already cached, so no
+    downloads: pure extraction). Each of 8 workers can hold a compressed archive (up to
+    128 MB) and its extracted tree (up to 1 GB, `REPO_LIMITS`) at once. The second fix bounds
+    that: `RepoMemory.archive` is now a context manager holding one of
+    `ARCHIVES_IN_MEMORY` (3) slots from extraction until the comparison is done. Downloads
+    stay parallel and keep their per-request network accounting (`GitHub.archive_body` /
+    `extract`). An archive that fails to extract is remembered per (commit, directory), so a
+    monorepo's versions don't extract it again. Likewise `PACKUMENTS_IN_MEMORY` (3) bounds the
+    dependency lookups' packument parsing (a packument can be 256 MB). Tests:
+    `test_archives_are_extracted_a_few_at_a_time_and_a_bad_one_once`. That tick ran on the
+    code without the slots and stayed below the 21.6 GB that was killed; the next tick is the
+    real measurement.
+- **The workflows were cut off mid-run.** The airgap and bundle build had finished its four
+  build agents (airgap-only export, rule fixes, the `ranges.py` semver port, `bundle.py`); its
+  integrator had run lint and mypy clean and died in the full test run; its two reviews never
+  started. The `chai-*` analysis agent had written its rules, and died waiting for the
+  "after" Stage 2 evaluation.
+  - **Resolution:** gates rerun by hand (1,853 tests, 97% branch coverage); the two bundle
+    reviews relaunched as single agents with memory limits (no evals, no `data/` loads); the
+    Stage 2 evaluation is to be rerun when the tick is done.
+- **`/tmp` is RAM.** It is a tmpfs, and the session scratchpad held 1.7 GB, including a
+  half-finished 956 MB bundle-measurement cache. Deleted. Large scratch data goes on disk now.
+
+### Evaluation snapshot
+- Stage 4 output is unchanged by streaming (tests), so no eval rerun was needed for it.
+- The `chai-*` rules (`static.encoded-url`, `static.function-require`, both MEDIUM 3; written
+  by the family-analysis agent before the crash, rerun here): `stage2-rules` on `vm-day1` B
+  recall 49.9% -> 52.4%, B follow-on 50.7% -> 53.9%, A 71.5% -> 71.6%: +58 samples, 0 benign
+  added, 0 lost. `pipeline+3` (the analyst's run): B 66.0% -> 67.6%, benign unchanged. The
+  live day will tell more than 1,500 benign samples can.
+- **A ReDoS in the new `static.function-require`**, found while reviewing it: two `\s*`
+  around an optional `\)` backtrack quadratically on "Function" plus a long run of
+  whitespace (32k spaces: 0.44 s; a 16 MB file would stall Stage 2). Fixed with possessive
+  quantifiers (no change to what matches); `test_function_require_is_linear_on_long_whitespace`.
+
+- **Two reviews of the offline bundle (safety and npm fidelity), then a fix round.** Both
+  verified their findings with probes (nothing run but Python over inert data).
+  - Safety: a quadratic `[v=\s]*` in the semver port (a 16k-char spec took 2.4 s, and failed
+    parses weren't cached); dependency trees extracted with the per-tarball default limits
+    before the bundle's caps were checked (about 128 GB of RAM reachable with a 128 MB
+    download), and a negative `unpackedSize` cancelled the declared total; a package.json
+    nested 300 deep crashed all of Stage 5, every tick, until the run was pruned (a pydantic
+    `ValidationError` that nothing caught); unbounded packument lookups per bundle.
+  - Fidelity: execute bits dropped (every file written 0644, so a `./run.sh` hook would get
+    EACCES offline while the record said complete); `1e400` written back as `Infinity`
+    (EJSONPARSE in npm, "complete" in Kitsunox); a file where a folder goes; resolution order
+    unlike arborist's (different versions than an online install); dependency shrinkwraps
+    ignored; a shipped folder satisfying every requirer whatever its version; peer conflicts
+    nesting a second copy, possibly of the package itself. Also BOMs, link entries and
+    duplicate keys, which npm tolerates, made the bundle opt out: a free evasion.
+  - **Resolution:** all fixed, each with a regression test: caps on range length and
+    memoised failures, possessive `[v=\s]*+`; extraction within what is left of the bundle's
+    caps (`ArchiveLimitError`); `internal-error` as the unbundled outcome for anything
+    unexpected; caps on edges, packuments and packument bytes; file modes in `ArtifactTree`;
+    numbers kept as written; `path-collision`; arborist's queue order, peer sets and REPLACE
+    (not npm's intermediate placement levels, documented); `dependency-shrinkwrap`
+    incomplete; npm's readings of BOM, links and duplicate keys, recorded as `normalized`.
+    `BUNDLE_FORMAT` 2 and Stage 5 `STAGE_VERSION` 7, so bundled job keys change (nothing was
+    exported yet).
+
+- **A ReDoS audit of every regex** (85 patterns, ~2,000 generated inputs each at n and 4n,
+  then the worst at 64k and 1M). Three fixed with identical matches (differentials over
+  40k-2.3M strings, 0 mismatches): Stage 5's `PIPE_RUN` was cubic (`x/curl/curl/...`, 16k
+  chars: 93 s) and `SUBST_RUN` quadratic (`sh -sh -sh ...`, 64k: 5.7 s), rewritten so each
+  shell segment's start is tried once; `static.encoded-blob` was linear but slow (16 MB of
+  199-char runs: ~10 s), now anchored at run starts (50 ms at 4M). One `PIPE_RUN` shape
+  (`curl|sudo -curl|sudo -...`: 128k, 14 s per argv word) had no exact fix: a sudo option now
+  stops at `|`, which is what the shell does anyway, so `sandbox.download-run` is v2.
+  Everything else measured linear and fast.
+
+### Open questions / next steps
+- Measure a whole tick with the archive and packument slots (time and peak RSS), and add a
+  `docs/validation.md` section for the first VM day.
+- Whether an unbundled reason a package can choose (`original-not-repackable`) together with
+  install hooks should score, rather than stay INFO.
+- Bundle completeness on live runs (the integrator's measurement died with the session).
+- The owner: set up the airgapped analysis VM and `KITSUNOX_SANDBOX_RESULTS`
+  ([stages/sandbox.md](stages/sandbox.md#usage)).
+
+## 2026-10-30: Stage 5 becomes an export for OpenSSF package-analysis, airgapped, with offline bundles; viewer and dependency rules
+
+**Stage(s):** Stage 5 dynamic analysis, Stage 4 (dependency reputation), viewer
+**Context:** Catching up the log for work done in parallel on 2026-10-29/30. The entries
+above and below cover Stage 4's retries and the Stage 2 placeholder fix; this one covers the
+rest.
+
+### Decisions
+- **Stage 5 is OpenSSF package-analysis (rel-38), run by the owner; Kitsunox only exports and
+  imports** ([0014](decisions/0014-stage5-uses-ossf-package-analysis.md), superseding the
+  runner part of [0012](decisions/0012-sandbox-design.md)). Our own runner's isolation layer
+  could not be produced in this development environment (the tooling's safety checks stopped
+  it twice), and the parsers already built had nothing to drive them. package-analysis already
+  does the job and is maintained upstream. The owner chose it ("Option 2"). The old runner,
+  capture and config code was removed.
+- **Airgapped only** (the owner: "Package analysis needs to be airgapped"). By default
+  package-analysis gives the sandbox real internet access and runs its outer container
+  `--privileged`. Every exported job carries `-fully-offline -nointeractive ... -nopull
+  -offline`, checked against the pinned `run_analysis.sh` and `cmd/analyze`. There is no
+  online opt-in. Images cross to the analysis VM as `docker save` files, following upstream's
+  docs; Kitsunox ships no setup scripts.
+- **Offline dependency bundles** (the owner: "move all necessary dependency tarballs along
+  with it as a package"; [proposal](proposals/offline-dependency-bundle.md)). Without a
+  network, `npm install` fails before any hook runs whenever a registry dependency is
+  missing: on `20261029T221803Z-npm`, only 25 of 135 hook-bearing versions (19%) would install
+  offline. A selected version whose `package.json` needs dependencies is exported as one
+  Kitsunox-built tarball: its own files plus `node_modules/<dep>` for every dependency npm
+  would install at the run's `as_of`, with an explicit sorted `bundleDependencies` (npm
+  11.12.1 installs bundled dependencies without a registry request and runs their lifecycle
+  scripts). Versions are picked by a Python port of node-semver 7.7.4 and npm-pick-manifest
+  (`ecosystems/npm/ranges.py`, tested against node-semver's fixtures), and the bytes are
+  deterministic. Incomplete bundles are exported unbundled and say so
+  (`sandbox.bundle-incomplete`). Why one tarball: package-analysis copies exactly one file into
+  the sandbox, so `file:`, shrinkwrap and directory layouts don't work.
+- **Importer and rules treat results as hostile.** Strict schema, size caps, `O_NOFOLLOW`, a
+  rejection is scored (`sandbox.result-rejected`, HIGH when oversized). The bait credentials
+  package-analysis plants are matched by origin (`sandbox.bait-exfil`). Count caps that fire
+  (flooding) make `sandbox.truncated` HIGH. A second-stage install (`npm exec --package`, npx,
+  yarn/pnpm, a foreign tarball) is `sandbox.nested-install` HIGH. Running a file that wasn't in
+  the tarball is `sandbox.download-exec` HIGH.
+- **Stage 4 dependency reputation** (`npm.dependency.fresh-foreign` MEDIUM 3,
+  `npm.dependency.name-embeds-popular` LOW 1; [correlate.md](stages/correlate.md#evaluation)).
+  Registry records of newly added dependencies are fetched through the run's fetcher (capped
+  at 1,000 lookups per started day and 40 new names per package) and retried like the
+  repository lookups. On `vm-day1`: +1 A and +12 B, benign unchanged at 1.1% weighted
+  ([evaluation.md](evaluation.md), with a caveat on a confounded row).
+- **Local viewer** (`kitsunox view`, [viewer.md](viewer.md)): standard-library HTTP server, no
+  JavaScript, strict CSP, loopback-only bind (checked after binding), Host header check,
+  per-connection deadline, 32 concurrent connections, file size caps. All package text goes
+  through the same escaping as the Markdown, with hidden characters removed and flagged.
+
+### Challenges
+- **The safety checks stopped the runner and setup-script work three times**, the last time
+  in a reply to the owner. That forced the change of approach (0014) rather than a rewording.
+- **Reviews found real issues before anything ran.** Among them: the driver check accepted
+  `npm install /<any>.tgz` (a run that installed `/stage2.tgz` came out quiet); a
+  lexicographic observation cap let the package choose what survived; late results were never
+  imported after 48 hours. All fixed, with end-to-end probes in the review notes.
+
+### Open questions / next steps
+- None of Stage 5 has met a real package-analysis result yet. The first results from the
+  owner's VM are the real test, especially of the bundle mechanics, which come from reading
+  npm's source.
+
+## 2026-10-30: Webhook placeholders in Stage 2: measured, then labelled rather than dropped
+
+**Stage(s):** Stage 2 static heuristics
+**Context:** `static.exfil-endpoint` v2 matched documentation placeholders such as
+`discord.com/api/webhooks/123/abc` (in `@waffo/pancake-ts` on the laptop). I wanted to tighten
+it, but measured first on `vm-day1`, the VM's first dataset: 3,444 DataDog malware samples and
+1,500 provisional benign samples from run `20261029T221803Z-npm`.
+
+### Decisions
+- **`exfil-endpoint` v3 + new `static.webhook-placeholder` (MEDIUM, weight 3).**
+  - v3 calls a webhook an exfiltration endpoint only when its id looks real: a 17-20-digit
+    Discord snowflake, or upper-case Slack `T…/B…` ids that don't repeat or count up.
+  - What v2 matched and v3 rejects now gets its own finding, so Stage 2 still forwards it.
+  - Rejected: v3 alone (below).
+
+### Challenges
+- **The obvious tightening would have cost 42 attacks.** A scan of every webhook mention in
+  the malware (shapes only, no URLs) showed that every real Discord webhook has a 19-digit id.
+  So the Discord part of v3 cost nothing. The Slack part was different. v2's `[A-Z0-9]` check
+  was case-insensitive, so `/services/xxx/xxx/xxx` matched. That placeholder sits in a notifier
+  template in 43 shape-B samples, almost all one typosquat family (`chai-as-*`,
+  `chai-await-*`). For those samples it was the only Stage 2 match. Through `pipeline+3`, 42 of
+  the 43 were then caught by nothing else. v3 alone saved one benign flag (`@zerodot/discord`)
+  for 42 missed attacks.
+  - **Resolution:** keep the match at MEDIUM under an honest name.
+  - **Why it worked:** a per-sample comparison found 0 differences in Stage 2 flags between v2
+    and v3 plus the placeholder rule, over all 4,943 samples. Tests:
+    `test_placeholder_webhooks_are_labelled_not_dropped` and
+    `test_a_real_looking_webhook_is_not_also_a_placeholder`.
+
+### Evaluation snapshot
+- `stage2-rules` on `vm-day1`: recall 71.5% A / 49.9% B, 0.8% weighted benign pass-through.
+  Unchanged from v2 to v3 plus the placeholder rule; 44 findings relabelled from HIGH 5 to
+  MEDIUM 3.
+
+### Open questions / next steps
+- The `chai-as-*` family is caught only by accident. What actually gives it away (Stage 3
+  shows only LOW `process-exec`, `network` and `dynamic-code`) deserves a look.
+
+## 2026-10-30: Stage 4 retries network failures; sandbox design proposed
+
+**Stage(s):** Stage 4 (correlation), Stage 5 (design only), collection
+**Context:** The user asked for more agents where they help. Two jobs were independent of the
+Stage 2 measurement that was running: making Stage 4 retry network failures (an open item since
+2026-10-29), and the Phase 10 sandbox design that has to come before any sandbox code. Each
+went to an agent: Stage 4 in its own git worktree, so it couldn't touch this session's
+uncommitted work, followed by an adversarial review and a fix pass. The result was ported as a
+patch. The sandbox design is new documents only.
+
+### Decisions
+- **Stage 4 retries transient lookups in the same run** (0010 addendum, in line with 0009).
+  Only `TransientFetchError` counts as transient, meaning HttpFetcher's 5 attempts ran out on
+  connection errors or 429/5xx. A comparison that hits one is retried after the first pass,
+  at most twice, and the retries stop early when a pass recovers nothing. Before this,
+  `repo_lookup` caught every `FetchError` as "network: ..." and never retried. Permanent
+  failures, such as a malformed ref advertisement, were labelled "network" too.
+  - Rejected: retrying immediately inside the lookup, which gives the network no time to
+    recover.
+  - Rejected for now: redoing Stage 4 on a later tick. It would mean a `collect` change and
+    redoing every comparison in the run for a few versions.
+- **Versions that still fail stay visible.** Their decision reason ends with
+  `NETWORK_UNCOMPARED`, and `correlate.json` records
+  `repo_network {lookups, first_pass, retry_passes, retry_skipped, still_failing}`. The tick
+  log, `report/index.md` and the Discord update all show "N not compared (network)"
+  (`Report.network_uncompared()`).
+- **Outage guard.** No retry pass runs when at least half the lookups failed on the network,
+  with at least 20 failures. This is recorded as `retry_skipped: "outage"`. It is count-based
+  on purpose: analysis never reads the clock, so a time budget was out.
+- **`correlate.json` gains `stage_version` 2.** `rules_fingerprint` hashes only rule ids and
+  versions, so it couldn't tell this output from older output. It stays out of the
+  fingerprint because Stage 2 uses that fingerprint as a cache key.
+- **Sandbox: gVisor (systrap) under rootless Docker in a dedicated account**
+  ([0012](decisions/0012-sandbox-design.md), [stages/sandbox.md](stages/sandbox.md)). The
+  status is *proposed*; nothing is installed or run. The VM has no `/dev/kvm`. The user
+  confirmed the host is Windows with Hyper-V on and won't turn it off, so nested
+  virtualization (Firecracker, Kata, gVisor's KVM platform) is out. The user asked for the
+  safest execution possible without nested virtualization: gVisor's user-space kernel plus
+  the VM as a second boundary. Decisions D0 and D2-D8 are still the user's: build it at all,
+  host isolation, HTTPS capture, what enters, profiles, effect on scores, detonating DataDog
+  samples, and the npm version.
+
+### Challenges
+- **The first retry design could make an outage take longer than the hourly tick**
+  (adversarial review of the agent's first commit). A failed refs request was never
+  remembered, so every version of a repository paid the fetcher's full back-off (up to
+  ~65 s) in both passes. With ~500 lookups an hour on 8 workers, that is an estimated
+  0.5-2.3 h of Stage 4 during a GitHub outage.
+  - **Resolution:** `RepoMemory` (`stages/repo.py`) fetches refs once per repository under a
+    per-repository lock. For the current pass only, it also remembers repositories that failed
+    on the network, so their other versions fail fast. `new_pass()` clears that before each
+    retry. Together with the outage guard above, an outage now costs one pass.
+  - **Why it worked:** in tests, 3 versions of one repository now take attempts+1 refs
+    requests instead of 3×attempts+3 (`test_a_failed_repository_fails_fast_within_a_pass`).
+    A repository that stays down costs one fetch per pass, not one per version
+    (`test_a_repository_still_down_says_why`). The guard's boundaries are tested: 20 of 40
+    failures skip the retries, 20 of 41 are retried. How long a real outage takes is
+    unmeasured; the first pass still pays the back-off once per distinct repository.
+- **A second review found the retry memory made output depend on thread timing.** The same
+  network responses gave two different `correlate.jsonl` files in 30 runs. The worker that
+  sent a failing request got "network: GET ... failed after N attempts"; the others got
+  "not requested again in this pass". Two more verified defects came from keying the memory by
+  repository. One commit's failed archive refused the repository's other commits, even ones
+  already cached. The outage guard also counted refused versions, so one blip during a
+  30-version monorepo burst was judged an outage and every retry was skipped.
+  - **Resolution:** the memory is now per request (refs, or the archive at one commit), and a
+    request is refused only if it would really go to the network
+    (`HttpFetcher.needs_network`). Every version needing a failed request gets one stable text,
+    "network: o/r refs unavailable", while the fetcher's error goes to
+    `correlate.json repo_network.errors`. The guard counts distinct failed requests out of
+    distinct requests sent. Release tarballs that failed on the network are left to Stage 2's
+    next-tick retry, counted as `package_files_network`. `STAGE_VERSION` is 3.
+  - **Why it worked:** the reviewer's 7 bug-asserting repros now fail as expected.
+    `test_the_output_does_not_depend_on_thread_timing` runs 21 times with delays on 1 or 8
+    workers and gets one distinct output. An independent verifier ran the timing case 20+
+    times at 8 workers with random delays and checked the guard's boundaries (20 of 40 is an
+    outage, 20 of 42 is retried). It also confirmed that an archive served from the immutable
+    index is still recorded in the run's snapshot, so replay works.
+  - **Still found by the verifier and fixed after:** a permanently rejected archive (over the
+    256 MB limit) was downloaded once per version, one after another. Rejections are now
+    remembered for the run (`test_a_rejected_archive_is_downloaded_once`). The docs' list of
+    fields that reset on replay was also incomplete.
+- **Retry-After wasn't capped** (`util/http.py`, older than Stage 4): a server could stall a
+  worker for as long as it asked. It is now capped at `max_delay`
+  (`test_retry_after_is_capped_by_max_delay`).
+- **Replay is exact only for lookups that eventually succeeded.**
+  `test_a_recovered_run_replays_identically` records a run with a failing archive and replays
+  it offline: `correlate.jsonl` is byte-identical. A lookup that never succeeded has nothing
+  recorded, so on replay it is a permanent "replay miss". `repo_network` describes the
+  recording run only, and the docs now say so.
+
+### Open questions / next steps
+- How often Stage 4 hits the network in live ticks: `repo_network` in `correlate.json` will
+  show it from the next ticks on.
+- Whether `collect` should redo Stage 4 on a later tick for runs marked
+  `retry_skipped: "outage"`.
+- Sandbox: the user's answers to D0 and D2-D8, then the Phase 1 spike (rootless Docker +
+  gVisor + runtime monitoring together on this VM, which no documentation confirms).
+
+## 2026-10-29: Cross-run review queue, `kitsunox run`, and the first VM tick
+
+**Stage(s):** Report, collection
+**Context:** The user asked to move on to development, bug fixing, and running the pipeline
+for real. Running it came first: the first VM tick started at 22:18 UTC as a one-off
+`kitsunox collect --keep-repo-days 4`, since the systemd timer isn't installed yet. Every stage
+uses threads, not processes, so code edited during the run can't leak into it. Meanwhile I built
+Phase 8's remaining pieces.
+
+### Decisions
+- **Review queue** (`reporting/queue.py`, `kitsunox queue`, step 6 of `collect`): one entry per
+  package across every report from the last `keep_days`. Each version counts once, and every
+  version links to its page in the run that reported it. Ordered by score, severity, name. See
+  [stages/report.md](stages/report.md#review-queue-dataqueue).
+- **The strongest sighting wins, not the earliest.** A version in the 15-minute overlap of
+  two chained runs is analysed twice. The later run may know more (a tag pushed since, a new
+  label set), so the queue keeps the sighting with the higher (severity, score), and the
+  earliest on a tie. Evaluation datasets keep the earliest; that rule is about labels, not
+  about what a reviewer sees.
+- **`kitsunox run`:** ingest, Stages 1-4 and the report, once, through the same `run_stages`
+  as `collect`. Like `ingest record` without a feed range, it moves the checkpoint, so demos
+  use their own `--data-dir` (`data-*/` is now gitignored).
+
+### Challenges
+- **The review (two reviewers and a verifier) confirmed 5 of 8 findings.** Each fix has a
+  test:
+  - **The queue's cost grew with the whole history.** Runs keep their reports after pruning,
+    and every tick parsed all of them before applying the window. A reviewer's synthetic
+    benchmark measured 170 reports at 11 s and 781 MB, under the lock, and growing. The
+    window is now chosen from the manifests, and reports are read one at a time into small
+    sightings.
+  - **Unreadable reports were listed forever**, even far outside the window. Now only
+    reports in the window count.
+  - **Earliest-run dedup hid stronger later sightings.** This is the decision above.
+  - **A report whose Markdown write failed was never redone.** The resume check looked only
+    for `report.json`, which is written first. It now also requires `index.md` and a
+    `report.json` that loads. The same check rebuilds reports written with an old schema.
+  - **No test checked that queue links resolve.** Now they are checked against the files
+    `write_markdown` writes, with a crafted name.
+- **The `--as-of` help text was wrong:** it said "UTC if no offset", but typer rejects
+  offsets. Found while testing `kitsunox run`.
+
+### Open questions / next steps
+- Measure on the first VM day: tick duration on 4 vCPUs, how often Stage 4 hits network
+  failures (it never retries them), and queue build time on real reports.
+- Stage 2: placeholder webhooks in documentation. This needs benign samples, which this
+  run will provide.
+
+## 2026-10-29: Brief run updates to Discord, and a review of the VM changes
+
+**Stage(s):** collection (`collect`, scheduling)
+**Context:** With collection unattended on the VM, the user asked for brief run updates in a
+Discord channel through a webhook. Design: [0011](decisions/0011-run-notifications.md).
+
+### Decisions
+- **`collect` returns a `Tick`** (manifest, reports written, failed best-effort steps), and
+  `kitsunox collect` posts it (`src/kitsunox/notify.py`). Parsing `collect.log` was rejected:
+  its lines are written for people.
+- **Content:** the run, its versions, how many to review by severity, and the top 5
+  packages, each once with its version count. This answers the "27 `@lightdash/cli` entries"
+  complaint for the message, not yet for the queue. It also reports catch-ups, failed steps,
+  outages and chain gaps. A crash gives the exception type and location only; a skipped tick
+  posts nothing.
+- **The webhook is a secret, and names are untrusted.** The URL is read from `.env`
+  (`util/env.py`, no new dependency), checked against Discord's webhook pattern and never
+  logged. Errors give the HTTP status or exception type, because httpx messages carry the URL.
+  Mentions are disabled, previews suppressed, and Discord markdown escaped.
+- **An exception to "all network access through `HttpFetcher`"**: this is output, not part of
+  any run's snapshot, so it doesn't affect replay. CLAUDE.md now scopes that invariant to
+  analysis.
+
+### Challenges
+- **A review found five real defects** before anything shipped. Three reviewers (security,
+  correctness, project rules) and one verifier went over the change; the verifier reproduced
+  each finding or refuted it. Results: 11 findings, 5 distinct after merging duplicates, 1
+  refuted (a "duplicate helper" point with no failure). Each fix has a test:
+  - **A broken `.env` stopped the whole tick** before ingest. Invalid UTF-8, a directory or no
+    read permission meant no collection and no tarball capture, every hour. Now it's
+    `notify: off, .env unreadable (...)` and the tick runs
+    (`test_collect_posts_an_update_or_a_crash`).
+  - **systemd quoting was only right for `ExecStart=`.** It was also applied to
+    `WorkingDirectory=`, `StandardOutput=append:` and `Environment=`, which take values
+    literally. A project path with a space made the unit fatal (`systemd-analyze`: "path is
+    not absolute"). Each setting now gets its own encoding, and the test runs `systemd-analyze
+    verify` on a unit for `pro ject$x` / `da ta%`.
+  - **A newline in a path injected unit directives** (for example an extra `ExecStartPre=`).
+    Paths with control characters or edge whitespace are now refused
+    (`test_schedule_refuses_paths_that_break_unit_files`).
+  - **`Retry-After: nan` turned the retry into a `ValueError`**. Fixed with
+    `test_odd_retry_after_values_still_retry`.
+  - **"retried next tick" wasn't always true.** A run whose report alone failed isn't
+    resumed, so the message no longer promises a retry.
+- **Live check:** one test post through the real webhook returned `notify: posted`.
+
+### Open questions / next steps
+- Resuming a run whose only missing output is `report/` (today `_resume_from` doesn't look
+  for it). Small, but it belongs with the cross-run queue work.
+
+## 2026-10-29: Collection moves to a Linux VM, with a fresh start
+
+**Stage(s):** collection (scheduling, retention), evaluation data
+**Context:** The laptop had run out of disk for Stage 4's repository archives (they were cut to
+2 days). The planned host, an Ubuntu VM on the user's desktop, is ready: 4 vCPUs, 30 GB RAM,
+357 GB free. It is also the planned host for the Stage 5 sandbox (roadmap Phase 10).
+
+### Decisions
+- **Start fresh on the VM; don't copy `data/`.** The user chose this over copying everything
+  (which would have kept the chain checkpoint) or copying only state and eval data.
+  Consequences:
+  - The `repo.compared` v1 Stage 4 re-run planned in the previous entry is **dropped**.
+  - The `day1` dataset and its results (`pipeline+4`: 91.2% / 66.5% at 0.9%) live only on the
+    laptop and can't be reproduced here. They stay in `evaluation.md` as recorded.
+  - Tarballs the laptop captured, including malicious ones npm has since deleted, are not
+    carried over.
+  - DataDog samples are downloaded again (`samples datadog`). The VM's own benign samples stay
+    provisional for 30 days.
+- **systemd user timer instead of launchd** (`kitsunox schedule systemd`). It shares the
+  command line with `schedule plist` (`_collect_job` in `cli.py`).
+  - `Type=oneshot` service at `Nice=10` and `IOSchedulingClass=idle`, mirroring launchd's
+    `LowPriorityIO`.
+  - The timer fires `OnUnitActiveSec=60min` after a tick starts. A long tick isn't started
+    twice, and `DataDir.lock()` still guards everything.
+  - Arguments are quoted for unit files (spaces, `%` specifiers, `$`). Test:
+    `test_schedule_systemd_runs_collect`. The generated units pass `systemd-analyze verify`.
+- **Retention on the VM: runs and tarballs 7 days, repository archives 4.** At ~14 + ~31 GB a
+  day, this is ~225 GB of 357 GB, with headroom for heavy days (0006 addendum).
+
+### Challenges
+- **Nothing in the code assumed macOS except the scheduler.** All four gates passed on the VM
+  before any change: 382 tests, ruff, mypy. `fcntl.flock` locking works the same on Linux.
+- **Installing the timer is the user's step.** The agent session isn't allowed to install
+  persistent services, so the user runs the `systemctl --user` and `loginctl enable-linger`
+  commands from `stages/ingest.md`.
+
+### Open questions / next steps
+- The first tick has no checkpoint, so it covers a full 24-hour window (~110k versions). The
+  laptop needed 11 hours for that on 8 cores; measure it on 4 vCPUs and add a
+  `validation.md` section after the first full VM day.
+- Stop the laptop agent once the VM has run a few good ticks.
+- Next work: a cross-run review queue grouped by package.
+
 ## 2026-10-29: First live Stage 4 run: a monorepo bug, and repository archives are too big
 
 **Stage(s):** Stage 4 (correlation, repository comparison), Report

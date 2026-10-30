@@ -18,7 +18,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from kitsunox.core.interfaces import ChangeStub, Ecosystem, PackageChanges
+from kitsunox.core.interfaces import DIFF_BASE, ChangeStub, Ecosystem, PackageChanges
 from kitsunox.core.models import Change, Persisted, Popularity, Record, Window
 from kitsunox.core.watchlist import WEEKLY_CUTOFF, Watchlist
 from kitsunox.util.http import FetchError, TransientFetchError
@@ -102,9 +102,11 @@ def run_ingest(
     workers: int = 8,
     popularity: PopularitySource | None = None,
     retry: Sequence[RetryItem] = (),
+    diff_base: int = DIFF_BASE,
 ) -> IngestResult:
     """`retry`: packages to fetch again whatever the feed says; a package both in the feed and
-    in `retry` is fetched once, over the wider window."""
+    in `retry` is fetched once, over the wider window. `diff_base`: how each release's diff
+    base is chosen (`interfaces.DIFF_BASE`; a replay passes the run's)."""
     stubs = ecosystem.list_changes(since, until)
     starts = {item.name: item.window_start for item in retry}
     listed = {stub.name for stub in stubs}
@@ -115,7 +117,9 @@ def run_ingest(
     def build(stub: ChangeStub) -> PackageChanges | SkippedPackage:
         start = min(window.start, starts.get(stub.name, window.start))
         try:
-            return ecosystem.build_changes(stub, Window(start=start, end=window.end))
+            return ecosystem.build_changes(
+                stub, Window(start=start, end=window.end), diff_base=diff_base
+            )
         except (FetchError, ValueError, ValidationError) as exc:
             # Expected: network failures, malformed packuments (PackumentError is a ValueError).
             return _skip(stub, exc)

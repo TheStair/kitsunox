@@ -103,15 +103,25 @@ class GitHub:
 
     def archive(self, repo: GitHubRepo, commit: str, *, directory: str = "") -> ArtifactTree:
         """The files at `commit`, or only those under `directory` (paths relative to it)."""
+        return self.extract(self.archive_body(repo, commit), directory=directory)
+
+    def archive_body(self, repo: GitHubRepo, commit: str) -> bytes:
+        """The archive at `commit`, compressed (at most `limits.max_compressed_bytes` once
+        extracted): fetching and extracting are separate so a caller can bound how many
+        archives are extracted at once (`stages/repo.py`)."""
         if not _SHA.match(commit):
             raise ValueError(f"not a full commit id: {commit!r}")
         url = f"{ARCHIVE_PREFIX}{repo}/tar.gz/{commit}"
         response = self.fetcher.get(url, immutable=True)
         if not response.ok:
             raise FetchError(f"{url}: HTTP {response.status}")
+        return response.body
+
+    def extract(self, body: bytes, *, directory: str = "") -> ArtifactTree:
+        """An archive's files, or only those under `directory` (paths relative to it)."""
         prefix = f"{directory.strip('/')}/" if directory.strip("/") else ""
         tree = extract_tar_gz(
-            response.body,
+            body,
             strip_components=1,  # `<repo>-<commit>/`
             limits=self.limits,
             include=lambda path: path.startswith(prefix),

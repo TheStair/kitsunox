@@ -19,7 +19,7 @@ from kitsunox.evaluation.harness import (
 )
 from kitsunox.evaluation.labels import LabelSet, label_store
 from kitsunox.evaluation.metrics import ForwardAll
-from kitsunox.evaluation.static_eval import strip_to_package
+from kitsunox.evaluation.static_eval import ABOUT, strip_to_package
 
 COMMIT = "c0ffee" + "0" * 34
 GOOD = "compromised_lib/kx-fixture/1.1.0/2026-03-02-kx-fixture-v1.1.0.zip"
@@ -166,7 +166,14 @@ def test_stage2_predictor_reads_files_from_the_encrypted_zip(
     # The fixture zip holds only an inert package.json, so nothing fires; the previous
     # version's tarball isn't served by the mock, so the base counts as unavailable.
     assert report.cells["malicious/A/datadog"].forwarded == 0
-    notes = predictor.notes  # type: ignore[attr-defined]
+    every = predictor.notes  # type: ignore[attr-defined]
+    about = {k: v for k, v in every.items() if k.startswith(ABOUT)}
+    notes = {k: v for k, v in every.items() if not k.startswith(ABOUT)}
+    if name == "pipeline+4":  # what the result was computed with
+        assert f"{ABOUT}watchlist None" in about and f"{ABOUT}labels {labels.id}" in about
+        assert about[f"{ABOUT}dependency lookups looked_up"] == 0
+    else:
+        assert not about
     assert notes == {"base unavailable (all files treated as new)": 1} or (
         name.startswith("pipeline") and not notes  # not routed to Stage 2 at all
     )

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from kitsunox.util import files
-from kitsunox.util.files import atomic_write
+from kitsunox.util.files import LineFile, atomic_write
 
 
 def test_writes_and_replaces(tmp_path: Path) -> None:
@@ -38,3 +38,25 @@ def test_retries_then_refuses_a_damaged_write(
         atomic_write(target, b"{}")
     assert target.read_bytes() == b"[]"  # the old content stays
     assert [p.name for p in tmp_path.iterdir()] == ["x.json"]
+
+
+def test_line_file_reads_non_empty_lines_on_demand(tmp_path: Path) -> None:
+    path = tmp_path / "x.jsonl"
+    path.write_bytes(b'{"a":1}\n\n  \n{"b":2}\n{"c":3}')
+    lines = LineFile(path)
+    assert len(lines) == 3
+    assert [lines[i] for i in range(3)] == [b'{"a":1}\n', b'{"b":2}\n', b'{"c":3}']
+    assert lines[-1] == b'{"c":3}'
+    atomic_write(path, b"replaced\n")  # the open descriptor keeps the old file
+    assert lines[1] == b'{"b":2}\n'
+    lines.close()
+
+
+def test_line_file_notices_a_file_cut_short(tmp_path: Path) -> None:
+    path = tmp_path / "x.jsonl"
+    path.write_bytes(b"one\ntwo\n")
+    lines = LineFile(path)
+    with path.open("r+b") as handle:
+        handle.truncate(5)
+    with pytest.raises(OSError, match="modified in place"):
+        lines[1]

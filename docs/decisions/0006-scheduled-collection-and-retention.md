@@ -81,3 +81,13 @@ machine's free disk. They get their own setting, `--keep-repo-days` on `collect`
 agent uses 2 until collection moves to a VM with room. A run older than that keeps everything
 else, but its Stage 4 can no longer be replayed from cache: the archives would be fetched again
 (they are immutable by commit, so the result is the same unless the repository is gone).
+
+## Addendum (2026-10-29): collection moves to a Linux VM
+
+Collection now runs on an Ubuntu VM on the user's desktop (4 vCPUs, 30 GB RAM, 357 GB free),
+the host planned for the Stage 5 sandbox. The scheduler is a systemd user timer
+(`kitsunox schedule systemd`, same command line as the launchd agent; see
+[stages/ingest.md](../stages/ingest.md)). Retention: runs and tarballs 7 days, repository
+archives **4 days** (`--keep-repo-days 4`). Estimated at ~14 GB/day of tarballs and ~31 GB/day
+of archives, that is about 100 + 125 GB, leaving room for heavy days. The VM started a **new
+chain**; the laptop's `data/` was not copied (see the devlog).

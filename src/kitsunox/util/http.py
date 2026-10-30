@@ -196,6 +196,20 @@ class HttpFetcher:
     def close(self) -> None:
         self._client.close()
 
+    def needs_network(
+        self, url: str, *, headers: Mapping[str, str] | None = None, immutable: bool = False
+    ) -> bool:
+        """Whether `get` with these arguments would send a request now: False when this run's
+        snapshot holds the response, when an `immutable` request is in the immutable index
+        (RECORD), and always in REPLAY (a miss is an error there, not a request)."""
+        if self.mode is FetchMode.REPLAY:
+            return False
+        key = request_key(url, headers)
+        with self._lock:
+            if key in self.snapshot.entries:
+                return False
+        return not (immutable and self._immutable_lookup(key) is not None)
+
     def get(
         self, url: str, *, headers: Mapping[str, str] | None = None, immutable: bool = False
     ) -> FetchedResponse:
@@ -253,8 +267,10 @@ class HttpFetcher:
             except httpx.HTTPError as exc:  # decoding errors, redirect loops: not retryable
                 raise FetchError(f"GET {url}: {type(exc).__name__}: {exc}") from exc
             if attempt < self.retry.max_attempts:
-                delay = min(self.retry.max_delay, self.retry.base_delay * 2 ** (attempt - 1))
-                self._sleep(max(delay, retry_after or 0.0))
+                # A server's Retry-After is honoured up to `max_delay` too: a hostile or broken
+                # one could otherwise stall a worker for hours.
+                delay = max(self.retry.base_delay * 2 ** (attempt - 1), retry_after or 0.0)
+                self._sleep(min(self.retry.max_delay, delay))
         raise TransientFetchError(
             f"GET {url} failed after {self.retry.max_attempts} attempts: {last_error}"
         )

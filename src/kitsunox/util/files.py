@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
+from array import array
 from pathlib import Path
 
 WRITE_ATTEMPTS = 3
@@ -26,3 +28,42 @@ def atomic_write(path: Path, data: bytes) -> None:
             return
     tmp.unlink(missing_ok=True)
     raise OSError(f"{path}: written bytes did not read back intact")
+
+
+class LineFile:
+    """The non-empty lines of a file, read on demand by index, so a large JSONL file is never
+    held in memory: only each line's offset and length are kept (16 bytes a line). Reads use
+    `os.pread` on one descriptor opened up front, so threads can share it. The file must not
+    be modified in place while open; replacing it (`atomic_write`) is fine, since the open
+    descriptor keeps the old file. Lines keep their trailing newline (JSON parsers ignore it)."""
+
+    def __init__(self, path: Path) -> None:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        self._closer = weakref.finalize(self, os.close, fd)
+        self._fd = fd
+        offsets, lengths = array("q"), array("q")
+        position = 0
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            for line in handle:
+                if line.strip():
+                    offsets.append(position)
+                    lengths.append(len(line))
+                position += len(line)
+        self._offsets, self._lengths = offsets, lengths
+
+    def __len__(self) -> int:
+        return len(self._offsets)
+
+    def __getitem__(self, index: int) -> bytes:
+        offset, length = self._offsets[index], self._lengths[index]
+        chunks, read = [], 0
+        while read < length:
+            chunk = os.pread(self._fd, length - read, offset + read)
+            if not chunk:
+                raise OSError(f"line {index} ends early: the file was modified in place")
+            chunks.append(chunk)
+            read += len(chunk)
+        return b"".join(chunks)
+
+    def close(self) -> None:
+        self._closer()

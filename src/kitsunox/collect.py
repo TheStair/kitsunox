@@ -11,10 +11,18 @@ Each tick, in order:
    in the same tick. Runs from the last `STAGES_CATCH_UP` with unfinished stages are resumed
    first, oldest first, from the first stage whose output is missing (from Stage 1 if Stage 2
    hit network failures; cached tarballs and results make this cheap).
-5. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same)
-   if the last prune is older than `PRUNE_EVERY`.
+5. If a Stage 5 results root is configured (`sandbox_results`, from `SANDBOX_RESULTS_ENV`),
+   Stage 5 on each run whose stages ran this tick: import package-analysis results the owner
+   brought back, refresh the runs they answer, export this run's tarballs for the airgapped
+   analysis VM (`stages/sandbox.py`, decision 0014). Without one, Stage 5 is skipped.
+6. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same),
+   with Stage 5's exports and unused results, if the last prune is older than `PRUNE_EVERY`.
+7. Rebuild the review queue (`reporting/queue.py`) over the last `keep_days` of reports.
 
-Steps 1, 2, 4 and 5 are best-effort: a failure is logged, and the tick carries on with the
+The tick returns a `Tick` (manifest, reports written, failed steps); `kitsunox collect` posts it
+as a brief Discord update when a webhook is configured (`notify.py`, decision 0011).
+
+Steps 1, 2 and 4-7 are best-effort: a failure is logged, and the tick carries on with the
 previous watchlist or label set, because a missed ingest is lost data while a stale list is not.
 If the registry is unreachable, or a run hits an outage (`IngestDegradedError`), the tick logs
 it and stops without writing anything: the checkpoint stays put, so the next tick covers the gap
@@ -52,9 +60,17 @@ from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, 
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import is_archive_url
+from kitsunox.notify import Tick
 from kitsunox.reporting.publish import publish_report
+from kitsunox.reporting.queue import build_queue, write_queue
+from kitsunox.reporting.report import REPORT_DIR, Report
+from kitsunox.sandbox.results import SANDBOX_INFO, prune_sandbox
+from kitsunox.sandbox.select import DEFAULT_CAP
+from kitsunox.sandbox.spool import export_dir, exported_jobs
 from kitsunox.stages.code import run_code_stage
+from kitsunox.stages.correlate import repo_network_failures
 from kitsunox.stages.review import run_correlate_stage
+from kitsunox.stages.sandbox import OVERDUE_AFTER, run_sandbox_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
 from kitsunox.util.http import FetchError
@@ -65,6 +81,10 @@ PRUNE_EVERY = timedelta(hours=20)
 # Tarballs of malicious packages are usually deleted within a day or two; later retries are moot.
 STAGES_CATCH_UP = timedelta(hours=48)
 DEFAULT_KEEP_DAYS = 7
+REPORT_ONLY = 5  # a `start` for `_stages`: Stages 1-4 are done, only the report is missing
+# Where the owner puts package-analysis's results (each export's `results/` contents). Not a
+# secret; set in the environment or `.env`. Unset: `collect` skips Stage 5.
+SANDBOX_RESULTS_ENV = "KITSUNOX_SANDBOX_RESULTS"
 
 Log = Callable[[str], None]
 
@@ -77,25 +97,37 @@ def collect(
     keep_repo_days: int | None = None,
     log: Log,
     clients: Callable[[], httpx.Client] | None = None,
-) -> RunManifest | None:
+    sandbox_results: pathlib.Path | None = None,
+) -> Tick:
     """`clients` makes a fresh HTTP client per step (each step closes its own); tests pass a
-    mock. Default: a real client per step. Returns the new run's manifest, or None if the
-    registry couldn't be read."""
+    mock. Default: a real client per step. `sandbox_results` is Stage 5's results root (None:
+    no Stage 5). Returns what the tick did: the new run's manifest (None if the registry
+    couldn't be read), the reports written, and the steps that failed."""
 
     def client() -> httpx.Client | None:
         return clients() if clients else None
 
+    failed: list[str] = []
+    reports: list[Report] = []
+
+    def best_effort(step: str, action: Callable[[], str]) -> None:
+        try:
+            log(f"{step}: {action()}")
+        except Exception as exc:  # unattended: keep collecting with the previous data
+            log(f"{step}: FAILED ({type(exc).__name__}: {exc}) at {where(exc)}; continuing")
+            failed.append(step)
+
     if _age(data.watchlists.latest_id(NPM), now) > WATCHLIST_MAX_AGE:
-        _best_effort("watchlist", log, lambda: _watchlist(data, now, client()))
+        best_effort("watchlist", lambda: _watchlist(data, now, client()))
     if _age(label_store(data).latest_id(NPM), now) > LABELS_MAX_AGE:
-        _best_effort("labels", log, lambda: _labels(data, now, client()))
+        best_effort("labels", lambda: _labels(data, now, client()))
 
     request = IngestRequest(as_of=now, chain=True)
     try:
         manifest = record_ingest(data, NpmEcosystem, request, client=client())
     except (FetchError, IngestDegradedError) as exc:
         log(f"ingest: OFFLINE or outage, nothing written; the next tick catches up ({exc})")
-        return None
+        return Tick(manifest=None, failed=tuple(failed))
     chain = f"chained from {manifest.chained_from}" if manifest.chained_from else "NOT chained"
     log(
         f"ingest: run {manifest.run_id}, feed ({manifest.cursor_since}, {manifest.cursor_until}], "
@@ -105,17 +137,33 @@ def collect(
         f"window covered: {manifest.window_covered}"
     )
 
+    staged: list[str] = []
+
     def stages(run_id: str, start: int = 1) -> Callable[[], str]:
-        return lambda: _stages(data, run_id, client, start)
+        def action() -> str:
+            summary, report = run_stages(data, run_id, client, start)
+            reports.append(report)
+            staged.append(run_id)
+            return summary
+
+        return action
+
+    def sandbox(run_id: str, results: pathlib.Path) -> Callable[[], str]:
+        return lambda: run_sandbox(data, run_id, results, client())
 
     for run_id, start in _stages_pending(data, now, exclude=manifest.run_id):
-        _best_effort(f"stages (catch-up {run_id} from Stage {start})", log, stages(run_id, start))
-    _best_effort("stages", log, stages(manifest.run_id))
+        resume = f"Stage {start}" if start < REPORT_ONLY else "the report"
+        best_effort(f"stages (catch-up {run_id} from {resume})", stages(run_id, start))
+    best_effort("stages", stages(manifest.run_id))
+    if sandbox_results is not None:
+        for run_id in staged:
+            best_effort(f"sandbox {run_id}", sandbox(run_id, sandbox_results))
 
     last_prune = _last_prune(data)
     if last_prune is None or now - last_prune > PRUNE_EVERY:
-        _best_effort("prune", log, lambda: _prune(data, now, keep_days, keep_repo_days))
-    return manifest
+        best_effort("prune", lambda: _prune(data, now, keep_days, keep_repo_days))
+    best_effort("queue", lambda: _queue(data, keep_days))
+    return Tick(manifest=manifest, reports=tuple(reports), failed=tuple(failed))
 
 
 def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str:
@@ -130,13 +178,18 @@ def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str
     return f"built {watchlist.id} ({len(watchlist.entries)} packages)"
 
 
-def _stages(
+def run_stages(
     data: DataDir, run_id: str, client: Callable[[], httpx.Client | None], start: int = 1
-) -> str:
-    """Stages 1-4 on one run, from Stage `start` (a catch-up resumes where outputs are
-    missing). Each fetching stage gets its own client (fetchers close theirs)."""
+) -> tuple[str, Report]:
+    """Stages 1-4 and the report on one run, from Stage `start` (a catch-up resumes where
+    outputs are missing; `REPORT_ONLY` redoes just the report). Each fetching stage gets its own
+    client (fetchers close theirs)."""
     run_dir = data.run_dir(run_id)
     parts = []
+    if start <= 4:
+        # The old report no longer matches what is about to be rewritten. Without its index
+        # (written last), a tick killed before the new report resumes as REPORT_ONLY.
+        (run_dir / REPORT_DIR / "index.md").unlink(missing_ok=True)
     if start <= 2:
         manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
         candidates, _ = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
@@ -155,18 +208,69 @@ def _stages(
         parts.append(
             f"{sum(c.history[-1].forwarded for b in coded for c in b.versions)} flagged by Stage 3"
         )
-    versions = run_correlate_stage(data, run_id, client=client())
-    compared = sum(
-        any(
-            f.rule_id == "repo.compared" and "No comparison" not in f.explanation
-            for f in c.findings
+    if start <= 4:
+        versions = run_correlate_stage(data, run_id, client=client())
+        compared = sum(
+            any(
+                f.rule_id == "repo.compared" and "No comparison" not in f.explanation
+                for f in c.findings
+            )
+            for c in versions
         )
-        for c in versions
-    )
+        uncompared = repo_network_failures(versions)
+        parts.append(
+            f"{compared} compared with their repository"
+            + (f", {uncompared} not compared (network)" if uncompared else "")
+        )
     report = publish_report(data.run_dir(run_id))
-    parts.append(
-        f"{compared} compared with their repository, {report.reported} to review (report/index.md)"
+    if start <= 4 and (failing := report.dependency_network_failures()[0]):
+        parts.append(f"{failing} dependency lookups failed (network)")
+    parts.append(f"{report.reported} to review (report/index.md)")
+    return "; ".join(parts), report
+
+
+def run_sandbox(
+    data: DataDir,
+    run_id: str,
+    results: pathlib.Path | None,
+    client: httpx.Client | None,
+    *,
+    cap: int = DEFAULT_CAP,
+    replay: bool = False,
+) -> str:
+    """Stage 5 on a run Stage 4 has processed (`run_sandbox_stage`), summarised in one line.
+    A live call then rebuilds the report of the run and of every earlier run it refreshed
+    (results arrived for them), since reports include Stage 5's findings."""
+    outcome = run_sandbox_stage(
+        data, run_id, results=results, cap=cap, replay=replay, client=client
     )
+    if not replay:
+        for rendered in (run_id, *outcome.refreshed):
+            publish_report(data.run_dir(rendered))
+    counts = json.loads((data.run_dir(run_id) / SANDBOX_INFO).read_bytes())["counts"]
+    parts = [
+        f"{counts['selected'] + counts['deferred']} of {counts['reported']} reported versions "
+        f"have install hooks ({counts['deferred']} over the cap of {cap})",
+        f"{counts['analysed']} analysed ({counts['install_failed']} install failed), "
+        f"{counts['pending']} awaiting analysis, {counts['rejected']} results rejected",
+        f"{counts['bundled']} bundled, {counts['unbundled']} not bundleable",
+    ]
+    if counts["bundle_pending"]:
+        parts[-1] += f", {counts['bundle_pending']} bundles retried later"
+    if not replay and results is not None:
+        jobs = len(exported_jobs(data, run_id))
+        parts.append(f"export: {jobs} jobs in {export_dir(data, run_id)}")
+        accepted = sum(o == "accepted" for o in outcome.imported.values())
+        rejected = sum(o == "rejected" for o in outcome.imported.values())
+        if accepted or rejected:
+            parts.append(f"imported {accepted} results ({rejected} rejected)")
+    if outcome.refreshed:
+        parts.append(f"{len(outcome.refreshed)} earlier runs updated")
+    if outcome.overdue:
+        parts.append(
+            f"{sum(outcome.overdue.values())} jobs from {len(outcome.overdue)} runs still "
+            f"unanalysed after {OVERDUE_AFTER.days} days"
+        )
     return "; ".join(parts)
 
 
@@ -181,7 +285,33 @@ def _resume_from(run_dir: pathlib.Path) -> int | None:
         return 3
     if not (run_dir / "correlate.jsonl").exists():
         return 4
+    if not _report_complete(run_dir / REPORT_DIR):
+        return REPORT_ONLY
     return None
+
+
+def _report_complete(directory: pathlib.Path) -> bool:
+    """`index.md` is written last; `report.json` must also load (a damaged file, or one written
+    with another schema version, is rebuilt: that is cheap, Stage 4 isn't redone)."""
+    if not (directory / "index.md").exists():
+        return False
+    try:
+        Report.load_json((directory / "report.json").read_bytes())
+    except OSError, ValueError:
+        return False
+    return True
+
+
+def _queue(data: DataDir, days: int) -> str:
+    queue = build_queue(data, NPM, days=days)
+    if queue is None:
+        return "no reports yet"
+    write_queue(data, queue)
+    skipped = f", {len(queue.skipped)} unreadable reports left out" if queue.skipped else ""
+    return (
+        f"{queue.packages} packages ({queue.versions} versions) from {len(queue.runs)} runs"
+        f"{skipped} (queue/index.md)"
+    )
 
 
 def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[tuple[str, int]]:
@@ -223,23 +353,18 @@ def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | N
         keep_archive_days=keep_repo_days,
         is_archive=is_archive_url,
     )
+    exports, results = prune_sandbox(data, labels.labels.keys())
     path = data.root / "state" / "prune.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"last": now.isoformat()}) + "\n")
+    sandbox = f"; Stage 5: {exports} exports, {results} results" if exports or results else ""
     return (
         f"{len(report.runs_pruned)} runs pruned, {report.blobs_pinned} blobs pinned, "
-        f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB)"
+        f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB){sandbox}"
     )
 
 
-def _best_effort(step: str, log: Log, action: Callable[[], str]) -> None:
-    try:
-        log(f"{step}: {action()}")
-    except Exception as exc:  # unattended: keep collecting with the previous data
-        log(f"{step}: FAILED ({type(exc).__name__}: {exc}) at {_where(exc)}; continuing")
-
-
-def _where(exc: BaseException) -> str:
+def where(exc: BaseException) -> str:
     """The innermost frames of the traceback (file:line in function), for an unattended log."""
     frames = traceback.extract_tb(exc.__traceback__)[-3:]
     return " < ".join(

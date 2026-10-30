@@ -4,7 +4,8 @@ import json
 
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
 from kitsunox.ecosystems.npm.install import install_entry_files
-from kitsunox.ecosystems.npm.rules.install_code import InstallScriptCode
+from kitsunox.ecosystems.npm.rules import install_code
+from kitsunox.ecosystems.npm.rules.install_code import InstallScriptChanged, InstallScriptCode
 from kitsunox.rules.capabilities import CapabilityGained
 from kitsunox.stages.ast import CapabilityCache, CodeChange, code_change
 
@@ -25,7 +26,7 @@ def pkg(hook: str | None = None, files: dict[str, bytes] | None = None) -> dict[
 
 
 def change(new: dict[str, bytes], base: dict[str, bytes] | None) -> CodeChange:
-    return code_change(SNAP, new, base, CACHE, install_entry_files)
+    return code_change(SNAP, new, base, CACHE, install_entry_files, "1.0.0")
 
 
 def test_gaining_network_with_env_is_medium() -> None:
@@ -59,3 +60,60 @@ def test_install_script_code_counts_only_new_capabilities_on_updates() -> None:
     (finding,) = InstallScriptCode().evaluate_code(change(worse, old))
     assert "dynamic-code (new to the install code)" in finding.explanation
     assert InstallScriptCode().evaluate_code(change(PLAIN, None)) == ()  # no install script
+
+
+def test_a_changed_install_file_is_shown_as_a_diff() -> None:
+    """The hook's command is word for word the same; the file it runs isn't."""
+    old = pkg("node setup.js", {"setup.js": b"console.log('hi')\nconst a = 1\n"})
+    new = pkg("node setup.js", {"setup.js": b"console.log('hi')\nconst a = 2\nfetch(u)\n"})
+    (finding,) = InstallScriptChanged().evaluate_code(change(new, old))
+    assert finding.severity is Severity.MEDIUM
+    assert finding.explanation == (
+        "`npm install` runs code that changed since 1.0.0: setup.js (+2 -1 lines)."
+    )
+    (evidence,) = finding.evidence
+    assert (evidence.path, evidence.line_start) == ("setup.js", 1)
+    assert evidence.snippet is not None
+    assert evidence.snippet.splitlines() == [
+        "@@ -1,2 +1,3 @@",
+        " console.log('hi')",
+        "-const a = 1",
+        "+const a = 2",
+        "+fetch(u)",
+    ]
+    rule = InstallScriptChanged()
+    assert rule.evaluate_code(change(old, old)) == ()  # unchanged
+    assert rule.evaluate_code(change(new, None)) == ()  # new package: nothing to compare
+    assert rule.evaluate_code(change(PLAIN, PLAIN)) == ()  # no install script
+
+
+def test_a_newly_run_binary_or_long_install_file() -> None:
+    rule = InstallScriptChanged()
+    old = pkg("node a.js", {"a.js": b"1"})
+    (newly,) = rule.evaluate_code(change(pkg("node b.js", {"b.js": b"2"}), old))
+    assert "b.js (newly run)" in newly.explanation
+    assert newly.evidence[0].snippet == "@@ -0,0 +1 @@\n+2"
+    binary = pkg("node a.js", {"a.js": b"\x00\x01"})
+    (found,) = rule.evaluate_code(change(binary, old))
+    assert found.evidence[0].snippet == "(binary file changed)"
+    long_old = pkg("node a.js", {"a.js": b"x\n" * (install_code.MAX_DIFFED_LINES + 1)})
+    (found,) = rule.evaluate_code(change(long_old, old))
+    assert "a.js (too long to diff)" in found.explanation
+    assert "too long to diff" in (found.evidence[0].snippet or "")
+
+
+def test_a_long_diff_is_cut() -> None:
+    old = pkg("node a.js", {"a.js": b"".join(b"%d\n" % i for i in range(100))})
+    new = pkg("node a.js", {"a.js": b"".join(b"%d!\n" % i for i in range(100))})
+    (found,) = InstallScriptChanged().evaluate_code(change(new, old))
+    lines = (found.evidence[0].snippet or "").splitlines()
+    assert len(lines) == install_code.MAX_DIFF_LINES + 1
+    assert lines[-1].startswith("... ") and lines[-1].endswith(" more diff lines")
+
+
+def test_an_install_file_that_changed_only_its_own_version_is_unchanged() -> None:
+    old = pkg("node i.js", {"i.js": b"download(`kx@1.0.0`)"})
+    new = pkg("node i.js", {"i.js": b"download(`kx@1.0.1`)"})
+    assert InstallScriptChanged().evaluate_code(change(new, old)) == ()  # SNAP is 1.0.1
+    other = pkg("node i.js", {"i.js": b"download(`evil@1.0.1`)"})
+    assert len(InstallScriptChanged().evaluate_code(change(other, old))) == 1

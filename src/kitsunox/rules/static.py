@@ -7,6 +7,7 @@ behind each are in `docs/stages/static.md`.
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 from collections.abc import Sequence
@@ -76,19 +77,143 @@ class ExfilEndpoint(RegexRule):
 
     # v2: webhook URLs need an id after the path (docs write `hooks.slack.com/services/...`),
     # and `requestbin` needs a dot (it matched `OscoreRequestBinding`). Live run 2026-10-28.
+    # v3: webhook ids must look real. Discord ids are 17-20-digit snowflakes (every one in the
+    # DataDog samples has 19); Slack's are `T...`/`B...` in upper case (v2's `[A-Z0-9]` was
+    # case-insensitive, so `/services/xxx/xxx` matched). Repeated or counting-up ids are
+    # placeholders (`123/abc`, `T00000000/B00000000`). URLs built in code (`bot${token}`,
+    # `webhooks/" + id`) never carried a literal id, so v2 and v3 both miss or both keep them.
+    # Kept on purpose (2026-10-30, first VM day): bare suffixes (`".trycloudflare.com"`),
+    # `bot${token}` and lists of ngrok's region hosts (`eu.ngrok.io`). Live benign code has
+    # them, but dropping the first two cost 29 malicious `vm-day1` samples caught by nothing
+    # else (against 3 benign), and dropping region hosts cost 11 (`gina`, `cro-pricing`, ...)
+    # to clear 6 benign packages. See docs/stages/static.md.
 
     id = "static.exfil-endpoint"
-    version = 2
+    version = 3
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
     pattern = re.compile(
-        r"discord(?:app)?\.com/api/webhooks/\d|hooks\.slack\.com/services/[A-Z0-9]"
+        r"discord(?:app)?\.com/api/(?:v\d{1,2}/)?webhooks/(?P<discord>\d{17,20})/"
+        r"|hooks\.slack\.com/services/(?P<slack>(?-i:T[A-Z0-9]{8,12}/B[A-Z0-9]{8,12}))/"
         r"|api\.telegram\.org/bot"
         r"|pastebin\.com/|paste\.ee/|hastebin\.|webhook\.site|requestbin\.|pipedream\.net"
         r"|\.oast\.(?:fun|me|pro|site|live|online)|oastify\.com|burpcollaborator\.net"
         r"|interact\.sh|\.ngrok(?:-free)?\.(?:io|app)|\.trycloudflare\.com|\.serveo\.net",
         re.IGNORECASE,
+    )
+
+    def accept(self, match: re.Match[str]) -> bool:
+        webhook_id = match.group("discord") or match.group("slack")
+        return webhook_id is None or not _placeholder_id(webhook_id)
+
+
+def _placeholder_id(webhook_id: str) -> bool:
+    """`000000000000000000`, `T00000000/B00000000`, `123456789012345678`: a documentation
+    example, not a webhook someone created."""
+    digits = "".join(c for c in webhook_id if c.isdigit())
+    parts = [p[1:] if p[:1].isalpha() else p for p in webhook_id.split("/")]
+    if any(len(set(p)) == 1 for p in parts):
+        return True
+    return len(digits) >= 8 and digits[:8] in "01234567890123456789"
+
+
+class WebhookPlaceholder(RegexRule):
+    """A Discord or Slack webhook URL whose id is a placeholder (`/services/xxx/xxx`,
+    `/webhooks/123/abc`): what `exfil-endpoint` v2 matched and v3 no longer calls an
+    exfiltration endpoint.
+
+    Kept at MEDIUM, so Stage 2 still forwards it, because dropping these cost recall: on
+    `vm-day1` 42 DataDog samples (a `chai-as-*` typosquat family carrying a notifier template)
+    were caught end to end only through this match, against one benign package
+    (`@zerodot/discord`). The finding now says what it is, and scores 3 instead of 5.
+    Since `encoded-url` (below), 42 of those 43 are also caught by what they actually do; the
+    one this rule alone still catches is `jsonlogbundler`, against the same benign package."""
+
+    id = "static.webhook-placeholder"
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Webhook URL with a placeholder id"
+    pattern = re.compile(
+        r"discord(?:app)?\.com/api/(?:v\d{1,2}/)?webhooks/\d|hooks\.slack\.com/services/[A-Z0-9]",
+        re.IGNORECASE,
+    )
+
+    def accept(self, match: re.Match[str]) -> bool:
+        real = ExfilEndpoint.pattern.match(match.string, match.start())
+        return real is None or not ExfilEndpoint().accept(real)
+
+    def explain(self, match: re.Match[str]) -> str:
+        return (
+            f"Found `{match.group(0)[:80]}` with a placeholder id: a template or documentation "
+            "example, or a URL the code completes later."
+        )
+
+
+class EncodedUrl(RegexRule):
+    """A string literal that is a URL in base64 or hex: `"aHR0cHM6Ly9..."` is `https://...`.
+
+    Code that talks to a server it means to has no reason to hide the address. Encoding it
+    keeps the host out of plain-text search, so this is a general sign of a hidden endpoint
+    (a second-stage download, a C2 or an exfiltration host), whatever the code then does with
+    it. Only a whole literal that decodes to printable text starting `http(s)://` or
+    `ws(s)://` counts: the same bytes inside a longer blob (an inline source map) do not.
+
+    Added 2026-10-30 for a `vm-day1` family of 43 DataDog samples (pino clones named
+    `chai-as-*`, `chai-await-*`, `aligners`, ...) that fetch a URL decoded with `atob` (or a
+    hex helper) and run the response with `new Function("require", body)` or `eval`."""
+
+    id = "static.encoded-url"
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "URL hidden in base64 or hex"
+    pattern = re.compile(
+        r"""(?P<q>["'`])(?:"""
+        r"""(?P<b64>(?:aHR0c(?:HM6Ly|DovL)|d3M6Ly|d3NzOi8v)[A-Za-z0-9+/_-]{4,}={0,2})"""
+        r"""|(?P<hex>(?i:(?:68747470|7773)(?:73)?3a2f2f)(?:[0-9a-fA-F]{2}){4,})"""
+        r""")(?P=q)""",
+    )
+
+    def accept(self, match: re.Match[str]) -> bool:
+        return _decoded_url(match) is not None
+
+    def explain(self, match: re.Match[str]) -> str:
+        return f"An encoded string literal decodes to `{_decoded_url(match) or ''}`."
+
+
+def _decoded_url(match: re.Match[str]) -> str | None:
+    """The literal decoded, truncated to 100 characters, if it is a printable URL."""
+    try:
+        if match.group("hex"):
+            raw = bytes.fromhex(match.group("hex"))
+        else:
+            b64 = match.group("b64").replace("-", "+").replace("_", "/").rstrip("=")
+            raw = base64.b64decode(b64 + "=" * (-len(b64) % 4))
+        text = raw.decode("ascii")
+    except ValueError:  # binascii.Error and UnicodeDecodeError are ValueErrors
+        return None
+    if not text.isprintable() or not re.match(r"(?:https?|wss?)://\w", text):
+        return None
+    return text[:100]
+
+
+class FunctionRequire(RegexRule):
+    """A function compiled at runtime whose first parameter is `require`:
+    `new Function("require", body)` (also via `Function.constructor`). Code built from a
+    string is handed the module loader, so whatever the string turns out to be (typically a
+    response just downloaded) can load `child_process`, `fs` or `https` itself. A loader for
+    a second stage needs exactly this; bundlers and template engines compile code without
+    giving it `require`."""
+
+    id = "static.function-require"
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Compiles code at runtime and hands it `require`"
+    pattern = re.compile(
+        # Possessive `*+`: `\s` never matches `.`, `)` or `(`, so giving whitespace back can't
+        # help, and without them "Function" plus a long run of spaces backtracks quadratically
+        # (32k spaces took 0.44 s; a 16 MB file of them would stall Stage 2).
+        r"""(?<![\w$])Function(?:\s*+\.\s*+constructor)?\s*+\)?\s*+\(\s*+["'`]require["'`]\s*+,"""
     )
 
 
@@ -154,7 +279,11 @@ class EncodedBlob(RegexRule):
     weight = 1.0
     title = "Large encoded blob"
     MIN_LENGTH: ClassVar[int] = 200
-    pattern = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}|(?:[0-9a-fA-F]{2}){100,}")
+    # A match starts where a run does (inside a run, a shorter run fails too): the lookbehind
+    # skips those starts, which scanned up to 199 characters each (1M chars of them: 0.6 s).
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{200,}={0,2}|(?:[0-9a-fA-F]{2}){100,})"
+    )
     _DATA_URI = re.compile(
         r"data:(?:image|font|application/font|application/x-font)[^,]{0,60};base64,$"
     )
@@ -269,6 +398,9 @@ class Network(RegexRule):
 
 RULES: Final = (
     ExfilEndpoint(),
+    WebhookPlaceholder(),
+    EncodedUrl(),
+    FunctionRequire(),
     SensitivePath(),
     EnvHarvest(),
     HardcodedIp(),

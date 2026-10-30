@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -169,3 +170,66 @@ def test_stub_is_never_a_diff_base() -> None:
         start=datetime(2026, 10, 27, tzinfo=UTC), end=datetime(2026, 10, 28, tzinfo=UTC)
     )
     assert "1.0.2" in packument.versions_in(window)  # ...but still emitted and analysed
+
+
+def releases(*rows: tuple[str, int | None, int | None]) -> Packument:
+    """A packument of `(version, dist.fileCount, dist.unpackedSize)`, published an hour apart
+    in the order given."""
+    versions: dict[str, Any] = {}
+    times: dict[str, str] = {}
+    for hour, (version, files, size) in enumerate(rows):
+        dist: dict[str, Any] = {}
+        if files is not None:
+            dist["fileCount"] = files
+        if size is not None:
+            dist["unpackedSize"] = size
+        versions[version] = {"version": version, "dist": dist}
+        times[version] = f"2026-10-29T{hour:02d}:00:00Z"
+    return Packument({"name": "kx", "versions": versions, "time": times}, expected_name="kx")
+
+
+def test_a_partial_publish_is_not_a_diff_base() -> None:
+    """`@nutui/nutui-react-taro`: beta.3 shipped 166 of 5,215 files, so beta.4 looked as if it
+    had added the build and the postinstall that beta.2 already had."""
+    nutui = releases(
+        ("3.0.24-beta.2", 5215, None), ("3.0.24-beta.3", 166, None), ("3.0.24-beta.4", 5215, None)
+    )
+    assert nutui.previous_version("3.0.24-beta.4") == "3.0.24-beta.2"
+    assert nutui.previous_version("3.0.24-beta.4", diff_base=1) == "3.0.24-beta.3"  # old runs
+    assert nutui.previous_version("3.0.24-beta.3") == "3.0.24-beta.2"  # still analysed itself
+    # By unpacked size when a count is missing:
+    sized = releases(("1.0.0", None, 900_000), ("1.0.1", None, 80_000), ("1.0.2", None, 900_000))
+    assert sized.previous_version("1.0.2") == "1.0.0"
+
+
+def test_a_large_release_cannot_push_its_diff_base_back() -> None:
+    """A release only smaller than the new one is kept: otherwise an attacker could bloat a
+    release to skip back to an older version that already had its install script."""
+    grown = releases(("1.0.0", 30, None), ("1.1.0", 30, None), ("2.0.0", 4000, None))
+    assert grown.previous_version("2.0.0") == "1.1.0"
+    tiny = releases(("1.0.0", 12, None), ("1.0.1", 2, None), ("1.0.2", 12, None))
+    assert tiny.previous_version("1.0.2") == "1.0.1"  # too small to call anything partial
+    flags = releases(("1.0.0", True, None), ("1.0.1", 1, None), ("1.0.2", 500, None))
+    assert flags.previous_version("1.0.2") == "1.0.1"  # `true` is not a file count
+
+
+def test_at_most_a_few_partial_publishes_are_passed_over() -> None:
+    rows = [
+        ("1.0.0", 500, None),
+        *((f"1.0.{i}", 5, None) for i in range(1, 6)),
+        ("1.0.6", 500, None),
+    ]
+    many = releases(*rows)
+    # 1.0.5 .. 1.0.1 are partial next to 1.0.6, but each is the size of the one before it
+    assert many.previous_version("1.0.6") == "1.0.5"
+    rows = [("1.0.0", 500, None), ("1.0.1", 500, None), ("1.0.2", 5, None), ("1.0.3", 500, None)]
+    assert releases(*rows).previous_version("1.0.3") == "1.0.1"
+
+
+def test_a_chain_of_shrinking_releases_keeps_the_usual_diff_base() -> None:
+    """Each a quarter of the one before: passing over all of them would reach far back, so
+    after `MAX_PARTIAL_SKIPS` the usual choice stands."""
+    sizes = (8530, 2130, 530, 130, 30, 9000)
+    chain = releases(*((f"1.0.{i}", n, None) for i, n in enumerate(sizes)))
+    assert chain.previous_version("1.0.5") == "1.0.4"
+    assert chain.previous_version("9.9.9") is None  # no publish time: not in the packument

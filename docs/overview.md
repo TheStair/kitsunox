@@ -23,7 +23,10 @@ uv sync                              # create .venv and install locked dependenc
 uv run kitsunox --help
 uv run kitsunox ingest record        # Stage 0: collect the last 24h of npm releases
 uv run kitsunox ingest replay <run>  # re-run a recorded run offline, check output is identical
-uv run kitsunox collect              # one unattended tick (run hourly by launchd, see stages/ingest.md)
+uv run kitsunox collect              # one unattended tick (run hourly by a systemd timer, see stages/ingest.md)
+uv run kitsunox run --data-dir data-demo --window-hours 1   # the whole pipeline once, into its own data dir
+uv run kitsunox queue                # the review queue across runs, by package (data/queue/index.md)
+uv run kitsunox view                 # browse the queue and reports at http://127.0.0.1:8000 (read-only)
 ```
 
 Runs are written to `data/runs/<run_id>/`. See [stages/ingest.md](stages/ingest.md).
@@ -55,4 +58,5 @@ which is gitignored.
 - [`roadmap.md`](roadmap.md): phases and decisions
 - [`stages/`](stages/): one page per pipeline stage
 - [`decisions/`](decisions/): records of significant design choices
+- [`viewer.md`](viewer.md): the local web viewer and its security properties
 - [`devlog.md`](devlog.md): project journal

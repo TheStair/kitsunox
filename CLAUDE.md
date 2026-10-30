@@ -30,7 +30,8 @@ unless the user asks.
 
 ### Resources
 
-The user's machine has 8 cores and 64 GB RAM. Compute and runtime are not major constraints;
+Collection and development run on an Ubuntu VM with 4 vCPUs, 30 GB RAM and ~360 GB disk (the
+earlier laptop had 8 cores and 64 GB). Compute and runtime are not major constraints;
 correctness and output quality are. Parallelism within a stage is fine.
 
 ---
@@ -114,6 +115,8 @@ uv run kitsunox labels sync                        # OSV malware labels (~220 MB
 uv run kitsunox collect                            # hourly tick: refresh lists, chained ingest, prune
 uv run kitsunox data prune --keep-days 7           # retention (takes the data-dir lock)
                                                    # --keep-repo-days N: Stage 4 archives (default = keep-days)
+uv run kitsunox schedule systemd --keep-repo-days 4 # write the hourly systemd user timer (see stages/ingest.md)
+                                                   # collect posts a daily Discord summary if KITSUNOX_DISCORD_WEBHOOK is in .env
 uv run kitsunox samples datadog --intent 2000      # DataDog malware samples (encrypted, metadata only)
 uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor stage1-rules
 uv run kitsunox triage <run_id>                    # Stage 1 on a recorded run
@@ -121,6 +124,10 @@ uv run kitsunox static <run_id>                    # Stage 2 on a triaged run (f
 uv run kitsunox ast <run_id>                       # Stage 3 on a run Stage 2 processed
 uv run kitsunox correlate <run_id>                 # Stage 4: correlation, repo comparison, score
 uv run kitsunox report <run_id>                    # report.json + Markdown queue (data/runs/<id>/report/)
+uv run kitsunox sandbox <run_id> --results DIR     # Stage 5: import package-analysis results, export for the airgapped VM
+uv run kitsunox queue                              # review queue across runs, by package (data/queue/)
+uv run kitsunox view                               # read-only local web viewer on 127.0.0.1:8000 (docs/viewer.md)
+uv run kitsunox run --data-dir data-demo --window-hours 1   # whole pipeline once (own data dir: it moves the checkpoint)
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -141,6 +148,7 @@ src/kitsunox/
   githost/          # git hosts (GitHub refs + archives, no API token) for Stage 4 and the git path
   evaluation/       # OSV labels, datasets built from ingest runs, predictors + metrics
   reporting/        # report rendering (Markdown/HTML), summary index
+  web/              # read-only local viewer for reports and the queue (stdlib http.server, no JS)
   util/             # shared helpers: HTTP + retry, hashing, diffing, entropy, logging
   cli.py            # typer app; entry point `kitsunox`
 tests/              # mirrors src/ layout; fixtures/ holds inert samples
@@ -149,7 +157,8 @@ data/               # caches, raw downloads, results, malicious samples (gitigno
 ```
 
 Not created until needed: `modules/` (optional add-ons such as a future Claude analysis stage or
-extra feeds) and `sandbox/` (Dockerfile(s) and runner for Stage 5; design review first).
+extra feeds). Stage 5 has no runner of its own: it exports tarballs for OpenSSF package-analysis,
+which the owner runs, and imports the results (`src/kitsunox/sandbox/`, decision 0014).
 
 ---
 
@@ -288,22 +297,32 @@ version, adds known-malware, combination and tarball-vs-repo findings (`stages/r
 `githost/github.py`, `ecosystems/npm/repo.py`), scores, and decides what to report. See
 `docs/stages/correlate.md` and decision 0010. Eval predictor: `pipeline+4`.
 Reports (`reporting/`: `report.py` builds the canonical `report.json`, `markdown.py` renders it
-with all package text escaped as untrusted) are written per run by `collect`; see
-`docs/stages/report.md`.
+with all package text escaped as untrusted) are written per run by `collect`, which then rebuilds
+the cross-run review queue (`reporting/queue.py`, `data/queue/`); see `docs/stages/report.md`.
+Stage 5 (`stages/sandbox.py`, `sandbox/`, `rules/sandbox.py`; decision 0014) exports reported
+versions with install hooks, as offline dependency bundles, for OpenSSF package-analysis on the
+owner's airgapped VM, and imports its results as hostile data; `collect` runs it only when
+`KITSUNOX_SANDBOX_RESULTS` is set. It downloads (never runs) a reported version's tarball when
+no earlier stage captured it. See `docs/stages/sandbox.md`.
+Stages 4 and 5 and the report stream a run's versions from disk (`CandidateFile`, `RunVersions`):
+never load a whole run's candidates into memory (a 110k-version run was OOM-killed at 21.6 GB).
 
 Key invariants:
-- All network access goes through `HttpFetcher`, so runs stay replayable.
+- All network access for analysis goes through `HttpFetcher`, so runs stay replayable. The one
+  exception is output: `collect`'s daily Discord summary (`notify.py`, decision 0011), posted with
+  httpx after the tick. The webhook URL is a secret, and package names in it are escaped.
 - Analysis never reads the clock; it uses the run's `as_of`.
 - Tarballs are only ever extracted with `extract_tar_gz`.
 - Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
-- A launchd agent (`local.kitsunox.collect`) runs `kitsunox collect` hourly against `data/`:
+- A systemd user timer (`kitsunox-collect.timer`, from `kitsunox schedule systemd`; launchd's
+  `schedule plist` on macOS) runs `kitsunox collect` hourly against `data/`:
   ingest, then Stages 1-4; Stage 2 captures tarballs (~14 GB/day) before npm deletes them.
   Network failures are retried, never silently skipped (decision 0009): don't catch
   `TransientFetchError` as if it were a missing package.
   Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit
   `data/state/` or delete blobs while the agent might be running. Runs older than 7 days are
   pruned and can't be replayed. Stage 4's GitHub archives (~30 GB/day) have their own
-  `--keep-repo-days` (default 7; this laptop's agent uses 2). See `docs/decisions/0006-scheduled-collection-and-retention.md`.
+  `--keep-repo-days` (default 7; the VM's timer uses 4). See `docs/decisions/0006-scheduled-collection-and-retention.md`.
 - Validation results live in `docs/validation.md`. Add a new dated section after significant
   changes.
 

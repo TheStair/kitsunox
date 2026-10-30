@@ -83,6 +83,18 @@ scripts run.
 `npm.install-script-code` also covers a case Stage 1 cannot see: the command stays
 `node setup.js` and only `setup.js` changes.
 
+**`npm.install-script-changed`** (MEDIUM, weight 3; 2026-10-30) compares the files the install
+hooks name with the previous version's, byte for byte, and puts the changed lines in the
+evidence as a unified diff (one line of context, 40 lines and 200 characters a line at most;
+reports render it as a `diff` block). It fires when such a file changed or is newly run. A file
+whose only change is its own version string (`workerd`'s `install.js` downloads
+`${pkg}@<version>`) is unchanged. A file over 2,000 lines is reported changed without a diff:
+`difflib` is quadratic on lines that repeat without being junked (20,000 lines cycling 150
+values took 45 s). Each file is kept up to 256 KiB for the comparison. Stage 1 forwards every
+update with an install hook so this rule sees them. On the first VM day it fired on 47 of the
+601 hook updates whose two tarballs were captured (7.8%), and not on `@pulumi/*`, whose
+`install-pulumi-plugin.js` didn't change.
+
 ## Evaluation
 
 `day1` (sha256 `d99626981ae6`), 2026-10-28:

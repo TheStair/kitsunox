@@ -69,7 +69,8 @@ Both implement the same rule interface from `kitsunox/core/` (not yet written).
 
 `modules/` (optional add-ons such as a future LLM stage) and `sandbox/` (Stage 5 Docker runner)
 from CLAUDE.md's suggested layout aren't created until they have content. The sandbox needs a
-design review before any code exists.
+design review before any code exists. (2026-10-30: Stage 5 uses OpenSSF package-analysis instead
+of a runner of our own, so `sandbox/` is not created; see 0014.)
 
 ## Consequences
 

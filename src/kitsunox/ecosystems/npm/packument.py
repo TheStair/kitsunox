@@ -9,8 +9,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
+from kitsunox.core.interfaces import DIFF_BASE
 from kitsunox.core.models import (
     ArtifactRef,
     Change,
@@ -25,6 +26,15 @@ ECOSYSTEM = "npm"
 
 # Large free-text fields that carry no detection value at this stage and can be megabytes.
 _DROPPED_MANIFEST_KEYS = frozenset({"readme", "readmeFilename", "_npmOperationalInternal"})
+# Keys of a packument's `time` object that are not versions.
+_TIME_KEYS = frozenset({"created", "modified", "unpublished"})
+
+# A diff base is a partial publish when it has under 1/PARTIAL_RATIO of the files of both the
+# new version and the release before it (diff base 2, `Packument.previous_version`).
+PARTIAL_RATIO: Final = 4
+MIN_FULL_FILES: Final = 20  # below this many files, a smaller release isn't called partial
+MIN_FULL_BYTES: Final = 64 * 1024  # the same by unpacked size, when a count is missing
+MAX_PARTIAL_SKIPS: Final = 3
 
 _GITHUB_REPO = re.compile(
     r"^(?:git\+)?(?:https?|git|ssh)://(?:git@)?(?:www\.)?github\.com[/:]"
@@ -73,6 +83,19 @@ class Packument:
             if version in self.versions and moment is not None:
                 self.publish_times[version] = moment
         self.unpublished = "unpublished" in _dict(root.get("time")) and not self.versions
+        # Every version's publish time, including versions no longer listed: npm keeps a
+        # version's `time` entry when it takes the package down and replaces its versions
+        # (`time.created` and `maintainers` it rewrites). Stage 4 reads it to tell when a
+        # dependency first existed. Only keys that are versions (listed, or valid semver) count,
+        # so a stray key such as `__proto__` can't pose as the first version.
+        self.version_times: dict[str, datetime] = {
+            version: moment
+            for version, raw in _dict(root.get("time")).items()
+            if version not in _TIME_KEYS
+            and (version in self.versions or semver.parse(version) is not None)
+            and (moment := _parse_time(raw)) is not None
+        }
+        self.maintainers = _account_names(root.get("maintainers"))
         self.modified_at = _parse_time(_dict(root.get("time")).get("modified"))
         self.top_level_repository = root.get("repository")
 
@@ -81,7 +104,7 @@ class Packument:
         hits = [v for v, t in self.publish_times.items() if window.contains(t)]
         return sorted(hits, key=lambda v: (self.publish_times[v], v))
 
-    def previous_version(self, version: str) -> str | None:
+    def previous_version(self, version: str, *, diff_base: int = DIFF_BASE) -> str | None:
         """The version a new release should be diffed against.
 
         Among versions published before `version`, take the highest semver below it, which keeps
@@ -95,25 +118,59 @@ class Packument:
         gained all its scripts and dependencies (98% of "new packages" in the 2026-10-27 run
         were such stubs). `stub` is publisher-controlled, so it only changes the diff base: a
         release marked as a stub is still emitted and analysed. Hiding earlier versions this
-        way only makes the diff larger."""
+        way only makes the diff larger.
+
+        Diff base 2 also passes over a partial publish (`_partial`): a release with under a
+        quarter of the files of both the new version and the release before it, as
+        `@nutui/nutui-react-taro@3.0.24-cpp-beta.3` (166 files between two of 5,215, without
+        the build or the postinstall the releases around it had). Diffing against it made the
+        next release look as if it had added all of them. A release smaller than the new one
+        only is never passed over: a release can't push its diff base back by being large, so
+        it can't skip to an older version that, say, already had its install script. The
+        partial release itself is still analysed, against the release before it, and at most
+        `MAX_PARTIAL_SKIPS` are passed over."""
+        ranked = self._diff_bases(version)
+        if not ranked:
+            return None
+        if diff_base < 2:
+            return ranked[0]
+        for i, candidate in enumerate(ranked[: MAX_PARTIAL_SKIPS + 1]):
+            before = ranked[i + 1] if i + 1 < len(ranked) else None
+            if before is None or not (
+                self._partial(candidate, version) and self._partial(candidate, before)
+            ):
+                return candidate
+        return ranked[0]
+
+    def _diff_bases(self, version: str) -> list[str]:
+        """Possible diff bases, best first (`previous_version`'s order)."""
         published = self.publish_times.get(version)
         if published is None:
-            return None
+            return []
         earlier = [
             v
             for v, t in self.publish_times.items()
             if (t, v) < (published, version) and v != version and not self.is_stub(v)
         ]
-        if not earlier:
-            return None
         target = semver.parse(version)
         if target is not None:
             lower = [
                 (sv, v) for v in earlier if (sv := semver.parse(v)) is not None and sv < target
             ]
             if lower:
-                return max(lower, key=lambda pair: (pair[0], self.publish_times[pair[1]]))[1]
-        return max(earlier, key=lambda v: (self.publish_times[v], v))
+                lower.sort(key=lambda pair: (pair[0], self.publish_times[pair[1]]), reverse=True)
+                return [v for _, v in lower]
+        return sorted(earlier, key=lambda v: (self.publish_times[v], v), reverse=True)
+
+    def _partial(self, small: str, full: str) -> bool:
+        """`small` has under 1/PARTIAL_RATIO of `full`'s files (`dist.fileCount`), or of its
+        unpacked size when a count is missing; never when `full` is small itself."""
+        a, b = _dist(self.versions.get(small, {})), _dist(self.versions.get(full, {}))
+        for key, floor in (("fileCount", MIN_FULL_FILES), ("unpackedSize", MIN_FULL_BYTES)):
+            x, y = _count(a.get(key)), _count(b.get(key))
+            if x is not None and y is not None:
+                return y >= floor and x * PARTIAL_RATIO < y
+        return False
 
     def is_stub(self, version: str) -> bool:
         return self.versions.get(version, {}).get("stub") is True
@@ -133,10 +190,12 @@ class Packument:
             repo = repo.get("url")
         return normalize_repository_url(repo) if isinstance(repo, str) else None
 
-    def changes_in(self, window: Window, *, feed_seq: int | None = None) -> list[Change]:
+    def changes_in(
+        self, window: Window, *, feed_seq: int | None = None, diff_base: int = DIFF_BASE
+    ) -> list[Change]:
         changes = []
         for version in self.versions_in(window):
-            previous = self.previous_version(version)
+            previous = self.previous_version(version, diff_base=diff_base)
             changes.append(
                 Change(
                     new=self.snapshot(version),
@@ -172,14 +231,6 @@ def publish_info(manifest: Mapping[str, Any], published_at: datetime | None) -> 
     trusted = _dict(npm_user.get("trustedPublisher"))
     approver = _dict(npm_user.get("approver"))
     dist = _dict(manifest.get("dist"))
-    raw_maintainers = manifest.get("maintainers")
-    maintainers = sorted(
-        {
-            name
-            for m in (raw_maintainers if isinstance(raw_maintainers, list) else [])
-            if (name := _str(_dict(m).get("name")))
-        }
-    )
     return PublishInfo(
         published_at=published_at,
         publisher=_str(npm_user.get("name")),
@@ -187,8 +238,23 @@ def publish_info(manifest: Mapping[str, Any], published_at: datetime | None) -> 
         approver=_str(approver.get("name")),
         has_provenance=bool(_dict(dist.get("attestations")).get("provenance")),
         git_head=_str(manifest.get("gitHead")),
-        maintainers=tuple(maintainers),
+        maintainers=_account_names(manifest.get("maintainers")),
     )
+
+
+def _account_names(raw: object) -> tuple[str, ...]:
+    """Sorted account names from a `maintainers` list (`[{"name": ...}, ...]`)."""
+    entries = raw if isinstance(raw, list) else []
+    return tuple(sorted({name for m in entries if (name := _str(_dict(m).get("name")))}))
+
+
+def _dist(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    return _dict(manifest.get("dist"))
+
+
+def _count(value: object) -> int | None:
+    """A non-negative integer from untrusted JSON (`true` is not 1)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def artifact_ref(manifest: Mapping[str, Any]) -> ArtifactRef | None:

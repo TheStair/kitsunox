@@ -6,7 +6,9 @@
 > before the run fetched it. Hourly chained collection (Phase 9) has been running since then, so the malicious set can now
 > grow. Stage 1 is done and was evaluated on DataDog samples (0007). Stage 2 runs hourly in
 > `collect` with hybrid routing (0008) and captures tarballs. Stages 3 (AST capabilities) and 4
-> (correlation, repo comparison, score) run there too since 2026-10-28. Next: reporting.
+> (correlation, repo comparison, score) run there too since 2026-10-28, and reports per run.
+> On 2026-10-29 collection moved to a Linux VM (systemd timer) and started a new chain. The
+> cross-run review queue followed the same day.
 
 ## Phases
 
@@ -20,11 +22,11 @@
 | 5 | Stage 2 static heuristics | Changed-file diff; entropy, blob, URL/IP/webhook, dynamic-code keyword rules | ✅ 10 rules; runs hourly in `collect`. End to end (`pipeline`): 86.0% / 66.0% (A / B) at 0.7% benign. Routing: [0008](decisions/0008-stage2-routing-and-tarball-capture.md). See [stages/static.md](stages/static.md) |
 | 6 | Stage 3 AST capabilities | tree-sitter JS/TS parsing; per-file capability sets; capability-delta rules | ✅ parser, profiles, deltas, 2 rules; runs in `collect`. Alone 80.6% A at 0.2% benign; end to end (`pipeline+3`) 89.7% / 66.0% at 0.8%. See [stages/ast.md](stages/ast.md) |
 | 7 | Stage 4 correlation | Tarball-vs-repo diff; OSV/GHSA lookups; new-dependency reputation; combination rules and final score | ✅ first version; runs in `collect`. Repo comparison without a GitHub token, known-malware dependencies, `gitHead` provenance, one combination rule, distinct-rule score. End to end (`pipeline+4`) 91.1% / 66.5% at 0.9% benign. See [stages/correlate.md](stages/correlate.md), [0010](decisions/0010-stage4-correlation-and-repo-comparison.md). Not yet: new-dependency reputation, GHSA, manifest comparison with the repo |
-| 8 | Reporting | `report.json` → Markdown per candidate + `index.md`; `kitsunox run` end to end | ✅ per run, written by `collect` (`kitsunox report`); untrusted text escaped. Not yet: a cross-run queue, `kitsunox run`. See [stages/report.md](stages/report.md) |
+| 8 | Reporting | `report.json` → Markdown per candidate + `index.md`; `kitsunox run` end to end | ✅ per run, written by `collect` (`kitsunox report`); untrusted text escaped. Cross-run review queue by package (`kitsunox queue`, 2026-10-29). `kitsunox run` runs everything once. Not yet: reviewer verdicts. See [stages/report.md](stages/report.md) |
 | 8b | Git path (parallel source) | Commits on GitHub/GitLab repos of watchlist packages → filter → full repo fetch when needed → join with npm releases. See [decision 0004](decisions/0004-git-path-parallel-to-npm.md) | ⬜ after the npm workflow |
-| 9 | Prospective labeling | Scheduled ingest + cache retention; nightly join against new `MAL-` records to grow the eval set | 🟡 hourly `kitsunox collect` (launchd) + retention running since 2026-10-27, with Stages 1–2 and tarball capture since the evening of 2026-10-27; datasets are rebuilt by hand with `eval build` |
-| 10 | Sandbox (optional) | Design doc and review **first**; then Docker runner for install hooks, no network or capture proxy | ⬜ Planned host (2026-10-28): the whole pipeline moves to a VM on the user's desktop, with the sandbox (Docker) inside it; not cloud (provider terms on malware, cost). The VM holds `data/` and `.env`, so: no network or capture proxy only for detonation containers, read-only input / write-only output mounts, hardened runtime (rootless Docker or gVisor), minimal read-only secrets, VM snapshots for rollback |
-| 11 | Extras (optional) | Local web viewer for reports; Claude-based analysis stage in `modules/`; second ecosystem (PyPI) | ⬜ |
+| 9 | Prospective labeling | Scheduled ingest + cache retention; nightly join against new `MAL-` records to grow the eval set | 🟡 hourly `kitsunox collect` + retention running since 2026-10-27 (launchd on the laptop; a systemd timer on the VM since 2026-10-29, new chain), with Stages 1–2 and tarball capture since the evening of 2026-10-27; datasets are rebuilt by hand with `eval build` |
+| 10 | Sandbox (optional) | Design doc and review **first**; then dynamic analysis of install hooks, no network or capture proxy | 🟡 Design accepted 2026-10-30 ([0012](decisions/0012-sandbox-design.md)); runner replaced by OpenSSF package-analysis rel-38, run by the owner on an analysis VM ([0014](decisions/0014-stage5-uses-ossf-package-analysis.md), [stages/sandbox.md](stages/sandbox.md)). Kitsunox exports tarballs (with offline dependency bundles) for an **airgapped** VM and imports results as hostile data; `kitsunox sandbox`, in `collect` when `KITSUNOX_SANDBOX_RESULTS` is set, and in the reports. Not yet run on real packages |
+| 11 | Extras (optional) | Local web viewer for reports; Claude-based analysis stage in `modules/`; second ecosystem (PyPI) | 🟡 Viewer done 2026-10-30 (`kitsunox view`, [viewer.md](viewer.md)): stdlib, read-only, loopback, no JavaScript, strict CSP; adversarially reviewed. Claude stage and PyPI not started |
 
 The eval harness (Phase 3) deliberately comes before any detection stage, so every rule lands
 with numbers attached.

@@ -15,6 +15,7 @@ import threading
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from typing import Final, override
 
 from pydantic import Field
 
@@ -27,7 +28,7 @@ from kitsunox.core.models import (
     Severity,
     StageDecision,
 )
-from kitsunox.core.rules import RuleContext
+from kitsunox.core.rules import RuleContext, rules_fingerprint
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.install import install_entry_files
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
@@ -43,13 +44,23 @@ from kitsunox.stages.ast import CapabilityCache, code_change
 from kitsunox.stages.code import CODE_RULES
 from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
 from kitsunox.stages.repo import compare
-from kitsunox.stages.review import CORRELATION_RULES, NPM
+from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import MAX_ARTIFACT_BYTES, ContentCache, new_contents
 from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import ArtifactTree, extract_zip
-from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
+from kitsunox.util.http import (
+    BlobStore,
+    FetchedResponse,
+    FetchError,
+    FetchMode,
+    HttpFetcher,
+    Snapshot,
+)
 
 Tree = Mapping[str, bytes]
+# Prefix of the `notes` that say what a result was computed with (rule fingerprint, watchlist,
+# lookup counts), as opposed to the ones that count samples something went wrong for.
+ABOUT: Final = "about: "
 
 
 def strip_to_package(tree: Tree) -> dict[str, bytes]:
@@ -171,6 +182,7 @@ class StaticRules:
                 base if change.previous else None,
                 self.capabilities,
                 install_entry_files,
+                change.previous.ref.version if change.previous else None,
             )
             stage3 = tuple(f for rule in CODE_RULES for f in rule.evaluate_code(code))
         return found.model_copy(update={"stage2": stage2, "stage3": stage3, "package": new})
@@ -237,6 +249,26 @@ class Pipeline(StaticRules):
         return found.stage1_flagged or found.stage2_flagged or found.stage3_flagged
 
 
+class PinnedFetcher(HttpFetcher):
+    """A fetcher that treats every response as immutable: the first successful response to a
+    request is kept in its immutable index and served to every later evaluation, even for
+    documents that change (packuments). That makes an evaluation re-run offline and stable,
+    as of the first run; a failed request (and a 404, which the index doesn't keep) is asked
+    again."""
+
+    @override
+    def needs_network(
+        self, url: str, *, headers: Mapping[str, str] | None = None, immutable: bool = False
+    ) -> bool:
+        return super().needs_network(url, headers=headers, immutable=True)
+
+    @override
+    def get(
+        self, url: str, *, headers: Mapping[str, str] | None = None, immutable: bool = False
+    ) -> FetchedResponse:
+        return super().get(url, headers=headers, immutable=True)
+
+
 def _as_of(change: Change) -> datetime:
     return change.new.publish.published_at or datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -264,7 +296,16 @@ class Correlated(PipelineWithCode):
     versions as in `pipeline+3`; Stage 4 runs on every version, as live. Known-malware records
     count only if published by the release's publish time (later labels don't leak in), and
     the repository comparison runs for the versions `wants_repo` picks, with repository data
-    cached under `data/eval/repos/`."""
+    cached under `data/eval/repos/`. Dependency records come from the registry with the request
+    a live run sends, one per name and no limits, pinned under `data/eval/dependencies/`
+    (`PinnedFetcher`): the first evaluation to fetch a packument fixes it for every later one,
+    so a re-run is offline and doesn't drift as packages are taken down. Only versions
+    published by the sample's publish time count. Watched means on the newest watchlist, the
+    one DataDog samples were imported with.
+
+    `notes` also records (under `ABOUT`) what a result depends on besides the dataset: the
+    correlation rules' fingerprint, the watchlist and label set ids, and the dependency lookup
+    counts (looked up, found, missing, failed)."""
 
     name = "pipeline+4"
 
@@ -283,6 +324,22 @@ class Correlated(PipelineWithCode):
         )
         self.locator = NpmLocator()
         self.refs: dict[GitHubRepo, Mapping[str, str] | None] = {}
+        watchlist_id = data.watchlists.latest_id(NPM)
+        self.watchlist = data.watchlists.load(NPM, watchlist_id) if watchlist_id else None
+        root = data.root / "eval" / "dependencies"
+        self.dependencies = NpmDependencyLookup(
+            PinnedFetcher(
+                store=BlobStore(root / "blobs"),
+                snapshot=Snapshot(),
+                mode=FetchMode.RECORD,
+                immutable_index=root / "http-immutable",
+            ),
+            cap=None,
+            per_release=None,
+        )
+        self.notes[f"{ABOUT}correlation rules {rules_fingerprint(CORRELATION_RULES)}"] = 1
+        self.notes[f"{ABOUT}watchlist {watchlist_id}"] = 1
+        self.notes[f"{ABOUT}labels {labels_id}"] = 1
 
     def needs_files(self, found: SampleFindings) -> bool:
         return found.routed
@@ -312,5 +369,23 @@ class Correlated(PipelineWithCode):
                 )
             except FetchError as exc:
                 self._note(f"repo: {type(exc).__name__} (no comparison)")
-        ctx = CorrelationContext(as_of=_as_of(change), known_bad=self.labels, repo=repo)
-        return correlate(candidate, ctx, CORRELATION_RULES)
+        ctx = CorrelationContext(
+            as_of=_as_of(change),
+            known_bad=self.labels,
+            repo=repo,
+            watchlist=self.watchlist,
+            dependencies=self.dependencies,
+        )
+        result = correlate(candidate, ctx, CORRELATION_RULES)
+        self._dependency_notes()
+        return result
+
+    def _dependency_notes(self) -> None:
+        """The lookup counts so far, under the notes lock: the last sample to finish writes the
+        final ones, since every lookup finished before its own sample did."""
+        with self._lock:
+            stats = self.dependencies.stats()
+            for key in ("looked_up", "found", "missing", "failed"):
+                count = stats[key]
+                if isinstance(count, int):
+                    self.notes[f"{ABOUT}dependency lookups {key}"] = count

@@ -1,0 +1,113 @@
+/* Kitsunox local viewer. Served as the only stylesheet (CSP: style-src 'self'). */
+
+:root {
+  color-scheme: light dark;
+  --fg: #1d1f21;
+  --bg: #fdfdfc;
+  --muted: #5c6066;
+  --line: #d7d9dc;
+  --panel: #f3f4f5;
+  --link: #0b57a4;
+  --critical: #8a0f1e;
+  --high: #b3261e;
+  --medium: #8a5a00;
+  --low: #3d6b1f;
+  --info: #4d5257;
+  --flag-bg: #fff1c2;
+  --error-bg: #fde8e7;
+  --warning-bg: #fff6dd;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e6e3;
+    --bg: #17181a;
+    --muted: #a3a7ad;
+    --line: #3a3d42;
+    --panel: #222427;
+    --link: #8ab8ff;
+    --critical: #ff8a95;
+    --high: #ff9b8f;
+    --medium: #f0c060;
+    --low: #9fd27a;
+    --info: #b8bcc2;
+    --flag-bg: #4a3d00;
+    --error-bg: #4a1e1c;
+    --warning-bg: #3d3210;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header, main, footer { max-width: 80rem; margin: 0 auto; padding: 0 1.25rem; }
+header { border-bottom: 1px solid var(--line); padding-top: 0.75rem; padding-bottom: 0.75rem; }
+header a { margin-right: 1rem; }
+.brand { font-weight: 700; }
+footer { color: var(--muted); font-size: 0.875rem; border-top: 1px solid var(--line); margin-top: 3rem; }
+
+a { color: var(--link); }
+a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+h1 { font-size: 1.6rem; overflow-wrap: anywhere; }
+h2 { font-size: 1.25rem; margin-top: 2rem; }
+h3 { font-size: 1.1rem; margin-top: 1.75rem; border-bottom: 1px solid var(--line); }
+h4 { font-size: 1rem; margin: 0 0 0.25rem; }
+
+.crumbs { list-style: none; padding: 0; margin: 1rem 0 0; display: flex; flex-wrap: wrap; color: var(--muted); }
+.crumbs li + li::before { content: "/"; padding: 0 0.5rem; }
+
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9375rem; }
+caption { text-align: left; font-weight: 600; padding-bottom: 0.25rem; }
+th, td { border-bottom: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+thead th { border-bottom: 2px solid var(--line); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.facts th { width: 11rem; font-weight: 600; }
+td.bad { color: var(--high); }
+
+ul.flat { list-style: none; margin: 0; padding: 0; }
+
+code, pre { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.875rem; }
+pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32rem;
+}
+
+.sev { font-weight: 600; text-transform: uppercase; font-size: 0.8125rem; letter-spacing: 0.02em; }
+.sev-critical { color: var(--critical); }
+.sev-high { color: var(--high); }
+.sev-medium { color: var(--medium); }
+.sev-low { color: var(--low); }
+.sev-info { color: var(--info); }
+
+.note, .meta, .where { color: var(--muted); font-size: 0.875rem; }
+.where { margin: 0.5rem 0 0.25rem; overflow-wrap: anywhere; }
+.label { font-weight: 600; margin: 0.25rem 0; font-size: 0.875rem; }
+.flag { background: var(--flag-bg); color: var(--fg); font-size: 0.8125rem; padding: 0 0.25rem; margin-left: 0.25rem; border-radius: 3px; }
+.unlinked { overflow-wrap: anywhere; }
+
+.finding { border-left: 3px solid var(--line); padding: 0.25rem 0 0.25rem 0.9rem; margin: 1.25rem 0; }
+.evidence { padding-left: 1.1rem; }
+.change { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 50rem) { .change { grid-template-columns: 1fr; } }
+
+.error, .warning { border-radius: 4px; padding: 0.25rem 1rem; margin: 1rem 0; border: 1px solid var(--line); }
+.error { background: var(--error-bg); }
+.warning { background: var(--warning-bg); }
+
+.pager { list-style: none; padding: 0; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+
+details { margin: 1.5rem 0; }
+summary { cursor: pointer; }

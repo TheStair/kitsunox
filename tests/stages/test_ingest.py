@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kitsunox.core.interfaces import ChangeStub, DownloadCounts, PackageChanges
+from kitsunox.core.interfaces import DIFF_BASE, ChangeStub, DownloadCounts, PackageChanges
 from kitsunox.core.models import (
     ArtifactRef,
     Change,
@@ -61,7 +61,9 @@ class FakeEcosystem:
     def list_changes(self, since: int, until: int) -> list[ChangeStub]:
         return [ChangeStub(name=n, cursor=i) for i, n in enumerate(sorted(self.behavior))]
 
-    def build_changes(self, stub: ChangeStub, window: Window) -> PackageChanges:
+    def build_changes(
+        self, stub: ChangeStub, window: Window, *, diff_base: int = DIFF_BASE
+    ) -> PackageChanges:
         outcome = self.behavior[stub.name]
         if isinstance(outcome, Exception):
             raise outcome

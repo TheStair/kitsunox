@@ -27,16 +27,45 @@ uv run kitsunox ingest replay 20261027T184048Z-npm
 # Chained: continue from the previous run (window starts 15 min before it ended)
 uv run kitsunox ingest record --chain
 
-# Unattended: what the hourly launchd agent runs (watchlist/labels refresh, chained run, prune)
+# Unattended: what the hourly agent (systemd or launchd) runs (watchlist/labels refresh, chained run, prune)
 uv run kitsunox collect
 uv run kitsunox data prune --keep-days 7    # --keep-repo-days N: GitHub archives (Stage 4) sooner
 ```
 
-**Scheduling.** Install the agent with:
+**Scheduling.** Collection runs on a Linux VM since 2026-10-29, as a systemd user timer:
+
+```sh
+uv run kitsunox schedule systemd --keep-repo-days 4   # writes ~/.config/systemd/user/kitsunox-collect.{service,timer}
+systemctl --user daemon-reload
+systemctl --user enable --now kitsunox-collect.timer
+sudo loginctl enable-linger "$USER"                     # keep ticking while logged out
+systemctl --user start --no-block kitsunox-collect.service   # a tick now, without waiting
+```
+
+The service is `Type=oneshot` at low CPU and I/O priority. The timer fires `--interval-minutes`
+(60) after the previous tick *started*. A tick that runs longer is never started twice; the next
+one follows as soon as it ends, and `DataDir.lock()` guards the data directory regardless.
+Remove it with `systemctl --user disable --now kitsunox-collect.timer`. Check it with
+`systemctl --user list-timers` and `journalctl --user -u kitsunox-collect`.
+
+On macOS (the laptop, until 2026-10-29), the same job is a launchd agent:
 `uv run kitsunox schedule plist > ~/Library/LaunchAgents/local.kitsunox.collect.plist` and
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.kitsunox.collect.plist`. Remove
-it with `launchctl bootout gui/$(id -u)/local.kitsunox.collect`. Its log is
-`data/logs/collect.log`. Design: [0006](../decisions/0006-scheduled-collection-and-retention.md).
+it with `launchctl bootout gui/$(id -u)/local.kitsunox.collect`.
+
+Either way, the log is `data/logs/collect.log`. Design:
+[0006](../decisions/0006-scheduled-collection-and-retention.md).
+
+**Run updates.** If `KITSUNOX_DISCORD_WEBHOOK` is set (in `.env` or the environment), the first
+tick of each UTC day posts a summary of the day before to that Discord channel: ticks (crashed,
+with failed steps, offline), runs and versions, how many versions and packages to review by
+severity (a version two overlapping runs reported counts once), the top packages, chain gaps and
+network skips. Each tick appends a line to `data/state/ticks.jsonl` for it;
+`data/state/notify.json` remembers the last day posted. A crash is posted right away, at most
+once a day. `--notify-each-tick` also posts the old brief update after every tick;
+`--no-notify` turns posting off. A skipped tick posts nothing. Package names are escaped and
+mentions disabled, and the URL is never logged. See
+[0011](../decisions/0011-run-notifications.md).
 
 Output lives in `data/runs/<run_id>/`:
 
@@ -83,6 +112,16 @@ sequenceDiagram
    than it, so a backport like 1.4.1 published after 2.0.0 is diffed against 1.4.0. If none
    qualifies, the most recently published earlier version is used. No earlier version means a
    brand-new package (threat-model shape B).
+   **A partial publish is passed over** (diff base 2, since 2026-10-30): a candidate with under
+   a quarter of the files (`dist.fileCount`; else `dist.unpackedSize`) of both the new version
+   and the release before it, at most 3 in a row (`Packument.previous_version`). The case:
+   `@nutui/nutui-react-taro@3.0.24-cpp-beta.3` shipped 166 of 5,215 files, so `beta.4` looked
+   as if it had added the build, a postinstall and a dependency that `beta.2` already had
+   (score 20, rank 1 of the first VM day). A release only smaller than the new one is kept, so
+   a release can't push its own diff base back by being large (to an older version that
+   already had its install script, say). The rule is recorded per run
+   (`RunManifest.diff_base`; runs recorded before it read as 1) and a replay uses the run's.
+   On the first VM day it changed the diff base of 41 of 101,232 updates (13 reported).
 6. **Popularity** (existing packages only; brand-new packages have no history). Three modes:
    - `watchlist` (default): membership in the newest watchlist built no later than `as_of`. The
      run records its id and SHA-256, and replay fails if the file has changed. No network.

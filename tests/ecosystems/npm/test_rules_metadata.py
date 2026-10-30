@@ -70,6 +70,24 @@ def test_install_hook_added_changed_and_new_package() -> None:
     assert rule.evaluate(change(old, old), CTX) == []
 
 
+def test_a_command_that_changed_only_its_version_is_not_a_changed_hook() -> None:
+    """`@pulumi/*` generate `node scripts/install-pulumi-plugin.js resource command <version>`:
+    every release changed the command. The file it runs is compared in Stage 3."""
+    rule = InstallHook()
+
+    def hook(version: str, command: str) -> VersionSnapshot:
+        return snap(version, {"scripts": {"install": command}})
+
+    generated = "node scripts/install-pulumi-plugin.js resource command {}"
+    old = hook("1.3.0-alpha.1793269269", generated.format("1.3.0-alpha.1793269269"))
+    new = hook("1.3.0", generated.format("1.3.0"))
+    assert rule.evaluate(change(new, old), CTX) == []
+    swapped = hook("1.3.0", "node other.js 1.3.0")  # a different script, not just the version
+    assert len(rule.evaluate(change(swapped, old), CTX)) == 1
+    unversioned = hook("1.0.1", "node b.js")  # no version in the old command
+    assert len(rule.evaluate(change(unversioned, hook("1.0.0", "node a.js")), CTX)) == 1
+
+
 def test_long_snippets_are_truncated() -> None:
     payload = "x" * 5000
     (finding,) = InstallHook().evaluate(change(snap("1", {"scripts": {"install": payload}})), CTX)
@@ -198,6 +216,9 @@ def test_triage_forward_policy() -> None:
 
 def test_code_routes_send_quiet_changes_to_stage2() -> None:
     assert code_route(change(snap("1"))) == "new package"
+    hooked = change(snap("2", {"scripts": {"postinstall": "node i.js"}}), snap("1"))
+    assert code_route(hooked) == "install hook"  # Stage 3 diffs what the hook runs
+    assert code_route(change(snap("2", {"scripts": {"postinstall": " "}}), snap("1"))) is None
     grown = change(snap("2", size=1000 + MIN_GROWTH_BYTES), snap("1"))
     assert code_route(grown) == f"unpacked size grew by {MIN_GROWTH_BYTES} bytes"
     assert code_route(change(snap("2", size=1000 + MIN_GROWTH_BYTES - 1), snap("1"))) is None

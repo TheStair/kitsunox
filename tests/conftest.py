@@ -12,7 +12,7 @@ import tarfile
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,8 @@ import httpx
 import pytest
 from hypothesis import settings
 
-from kitsunox.core.run import DataDir
+from kitsunox.core.models import Severity, Window
+from kitsunox.core.run import DataDir, RunManifest
 from kitsunox.core.watchlist import WatchEntry, Watchlist
 from kitsunox.ecosystems.npm.registry import (
     DOWNLOADS_URL,
@@ -28,6 +29,7 @@ from kitsunox.ecosystems.npm.registry import (
     REGISTRY_URL,
     REPLICATE_URL,
 )
+from kitsunox.reporting.report import Links, Report, ReportEntry, ScoreTerm
 from kitsunox.util.http import HttpFetcher
 
 # Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
@@ -166,3 +168,86 @@ def save_watchlist(data: DataDir, built_at: datetime) -> str:
     )
     data.watchlists.save(watchlist.ecosystem, watchlist.id, watchlist)
     return watchlist.id
+
+
+REPORT_AS_OF = datetime(2026, 10, 29, 21, 5, tzinfo=UTC)
+
+
+def report_entry(
+    rank: int,
+    name: str,
+    version: str,
+    score: float,
+    severity: Severity,
+    *rules: str,
+    published_at: datetime | None = REPORT_AS_OF,
+    watched: bool = False,
+) -> ReportEntry:
+    """A minimal report entry; `rules` become its score terms."""
+    return ReportEntry(
+        rank=rank,
+        ref=f"npm:{name}@{version}",
+        name=name,
+        version=version,
+        previous_version=None,
+        published_at=published_at,
+        publisher=None,
+        watched=watched,
+        downloads=None,
+        downloads_period_days=None,
+        score=score,
+        reason="r",
+        severity=severity,
+        score_terms=tuple(
+            ScoreTerm(rule_id=r, severity=severity, weight=1, count=1) for r in rules
+        ),
+        findings=(),
+        stages=(),
+        links=Links(registry="https://www.npmjs.com/", files="https://www.npmjs.com/"),
+    )
+
+
+def make_report(
+    run_id: str,
+    *entries: ReportEntry,
+    as_of: datetime = REPORT_AS_OF,
+    ecosystem: str = "npm",
+    correlation: dict[str, object] | None = None,
+) -> Report:
+    by_severity: dict[str, int] = {}
+    for e in entries:
+        by_severity[e.severity.value] = by_severity.get(e.severity.value, 0) + 1
+    return Report(
+        run_id=run_id,
+        ecosystem=ecosystem,
+        as_of=as_of,
+        window_start=as_of - timedelta(hours=1),
+        window_end=as_of,
+        versions=4812,
+        reported=len(entries),
+        by_severity=dict(sorted(by_severity.items())),
+        correlation=correlation or {},
+        entries=entries,
+    )
+
+
+def run_manifest(
+    run_id: str = "20261029T210500Z-npm", *, as_of: datetime = REPORT_AS_OF, **extra: object
+) -> RunManifest:
+    fields: dict[str, object] = {
+        "run_id": run_id,
+        "tool_version": "0",
+        "ecosystem": "npm",
+        "as_of": as_of,
+        "window": Window(start=as_of - timedelta(hours=1), end=as_of),
+        "cursor_since": 0,
+        "cursor_until": 1,
+        "snapshot_sha256": "0",
+        "changes_sha256": "0",
+        "change_count": 4812,
+        "skipped_count": 0,
+        "packages_seen": 4000,
+        "chained_from": "20261029T200500Z-npm",
+    }
+    fields.update(extra)
+    return RunManifest.model_validate(fields)
