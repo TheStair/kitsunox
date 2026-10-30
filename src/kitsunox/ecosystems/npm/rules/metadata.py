@@ -44,9 +44,10 @@ def is_registry_spec(spec: str) -> bool:
     """True for semver ranges, dist-tags and `npm:` aliases; False for anything npm fetches
     from elsewhere (`git+https:`, `http(s):`, `file:`, `github:`, or `user/repo` shorthand)."""
     spec = spec.strip()
-    if spec.startswith(("npm:", "workspace:")):
+    if spec.startswith(("npm:", "workspace:", "catalog:")):
         # `workspace:` is a monorepo publish that wasn't rewritten: it fails to install, but
         # fetches nothing from outside the registry (seen 2026-10-27, `@synap-core/api-types`).
+        # So is pnpm's `catalog:` (2026-10-30, `postflareai`).
         return True
     return not _PROTOCOL.match(spec) and "/" not in spec
 

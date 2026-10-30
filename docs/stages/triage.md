@@ -90,7 +90,8 @@ package (`https://registry.npmjs.org/<name>/-/<file>.tgz`) is the registry, and 
 (`file:`, `link:`) is LOW, weight 1, since it fetches nothing. Its `vm-day1` malicious samples
 all used `github:` (71) or `http(s):` (17) URLs; on the live queue the two cases were 22
 reports (`@feedmepos/mf-connect` pins registry tarballs; `@atairo/qixi` shipped
-`file:../../frontend/...`).
+`file:../../frontend/...`). pnpm's `catalog:` left unrewritten is a registry spec, like
+`workspace:`: it fails to install and fetches nothing (`postflareai`).
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10

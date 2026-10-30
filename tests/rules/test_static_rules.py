@@ -56,6 +56,7 @@ def test_rule_fires(text: str, rule: str) -> None:
     [
         "get('http://127.0.0.1:3000/')",  # loopback
         "get('http://10.0.0.1/')",  # private
+        "isOnline([`https://1.1.1.1`, `https://8.8.8.8`])",  # public DNS resolvers (v2)
         "var g = Function('return this')();",  # global-object polyfill
         'new Function("return this")()',
         "obj.eval(x); retrieval(x)",  # method / substring, not the global eval

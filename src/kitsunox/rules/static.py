@@ -251,10 +251,20 @@ class EnvHarvest(RegexRule):
     )
 
 
+# Public DNS resolvers, reached by IP in connectivity checks (`apify-cli`: `isOnline` tries
+# `https://1.1.1.1` and `https://8.8.8.8`). 29 of the 56 MEDIUM `hardcoded-ip` findings on the
+# live queue (2026-10-30), none of the 159 in `vm-day1`'s malicious samples.
+PUBLIC_RESOLVERS: Final = frozenset(
+    {"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112", "208.67.222.222"}
+)
+
+
 class HardcodedIp(RegexRule):
-    """A URL to a raw public IPv4 address: common for second-stage downloads and C2."""
+    """A URL to a raw public IPv4 address: common for second-stage downloads and C2. v2: not a
+    well-known public DNS resolver (`PUBLIC_RESOLVERS`)."""
 
     id = "static.hardcoded-ip"
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"
@@ -265,7 +275,7 @@ class HardcodedIp(RegexRule):
             address = ipaddress.IPv4Address(match.group(1))
         except ValueError:
             return False
-        return address.is_global
+        return address.is_global and str(address) not in PUBLIC_RESOLVERS
 
 
 class EncodedBlob(RegexRule):

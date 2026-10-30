@@ -39,6 +39,9 @@ versions were mostly scored by older rules, which the queue never re-scores.
 - **`npm.dependency.non-registry` v2:** a registry tarball URL of the same package is the
   registry; a `file:`/`link:` path is LOW (fetches nothing). Malicious samples all used
   `github:` or `http(s):`. With the docs change: 876 -> about 845.
+- **`static.hardcoded-ip` v2** skips public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...): 29 of
+  the 56 MEDIUM live findings were connectivity checks (`apify-cli`), none of the 159 in
+  malicious samples. **`catalog:`** dependencies count as registry specs, like `workspace:`.
 - **`npm.install-script-changed` v2:** a file whose only change is its line endings is
   unchanged (`@tera-system/pro`: CRLF to LF, reported "+0 -0 lines").
 - **Stage 4 speed:** `compare_trees` hashed every file of the repository on every comparison

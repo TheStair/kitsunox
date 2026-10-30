@@ -102,6 +102,7 @@ def test_long_snippets_are_truncated() -> None:
         ("latest", False),
         ("npm:other@^1", False),
         ("workspace:*", False),
+        ("catalog:", False),  # pnpm's catalog, not rewritten: fails, fetches nothing
         ("*", False),
         ("git+https://github.com/x/y.git", True),
         ("github:x/y", True),
