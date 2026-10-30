@@ -125,6 +125,7 @@ class GitHub:
             strip_components=1,  # `<repo>-<commit>/`
             limits=self.limits,
             include=lambda path: path.startswith(prefix),
+            hidden_entries=False,  # GitHub writes these archives; nothing is hidden in them
         )
         if not prefix:
             return tree

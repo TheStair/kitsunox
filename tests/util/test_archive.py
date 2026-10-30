@@ -160,6 +160,10 @@ def test_entries_hidden_from_strict_readers_are_extracted_and_flagged(separator:
     assert sorted(tree) == ["evil.js", "index.js"]
     assert tree["evil.js"] == b"payload"
     assert any("strict tar reader" in a for a in tree.anomalies)
+    # A source that never hides entries skips the strict pass: same files, no such note.
+    lenient = extract_tar_gz(gzip.compress(raw), strip_components=1, hidden_entries=False)
+    assert sorted(lenient) == ["evil.js", "index.js"]
+    assert not any("strict tar reader" in a for a in lenient.anomalies)
 
 
 def test_trailing_non_zero_bytes_are_flagged() -> None:

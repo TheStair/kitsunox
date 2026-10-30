@@ -86,15 +86,19 @@ def extract_tar_gz(
     strip_components: int = 0,
     limits: ExtractLimits = DEFAULT_LIMITS,
     include: Callable[[str], bool] | None = None,
+    hidden_entries: bool = True,
 ) -> ArtifactTree:
     """Extract a gzip-compressed tar archive into memory. `strip_components` drops leading path
     segments (npm tarballs nest everything under `package/`). `include` selects regular files
-    by their safe path; the rest are not read (a monorepo archive, one package's directory)."""
+    by their safe path; the rest are not read (a monorepo archive, one package's directory).
+    `hidden_entries` reads the archive a second time, strictly, to report entries only a lenient
+    reader sees; a source that never hides any (GitHub's own archives) can skip that pass, a
+    fifth of Stage 4's time on 2026-10-30."""
     if len(data) > limits.max_compressed_bytes:
         raise ArchiveLimitError(f"compressed size {len(data)} exceeds limit", "compressed")
     raw = _gunzip_limited(data, limits)
 
-    strict_count = _strict_member_count(raw)
+    strict_count = _strict_member_count(raw) if hidden_entries else None
     files: dict[str, bytes] = {}
     modes: dict[str, int] = {}
     skipped: list[SkippedEntry] = []
@@ -133,7 +137,7 @@ def extract_tar_gz(
         raise ArchiveError(f"malformed tar: {exc}") from exc
 
     anomalies = []
-    if strict_count != lenient_count:
+    if strict_count is not None and strict_count != lenient_count:
         anomalies.append(
             f"{lenient_count - strict_count} entries follow an end-of-archive marker or invalid "
             "header (a strict tar reader would not see them)"

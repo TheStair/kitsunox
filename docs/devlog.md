@@ -47,6 +47,12 @@ versions were mostly scored by older rules, which the queue never re-scores.
 - **Stage 4 speed:** `compare_trees` hashed every file of the repository on every comparison
   to explain missing files; it now does so only when a missing file needs it, and `built_by`
   no longer copies the repository's contents. Stage 4 had grown to 16-40 minutes a tick.
+  That wasn't the main cost: a sampling profile of one tick's Stage 4, replayed offline, put
+  ~85% in extracting GitHub archives (pure-Python `tarfile` under the GIL, three extraction
+  slots), with 373 distinct archives for 404 comparisons, so caching would not help. GitHub
+  archives now skip the strict second tar pass that looks for hidden entries (about 16%
+  faster on real archives); npm tarballs keep it. Extracting in worker processes is the
+  larger fix, left for the owner's decision.
 
 ### Rejected or deferred
 - **`dynamic-code` alone always LOW:** lost the 35 `eval` samples.
