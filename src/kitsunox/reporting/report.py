@@ -28,7 +28,7 @@ from pydantic import Field
 from kitsunox.core.models import Candidate, Finding, Persisted, Record, Severity
 from kitsunox.core.run import RunManifest
 from kitsunox.sandbox.results import SANDBOX_INFO
-from kitsunox.stages.correlate import CORRELATE_INFO, CandidateFile
+from kitsunox.stages.correlate import CORRELATE_INFO, LOW_CAP, CandidateFile, score
 from kitsunox.stages.correlate import STAGE_ID as CORRELATE_STAGE
 from kitsunox.stages.repo import ReleaseSource
 from kitsunox.stages.sandbox import SANDBOX_JSONL
@@ -202,12 +202,22 @@ def write_report(run_dir: Path, report: Report) -> Path:
     return path
 
 
+def score_rule(entry: ReportEntry) -> str:
+    """How `entry.score` adds up, in words: the LOW cap is named when it applied (a report
+    written before the cap has the plain sum)."""
+    plain = "Each rule counts once, at its largest weight"
+    if sum(t.weight for t in entry.score_terms) > entry.score:
+        return f"{plain}; rules with only LOW findings together count at most {LOW_CAP:g}."
+    return f"{plain}."
+
+
 def _score(candidate: Candidate) -> float:
-    return sum(t.weight for t in score_terms(candidate.findings))
+    return score(candidate.findings)
 
 
 def score_terms(findings: Iterable[Finding]) -> tuple[ScoreTerm, ...]:
-    """How the score adds up: each rule once, at its largest weight (as `stages.correlate`)."""
+    """How the score adds up: each rule once, at its largest weight (as `stages.correlate`,
+    which also caps the LOW rules' total at `LOW_CAP`)."""
     terms: dict[str, ScoreTerm] = {}
     for f in findings:
         if f.severity == Severity.INFO:

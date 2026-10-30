@@ -147,10 +147,15 @@ def built_by(
     named = sorted(files_named(command, package))
     if not named:
         return None
-    contents = {_content(data) for data in repo.values()}
-    if any(_content(package[path]) not in contents for path in named):
-        return None
     shipped = {_content(package[path]) for path in named}
+    found: set[bytes] = set()
+    for data in repo.values():  # no copy of the whole repository: monorepos are large
+        if (content := _content(data)) in shipped:
+            found.add(content)
+            if len(found) == len(shipped):
+                break
+    if found != shipped:
+        return None
     parts = [p.strip() for p in (command.split(version) if version else [command])]
     parts = [p for p in parts if p] or [command.strip()]
     for path in sorted(repo):

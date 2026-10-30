@@ -73,7 +73,7 @@ is the malicious set.
 
 | Rule | Fires when | Severity | Benign (updates / new) | Malicious (updates / new) |
 |---|---|---|---|---|
-| `code.capability-gained` (v2) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code`, or `network` together with `process`, `env-all` or `dynamic-code` | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
+| `code.capability-gained` (v3) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 
 New packages get no `capability-gained` finding: with no previous version everything is
@@ -88,6 +88,16 @@ Apps that start reading `process.env` were the commonest MEDIUM-only report on t
 days (about 170 of 396), and on `vm-day1` all 35 malicious samples reported through this rule
 alone had gained `dynamic-code`. `env-all` with `network` is still MEDIUM.
 
+`code.capability-gained` v3 (2026-10-30): gaining `dynamic-code` alone is MEDIUM only through
+`eval` (`eval(x)`, `globalThis["eval"](x)`); `Function`, `new Function` and `vm` alone are LOW.
+Of the 90 live-queue reports this rule made alone through `dynamic-code`, 85 were `Function`
+or `vm` (`new Function(body)` in template and test helpers, `import vm` for expression
+sandboxes). All 35 `vm-day1` malicious samples reported through it alone were injected `eval(`
+payloads (`autotel-*`, `awaitly-*`), so none is lost. `Function` or `vm` together with
+`network` stays MEDIUM. Extractor v3 keeps up to three uses per capability *and detail* in a
+file, so a file's first three `new Function(x)` calls no longer crowd out a later `eval(x)`,
+and the evidence shows `eval` first.
+
 **Inline install code** (2026-10-30): the code a hook passes to `node -e`, `--eval`, `-p` or
 `--print` is profiled as `package.json#scripts.<hook>.js`
 (`ecosystems.npm.install.install_sources`), so the install-code rules read it. Before, an
@@ -99,7 +109,8 @@ hooks name with the previous version's, byte for byte, and puts the changed line
 evidence as a unified diff (one line of context, 40 lines and 200 characters a line at most;
 reports render it as a `diff` block). It fires when such a file changed or is newly run. A file
 whose only change is its own version string (`workerd`'s `install.js` downloads
-`${pkg}@<version>`) is unchanged. A file over 2,000 lines is reported changed without a diff:
+`${pkg}@<version>`), or its line endings (v2: `@tera-system/pro` 0.2.33 converted CRLF to LF
+and was reported "+0 -0 lines"), is unchanged. A file over 2,000 lines is reported changed without a diff:
 `difflib` is quadratic on lines that repeat without being junked (20,000 lines cycling 150
 values took 45 s). Each file is kept up to 256 KiB for the comparison. Stage 1 forwards every
 update with an install hook so this rule sees them. On the first VM day it fired on 47 of the

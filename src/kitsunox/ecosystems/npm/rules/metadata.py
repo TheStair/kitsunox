@@ -132,12 +132,27 @@ class InstallHook(BaseRule):
         return findings
 
 
+# The registry's own tarball URL for a version of the named package: npm fetches it from the
+# registry like a version range would.
+_REGISTRY_TARBALL: Final = re.compile(
+    r"https://registry\.npmjs\.org/(?P<name>(?:@[^/]+/)?[^/]+)/-/[^/]+\.tgz"
+)
+_LOCAL: Final = ("file:", "link:")
+
+
 class NonRegistryDependency(BaseRule):
     """A new dependency resolved from a URL, git repository, GitHub shorthand or local path
     instead of the registry: it bypasses registry-side malware takedowns and is often used to
-    pull a second stage."""
+    pull a second stage.
+
+    v2 (2026-10-30): the registry's own tarball URL for the same package is the registry
+    (`@feedmepos/mf-connect` pins `https://registry.npmjs.org/@feedmepos/mf-upselling/-/...`).
+    A local path (`file:`, `link:`) fetches nothing and is LOW, weight 1: it fails to install
+    outside its monorepo (`@atairo/qixi`: `file:../../frontend/...`). On `vm-day1` the rule's
+    malicious samples all used `github:` or `http(s):` URLs."""
 
     id = "npm.dependency.non-registry"
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -145,14 +160,24 @@ class NonRegistryDependency(BaseRule):
     def evaluate(self, change: Change, ctx: RuleContext) -> Sequence[Finding]:
         new = runtime_dependencies(change.new.manifest)
         old = runtime_dependencies(change.previous.manifest) if change.previous else {}
-        return [
-            self.finding(
-                f"Dependency `{name}` comes from `{snippet(spec)}`.",
-                _field(f"dependencies.{name}", after=spec, before=old.get(name)),
+        findings = []
+        for name, spec in sorted(new.items()):
+            if old.get(name) == spec or is_registry_spec(spec):
+                continue
+            tarball = _REGISTRY_TARBALL.fullmatch(spec.strip())
+            if tarball is not None and tarball["name"] == name:
+                continue
+            local = spec.strip().startswith(_LOCAL)
+            findings.append(
+                self.finding(
+                    f"Dependency `{name}` comes from `{snippet(spec)}`."
+                    + (" A local path: nothing is fetched." if local else ""),
+                    _field(f"dependencies.{name}", after=spec, before=old.get(name)),
+                    severity=Severity.LOW if local else None,
+                    weight=1.0 if local else None,
+                )
             )
-            for name, spec in sorted(new.items())
-            if old.get(name) != spec and not is_registry_spec(spec)
-        ]
+        return findings
 
 
 class DependencyAdded(BaseRule):

@@ -22,7 +22,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
-from kitsunox.lang.javascript import Capability
+from kitsunox.lang.javascript import Capability, Use
 from kitsunox.stages.ast import CodeChange, Profile
 
 C = Capability
@@ -32,15 +32,29 @@ C = Capability
 # reports: apps that start reading `process.env`), and on `vm-day1` none of the 35 malicious
 # samples reported through this rule alone had gained it without `dynamic-code`. Gaining
 # `env-all` together with `network` stays MEDIUM (`WITH_NETWORK`).
-STRONG: Final = frozenset({C.DYNAMIC_CODE})
+#
+# v3 (2026-10-30): `dynamic-code` alone is MEDIUM only through `eval`. `Function` and `vm` alone
+# are LOW: on the live queue they were 85 of the 90 reports this rule made alone through
+# `dynamic-code` (`new Function(body)` in template and test helpers, `import vm` for expression
+# sandboxes), while all 35 `vm-day1` malicious samples reported through it alone were injected
+# `eval(` payloads (`autotel-*`, `awaitly-*`). With `network` they stay MEDIUM.
 WITH_NETWORK: Final = frozenset({C.ENV_ALL, C.PROCESS, C.DYNAMIC_CODE})
 EVIDENCE_PER_CAPABILITY: Final = 2
+
+
+def evaluates(use: Use) -> bool:
+    """`eval(x)`, or `eval` reached through the global object (`globalThis["eval"]`)."""
+    return use.capability is C.DYNAMIC_CODE and (
+        use.detail == "eval" or use.detail.endswith("[eval]")
+    )
 
 
 def evidence(where: Profile, capabilities: frozenset[Capability]) -> tuple[Evidence, ...]:
     out = []
     for capability in sorted(capabilities):
-        for use in where.where(capability)[:EVIDENCE_PER_CAPABILITY]:
+        # `eval` first: it is what makes `dynamic-code` alone worth a look.
+        uses = sorted(where.where(capability), key=lambda u: not evaluates(u.use))
+        for use in uses[:EVIDENCE_PER_CAPABILITY]:
             out.append(
                 Evidence(
                     kind=EvidenceKind.FILE_SPAN,
@@ -57,7 +71,7 @@ class CapabilityGained(BaseRule):
     """An update's code can do something the previous version's couldn't."""
 
     id = "code.capability-gained"
-    version = 2
+    version = 3
     severity = Severity.LOW
     weight = 1.0
     title = "Code gained capabilities"
@@ -68,7 +82,10 @@ class CapabilityGained(BaseRule):
         gained = change.added
         if not gained:
             return ()
-        strong = bool(gained & STRONG) or (C.NETWORK in gained and bool(gained & WITH_NETWORK))
+        evals = C.DYNAMIC_CODE in gained and any(
+            evaluates(u.use) for u in change.after.where(C.DYNAMIC_CODE)
+        )
+        strong = evals or (C.NETWORK in gained and bool(gained & WITH_NETWORK))
         names = ", ".join(sorted(c.value for c in gained))
         return (
             self.finding(

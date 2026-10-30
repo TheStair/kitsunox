@@ -47,6 +47,33 @@ def test_gaining_the_environment_without_network_is_low() -> None:
     assert finding.severity is Severity.MEDIUM
 
 
+def test_gaining_dynamic_code_alone_is_medium_only_through_eval() -> None:
+    """v3: `new Function(body)` and `vm` alone were 85 of 90 live reports this rule made alone
+    through `dynamic-code`; the malicious ones were injected `eval(` payloads."""
+    rule = CapabilityGained()
+    for code in (b"new Function(body)", b'import vm from "node:vm"', b"Function(a, b)"):
+        (finding,) = rule.evaluate_code(change(pkg(files={"lib/x.js": code}), PLAIN))
+        assert finding.severity is Severity.LOW, code
+    for code in (b"eval(payload)", b'globalThis["eval"](payload)', b"new Function(x); eval(y)"):
+        (finding,) = rule.evaluate_code(change(pkg(files={"lib/x.js": code}), PLAIN))
+        assert finding.severity is Severity.MEDIUM, code
+    # `eval` is shown first, ahead of the `Function` calls before it.
+    many = b"new Function(a); new Function(b); new Function(c);\neval(y)"
+    (finding,) = rule.evaluate_code(change(pkg(files={"lib/x.js": many}), PLAIN))
+    assert finding.severity is Severity.MEDIUM
+    assert (finding.evidence[0].snippet or "").startswith("[dynamic-code] eval(y)")
+    # With network, `Function` stays MEDIUM; `eval` the base already had is not gained.
+    (finding,) = rule.evaluate_code(
+        change(pkg(files={"lib/x.js": b"fetch(u); Function(b)"}), PLAIN)
+    )
+    assert finding.severity is Severity.MEDIUM
+    had = pkg(files={"lib/y.js": b"eval(z)"})
+    (finding,) = rule.evaluate_code(
+        change(pkg(files={"lib/y.js": b"eval(z); Function(b)"}), had)
+    ) or (None,)
+    assert finding is None
+
+
 def test_gaining_only_network_is_low_and_nothing_for_new_packages() -> None:
     new = pkg(files={"lib/x.js": b"fetch(u)"})
     (finding,) = CapabilityGained().evaluate_code(change(new, PLAIN))
@@ -127,6 +154,16 @@ def test_an_install_file_that_changed_only_its_own_version_is_unchanged() -> Non
     assert InstallScriptChanged().evaluate_code(change(new, old)) == ()  # SNAP is 1.0.1
     other = pkg("node i.js", {"i.js": b"download(`evil@1.0.1`)"})
     assert len(InstallScriptChanged().evaluate_code(change(other, old))) == 1
+
+
+def test_an_install_file_that_changed_only_its_line_endings_is_unchanged() -> None:
+    """`@tera-system/pro` 0.2.33: `install.js` went from CRLF to LF, reported +0 -0 lines."""
+    old = pkg("node i.js", {"i.js": b"const a = 1;\r\nrun(a);\r\n"})
+    new = pkg("node i.js", {"i.js": b"const a = 1;\nrun(a);\n"})
+    assert InstallScriptChanged().evaluate_code(change(new, old)) == ()
+    edited = pkg("node i.js", {"i.js": b"const a = 2;\nrun(a);\n"})
+    (found,) = InstallScriptChanged().evaluate_code(change(edited, old))
+    assert "i.js (+1 -1 lines)" in found.explanation
 
 
 def test_inline_install_code_is_read() -> None:

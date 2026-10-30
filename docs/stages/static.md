@@ -39,9 +39,15 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   whole, so its old matches would fire again every release (a Telegram bot's
   `api.telegram.org/bot`, an obfuscated commercial build, in every version). A match the base
   version's file at the same path already had (same rule, same explanation with numbers
-  aside) is LOW, weight 1, and says "Also in the previous version's file". An
-  `exfil-endpoint` match only in a file that never runs (`NON_EXECUTING`: README and other
-  docs, `.md`, `.d.ts`, source maps, `docs/`, `examples/`, `test/`) is LOW as well. Findings
+  aside) is LOW, weight 1, and says "Also in the previous version's file". A bundler's
+  content-hashed chunk gets a new name whenever its content changes, so it is compared with
+  the base's chunks of the same name without the hash (`dist/registry-BX6j2lnF.mjs` with
+  `dist/registry-CFQBxtE2.mjs`; `static.BaseFiles`, at most 4 of them): a doc comment naming
+  `*.trycloudflare.com` in `@camstack/*` addons was HIGH again on every release. A match
+  only in a file that never runs (`NON_EXECUTING`: README and other docs, `.md`, `.d.ts`,
+  source maps, `docs/`, `examples/`, `test/`) is LOW as well; at first only for
+  `exfil-endpoint`, for every rule since the second pass (no malicious `vm-day1` sample lost;
+  `@atairo/qixi` was MEDIUM for an IP in a bundled dependency's README). Findings
   are kept, so a reviewer still sees them and they still add to the score. On `vm-day1` it
   cost 8 malicious samples, all follow-on releases of a series whose first malicious release is
   still reported (`esoftplay@0.0.142-m`, then 0.0.152 and others with the same Telegram

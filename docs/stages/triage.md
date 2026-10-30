@@ -85,6 +85,13 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 | `npm.maintainer.added` | LOW | | | | |
 | `npm.dormant-revived`: more than 365 days since the previous release | LOW | | | | |
 
+`npm.dependency.non-registry` v2 (2026-10-30): the registry's own tarball URL for the same
+package (`https://registry.npmjs.org/<name>/-/<file>.tgz`) is the registry, and a local path
+(`file:`, `link:`) is LOW, weight 1, since it fetches nothing. Its `vm-day1` malicious samples
+all used `github:` (71) or `http(s):` (17) URLs; on the live queue the two cases were 22
+reports (`@feedmepos/mf-connect` pins registry tarballs; `@atairo/qixi` shipped
+`file:../../frontend/...`).
+
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10
 samples on its own, so v2 makes it LOW.

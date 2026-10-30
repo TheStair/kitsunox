@@ -2,6 +2,60 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-30 (late night): Second precision pass: what still reports under the current rules
+
+**Stage(s):** Stage 2 (hashed chunks, docs-only matches), Stage 3 (`code.capability-gained`
+v3, extractor v3, `npm.install-script-changed` v2), Stage 1 (`npm.dependency.non-registry`
+v2), Stage 4 (LOW cap, lazy repository hashing), reports
+**Context:** Reviewing two more ticks and the top of the backlog: 49 more benign, none
+malicious (83 benign, 5 malicious, 4 inconclusive in all). The queue's 1,761 unreviewed
+versions were mostly scored by older rules, which the queue never re-scores.
+
+### How it was measured
+- **What still reports:** Stage 2 re-run on every queued version from its run's captured
+  tarballs (current code, REPLAY), the other findings re-graded as the current rules would,
+  then the current decision (`session-scripts/policy/current_backlog.py`). Of 1,761
+  unreviewed versions, 1,078 still reported before this pass.
+- **Eval:** each change simulated on the `vm-day1` findings dump first, then a `pipeline+4`
+  run with the Stage 2-3 changes, and the Stage 1/4 changes simulated on its findings: 2,494
+  malicious reported (72.4%, was 2,496), 18 of 1,500 benign (was 20). The 2 lost
+  (`@pixui-dev/pxw@0.1.23`, `securegate-cli-tool@2.1.4`) were caught only by the CRLF
+  artefact below: follow-on releases whose install script didn't change but for line endings.
+
+### Decisions
+- **`code.capability-gained` v3:** gaining `dynamic-code` alone is MEDIUM only through
+  `eval`. 85 of the 90 live reports it made alone that way were `new Function(body)` or `vm`;
+  all 35 malicious samples it reported alone were injected `eval(` payloads (`autotel-*`,
+  `awaitly-*`). Extractor v3 caps evidence per capability *and detail*, so three
+  `new Function` calls can't crowd out a later `eval`.
+- **LOW cap (Stage 4 v7):** rules with only LOW findings add at most 3 to the score, so LOW
+  findings alone never report. They were 165 of the 1,078 still reported; on `vm-day1` only
+  one malicious sample was reported by score alone, and it had a weak MEDIUM, which still
+  reaches 6. 1,078 -> 886.
+- **Hashed chunks:** Stage 2 compares a bundler's content-hashed chunk with the base's chunk of
+  the same name without the hash (`@camstack/*`: a doc comment naming `*.trycloudflare.com`
+  was HIGH on every release).
+- **Docs-only matches are LOW for every static rule**, not just `exfil-endpoint`.
+- **`npm.dependency.non-registry` v2:** a registry tarball URL of the same package is the
+  registry; a `file:`/`link:` path is LOW (fetches nothing). Malicious samples all used
+  `github:` or `http(s):`. With the docs change: 876 -> about 845.
+- **`npm.install-script-changed` v2:** a file whose only change is its line endings is
+  unchanged (`@tera-system/pro`: CRLF to LF, reported "+0 -0 lines").
+- **Stage 4 speed:** `compare_trees` hashed every file of the repository on every comparison
+  to explain missing files; it now does so only when a missing file needs it, and `built_by`
+  no longer copies the repository's contents. Stage 4 had grown to 16-40 minutes a tick.
+
+### Rejected or deferred
+- **`dynamic-code` alone always LOW:** lost the 35 `eval` samples.
+- **`.yaml` as non-executing, placeholder webhooks LOW:** 3 or fewer live reports each, and
+  YAML/JSON can be configuration the code loads.
+- **Re-scoring the queue:** old runs keep their old reports until they age out (7 days).
+  Replaying Stages 2-4 of queued runs with the current rules would remove most of the
+  backlog at once; it rewrites past reports, so it waits for the owner.
+- **Following an install script's local imports:** `@next2012/aistudio-runtime`'s hook only
+  imports `lib/postinstall.js`, which the install-code rules never read. For a new package
+  that's a gap; to measure next.
+
 ## 2026-10-30 (night): A precision pass from the first live reviews
 
 **Stage(s):** Stage 1 (`npm.publish-method.downgrade`), Stage 2 (not-new and docs-only

@@ -53,13 +53,21 @@ STAGE_ID: Final = "correlate"
 # per-release limit, updates planned first) and those that failed on the network are retried in
 # the same passes and under the same outage guard as repository lookups. 6: a missing file
 # whose content is elsewhere in the repository is explained, and an install hook a repository
-# file writes is noted (`ManifestDifference.built_by`). Output without the field is 1.
-STAGE_VERSION: Final = 6
+# file writes is noted (`ManifestDifference.built_by`). 7: LOW findings together add at most
+# `LOW_CAP` to the score. Output without the field is 1.
+STAGE_VERSION: Final = 7
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
 # at 6 they add neither. Below 6, routine LOWs (process-exec + network + npm-publish) add up.
 REPORT_SCORE: Final = 6.0
+# LOW findings together add at most this to the score, so routine LOWs alone never reach
+# REPORT_SCORE. A large release matches six generic regexes at once (process-exec, network,
+# dynamic-code, env-harvest, npm-publish, sensitive-path; many in CHANGELOGs and tests): such
+# LOW-only versions were 165 of the 1,078 unreviewed live-queue versions still reported under
+# the current rules (2026-10-30). On `vm-day1` the cap costs no malicious sample (2,496 kept)
+# and drops 2 of 20 benign; a weak MEDIUM (`WEAK_ALONE`) with three LOWs still reaches 6.
+LOW_CAP: Final = 3.0
 CORRELATE_INFO: Final = "correlate.json"
 # Repository (and dependency) lookups that failed on the network are tried again after the
 # first pass, at most this many times, and only while a pass still recovers some (decision 0010
@@ -207,13 +215,19 @@ class CorrelationRule(Protocol):
     ) -> Sequence[Finding]: ...
 
 
-def score(findings: Sequence[Finding]) -> float:
-    """Each rule once, at its largest weight; INFO findings count nothing."""
-    best: dict[str, float] = {}
+def score(findings: Iterable[Finding]) -> float:
+    """Each rule once, at its largest weight; INFO findings count nothing, and rules whose
+    findings are all LOW together count at most `LOW_CAP`."""
+    weights: dict[str, float] = {}
+    above_low: set[str] = set()
     for f in findings:
-        if f.severity != Severity.INFO:
-            best[f.rule_id] = max(best.get(f.rule_id, 0.0), f.weight)
-    return sum(best.values())
+        if f.severity == Severity.INFO:
+            continue
+        weights[f.rule_id] = max(weights.get(f.rule_id, 0.0), f.weight)
+        if f.severity != Severity.LOW:
+            above_low.add(f.rule_id)
+    low = sum(w for rule, w in weights.items() if rule not in above_low)
+    return sum(w for rule, w in weights.items() if rule in above_low) + min(low, LOW_CAP)
 
 
 def correlate(

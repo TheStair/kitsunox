@@ -118,7 +118,7 @@ def compare_trees(package: Tree, repo: Tree, whole: Tree | None = None) -> TreeC
     is neither. A missing file whose content is somewhere in the repository (`whole`, else
     `repo`), byte for byte, is explained: a build copied it there (`nutui-react` ships its
     `scripts/postinstall.js` as `postinstall.js`)."""
-    contents = {_normalised(content) for content in (whole if whole is not None else repo).values()}
+    contents: set[str] | None = None  # every repository file's hash, once a file needs it
     directories: dict[str, set[str]] = {}
     for path in repo:
         directory, _, name = path.rpartition("/")
@@ -135,11 +135,12 @@ def compare_trees(package: Tree, repo: Tree, whole: Tree | None = None) -> TreeC
         missing.append(path)
         directory, _, name = path.rpartition("/")
         stems = directories.get(directory)
-        if (
-            stems is not None
-            and _stem(name) not in stems
-            and _normalised(package[path]) not in contents
-        ):
+        if stems is None or _stem(name) in stems:
+            continue
+        if contents is None:
+            searched = whole if whole is not None else repo
+            contents = {_normalised(content) for content in searched.values()}
+        if _normalised(package[path]) not in contents:
             unexplained.append(path)
     return TreeComparison(len(code), identical, differing, missing, unexplained)
 

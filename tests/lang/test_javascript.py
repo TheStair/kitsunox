@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from kitsunox.lang.javascript import (
+    MAX_EVIDENCE,
     Capability,
     analyse_source,
     fold_string,
@@ -121,3 +122,10 @@ def test_parsers_are_safe_across_threads() -> None:
 def test_constant_code_is_not_dynamic(code: bytes, dynamic: bool) -> None:
     uses = analyse_source(code, "javascript").uses
     assert any(u.capability is Capability.DYNAMIC_CODE for u in uses) is dynamic
+
+
+def test_evidence_is_capped_per_detail_so_a_later_eval_is_kept() -> None:
+    """v3: three `new Function(x)` calls used to fill the file's `dynamic-code` evidence."""
+    code = b"new Function(a); new Function(b); new Function(c); new Function(d);\neval(y)"
+    uses = [u for u in analyse_source(code, "javascript").uses if u.capability is C.DYNAMIC_CODE]
+    assert [u.detail for u in uses] == ["new Function"] * MAX_EVIDENCE + ["eval"]

@@ -108,11 +108,25 @@ def test_long_snippets_are_truncated() -> None:
         ("x/y", True),
         ("https://evil.example/p.tgz", True),
         ("file:../local", True),
+        ("https://registry.npmjs.org/dep/-/dep-1.0.0.tgz", False),  # the registry's own
+        ("https://registry.npmjs.org/other/-/other-1.0.0.tgz", True),  # another package
+        ("https://registry.npmjs.org.evil.example/dep/-/dep-1.0.0.tgz", True),
     ],
 )
 def test_non_registry_dependency(spec: str, fires: bool) -> None:
     new = snap("1.0.1", {"dependencies": {"dep": spec}})
     assert bool(NonRegistryDependency().evaluate(change(new, snap("1.0.0")), CTX)) is fires
+
+
+def test_a_scoped_registry_tarball_is_the_registry_and_a_local_path_is_low() -> None:
+    """v2: `@feedmepos/mf-connect` pinned registry tarballs; `@atairo/qixi` a `file:` path."""
+    url = "https://registry.npmjs.org/@s/dep/-/dep-0.3.2.tgz"
+    pinned = snap("1.0.1", {"dependencies": {"@s/dep": url}})
+    assert NonRegistryDependency().evaluate(change(pinned, snap("1.0.0")), CTX) == []
+    local = snap("1.0.1", {"dependencies": {"dep": "file:../../types"}})
+    (finding,) = NonRegistryDependency().evaluate(change(local, snap("1.0.0")), CTX)
+    assert (finding.severity, finding.weight) == (Severity.LOW, 1.0)
+    assert finding.explanation.endswith("A local path: nothing is fetched.")
 
 
 def test_unchanged_non_registry_dependency_is_not_new() -> None:

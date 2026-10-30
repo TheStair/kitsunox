@@ -33,6 +33,7 @@ from kitsunox.reporting.markdown import (
 )
 from kitsunox.reporting.publish import publish_report
 from kitsunox.reporting.report import build_report, stage_of
+from kitsunox.stages.correlate import LOW_CAP
 from kitsunox.stages.ingest import write_jsonl
 
 T0 = datetime(2026, 10, 28, tzinfo=UTC)
@@ -318,3 +319,14 @@ def test_failed_dependency_lookups_are_said_in_the_index(
     count, outage = expected
     assert (f"**{count:,} dependency lookups failed**" in index) == bool(count)
     assert ("skipped as an outage" in index) == outage
+
+
+def test_the_score_caps_low_rules_and_says_so(tmp_path: Path) -> None:
+    lows = [finding(f"static.r{i}", Severity.LOW, 1.0) for i in range(5)]
+    capped = candidate("capped", True, finding("npm.install-hook", Severity.MEDIUM, 3.0), *lows)
+    plain = candidate("plain", True, finding("npm.install-hook", Severity.MEDIUM, 3.0))
+    report = build_report(run_dir(tmp_path, [capped, plain]))
+    by_name = {e.name: e for e in report.entries}
+    assert by_name["capped"].score == 3.0 + LOW_CAP
+    assert "together count at most 3" in render_entry(by_name["capped"])
+    assert "together count" not in render_entry(by_name["plain"])

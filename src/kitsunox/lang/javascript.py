@@ -34,11 +34,13 @@ from kitsunox.core.models import Record
 # Bump whenever extraction changes: it keys the on-disk cache (`stages/ast.py`).
 # 2: `eval`, `Function(...)` and `new Function(...)` whose every argument is a short constant
 #    string are not dynamic code (`_constant_code`).
-EXTRACTOR_VERSION: Final = 2
+# 3: MAX_EVIDENCE counts per capability and detail, so three `new Function(x)` calls no longer
+#    hide a later `eval(x)` in the same file (`code.capability-gained` tells them apart).
+EXTRACTOR_VERSION: Final = 3
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
-MAX_EVIDENCE: Final = 3  # per capability per file
+MAX_EVIDENCE: Final = 3  # per capability and detail, per file
 
 
 class Capability(StrEnum):
@@ -207,13 +209,15 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
     parser, query = _parser(language)
     tree = parser.parse(content)
     uses: dict[Capability, list[Use]] = {}
+    kept: dict[tuple[Capability, str], int] = {}
     for capability, detail, node in _uses(query, tree.root_node):
-        found = uses.setdefault(capability, [])
-        if len(found) < MAX_EVIDENCE:
-            found.append(
+        key = (capability, detail[:80])
+        if kept.get(key, 0) < MAX_EVIDENCE:
+            kept[key] = kept.get(key, 0) + 1
+            uses.setdefault(capability, []).append(
                 Use(
                     capability=capability,
-                    detail=detail[:80],
+                    detail=key[1],
                     line=node.start_point.row + 1,
                     snippet=_snippet(content, node),
                 )

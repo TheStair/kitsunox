@@ -218,8 +218,14 @@ dependency's packument.
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.
 - **Score:** the sum over the rules that fired, each counted once at its largest weight
-  (Stage 2 reports a finding per matching file), INFO excluded. The CLI lists reported
-  versions by score.
+  (Stage 2 reports a finding per matching file), INFO excluded. Rules whose findings are all
+  LOW together add at most `LOW_CAP` (3; stage version 7, 2026-10-30), so LOW findings alone
+  never report a version: a large release matches six generic regexes at once
+  (process-exec, network, dynamic-code, env-harvest, npm-publish, sensitive-path, many in
+  CHANGELOGs and tests). Such LOW-only versions were 165 of the 1,078 unreviewed live-queue
+  versions still reported under the current rules; on `vm-day1` the cap costs no malicious
+  sample and drops 2 of 20 benign. A `WEAK_ALONE` MEDIUM (weight 3) with three LOWs still
+  reaches 6. Reports say when the cap applied. The CLI lists reported versions by score.
 
 ## Repository comparison (`stages/repo.py`)
 

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Final
 
 from kitsunox.core.models import Evidence, Finding
-from kitsunox.reporting.report import Report, ReportEntry
+from kitsunox.reporting.report import Report, ReportEntry, score_rule
 from kitsunox.util.files import atomic_write
 from kitsunox.util.text import hidden_note, safe_url, strip_hidden
 
@@ -189,6 +189,8 @@ def render_entry(entry: ReportEntry) -> str:
         f"| Compared with | {link(entry.links.compared_commit, 'repository at commit')} |",
         "",
         "## How the score adds up",
+        "",
+        score_rule(entry),  # our text, not input
         "",
         "| Rule | Severity | Weight | Findings |",
         "|---|---|---|---|",

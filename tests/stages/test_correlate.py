@@ -22,6 +22,7 @@ from kitsunox.core.models import (
 from kitsunox.stages import correlate as correlate_module
 from kitsunox.stages.correlate import (
     CORRELATE_INFO,
+    LOW_CAP,
     NETWORK_UNCOMPARED,
     OUTAGE_MIN,
     STAGE_VERSION,
@@ -66,6 +67,18 @@ def test_score_counts_each_rule_once_and_ignores_info() -> None:
         finding("c", Severity.INFO, 9.0),
     ]
     assert score(found) == 3.0
+
+
+def test_low_rules_together_count_at_most_the_cap() -> None:
+    """Six routine LOW regexes of a large release no longer reach the report score alone."""
+    lows = [finding(f"static.{i}", Severity.LOW, 1.0) for i in range(6)]
+    assert score(lows) == LOW_CAP
+    assert not decide(lows).forwarded
+    # A rule with any finding above LOW is outside the cap, at its largest weight.
+    mixed = [*lows, finding("x", Severity.LOW, 1.0), finding("x", Severity.MEDIUM, 3.0)]
+    assert score(mixed) == 3.0 + LOW_CAP
+    weak = finding("npm.publish-method.downgrade", Severity.MEDIUM, 3.0)
+    assert decide([weak, *lows]).forwarded  # a weak MEDIUM with three LOWs still reaches 6
 
 
 def test_report_on_severity_or_score() -> None:

@@ -74,6 +74,7 @@ class InstallScriptChanged(BaseRule):
     string (`@pulumi/*`); their files are what this rule compares."""
 
     id = "npm.install-script-changed"
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Code an install script runs changed"
@@ -87,8 +88,7 @@ class InstallScriptChanged(BaseRule):
         changed = [
             path
             for path, data in sorted(change.install_files.items())
-            if before.get(path) != data
-            and not _only_version(before.get(path), data, old_version, new_version)
+            if not _same(before.get(path), data, old_version, new_version)
         ]
         if not changed:
             return ()
@@ -113,15 +113,21 @@ class InstallScriptChanged(BaseRule):
         )
 
 
-def _only_version(old: bytes | None, new: bytes, old_version: bytes, new_version: bytes) -> bool:
-    """`new` is `old` with its own version string swapped for the new one (generated install
-    scripts embed it: `workerd`'s `install.js` downloads `${pkg}@1.20261029.1`)."""
-    return (
-        old is not None
-        and bool(old_version)
-        and old_version in old
-        and old.replace(old_version, new_version) == new
+def _same(old: bytes | None, new: bytes, old_version: bytes, new_version: bytes) -> bool:
+    """`new` runs the same code as `old`: equal once line endings are LF (`@tera-system/pro`
+    0.2.33 converted its CRLF `install.js`, +0 -0 lines), or `old` with its own version string
+    swapped for the new one (generated install scripts embed it: `workerd`'s `install.js`
+    downloads `${pkg}@1.20261029.1`)."""
+    if old is None:
+        return False
+    old, new = _lf(old), _lf(new)
+    return old == new or (
+        bool(old_version) and old_version in old and old.replace(old_version, new_version) == new
     )
+
+
+def _lf(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n")
 
 
 def _lines(data: bytes) -> list[str]:

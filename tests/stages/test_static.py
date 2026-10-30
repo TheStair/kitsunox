@@ -31,6 +31,7 @@ from kitsunox.stages.static import (
     new_contents,
     record_static,
     static_run,
+    unhashed,
 )
 from kitsunox.util.http import FetchError, TransientFetchError
 
@@ -259,3 +260,61 @@ def test_a_match_the_previous_version_had_is_low_and_says_so(tmp_path: Path) -> 
     ).versions
     (finding,) = only_docs.findings
     assert finding.severity is Severity.LOW and "doesn't run" in finding.explanation
+
+
+def test_a_hashed_chunk_is_compared_with_the_base_chunk_of_the_same_name(tmp_path: Path) -> None:
+    """`@camstack/addon-post-analysis` 1.2.654: the chunk's name changes with its content."""
+    note = b"// a Quick tunnel's random `*.trycloudflare.com`\n"
+    trees = {
+        "1.0.0": {"dist/registry-BX6j2lnF.mjs": note, "dist/other-0HGmZj7D.mjs": b"1"},
+        "1.0.1": {
+            "dist/registry-CFQBxtE2.mjs": note + b"export const a = 2\n",
+            "dist/other-9QmZk1Pa.mjs": b"fetch('https://x.trycloudflare.com')",  # other name
+        },
+    }
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: trees[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    by_path = {
+        f.evidence[0].path: f for f in result.findings if f.rule_id == "static.exfil-endpoint"
+    }
+    assert by_path["dist/registry-CFQBxtE2.mjs"].severity is Severity.LOW
+    assert by_path["dist/other-9QmZk1Pa.mjs"].severity is Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    ("path", "name"),
+    [
+        ("dist/clip-model-registry-BX6j2lnF.mjs", "dist/clip-model-registry.mjs"),
+        ("static/js/main.3f2a9b1c.js", "static/js/main.js"),
+        ("chunk-ABCD1234.cjs", "chunk.cjs"),
+        ("dist/model-registry.js", None),  # a word, not a hash
+        ("dist/a-BX6j2lnF.css", None),
+        ("lib/index.js", None),
+    ],
+)
+def test_unhashed(path: str, name: str | None) -> None:
+    assert unhashed(path) == name
+
+
+def test_any_rule_matching_only_in_a_file_that_never_runs_is_low(tmp_path: Path) -> None:
+    """`@atairo/qixi` 0.1.3: an IP in a bundled dependency's README was MEDIUM."""
+    trees = {
+        "1.0.0": {},
+        "1.0.1": {
+            "node_modules/agent/README.md": b"proxy http://168.63.76.32:3128 here",
+            "lib/x.js": b"get('http://168.63.76.32:3128/x')",
+        },
+    }
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: trees[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    by_path = {f.evidence[0].path: f for f in result.findings if f.rule_id == "static.hardcoded-ip"}
+    assert by_path["node_modules/agent/README.md"].severity is Severity.LOW
+    assert by_path["lib/x.js"].severity is Severity.MEDIUM

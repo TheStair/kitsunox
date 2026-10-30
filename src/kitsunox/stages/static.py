@@ -7,9 +7,12 @@ findings are attributed to the first version that contained it.
 A changed file is matched whole, so its old matches would fire again on every release (a
 Telegram bot's `api.telegram.org/bot` in every version of the bot). A match the base version's
 file at the same path already had (same rule, same explanation up to numbers) is LOW, weight 1,
-and says so; an `exfil-endpoint` match only in a file that never runs (documentation, type
-declarations, source maps, tests) is LOW too (`_demoted`). Nothing is dropped: the evidence
-stays for the reviewer and for scoring with other signals.
+and says so; a bundler's content-hashed chunk (`registry-BX6j2lnF.mjs`) is compared with the
+base's chunks of the same name (`BaseFiles`); a match only in a file that never runs
+(documentation, type declarations, source maps, tests) is LOW too (`_demoted`; until
+2026-10-30 only `exfil-endpoint`, then every rule: `@atairo/qixi` was MEDIUM for an IP in a
+bundled dependency's README).
+Nothing is dropped: the evidence stays for the reviewer and for scoring with other signals.
 """
 
 from __future__ import annotations
@@ -136,7 +139,7 @@ def _demoted(match: FileMatch, path: str, before: frozenset[tuple[str, str]]) ->
         return match
     if _key(match) in before:
         note = PREVIOUS_NOTE
-    elif match.rule_id == "static.exfil-endpoint" and NON_EXECUTING.search(path):
+    elif NON_EXECUTING.search(path):
         note = DOCS_NOTE
     else:
         return match
@@ -149,16 +152,53 @@ def _demoted(match: FileMatch, path: str, before: frozenset[tuple[str, str]]) ->
     )
 
 
-def _base_keys(base: Tree | None, path: str, cache: ContentCache) -> frozenset[tuple[str, str]]:
-    """What the base version's file at `path` matched (nothing if it had no such file)."""
-    content = (base or {}).get(path)
-    if content is None:
-        return frozenset()
-    return frozenset(_key(m) for m in cache.matches(sha256_hex(content), content))
+# A bundler's content hash before the extension: `-BX6j2lnF.mjs` (Vite, Rollup), `.3f2a9b1c.js`
+# (webpack). It has a digit, so a word (`-registry.js`) is not taken for one.
+_HASHED: Final = re.compile(r"[-.](?=[A-Za-z_]*[0-9])[A-Za-z0-9_]{8,20}(\.(?:m?js|cjs))$")
+MAX_COUNTERPARTS: Final = 4  # base chunks of one name compared with a new one
+
+
+def unhashed(path: str) -> str | None:
+    """`path` without its content hash (`dist/a-BX6j2lnF.mjs` -> `dist/a.mjs`), or None."""
+    match = _HASHED.search(path)
+    return path[: match.start()] + match.group(1) if match else None
+
+
+class BaseFiles:
+    """The base version's files a new file is compared with: the one at the same path, or for a
+    content-hashed chunk, which gets a new name whenever its content changes, the base's chunks
+    of the same name without the hash (`@camstack/addon-post-analysis` 1.2.654: a comment naming
+    `*.trycloudflare.com` was HIGH again on every release)."""
+
+    def __init__(self, tree: Tree | None) -> None:
+        self.tree: Tree = tree or {}
+        self._by_name: dict[str, list[str]] | None = None
+
+    def counterparts(self, path: str) -> list[bytes]:
+        if path in self.tree:
+            return [self.tree[path]]
+        name = unhashed(path)
+        if name is None:
+            return []
+        if self._by_name is None:
+            self._by_name = {}
+            for other in sorted(self.tree):
+                if (other_name := unhashed(other)) is not None:
+                    self._by_name.setdefault(other_name, []).append(other)
+        return [self.tree[p] for p in self._by_name.get(name, ())[:MAX_COUNTERPARTS]]
+
+
+def _base_keys(base: BaseFiles, path: str, cache: ContentCache) -> frozenset[tuple[str, str]]:
+    """What the base version's counterparts of `path` matched (nothing if it had none)."""
+    return frozenset(
+        _key(m)
+        for content in base.counterparts(path)
+        for m in cache.matches(sha256_hex(content), content)
+    )
 
 
 def content_matches(
-    item: NewContent, content: bytes, base: Tree | None, cache: ContentCache
+    item: NewContent, content: bytes, base: BaseFiles, cache: ContentCache
 ) -> list[FileMatch]:
     """A new content's matches as Stage 2 reports them (`_demoted` against the base)."""
     matches = cache.matches(item.sha256, content)
@@ -208,8 +248,9 @@ def analyse_batch(
 
     found: dict[str, list[tuple[str, FileMatch]]] = {}
     base_tree = None if isinstance(base, Unavailable) else base
+    base_files = BaseFiles(base_tree)
     for item, content in new_contents(base_tree, versions()):
-        for match in content_matches(item, content, base_tree, cache):
+        for match in content_matches(item, content, base_files, cache):
             found.setdefault(item.first_version, []).append((item.path, match))
     updated = []
     for candidate in batch.versions:

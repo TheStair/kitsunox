@@ -19,7 +19,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, Finding, Severity
 from kitsunox.reporting.queue import Queue, QueueEntry
-from kitsunox.reporting.report import Report, ReportEntry, stage_of
+from kitsunox.reporting.report import Report, ReportEntry, score_rule, stage_of
 from kitsunox.reporting.verdicts import KINDS, MAX_NOTE_CHARS, VerdictRecord
 from kitsunox.web.html import (
     block,
@@ -503,7 +503,6 @@ def _entry_body(entry: ReportEntry) -> str:
         f'<td class="num">{t.weight:g}</td><td class="num">{t.count}</td></tr>'
         for t in entry.score_terms
     )
-    total = sum(t.weight for t in entry.score_terms)
     parts = [
         f"<h1>#{entry.rank} {esc(entry.name)}@{esc(entry.version)}</h1>",
         f"<p><strong>Score {entry.score:g}</strong>, highest severity "
@@ -511,12 +510,12 @@ def _entry_body(entry: ReportEntry) -> str:
         "<h2>What changed</h2>",
         f'<table class="facts">\n<tbody>\n{rows}\n</tbody>\n</table>',
         "<h2>How the score adds up</h2>",
-        "<p>Each rule counts once, at its largest weight.</p>",
+        f"<p>{esc(score_rule(entry))}</p>",
         "<table>\n<thead><tr>"
         '<th scope="col">Rule</th><th scope="col">Severity</th><th scope="col">Weight</th>'
         '<th scope="col">Findings</th>'
         f"</tr></thead>\n<tbody>\n{terms}\n</tbody>\n"
-        f'<tfoot><tr><th scope="row" colspan="2">Total</th><td class="num">{total:g}</td>'
+        f'<tfoot><tr><th scope="row" colspan="2">Total</th><td class="num">{entry.score:g}</td>'
         "<td></td></tr></tfoot>\n</table>",
         "<h2>Findings</h2>",
     ]
