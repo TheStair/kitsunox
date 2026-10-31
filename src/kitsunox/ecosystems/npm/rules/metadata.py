@@ -216,10 +216,18 @@ class PublishMethodDowngrade(BaseRule):
     reason for HIGH on the first VM days (242 reported versions), almost all small packages
     whose maintainer sometimes publishes by hand. On `vm-day1` no malicious sample lost its
     report by this (the compromises it catches alone, `axios@1.14.1` and `@nx/*`, are watched);
-    one benign one is cleared."""
+    one benign one is cleared.
+
+    v3: LOW, weight 1, on a prerelease (`1.95.0-dev.2026…`, `0.6.0-canary.3`), watched or not.
+    npm installs a prerelease only when asked for it by version or tag, and maintainers often
+    publish their dev and canary builds by hand: 77 of the 101 live queue versions reported by
+    this rule alone (2026-10-31) were prereleases (the 9 reviewed, all benign). On `vm-day1` it
+    fires on 149 malicious samples, none a prerelease, so none is lost. The rule can't see
+    dist-tags, so a prerelease an attacker also tags `latest` is LOW here; what it runs still
+    meets the install and content rules."""
 
     id = "npm.publish-method.downgrade"
-    version = 2
+    version = 3
     severity = Severity.HIGH
     weight = 5.0
     title = "Published without the CI provenance the previous release had"
@@ -233,6 +241,13 @@ class PublishMethodDowngrade(BaseRule):
         if not had or has:
             return []
         before = f"trusted_publisher={old.trusted_publisher}, provenance={old.has_provenance}"
+        parsed = semver.parse(change.new.ref.version)
+        if parsed is not None and parsed.is_prerelease:
+            severity, weight = Severity.LOW, 1.0
+        elif _watched(change):
+            severity, weight = None, None
+        else:
+            severity, weight = Severity.MEDIUM, 3.0
         return [
             self.finding(
                 f"{change.previous.ref.version} was published from CI "
@@ -244,8 +259,8 @@ class PublishMethodDowngrade(BaseRule):
                     before=before,
                     after=f"publisher={new.publisher}",
                 ),
-                severity=None if _watched(change) else Severity.MEDIUM,
-                weight=None if _watched(change) else 3.0,
+                severity=severity,
+                weight=weight,
             )
         ]
 

@@ -2,6 +2,50 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-31 (afternoon): Re-score results, a prerelease downgrade, three skipped ticks
+
+**Stage(s):** Stage 1 (`npm.publish-method.downgrade` v3)
+**Context:** The re-score of the queue finished (two runs are being redone with the morning's
+rules). Over the 19 re-scored runs the queue went from 1,944 reported versions to 729 (-62%);
+no version with a malicious or inconclusive verdict dropped out. 640 versions in the queue were
+still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-largest group was
+`publish-method.downgrade` alone.
+
+### Decisions
+- **`publish-method.downgrade` v3: LOW, weight 1, on a prerelease.** 77 of the 101 queue
+  versions reported by this rule alone were prereleases (`-dev.`, `-canary.`, `-staging-`),
+  mostly watched packages' hand-published dev builds (`@builder.io/dev-tools`,
+  `@koda-sl/baker-cli`). npm installs a prerelease only when asked for it by version or tag.
+  - **Trade-off:** the rule can't see dist-tags, so a prerelease an attacker also tags
+    `latest` is LOW here. Reading dist-tags at ingest would close that.
+
+### Challenges
+- **Three ticks were skipped (06:42, 07:42, 08:42).** The re-score of the first VM day
+  (110k changes) was started with no gap before a tick, and held the data lock for 179 minutes.
+  The 09:45 tick ingested the whole gap (11,320 changes, window covered), so nothing was lost,
+  but three hours were reported late.
+  - **Resolution:** later re-scores keep a 20-minute gap and are small.
+
+### Review
+- Three dependency-confusion probes from one Bugcrowd researcher account
+  (`internal-renderers`, `pandafortunerush`, `ms-client-portal`, 1.0.0 and 10.0.0): install
+  hooks send user name, hostname and working directory to a bare IP. Malicious, like earlier
+  probes.
+- Two more Baileys forks silently follow WhatsApp channels with the user's account on connect,
+  now with the channel list's URL or IDs hidden in base64 (`sauruspro-bail`,
+  `kevinx-baileys`). Inconclusive, like `luna-baileys`.
+- `modulus-security`'s known-malware HIGH was a dependency on `tree-sitter-dockerfile`
+  `^0.0.1-security`, npm's empty placeholder for removed malware.
+
+### Evaluation snapshot
+- `vm-day1`: unchanged (2,506 malicious, 17 benign reported by the dump); the rule fires on 149
+  malicious samples, none a prerelease.
+
+### Open questions / next steps
+- Read dist-tags at ingest, so a prerelease tagged `latest` keeps the downgrade's weight.
+- A dependency pinned to npm's `0.0.1-security` placeholder needn't be HIGH.
+- `install-script-changed` alone still carries 120 unreviewed queue versions.
+
 ## 2026-10-31 (morning): `binding.gyp` as install code, extractor v4, every chunk compared
 
 **Stage(s):** Stage 2 (hashed chunks), Stage 3 (install code, capability extractor)

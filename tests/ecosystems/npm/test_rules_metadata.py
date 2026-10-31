@@ -168,6 +168,17 @@ def test_a_downgrade_is_high_only_for_a_watched_package() -> None:
     assert (small.severity, small.weight) == (Severity.MEDIUM, 3.0)
 
 
+def test_a_downgrade_on_a_prerelease_is_low() -> None:
+    """v3: `@builder.io/dev-tools@1.95.0-dev.…` and `@koda-sl/baker-cli@0.594.0-dev.…`, built by
+    hand between CI releases."""
+    old = snap("1.94.0", trusted_publisher="github")
+    for watched in (True, False):
+        (finding,) = PublishMethodDowngrade().evaluate(
+            change(snap("1.95.0-dev.202610291608", publisher="dev"), old, watched=watched), CTX
+        )
+        assert (finding.severity, finding.weight) == (Severity.LOW, 1.0)
+
+
 def test_unfamiliar_publisher() -> None:
     old = snap("1", publisher="alice", maintainers=("alice", "bob"))
     assert UnfamiliarPublisher().evaluate(change(snap("2", publisher="bob"), old), CTX) == []

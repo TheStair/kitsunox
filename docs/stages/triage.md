@@ -77,7 +77,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 | Rule | Sev. | Fires on benign | Recall, shape A | Recall, shape B | Caught by this rule only (A / B) |
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
-| `npm.publish-method.downgrade` (v2): previous release had trusted publishing or provenance, this one has neither. HIGH for a watched package; MEDIUM, weight 3, otherwise, which reports only beside other signals (`correlate.WEAK_ALONE`) | HIGH / MEDIUM | 0.18% | 15.4% | n/a | 107 / n/a |
+| `npm.publish-method.downgrade` (v3): previous release had trusted publishing or provenance, this one has neither. HIGH for a watched package; MEDIUM, weight 3, otherwise, which reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
 | `npm.dependency.non-registry`: new dependency from git/URL/GitHub shorthand/`file:` | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious`: major ≥ 90, CalVer exempt (v2) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
