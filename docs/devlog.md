@@ -31,15 +31,38 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
   - **Resolution:** later re-scores keep a 20-minute gap and are small.
 
 ### Review
-- Three dependency-confusion probes from one Bugcrowd researcher account
-  (`internal-renderers`, `pandafortunerush`, `ms-client-portal`, 1.0.0 and 10.0.0): install
-  hooks send user name, hostname and working directory to a bare IP. Malicious, like earlier
-  probes.
-- Two more Baileys forks silently follow WhatsApp channels with the user's account on connect,
-  now with the channel list's URL or IDs hidden in base64 (`sauruspro-bail`,
-  `kevinx-baileys`). Inconclusive, like `luna-baileys`.
-- `modulus-security`'s known-malware HIGH was a dependency on `tree-sitter-dockerfile`
-  `^0.0.1-security`, npm's empty placeholder for removed malware.
+- **The queue was reviewed to empty**: 652 unreviewed versions at 13:52, 0 by 14:44 (all 26
+  queued runs). Versions scored 5 and above had their install code read (fetched tarballs, or
+  Stage 2's captured blob for unpublished ones); below that, most verdicts rest on the
+  report's evidence excerpts.
+- **Malicious (new):**
+  - `tavern-ai-sdk@1.0.0`, a credential stealer posing as a persona loader: XOR+base64 string
+    tables decode to AWS SigV4 calls, `gsk_`/`sk-proj`/`secretAccessKey` patterns, SSH keys, an
+    ERC-20 `transferFrom` selector and a beacon loop; native `node-vm-detect` binaries for
+    sandbox evasion. Reported only at score 5 (four `static.obfuscated`); npm removed it two
+    hours after publish.
+  - Three dependency-confusion probes from one Bugcrowd researcher account
+    (`internal-renderers`, `pandafortunerush`, `ms-client-portal`, 1.0.0 and 10.0.0): install
+    hooks send user name, hostname and working directory to a bare IP.
+  - `dependencykfeg` 2.1.3, 25.0.3, 25.1.3 and `claims-acct-unlock@25.2.1` (publisher `weqwe`):
+    DNS and Burp Collaborator beacons, and a payload pulled from a raw GitHub tarball. npm has
+    replaced both with `0.0.1-security`.
+- **Inconclusive (new):** six more Baileys forks that follow WhatsApp channels with the user's
+  account on connect (`sauruspro-bail`, `kevinx-baileys`, `@bil-rgb/baileys`,
+  `@lekzsync/baileys`, `@prasstzymhtrr/baileys` (disclosed, opt-out), and `testbail`, by the
+  `luna-baileys` publisher, unpublished before it could be read); packages whose install runs
+  a fully obfuscated bundle (`sppurt`, `motionchart-cli`, six `sino-bc-cli` betas), Stage 5
+  jobs; `whybug` (obfuscated, mentions a relay).
+- `modulus-security`'s and `victor-nest-resource`'s known-malware HIGHs were dependencies held
+  by npm's `0.0.1-security` placeholder (`tree-sitter-dockerfile`, `fs`); so was
+  `com.hidano.shadow-only-shader`'s (a Unity built-in module name).
+
+### Removed / abandoned
+- **`install-script-changed` counting a hook's own file only when its change adds a risky
+  line** (the criterion v3 applies to files a hook merely loads). On `vm-day1` it lost 9
+  malicious samples (8 `esoftplay` releases, `fooobar@1.0.14`), whose payload edits an
+  existing hook file without adding a new network or process import, and cleared no benign
+  sample. Dropped.
 
 ### Evaluation snapshot
 - `vm-day1`: unchanged (2,506 malicious, 17 benign reported by the dump); the rule fires on 149
@@ -47,8 +70,18 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
 
 ### Open questions / next steps
 - Read dist-tags at ingest, so a prerelease tagged `latest` keeps the downgrade's weight.
-- A dependency pinned to npm's `0.0.1-security` placeholder needn't be HIGH.
-- `install-script-changed` alone still carries 120 unreviewed queue versions.
+- A dependency npm holds as its `0.0.1-security` placeholder needn't be HIGH (three of three
+  live known-malware HIGHs this period). Needs Stage 4's dependency lookup to fetch
+  known-malware names: a contract change, so not done in passing.
+- `install-script-changed` alone carried 120 queue versions, nearly all ordinary installer
+  edits. Reviewing them is still the price of catching edits to an existing hook file (see
+  Removed / abandoned).
+- Stage 2 compares a file only with its counterpart; a renamed chunk (`chunk-eevqxagd.js`), a
+  versioned directory or moved code reads as new. Of 46 queued exfil-endpoint versions with a
+  base, 28 already had the same literal in another base code file (estimate,
+  `exfil_anywhere.py`); comparing such files with all base code is being measured.
+- Policy question for the owner: should Baileys forks that follow channels with the user's
+  account (hidden or disclosed) be malicious rather than inconclusive?
 
 ## 2026-10-31 (morning): `binding.gyp` as install code, extractor v4, every chunk compared
 
