@@ -5,7 +5,11 @@ import json
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
 from kitsunox.ecosystems.npm.install import install_sources
 from kitsunox.ecosystems.npm.rules import install_code
-from kitsunox.ecosystems.npm.rules.install_code import InstallScriptChanged, InstallScriptCode
+from kitsunox.ecosystems.npm.rules.install_code import (
+    InstallScriptChanged,
+    InstallScriptCode,
+    InstallScriptObfuscated,
+)
 from kitsunox.rules.capabilities import CapabilityGained
 from kitsunox.stages.ast import CapabilityCache, CodeChange, code_change
 
@@ -204,3 +208,23 @@ def test_inline_install_code_is_read() -> None:
     (finding,) = InstallScriptCode().evaluate_code(change(new, None))
     assert "package.json#scripts.preinstall.js" in finding.explanation
     assert "network" in finding.explanation
+
+
+OBFUSCATED = (";".join(f"var _0x{i:04x}=_0x{i + 1:04x}" for i in range(0x1A00, 0x1A20))).encode()
+
+
+def test_obfuscated_install_code_is_high_and_new_or_changed_on_updates() -> None:
+    rule = InstallScriptObfuscated()
+    new = pkg("node setup.js", {"setup.js": OBFUSCATED})
+    (found,) = rule.evaluate_code(change(new, None))
+    assert found.severity is Severity.HIGH
+    assert found.explanation.startswith("`npm install` runs obfuscated code: setup.js.")
+    assert found.evidence[0].path == "setup.js"
+    assert found.evidence[0].snippet is not None and "obfuscator-style" in found.evidence[0].snippet
+    assert rule.evaluate_code(change(new, new)) == ()  # the same bytes ran before
+    rebuilt = pkg("node setup.js", {"setup.js": OBFUSCATED + b";var _0xffff=1"})
+    (changed,) = rule.evaluate_code(change(rebuilt, new))
+    assert "(new or changed since the previous version)" in changed.explanation
+    # Obfuscated code no hook runs is Stage 2's `static.obfuscated`, not this.
+    assert rule.evaluate_code(change(pkg("node index.js", {"lib.js": OBFUSCATED}), None)) == ()
+    assert rule.evaluate_code(change(pkg("node setup.js", {"setup.js": b"go()"}), None)) == ()

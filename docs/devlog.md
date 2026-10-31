@@ -64,8 +64,12 @@ after the fact".
 
 ### Open questions / next steps
 - Stage 5 for the obfuscated install code (`sppurt`, `motionchart-cli`, `sino-bc-cli`,
-  `whybug`, `calculatorscool346`): the owner asked for a sandbox run; the airgapped analysis VM
-  is not set up yet, so the export is the step on this side.
+  `whybug`, `calculatorscool346`): the owner asked for a sandbox run and to flag such code. The
+  airgapped analysis VM is not set up and no results root is configured, so nothing can run
+  yet. The flag is a new Stage 3 rule, `npm.install-script-obfuscated` (HIGH, weight 4: a file
+  `npm install` runs has javascript-obfuscator identifiers; on updates only new or changed
+  ones). `vm-day1`: fires on 96 malicious samples and 0 of 1,500 benign, changes no reporting
+  decision; it raises rank, so these versions lead the queue and Stage 5's per-run cap of 30.
 - `npm.dependency.known-malware`: skip a dependency whose spec can only resolve to the holder.
 
 ## 2026-10-31 (afternoon): Re-score results, a prerelease downgrade, three skipped ticks

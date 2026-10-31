@@ -20,6 +20,7 @@ from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.install import loaded_files
 from kitsunox.lang.javascript import Capability
 from kitsunox.rules.capabilities import evidence
+from kitsunox.rules.static import Obfuscated
 from kitsunox.stages.ast import CodeChange
 
 C = Capability
@@ -212,4 +213,53 @@ def _diff_evidence(path: str, old: bytes | None, new: bytes) -> Evidence:
     )
 
 
-RULES: Final = (InstallScriptCode(), InstallScriptChanged())
+class InstallScriptObfuscated(BaseRule):
+    """A file `npm install` runs is obfuscated (javascript-obfuscator's `_0x` identifiers, the
+    `static.obfuscated` test, on the first 256 KiB kept of each install file). The code runs
+    with the user's privileges at install and reading it says nothing about what it does, so
+    only a sandbox run (Stage 5) can; HIGH puts it in front of Stage 5's per-run cap and of the
+    queue. For an update, only an obfuscated file that is new to the install code or changed
+    counts: the same bytes ran before.
+
+    Added 2026-10-31 at the owner's request ("flag it"): five packages reviewed as inconclusive
+    run obfuscated code at install (`sppurt`, `motionchart-cli`, `sino-bc-cli`, `whybug`,
+    `calculatorscool346`), scored 3-11, some outside Stage 5's cap of 30."""
+
+    id = "npm.install-script-obfuscated"
+    severity = Severity.HIGH
+    weight = 4.0
+    title = "Install script runs obfuscated code"
+    _detector: Final = Obfuscated()
+
+    def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
+        before = change.install_files_before or {}
+        found = []
+        for path, data in sorted(change.install_files.items()):
+            if before.get(path) == data:
+                continue
+            matches = self._detector.evaluate_text(data.decode("utf-8", "replace"))
+            if matches:
+                found.append((path, matches[0]))
+        if not found:
+            return ()
+        paths = ", ".join(path for path, _ in found)
+        new = " (new or changed since the previous version)" if change.before is not None else ""
+        return (
+            self.finding(
+                f"`npm install` runs obfuscated code{new}: {paths}. Only a sandbox run can show "
+                "what it does.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=path,
+                        line_start=match.line,
+                        line_end=match.line,
+                        snippet=f"{match.explanation} {match.snippet}",
+                    )
+                    for path, match in found[:MAX_FILES_SHOWN]
+                ),
+            ),
+        )
+
+
+RULES: Final = (InstallScriptCode(), InstallScriptChanged(), InstallScriptObfuscated())
