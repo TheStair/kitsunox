@@ -2,6 +2,72 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-31 (evening): Confirmed after the fact, a Baileys policy, a fourth stealer republish
+
+**Stage(s):** Review queue and viewer (`evaluation/confirmations.py`, `reporting/queue.py`,
+`web/pages.py`); `collect`
+**Context:** The owner answered three questions from the afternoon: Baileys forks, obfuscated
+install code (Stage 5), and the known-malware false positives. For the last they suggested
+using npm's removals as evidence that we catch real malware, then refined it: "don't use NPM
+removed as a rule, we want to identify our own malware, but we should flag it if it is removed
+after the fact".
+
+### Decisions
+- **Takedowns and OSV records are a flag, never a score**
+  ([decision 0016](decisions/0016-after-the-fact-confirmations.md)). npm replaces a removed
+  package with `0.0.1-security` from its own `npm` account, and that publish is in the changes
+  feed we already record: 39 takedowns in our runs since 2026-10-29. `collect` now scans each
+  new run for them (`data/takedowns/npm.json`), and the queue marks every version a later
+  takedown or a covering OSV `MAL-` record confirms, counts verdicts confirmed since, and lists
+  benign or inconclusive ones to review again. Alternatives were a scoring rule (rejected by the
+  owner: recall must measure our own detection) and polling the registry for every reported
+  package (needless requests: the feed already carries every takedown).
+- **Baileys forks that make the user's WhatsApp account follow channels are malicious**
+  (owner: "if npm flags those forks as malicious we should match their behavior"). The evidence:
+  OSV holds about 200 `MAL-` records for Baileys/WhatsApp forks; npm removed four in our feed
+  this week (`@chatunitycenter/baileys`, `grizzly-baileys`, `ourin-baileys`, `neuralwhatsapp`),
+  and `@sauruslord/baileys` and `sauruslord-baileys` share the `sauruspro-bail` author's
+  marker. Re-recorded as malicious: `luna-baileys`, `sauruspro-bail`, `kevinx-baileys`,
+  `@bil-rgb/baileys`, `@lekzsync/baileys`; new: `@chatbridgeworld/baileys` (five hard-coded
+  channels followed 90 s after connecting). Left inconclusive: `@prasstzymhtrr/baileys`
+  (announces the follow and honours `NO_AUTOFOLLOW=1`) and `testbail` (unpublished unread).
+
+### Challenges
+- **The fourth tavern-family republish ranked 21st of its run** (`persona-ai-sdk@1.0.0`,
+  publisher `gendomidas`, score 6 from `static.obfuscated` alone). Importing `./personas` runs
+  `cache-warm.mjs`; its XOR+base64 string tables decode to AWS `GetCallerIdentity` and
+  `ListAccountAliases`, Bedrock's `/create-foundation-model-agreement`, a Groq key pattern and a
+  filesystem walk: LLM-credential theft, as in `tavern-ai-sdk`, `char-ai-sdk` and
+  `character-ai-sdk`. The ranking gap from the afternoon entry is unchanged; a rule for these
+  string tables still needs measuring on obfuscated benign packages first.
+- **A three-hop dependency chain scored 3** (`claims-ac1`, the `claims-acct-unlock` family):
+  its dependency `node-ac2` is a GitHub tarball whose own dependency `node-ac3` (same repo) has
+  a preinstall that fetches a C2 hostname from a GitHub text file and POSTs the home directory,
+  working directory and platform to it. Stage 4 sees only the first hop
+  (`npm.dependency.non-registry`, MEDIUM); the payload is two non-registry tarballs away.
+  Reading non-registry dependency tarballs is a possible Stage 4 addition, not started.
+- **`npm.dependency.known-malware` fired on `modulus-firewall@0.1.1`**, whose dependency is
+  `tree-sitter-dockerfile@^0.0.1-security`: the spec names npm's own holder, which installs
+  nothing. Same publisher as the earlier `modulus-security` false positive.
+
+### Evaluation snapshot
+- Confirmed since (as of this entry): 7 versions with a malicious verdict (`@pcb-dp/qa-commons`,
+  `claims-acct-unlock`, four `dependencykfeg`, `ssite-mock-server`), 0 inconclusive, 0 benign.
+  Four benign packages have OSV records about *other* versions (`@builder.io/dev-tools`,
+  `@onescience/onecode`, `@vibelet/cli`, `codeam-cli`); none covers a version we cleared.
+- Queue: 96 versions from seven ticks reviewed to empty: 3 new malicious (`persona-ai-sdk`,
+  `claims-ac1`, `@chatbridgeworld/baileys`), the rest benign (27 Meta `@astryxdesign/cli`
+  canaries, 16 `@ejfkdev/*` binary installers, placeholders and fixtures).
+- One recall miss in hindsight: `tailwindcss-visual-kit@1.3.7` (2026-10-29) added a dependency,
+  `@nexlayerlabs/postcss-keyframe-utils`, that npm removed the next day; we scored it 1. Its
+  malicious versions predate our feed, so no stage saw the code.
+
+### Open questions / next steps
+- Stage 5 for the obfuscated install code (`sppurt`, `motionchart-cli`, `sino-bc-cli`,
+  `whybug`, `calculatorscool346`): the owner asked for a sandbox run; the airgapped analysis VM
+  is not set up yet, so the export is the step on this side.
+- `npm.dependency.known-malware`: skip a dependency whose spec can only resolve to the holder.
+
 ## 2026-10-31 (afternoon): Re-score results, a prerelease downgrade, three skipped ticks
 
 **Stage(s):** Stage 0 (diff base 4), Stage 1 (`npm.publish-method.downgrade` v3), Stage 2

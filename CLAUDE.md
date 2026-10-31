@@ -126,6 +126,7 @@ uv run kitsunox correlate <run_id>                 # Stage 4: correlation, repo 
 uv run kitsunox report <run_id>                    # report.json + Markdown queue (data/runs/<id>/report/)
 uv run kitsunox sandbox <run_id> --results DIR     # Stage 5: import package-analysis results, export for the airgapped VM
 uv run kitsunox queue                              # review queue across runs, by package (data/queue/)
+uv run kitsunox takedowns                          # npm takedowns seen in the feed (flags only, decision 0016)
 uv run kitsunox view                               # local web viewer on 127.0.0.1:8000: queue, runs, verdicts (docs/viewer.md)
 uv run kitsunox verdict <run_id> <rank> malicious --note "..." --by claude   # record a verdict; `kitsunox verdicts` lists them
 uv run kitsunox run --data-dir data-demo --window-hours 1   # whole pipeline once (own data dir: it moves the checkpoint)

@@ -9,7 +9,7 @@ worker threads fetched it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from compression import zstd
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -212,8 +212,15 @@ def changes_file(run_dir: Path) -> Path:
 
 
 def read_changes(path: Path) -> Sequence[Change]:
+    return list(iter_changes(path))
+
+
+def iter_changes(path: Path) -> Iterator[Change]:
+    """A run's changes one at a time, for readers that must not hold a whole run (the first VM
+    run had 110,084)."""
     if path.suffix == ".zst":
         with zstd.open(path, "rt", encoding="utf-8") as handle:
-            return [Change.load_json(line) for line in handle if line.strip()]
+            yield from (Change.load_json(line) for line in handle if line.strip())
+        return
     with path.open(encoding="utf-8") as handle:
-        return [Change.load_json(line) for line in handle if line.strip()]
+        yield from (Change.load_json(line) for line in handle if line.strip())

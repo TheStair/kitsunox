@@ -223,6 +223,16 @@ class Packument:
         return changes
 
 
+SECURITY_HOLDER_VERSION: Final = "0.0.1-security"
+
+
+def is_security_holder(snapshot: VersionSnapshot) -> bool:
+    """npm's security holding package: the registry removed the package as malicious and
+    published `0.0.1-security` (an empty package) from its own `npm` account in its place. The
+    version string alone proves nothing (anyone can publish it); the publisher is npm's."""
+    return snapshot.publish.publisher == "npm" and snapshot.ref.version == SECURITY_HOLDER_VERSION
+
+
 def is_registry_placeholder(snapshot: VersionSnapshot) -> bool:
     """A version the registry created rather than the package's author. Two kinds:
 
@@ -236,7 +246,7 @@ def is_registry_placeholder(snapshot: VersionSnapshot) -> bool:
     install scripts and no dependencies, i.e. nothing a rule could flag."""
     publish, manifest = snapshot.publish, snapshot.manifest
     stub = manifest.get("stub") is True
-    if publish.publisher == "npm" and (stub or snapshot.ref.version == "0.0.1-security"):
+    if is_security_holder(snapshot) or (publish.publisher == "npm" and stub):
         return True
     inert = not any(manifest.get(k) for k in ("scripts", "dependencies", "optionalDependencies"))
     return stub and snapshot.ref.version == "0.0.0-stage" and inert

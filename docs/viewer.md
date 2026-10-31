@@ -26,6 +26,12 @@ its run is kept. The queue page opens with the tally ("Verified malicious: N"), 
 daily Discord summary. A new release of a reviewed package comes back to the queue: verdicts are
 per version.
 
+A version that npm has since removed, or that an OSV `MAL-` record covers, is marked
+**Confirmed since** on the queue, verdict and entry pages, and the queue page lists benign or
+inconclusive verdicts confirmed since under "Review these again" (a check, never part of a
+score; [decision 0016](decisions/0016-after-the-fact-confirmations.md)). The flags come from
+`queue.json`, so they appear after the next tick or `kitsunox queue`.
+
 The log is `data/verdicts/npm.jsonl` (`reporting.verdicts`), append-only: the last record for a
 version is its verdict, and the whole history is kept. Each record copies the entry as reviewed,
 so the verdict pages outlive the run's 7 days. From a shell, `kitsunox verdict <run_id> <rank>

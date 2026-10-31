@@ -66,6 +66,7 @@ def test_ticks_chain_and_prune_once_a_day(tmp_path: Path, registry: Router) -> N
     assert (data.run_dir(first.run_id) / "ast.jsonl").exists()
     assert (tmp_path / "queue" / "queue.json").exists()
     assert any(line.startswith("queue: 1 packages (1 versions) from 1 runs") for line in log), log
+    assert any(line.startswith("takedowns: 0 new in 1 runs, 0 kept") for line in log), log
 
     log.clear()
     second = collect(

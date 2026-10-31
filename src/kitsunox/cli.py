@@ -39,7 +39,9 @@ from kitsunox.core.run import (
 )
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
+from kitsunox.ecosystems.npm.packument import is_security_holder
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
+from kitsunox.evaluation.confirmations import scan_takedowns
 from kitsunox.evaluation.harness import (
     PREDICTOR_NAMES,
     make_dataset,
@@ -490,6 +492,22 @@ def queue_cmd(
     if queue.skipped:
         typer.echo(f"unreadable reports left out: {', '.join(queue.skipped)}", err=True)
     typer.echo(f"saved to {directory}/index.md")
+
+
+@app.command("takedowns")
+def takedowns_cmd(data_dir: DataDirOption = DEFAULT_DATA_DIR) -> None:
+    """Scan runs not scanned yet for registry takedowns (npm's `0.0.1-security` holding
+    package) and list every one kept (data/takedowns/). `collect` scans after each tick; the
+    queue flags versions removed after the fact. Never part of a score."""
+    data = DataDir(data_dir)
+    with data.lock():
+        log, runs, added = scan_takedowns(data, NPM, is_security_holder)
+    for takedown in log.takedowns:
+        typer.echo(
+            f"{takedown.published_at:%Y-%m-%d %H:%M} {takedown.name!r} {takedown.version} "
+            f"(run {takedown.run_id})"
+        )
+    typer.echo(f"{added} new in {runs} runs scanned; {len(log.takedowns)} takedowns kept")
 
 
 @app.command("rescore")

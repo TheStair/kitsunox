@@ -98,6 +98,14 @@ of the newest one and writes:
   listed in `skipped` and left out. It doesn't stop the queue.
 - `collect` rebuilds the queue after prune (best-effort), so pruned runs drop out after
   `--days`. Their report pages stay, so the links keep working.
+- **Confirmed since** ([decision 0016](../decisions/0016-after-the-fact-confirmations.md)):
+  each version carries the registry takedowns published after it (npm's `0.0.1-security`
+  holder, found in the runs' feeds by `collect` and kept in `data/takedowns/npm.json`; also
+  `kitsunox takedowns`) and the OSV `MAL-` records covering it, as of the queue's `as_of`.
+  `confirmed` lists the versions with a verdict that were confirmed since, benign first; the
+  index counts them per verdict and lists the benign and inconclusive ones to review again,
+  and its table gets a "Confirmed since" column. A flag only: no score changes
+  (`test_versions_confirmed_since_are_flagged_never_scored`).
 - A run whose Stages 1-4 finished but whose report is incomplete is caught up "from the
   report" on the next tick, without redoing Stage 4. Incomplete means `report.json` or
   `index.md` (written last) is missing, or `report.json` doesn't load

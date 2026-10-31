@@ -327,3 +327,27 @@ def test_verdict_records_from_the_shell_and_verdicts_lists_them(tmp_path: Path) 
         ["verdict", run_id, "1", "benign", "--by", "Bad Name", *args],
     ):
         assert runner.invoke(app, bad).exit_code == 2
+
+
+def test_takedowns_scans_new_runs_and_lists_what_it_keeps(tmp_path: Path) -> None:
+    from conftest import run_manifest
+    from kitsunox.core.models import Change, PackageVersionRef, PublishInfo, VersionSnapshot
+    from kitsunox.stages.ingest import write_jsonl
+
+    run_id = "20261029T210500Z-npm"
+    run_dir = DataDir(tmp_path).run_dir(run_id)
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(run_manifest(run_id).model_dump_json())
+    holder = VersionSnapshot(
+        ref=PackageVersionRef(ecosystem="npm", name="evil\x1b[2J", version="0.0.1-security"),
+        publish=PublishInfo(published_at=AS_OF, publisher="npm"),
+        manifest={},
+    )
+    write_jsonl(run_dir / "changes.jsonl", [Change(new=holder)])
+    args = ["takedowns", "--data-dir", str(tmp_path)]
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.output
+    assert "'evil\\x1b[2J' 0.0.1-security" in first.stdout  # package text is repr'd, inert
+    assert first.stdout.splitlines()[-1] == "1 new in 1 runs scanned; 1 takedowns kept"
+    again = runner.invoke(app, args)
+    assert again.stdout.splitlines()[-1] == "0 new in 0 runs scanned; 1 takedowns kept"

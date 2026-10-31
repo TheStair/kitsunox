@@ -9,6 +9,7 @@ from kitsunox.ecosystems.npm.packument import (
     Packument,
     PackumentError,
     is_registry_placeholder,
+    is_security_holder,
     normalize_repository_url,
     platform_build,
 )
@@ -143,6 +144,24 @@ def test_registry_placeholder(
         manifest=manifest,
     )
     assert is_registry_placeholder(snapshot) is expected
+
+
+@pytest.mark.parametrize(
+    ("publisher", "version", "expected"),
+    [
+        ("npm", "0.0.1-security", True),
+        ("npm", "0.0.0-stage", False),  # staged publishing, not a takedown
+        ("mallory", "0.0.1-security", False),  # anyone can pick the version string
+        (None, "0.0.1-security", False),
+    ],
+)
+def test_security_holder(publisher: str | None, version: str, expected: bool) -> None:
+    snapshot = VersionSnapshot(
+        ref=PackageVersionRef(ecosystem="npm", name="x", version=version),
+        publish=PublishInfo(publisher=publisher),
+        manifest={},
+    )
+    assert is_security_holder(snapshot) is expected
 
 
 def test_stub_is_never_a_diff_base() -> None:

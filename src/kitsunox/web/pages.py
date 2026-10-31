@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from typing import Final
 
 from kitsunox.core.models import Evidence, Finding, Severity
-from kitsunox.reporting.queue import Queue, QueueEntry
+from kitsunox.evaluation.confirmations import Confirmation
+from kitsunox.reporting.queue import Queue, QueueEntry, confirmed_text
 from kitsunox.reporting.report import Report, ReportEntry, score_rule, stage_of
 from kitsunox.reporting.verdicts import KINDS, MAX_NOTE_CHARS, VerdictRecord
 from kitsunox.web.html import (
@@ -166,7 +167,7 @@ def queue_page(library: Library, token: str | None = None) -> Page:
     if isinstance(queue, LoadError):
         return Page(200, page("Review queue", _load_error("Review queue", queue), crumbs))
     verdicts = library.verdicts(queue.ecosystem)
-    body = _queue_body(_unreviewed(queue, verdicts), verdicts, token)
+    body = _queue_body(_unreviewed(queue, verdicts), verdicts, token, _confirmed_section(queue))
     return Page(200, page(f"Review queue ({queue.ecosystem})", body, crumbs))
 
 
@@ -187,10 +188,59 @@ def _unreviewed(queue: Queue, verdicts: Verdicts) -> Queue:
     )
 
 
-def _queue_body(queue: Queue, verdicts: Verdicts, token: str | None) -> str:
+def _confirmed(library: Library) -> dict[tuple[str, str], tuple[Confirmation, ...]]:
+    """Registry takedowns and OSV records the queue found since, by (name, version)."""
+    queue = library.queue()
+    if not isinstance(queue, Queue):
+        return {}
+    found = {(c.name, c.version): c.confirmed for c in queue.confirmed}
+    for entry in queue.entries:
+        found.update({(entry.name, v.version): v.confirmed for v in entry.versions if v.confirmed})
+    return found
+
+
+def _confirmation(confirmed: tuple[Confirmation, ...]) -> str:
+    """A flag, never part of a score. OSV ids are outside data: escaped."""
+    if not confirmed:
+        return ""
+    return f'<span class="confirmed">Confirmed since: {esc(confirmed_text(confirmed))}</span>'
+
+
+def _confirmed_section(queue: Queue) -> str:
+    if not queue.confirmed:
+        return ""
+    counts = ", ".join(
+        f"{internal(f'/verdicts/{kind}', VERDICT_LABELS[kind])}: "
+        f"{sum(1 for c in queue.confirmed if c.verdict == kind)}"
+        for kind in KINDS
+    )
+    parts = [
+        "<p>Versions with a verdict that a registry takedown or an OSV record has confirmed "
+        f"since (a check on the pipeline and the review, not part of any score): {counts}.</p>"
+    ]
+    again = [c for c in queue.confirmed if c.verdict != "malicious"]
+    if again:
+        items = "".join(
+            f"<li>{VERDICT_LABELS[c.verdict]}: "
+            + (
+                internal(href, f"{esc(c.name)}@{esc(c.version)}")
+                if (href := entry_href(c.run_id, c.rank))
+                else f"{esc(c.name)}@{esc(c.version)}"
+            )
+            + f" ({esc(confirmed_text(c.confirmed))})</li>"
+            for c in again
+        )
+        parts.append(  # warning_box wraps a <p>, which can't hold a list
+            f'<div class="warning" role="note"><p>Review these again:</p><ul>{items}</ul></div>'
+        )
+    return "\n".join(parts)
+
+
+def _queue_body(queue: Queue, verdicts: Verdicts, token: str | None, confirmed: str = "") -> str:
     parts = [
         f"<h1>Review queue ({esc(queue.ecosystem)})</h1>",
         _tally(verdicts),
+        *([confirmed] if confirmed else []),
         f"<p>Reports from {when(queue.since)} to {when(queue.as_of)} ({len(queue.runs)} runs): "
         f"<strong>{queue.packages} packages to review</strong> ({queue.versions} versions), "
         "highest score first. Each version links to its entry in the run that reported it "
@@ -223,7 +273,8 @@ def _queue_row(entry: QueueEntry, token: str | None = None) -> str:
         href = entry_href(v.run_id, v.rank)
         shown = internal(href, label) if href else label
         form = verdict_form(token, v.run_id, v.rank, "/", note=False) if token and href else ""
-        versions.append(f'<li>{shown} <span class="note">{v.score:g}</span>{form}</li>')
+        flag = _confirmation(v.confirmed)
+        versions.append(f'<li>{shown} <span class="note">{v.score:g}</span>{flag}{form}</li>')
     rules = "".join(f"<li><code>{esc(r.rule_id)}</code> ({r.versions})</li>" for r in entry.rules)
     whole = package_form(token, entry) if token and len(entry.versions) > 1 else ""
     return (
@@ -388,14 +439,21 @@ def entry_page(library: Library, run_id: str, rank: int, token: str | None = Non
         after = ranked[index + 1]
         neighbours.append(f"<li>{_entry_link(run_id, after, 'Next')}</li>")
     pager = f'<nav aria-label="Entries"><ul class="pager">{"".join(neighbours)}</ul></nav>'
-    review = _review(library.verdicts(report.ecosystem), run_id, entry, token)
+    confirmed = _confirmed(library).get((entry.name, entry.version), ())
+    review = _review(library.verdicts(report.ecosystem), run_id, entry, token, confirmed)
     body = "\n".join([review, _entry_body(entry), pager if neighbours else ""])
     title = f"{entry.name}@{entry.version}"
     return Page(200, page(title, body, [*crumbs, (None, f"#{entry.rank}")]))
 
 
-def _review(verdicts: Verdicts, run_id: str, entry: ReportEntry, token: str | None) -> str:
-    """The version's verdict and history, and the form to record one."""
+def _review(
+    verdicts: Verdicts,
+    run_id: str,
+    entry: ReportEntry,
+    token: str | None,
+    confirmed: tuple[Confirmation, ...] = (),
+) -> str:
+    """The version's verdict and history, any confirmation since, and the verdict form."""
     back = f"/runs/{run_id}/entries/{entry.rank}"
     now = verdicts.now.get((entry.name, entry.version))
     parts = ['<section class="review" aria-label="Review">', "<h2>Review</h2>"]
@@ -406,6 +464,8 @@ def _review(verdicts: Verdicts, run_id: str, entry: ReportEntry, token: str | No
         )
     else:
         parts.append("<p>No verdict yet: this version is in the review queue.</p>")
+    if confirmed:
+        parts.append(f"<p>{_confirmation(confirmed)} (a check, not part of the score)</p>")
     if token:
         parts.append(verdict_form(token, run_id, entry.rank, back, note=True))
         if now is not None:
@@ -441,7 +501,11 @@ def verdicts_page(library: Library, kind: str, token: str | None = None) -> Page
     if not records:
         parts.append("<p>None yet.</p>")
         return Page(200, page(label, "\n".join(parts), crumbs))
-    rows = "\n".join(_verdict_row(library, r, token, f"/verdicts/{kind}") for r in records)
+    confirmed = _confirmed(library)
+    rows = "\n".join(
+        _verdict_row(library, r, token, f"/verdicts/{kind}", confirmed.get(r.key, ()))
+        for r in records
+    )
     parts.append(
         f"<table>\n<caption>{label} versions</caption>\n<thead><tr>"
         '<th scope="col">Package</th><th scope="col">Score</th><th scope="col">Severity</th>'
@@ -452,7 +516,13 @@ def verdicts_page(library: Library, kind: str, token: str | None = None) -> Page
     return Page(200, page(label, "\n".join(parts), crumbs))
 
 
-def _verdict_row(library: Library, record: VerdictRecord, token: str | None, back: str) -> str:
+def _verdict_row(
+    library: Library,
+    record: VerdictRecord,
+    token: str | None,
+    back: str,
+    confirmed: tuple[Confirmation, ...] = (),
+) -> str:
     label = f"{esc(record.name)}@{esc(record.version)}"
     href = entry_href(record.run_id, record.rank)
     kept = href is not None and library.find_run(record.run_id) is not None
@@ -468,7 +538,8 @@ def _verdict_row(library: Library, record: VerdictRecord, token: str | None, bac
         f"<td>{esc(record.severity)}</td>"
         f'<td><ul class="flat">{rules}</ul></td>'
         f"<td>{when(record.published_at)} by {esc(record.publisher or 'unknown')}</td>"
-        f"<td>{when(record.at)} ({esc(record.by)})</td><td>{esc(record.note)}</td>"
+        f"<td>{when(record.at)} ({esc(record.by)})</td>"
+        f"<td>{esc(record.note)}{_confirmation(confirmed)}</td>"
         f"<td>{reopen}</td></tr>"
     )
 

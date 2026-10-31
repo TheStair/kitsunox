@@ -6,9 +6,11 @@ from pathlib import Path
 from conftest import REPORT_AS_OF, make_report, report_entry, run_manifest
 from kitsunox.core.models import Severity
 from kitsunox.core.run import DataDir
+from kitsunox.evaluation.confirmations import Confirmations, Takedown
 from kitsunox.reporting.markdown import write_markdown
 from kitsunox.reporting.queue import build_queue, render_queue, write_queue
 from kitsunox.reporting.report import Report, write_report
+from kitsunox.reporting.verdicts import verdict_record
 
 HIGH, MEDIUM = Severity.HIGH, Severity.MEDIUM
 T = REPORT_AS_OF
@@ -126,7 +128,7 @@ def test_untrusted_names_cannot_break_the_table(tmp_path: Path) -> None:
     row = next(line for line in index.splitlines() if line.startswith("| 1 |"))
     assert "<script>" not in index and "\n| 2 |" not in index
     # Exactly the table's own 8 column separators remain unescaped.
-    assert row.replace("\\|", "").count("|") == 8
+    assert row.replace("\\|", "").count("|") == 9
 
 
 def test_empty_queue_says_so(tmp_path: Path) -> None:
@@ -167,3 +169,48 @@ def test_every_version_link_resolves(tmp_path: Path) -> None:
         assert target.is_file(), page
         assert target.is_relative_to((tmp_path / "runs" / "r1" / "report" / "entries").resolve())
         assert " " not in page and "(" not in page and ")" not in page
+
+
+def test_versions_confirmed_since_are_flagged_never_scored(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    save(
+        data,
+        make_report(
+            "r",
+            report_entry(
+                1, "stealer", "1.0.0", 5, MEDIUM, "a", published_at=T - timedelta(hours=3)
+            ),
+            report_entry(
+                2, "cleared", "2.0.0", 4, MEDIUM, "b", published_at=T - timedelta(hours=3)
+            ),
+            report_entry(3, "queued", "0.1.0", 3, MEDIUM, "c", published_at=T - timedelta(hours=3)),
+        ),
+    )
+    report = Report.load_json((data.run_dir("r") / "report" / "report.json").read_bytes())
+    at = T - timedelta(hours=1)
+    stealer, cleared = report.entries[:2]
+    reviewed = {
+        ("stealer", "1.0.0"): verdict_record(report, stealer, "malicious", by="claude", at=at),
+        ("cleared", "2.0.0"): verdict_record(report, cleared, "benign", by="claude", at=at),
+    }
+    takedowns = [
+        Takedown(name=n, version="0.0.1-security", published_at=at, run_id="r")
+        for n in ("stealer", "cleared", "queued")
+    ]
+    queue = build_queue(
+        data, "npm", days=7, reviewed=reviewed, confirmations=Confirmations(takedowns, None, T)
+    )
+    assert queue is not None
+    (entry,) = queue.entries
+    assert (entry.name, entry.score, entry.confirmed) == ("queued", 3, True)  # score unchanged
+    assert [(c.verdict, c.name) for c in queue.confirmed] == [
+        ("benign", "cleared"),  # a missed attack first
+        ("malicious", "stealer"),
+    ]
+    page = render_queue(queue)
+    assert "1 malicious, 0 inconclusive, 1 benign" in page
+    assert (
+        "- **benign** cleared@2.0.0: removed by the registry 2026-10-29. Review it again." in page
+    )
+    assert "stealer@1.0.0" not in page  # confirmed malicious: counted, not listed
+    assert page.rstrip().endswith("| removed by the registry 2026-10-29 |")

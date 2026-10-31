@@ -17,12 +17,15 @@ Each tick, in order:
    analysis VM (`stages/sandbox.py`, decision 0014). Without one, Stage 5 is skipped.
 6. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same),
    with Stage 5's exports and unused results, if the last prune is older than `PRUNE_EVERY`.
-7. Rebuild the review queue (`reporting/queue.py`) over the last `keep_days` of reports.
+7. Scan runs not scanned yet for registry takedowns (npm's `0.0.1-security` holder), kept in
+   `data/takedowns/` (`evaluation/confirmations.py`): the queue flags reviewed and queued
+   versions removed after the fact. A flag only, never a score.
+8. Rebuild the review queue (`reporting/queue.py`) over the last `keep_days` of reports.
 
 The tick returns a `Tick` (manifest, reports written, failed steps); `kitsunox collect` posts it
 as a brief Discord update when a webhook is configured (`notify.py`, decision 0011).
 
-Steps 1, 2 and 4-7 are best-effort: a failure is logged, and the tick carries on with the
+Steps 1, 2 and 4-8 are best-effort: a failure is logged, and the tick carries on with the
 previous watchlist or label set, because a missed ingest is lost data while a stale list is not.
 If the registry is unreachable, or a run hits an outage (`IngestDegradedError`), the tick logs
 it and stops without writing anything: the checkpoint stays put, so the next tick covers the gap
@@ -61,7 +64,9 @@ from kitsunox.core.run import (
 )
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
+from kitsunox.ecosystems.npm.packument import is_security_holder
 from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
+from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR, scan_takedowns
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import is_archive_url
@@ -168,6 +173,7 @@ def collect(
     last_prune = _last_prune(data)
     if last_prune is None or now - last_prune > PRUNE_EVERY:
         best_effort("prune", lambda: _prune(data, now, keep_days, keep_repo_days))
+    best_effort("takedowns", lambda: _takedowns(data))
     best_effort("queue", lambda: _queue(data, keep_days))
     return Tick(manifest=manifest, reports=tuple(reports), failed=tuple(failed))
 
@@ -371,6 +377,14 @@ def _report_complete(directory: pathlib.Path) -> bool:
     except OSError, ValueError:
         return False
     return True
+
+
+def _takedowns(data: DataDir) -> str:
+    log, runs, added = scan_takedowns(data, NPM, is_security_holder)
+    return (
+        f"{added} new in {runs} runs, {len(log.takedowns)} kept "
+        f"({TAKEDOWNS_DIR}/{NPM}.json; flags only, never scored)"
+    )
 
 
 def _queue(data: DataDir, days: int) -> str:

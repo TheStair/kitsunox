@@ -11,9 +11,11 @@ from urllib.parse import urlencode
 
 import pytest
 
-from conftest import make_report, report_entry, run_manifest
+from conftest import REPORT_AS_OF, make_report, report_entry, run_manifest
 from kitsunox.core.models import Severity
 from kitsunox.core.run import DataDir
+from kitsunox.evaluation.confirmations import Confirmations, Takedown
+from kitsunox.evaluation.labels import LabelSet, MalwareLabel
 from kitsunox.reporting.queue import build_queue, write_queue
 from kitsunox.reporting.report import write_report
 from kitsunox.reporting.verdicts import read_verdicts
@@ -206,3 +208,38 @@ def test_one_verdict_covers_every_listed_version_of_a_package(tmp_path: Path) ->
     assert send([f"{RUN}:1", f"{RUN}:2"]) == 303
     assert sorted(r.version for r in read_verdicts(tmp_path, "npm")) == ["1.0.1", "1.0.2"]
     assert "kx" not in pages.queue_page(library, TOKEN).html.split("Packages to review")[1]
+
+
+def test_versions_confirmed_since_are_flagged_on_every_page(library: Library) -> None:
+    """A registry takedown or an OSV record shows next to the version (queue, verdict list,
+    entry) and a benign verdict it contradicts is listed to review again. OSV ids are outside
+    data and are escaped."""
+    data = DataDir(library.root)
+    status, _ = post(library, {"run": RUN, "rank": "1", "verdict": "benign", "back": "/"})
+    assert status == 303
+    takedown = Takedown(
+        name="evil-pkg", version="0.0.1-security", published_at=REPORT_AS_OF, run_id=RUN
+    )
+    labels = LabelSet(
+        ecosystem="npm",
+        source="s",
+        fetched_at=REPORT_AS_OF,
+        source_sha256="0",
+        labels={
+            CRAFTED: (MalwareLabel(id="<b>MAL</b>", published=REPORT_AS_OF, versions=("9.9.9",)),)
+        },
+    )
+    queue = build_queue(
+        data, "npm", days=7, confirmations=Confirmations([takedown], labels, REPORT_AS_OF)
+    )
+    assert queue is not None
+    write_queue(data, queue)
+
+    page = pages.queue_page(library, TOKEN).html
+    assert "Review these again:" in page and "Benign" in page
+    assert "removed by the registry 2026-10-29" in page
+    assert "Confirmed since: &lt;b&gt;MAL&lt;/b&gt;" in page and "<b>MAL" not in page
+    listed = pages.verdicts_page(library, "benign", TOKEN)
+    assert listed is not None and "Confirmed since: removed by the registry" in listed.html
+    entry = pages.entry_page(library, RUN, 1, TOKEN)
+    assert entry is not None and "not part of the score" in entry.html
