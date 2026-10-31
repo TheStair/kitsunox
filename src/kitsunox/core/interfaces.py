@@ -47,7 +47,8 @@ class DownloadCounts(Record):
 # 1: the highest earlier semver below it (else the latest earlier release).
 # 2: the same, passing over a partial publish (npm: `Packument.previous_version`).
 # 3: the same, passing over a platform build for a release that isn't one.
-DIFF_BASE: Final = 3
+# 4: the same, with OpenHarmony (`ohos-arm64`) builds among the platform builds.
+DIFF_BASE: Final = 4
 
 
 class Ecosystem(Protocol):

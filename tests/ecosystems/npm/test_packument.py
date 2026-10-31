@@ -216,6 +216,16 @@ def test_a_platform_build_is_not_a_release_s_diff_base() -> None:
         ("0.2.19-daily.20261030", 9, None),
     )
     assert daily.previous_version("0.2.19-daily.20261030") == "0.2.19-daily.20261029"
+    ohos = releases(
+        ("0.2.19-daily.20261030", 9, None),
+        ("0.2.19-daily.20261030.ohos-arm64", 9, None),
+        ("0.2.19-daily.20261031", 9, None),
+    )
+    assert ohos.previous_version("0.2.19-daily.20261031") == "0.2.19-daily.20261030"
+    assert (  # diff base 3 runs replay as recorded
+        ohos.previous_version("0.2.19-daily.20261031", diff_base=3)
+        == "0.2.19-daily.20261030.ohos-arm64"
+    )
     only = releases(("0.1.0-linux-x64", 30, None), ("0.1.0", 40, None))
     assert only.previous_version("0.1.0") == "0.1.0-linux-x64"  # nothing else to diff against
 
@@ -227,6 +237,7 @@ def test_a_platform_build_is_not_a_release_s_diff_base() -> None:
         ("0.3.8-darwin-x64", True),
         ("0.2.19-daily.20261029.win32-x64", True),
         ("1.0.0-macos-arm64.2", True),
+        ("0.2.19-daily.20261030.ohos-arm64", True),
         ("1.0.0", False),
         ("1.0.0-beta.1", False),
         ("1.0.0-linux", False),  # an OS alone: a release line, not a build

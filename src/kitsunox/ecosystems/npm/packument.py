@@ -37,12 +37,11 @@ MIN_FULL_BYTES: Final = 64 * 1024  # the same by unpacked size, when a count is 
 MAX_PARTIAL_SKIPS: Final = 3
 # A prerelease naming an OS and CPU (`0.5.4-latest-windows-x64`, `0.1.19-linux-x64`,
 # `0.2.19-daily.20261029.win32-x64`): one platform's build of a release (diff base 3).
-_PLATFORM_BUILD: Final = re.compile(
-    r"(?:^|[.-])(?:win32|windows|darwin|macos|linux|android|freebsd|openbsd|sunos|aix)"
-    r"[.-](?:x64|x86_64|amd64|arm64|aarch64|ia32|x86|arm|armv7l?|ppc64le?|s390x|riscv64)"
-    r"(?:$|[.-])",
-    re.IGNORECASE,
-)
+_OSES: Final = "win32|windows|darwin|macos|linux|android|freebsd|openbsd|sunos|aix"
+_CPUS: Final = "x64|x86_64|amd64|arm64|aarch64|ia32|x86|arm|armv7l?|ppc64le?|s390x|riscv64"
+_PLATFORM_BUILD: Final = re.compile(rf"(?:^|[.-])(?:{_OSES})[.-](?:{_CPUS})(?:$|[.-])", re.I)
+# Diff base 4 adds OpenHarmony (`0.2.19-daily.20261030.ohos-arm64`).
+_PLATFORM_BUILD_4: Final = re.compile(rf"(?:^|[.-])(?:{_OSES}|ohos)[.-](?:{_CPUS})(?:$|[.-])", re.I)
 
 _GITHUB_REPO = re.compile(
     r"^(?:git\+)?(?:https?|git|ssh)://(?:git@)?(?:www\.)?github\.com[/:]"
@@ -142,10 +141,11 @@ class Packument:
         isn't one: `@ozyman42/ozy-cli@0.5.4` was diffed against `0.5.4-latest-windows-x64`,
         published just before it with a single platform's binary and no postinstall, so the
         release's own postinstall read as added (8 live reports on the first two VM days). A
-        platform build is still analysed itself, and is still a base if nothing else is."""
+        platform build is still analysed itself, and is still a base if nothing else is.
+        Diff base 4 also knows OpenHarmony builds (`@bitfun-test/bitfun`'s daily `.ohos-arm64`)."""
         ranked = self._diff_bases(version)
-        if diff_base >= 3 and not platform_build(version):
-            ranked = [v for v in ranked if not platform_build(v)] or ranked
+        if diff_base >= 3 and not platform_build(version, diff_base=diff_base):
+            ranked = [v for v in ranked if not platform_build(v, diff_base=diff_base)] or ranked
         if not ranked:
             return None
         if diff_base < 2:
@@ -305,7 +305,8 @@ def normalize_repository_url(raw: str) -> str | None:
     return f"https://github.com/{owner}/{repo}"
 
 
-def platform_build(version: str) -> bool:
+def platform_build(version: str, *, diff_base: int = DIFF_BASE) -> bool:
     """`version`'s prerelease names an OS and CPU: one platform's build of a release."""
     prerelease = version.split("+", 1)[0].partition("-")[2]
-    return bool(prerelease) and _PLATFORM_BUILD.search(prerelease) is not None
+    pattern = _PLATFORM_BUILD_4 if diff_base >= 4 else _PLATFORM_BUILD
+    return bool(prerelease) and pattern.search(prerelease) is not None

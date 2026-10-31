@@ -4,7 +4,7 @@ Reverse-chronological. Newest entry first.
 
 ## 2026-10-31 (afternoon): Re-score results, a prerelease downgrade, three skipped ticks
 
-**Stage(s):** Stage 1 (`npm.publish-method.downgrade` v3)
+**Stage(s):** Stage 0 (diff base 4), Stage 1 (`npm.publish-method.downgrade` v3)
 **Context:** The re-score of the queue finished (two runs are being redone with the morning's
 rules). Over the 19 re-scored runs the queue went from 1,944 reported versions to 729 (-62%);
 no version with a malicious or inconclusive verdict dropped out. 640 versions in the queue were
@@ -18,6 +18,10 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
   `@koda-sl/baker-cli`). npm installs a prerelease only when asked for it by version or tag.
   - **Trade-off:** the rule can't see dist-tags, so a prerelease an attacker also tags
     `latest` is LOW here. Reading dist-tags at ingest would close that.
+- **Diff base 4: OpenHarmony builds are platform builds** (`.ohos-arm64`).
+  `@bitfun-test/bitfun@0.2.19-daily.20261031` was diffed against
+  `0.2.19-daily.20261030.ohos-arm64`, so its postinstall read as changed (HIGH), the case diff
+  base 3 fixed for Windows and Linux builds. Recorded runs replay with their own diff base.
 
 ### Challenges
 - **Three ticks were skipped (06:42, 07:42, 08:42).** The re-score of the first VM day

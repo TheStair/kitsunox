@@ -130,6 +130,9 @@ sequenceDiagram
    added (HIGH). 40 of 228,298 changes on the first two VM days had such a base, 8 of them
    reported. A platform build is still analysed itself, and is still the base when nothing
    else qualifies.
+   **Diff base 4** (2026-10-31) counts OpenHarmony builds as platform builds
+   (`0.2.19-daily.20261030.ohos-arm64`): `@bitfun-test/bitfun`'s daily release was diffed
+   against one and its postinstall read as changed (HIGH).
 6. **Popularity** (existing packages only; brand-new packages have no history). Three modes:
    - `watchlist` (default): membership in the newest watchlist built no later than `as_of`. The
      run records its id and SHA-256, and replay fails if the file has changed. No network.
