@@ -302,6 +302,40 @@ def test_every_base_chunk_of_a_name_is_compared(tmp_path: Path) -> None:
     assert found.severity is Severity.LOW
 
 
+def test_a_new_file_is_compared_with_all_of_the_base_s_code(tmp_path: Path) -> None:
+    """`@stacksjs/ts-cloud`: Bun names chunks `chunk-eevqxagd.js`, which `unhashed` can't tell
+    from a word, so its Telegram notifier read as new in every release. A file with no
+    counterpart is compared with what any base code file matched; one with a counterpart, and
+    base docs, still don't count."""
+    base = {
+        "dist/bin/chunk-eevqxagd.js": b"fetch(`https://api.telegram.org/bot${t}/sendMessage`)",
+        "lib/index.js": b"export const x = 1",
+        "README.md": b"Inspect requests at https://webhook.site/abc",
+    }
+    new = {
+        "dist/bin/chunk-jcehsvnm.js": b"fetch(`https://api.telegram.org/bot${t}/sendMessage`);",
+        "lib/index.js": b"fetch(`https://api.telegram.org/bot${t}/getMe`)",
+        "dist/bin/chunk-qwertyui.js": b"post('https://webhook.site/xyz')",
+    }
+    trees = {"1.0.0": base, "1.0.1": new}
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: trees[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    severity = {
+        (f.evidence[0].path, f.explanation.split(".")[0]): f.severity
+        for f in result.findings
+        if f.rule_id == "static.exfil-endpoint"
+    }
+    assert severity == {
+        ("dist/bin/chunk-jcehsvnm.js", "Found `api"): Severity.LOW,  # elsewhere in the base
+        ("lib/index.js", "Found `api"): Severity.HIGH,  # new to its own counterpart
+        ("dist/bin/chunk-qwertyui.js", "Found `webhook"): Severity.HIGH,  # only in base docs
+    }
+
+
 @pytest.mark.parametrize(
     ("path", "name"),
     [

@@ -4,7 +4,8 @@ Reverse-chronological. Newest entry first.
 
 ## 2026-10-31 (afternoon): Re-score results, a prerelease downgrade, three skipped ticks
 
-**Stage(s):** Stage 0 (diff base 4), Stage 1 (`npm.publish-method.downgrade` v3)
+**Stage(s):** Stage 0 (diff base 4), Stage 1 (`npm.publish-method.downgrade` v3), Stage 2
+(files with no counterpart)
 **Context:** The re-score of the queue finished (two runs are being redone with the morning's
 rules). Over the 19 re-scored runs the queue went from 1,944 reported versions to 729 (-62%);
 no version with a malicious or inconclusive verdict dropped out. 640 versions in the queue were
@@ -22,6 +23,19 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
   `@bitfun-test/bitfun@0.2.19-daily.20261031` was diffed against
   `0.2.19-daily.20261030.ohos-arm64`, so its postinstall read as changed (HIGH), the case diff
   base 3 fixed for Windows and Linux builds. Recorded runs replay with their own diff base.
+
+- **Stage 2: a file with no counterpart is compared with all of the base's code.** A match is
+  "not new" when the base's file at the same path, or its content-hashed chunks of the same
+  name, had it. A chunk renamed in a way `unhashed` can't see (Bun's `chunk-eevqxagd.js`, a
+  Vite name with no digit such as `main-Zlzlhfga.js`), code moved to a new path, or a versioned
+  directory (`gina`'s `framework/v0.7.7/`) read as new in every release. Such a file is now
+  compared with what any base code file matched (`BaseFiles.anywhere`; docs, types, source maps
+  and tests excluded), computed once per base. A file with a counterpart keeps the stricter
+  comparison, so an exfil URL added to a file that didn't have it is still new.
+  - **Estimate first** (`exfil_anywhere.py`): of 46 queued exfil-endpoint versions with a base,
+    28 already had the literal in another base code file, 27 of them reported by it alone.
+  - **Cost:** `esoftplay@0.0.248`, which moved its Telegram code into new files; 8 of the
+    family's 22 samples (from 0.0.142-m) are still reported.
 
 ### Challenges
 - **Three ticks were skipped (06:42, 07:42, 08:42).** The re-score of the first VM day
@@ -44,6 +58,8 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
   - Three dependency-confusion probes from one Bugcrowd researcher account
     (`internal-renderers`, `pandafortunerush`, `ms-client-portal`, 1.0.0 and 10.0.0): install
     hooks send user name, hostname and working directory to a bare IP.
+  - `char-ai-sdk@1.0.0` and `character-ai-sdk@1.0.0` (14:46 tick): the same stealer,
+    republished by a new account (`character-ai-labs`); still published at 14:55.
   - `dependencykfeg` 2.1.3, 25.0.3, 25.1.3 and `claims-acct-unlock@25.2.1` (publisher `weqwe`):
     DNS and Burp Collaborator beacons, and a payload pulled from a raw GitHub tarball. npm has
     replaced both with `0.0.1-security`.
@@ -65,8 +81,13 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
   sample. Dropped.
 
 ### Evaluation snapshot
-- `vm-day1`: unchanged (2,506 malicious, 17 benign reported by the dump); the rule fires on 149
-  malicious samples, none a prerelease.
+- `publish-method.downgrade` v3: `vm-day1` unchanged (2,506 malicious, 17 benign reported by the
+  dump); the rule fires on 149 malicious samples, none a prerelease.
+- Stage 2 base-wide comparison: 2,506 → 2,505 malicious (`esoftplay@0.0.248`), benign unchanged.
+- **Ranking gap:** `tavern-ai-sdk` and its two republications (`char-ai-sdk`,
+  `character-ai-sdk`, still live at 14:55) were reported only at score 5-6, through
+  `static.obfuscated` alone: their XOR-encoded string tables hide everything the capability and
+  exfil rules look for.
 
 ### Open questions / next steps
 - Read dist-tags at ingest, so a prerelease tagged `latest` keeps the downgrade's weight.
@@ -76,10 +97,6 @@ still unreviewed. Grouped by the MEDIUM+ rules that carry them, the second-large
 - `install-script-changed` alone carried 120 queue versions, nearly all ordinary installer
   edits. Reviewing them is still the price of catching edits to an existing hook file (see
   Removed / abandoned).
-- Stage 2 compares a file only with its counterpart; a renamed chunk (`chunk-eevqxagd.js`), a
-  versioned directory or moved code reads as new. Of 46 queued exfil-endpoint versions with a
-  base, 28 already had the same literal in another base code file (estimate,
-  `exfil_anywhere.py`); comparing such files with all base code is being measured.
 - Policy question for the owner: should Baileys forks that follow channels with the user's
   account (hidden or disclosed) be malicious rather than inconclusive?
 

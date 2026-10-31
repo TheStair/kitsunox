@@ -47,7 +47,15 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   8-character hash may have no digit and may contain `-` or `_` (`settings-panel-Bkki_GMk.js`,
   `-CnQC9-zc.js`); since 2026-10-31 such a suffix counts as a hash when it doesn't read as a
   word (a digit, `_` or `-`, or a capital past the first letter). Before, `glimmervoid`'s
-  settings panel was a "new" file, HIGH, in about 25 queued releases. A match
+  settings panel was a "new" file, HIGH, in about 25 queued releases. A file with no
+  counterpart at all (a chunk renamed in a way `unhashed` can't see, such as Bun's
+  `chunk-eevqxagd.js`; code moved to a new path or a versioned directory) is compared, since
+  2026-10-31, with what any of the base's code files matched (`BaseFiles.anywhere`; docs,
+  types, source maps and tests don't count) and says "Also in another of the previous
+  version's files". A file with a counterpart is still compared with that counterpart only.
+  On `vm-day1` this cost one malicious sample (`esoftplay@0.0.248`, which moved its Telegram
+  code into new files; 8 other releases of the family are still reported); in the live queue
+  about 27 of 46 exfil-endpoint reports with a base had the literal in another base file. A match
   only in a file that never runs (`NON_EXECUTING`: README and other docs, `.md`, `.d.ts`,
   source maps, `docs/`, `examples/`, `test/`) is LOW as well; at first only for
   `exfil-endpoint`, for every rule since the second pass (no malicious `vm-day1` sample lost;

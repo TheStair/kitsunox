@@ -125,6 +125,7 @@ NON_EXECUTING: Final = re.compile(
 )
 _NUMBER: Final = re.compile(r"[0-9]+")
 PREVIOUS_NOTE: Final = " Also in the previous version's file: not new in this release."
+ELSEWHERE_NOTE: Final = " Also in another of the previous version's files: not new in this release."
 DOCS_NOTE: Final = " Only in a file that doesn't run (documentation, types, a source map or tests)."
 
 
@@ -134,11 +135,16 @@ def _key(match: FileMatch) -> tuple[str, str]:
     return (match.rule_id, _NUMBER.sub("#", match.explanation))
 
 
-def _demoted(match: FileMatch, path: str, before: frozenset[tuple[str, str]]) -> FileMatch:
+def _demoted(
+    match: FileMatch,
+    path: str,
+    before: frozenset[tuple[str, str]],
+    previous_note: str = PREVIOUS_NOTE,
+) -> FileMatch:
     if match.severity in (Severity.INFO, Severity.LOW):
         return match
     if _key(match) in before:
-        note = PREVIOUS_NOTE
+        note = previous_note
     elif NON_EXECUTING.search(path):
         note = DOCS_NOTE
     else:
@@ -188,6 +194,7 @@ class BaseFiles:
         self.tree: Tree = tree or {}
         self._by_name: dict[str, list[str]] | None = None
         self._keys: dict[tuple[str, str], frozenset[tuple[str, str]]] = {}
+        self._anywhere: frozenset[tuple[str, str]] | None = None
 
     def counterparts(self, path: str) -> list[bytes]:
         if path in self.tree:
@@ -216,6 +223,20 @@ class BaseFiles:
             )
         return self._keys[memo]
 
+    def anywhere(self, cache: ContentCache) -> frozenset[tuple[str, str]]:
+        """What any of the base's code files matched (not documentation, types, source maps or
+        tests), worked out once. For a new file with no counterpart: a chunk renamed in a way
+        `unhashed` can't see (`chunk-eevqxagd.js`, `main-Zlzlhfga.js`), code moved to a new
+        path or a versioned directory (`framework/v0.7.7/`)."""
+        if self._anywhere is None:
+            self._anywhere = frozenset(
+                _key(m)
+                for path, content in sorted(self.tree.items())
+                if not NON_EXECUTING.search(path)
+                for m in cache.matches(sha256_hex(content), content)
+            )
+        return self._anywhere
+
 
 def _base_keys(base: BaseFiles, path: str, cache: ContentCache) -> frozenset[tuple[str, str]]:
     """What the base version's counterparts of `path` matched (nothing if it had none)."""
@@ -228,7 +249,12 @@ def content_matches(
     """A new content's matches as Stage 2 reports them (`_demoted` against the base)."""
     matches = cache.matches(item.sha256, content)
     before = _base_keys(base, item.path, cache) if matches else frozenset()
-    return [_demoted(m, item.path, before) for m in matches]
+    note = PREVIOUS_NOTE
+    if any(m.severity not in (Severity.INFO, Severity.LOW) for m in matches) and not (
+        item.path in base.tree or base.counterparts(item.path)
+    ):
+        before, note = base.anywhere(cache), ELSEWHERE_NOTE
+    return [_demoted(m, item.path, before, note) for m in matches]
 
 
 def analyse(content: bytes, rules: Sequence[FileRule] = RULES) -> tuple[FileMatch, ...]:
