@@ -71,3 +71,38 @@ def test_install_sources_follow_what_the_hook_loads() -> None:
         "b.js": b"payload",
     }
     assert sorted(install_sources(inline)) == ["a.js", "b.js", "package.json#scripts.install.js"]
+
+
+def test_binding_gyp_commands_are_install_commands() -> None:
+    """`@atedone/workspace-bootstrap`: no install script; a gyp action runs the code during
+    npm's implicit `node-gyp rebuild`. A command expansion runs while gyp reads the file."""
+    from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
+
+    gyp = b"""{
+      "targets": [{
+        "target_name": "x",
+        # a comment
+        "include_dirs": ["<!@(node -p \\"require('node-addon-api').include\\")"],
+        "actions": [{
+          "action_name": "state",
+          "inputs": ["scripts/write-state.js"],
+          "action": ["node", "scripts/write-state.js", '--install'],
+        }],
+      }],
+    }"""
+    files = {
+        "package.json": b'{"name": "x", "gypfile": true}',
+        "binding.gyp": gyp,
+        "scripts/write-state.js": b"process.getBuiltinModule('fs')",
+        "index.js": b"",
+    }
+    assert gyp_commands(files) == [
+        "node scripts/write-state.js --install",
+        "node -p \"require('node-addon-api').include\"",
+    ]
+    assert install_sources(files) == {
+        "scripts/write-state.js": b"process.getBuiltinModule('fs')",
+        "binding.gyp#commands.js": b"require('node-addon-api').include",
+    }
+    assert gyp_commands({"binding.gyp": b'{"targets": [{"sources": ["a.cc"]}]}'}) == []
+    assert gyp_commands({"package.json": b"{}"}) == []

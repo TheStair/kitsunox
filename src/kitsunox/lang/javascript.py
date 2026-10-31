@@ -36,7 +36,10 @@ from kitsunox.core.models import Record
 #    string are not dynamic code (`_constant_code`).
 # 3: MAX_EVIDENCE counts per capability and detail, so three `new Function(x)` calls no longer
 #    hide a later `eval(x)` in the same file (`code.capability-gained` tells them apart).
-EXTRACTOR_VERSION: Final = 3
+# 4: `process.getBuiltinModule("fs")` loads a module as `require` does, and
+#    `Reflect.get(process, "env")` is `process.env` (`@atedone/workspace-bootstrap`, 2026-10-31,
+#    used both to keep its install code clear of the usual tells).
+EXTRACTOR_VERSION: Final = 4
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
@@ -130,7 +133,7 @@ _QUERY: Final = f"""
 (import_statement source: (string) @source) @import
 (export_statement source: (string) @source) @import
 ((member_expression object: (identifier) @obj property: (property_identifier) @prop) @member
- (#any-of? @obj "process" {_any_of(GLOBAL_OBJECTS)}))
+ (#any-of? @obj "process" "Reflect" {_any_of(GLOBAL_OBJECTS)}))
 ((subscript_expression object: (identifier) @obj index: (_) @key) @member
  (#any-of? @obj "process" {_any_of(GLOBAL_OBJECTS)}))
 """
@@ -338,6 +341,35 @@ def _member(match: dict[str, list[ts.Node]]) -> Iterator[tuple[Capability, str, 
         yield Capability.NATIVE, f"process.{key}", node
     elif obj == "process" and key == "env" and _whole_env(node):
         yield Capability.ENV_ALL, "process.env", node
+    elif (obj, key) in (("process", "getBuiltinModule"), ("Reflect", "get")):
+        yield from _indirect(obj, key, node)
+
+
+def _indirect(obj: str, key: str, member: ts.Node) -> Iterator[tuple[Capability, str, ts.Node]]:
+    """`process.getBuiltinModule(x)`, which is `require(x)` for Node's own modules, and
+    `Reflect.get(process, "env")`, which is `process.env`."""
+    call = member.parent
+    if (
+        call is None
+        or call.type != "call_expression"
+        or call.child_by_field_name("function") != member
+    ):
+        return
+    arguments = call.child_by_field_name("arguments")
+    args = [c for c in arguments.named_children if c.type != "comment"] if arguments else []
+    if key == "getBuiltinModule":
+        specifier = fold_string(args[0]) if args else None
+        if specifier is None:
+            yield Capability.DYNAMIC_REQUIRE, "process.getBuiltinModule(<computed>)", call
+        elif (capability := module_capability(specifier)) is not None:
+            yield capability, specifier, call
+    elif (
+        len(args) >= 2
+        and _text(args[0]) == "process"
+        and fold_string(args[1]) == "env"
+        and _whole_env(call)
+    ):
+        yield Capability.ENV_ALL, "Reflect.get(process, 'env')", call
 
 
 def _whole_env(node: ts.Node) -> bool:

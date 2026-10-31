@@ -41,6 +41,14 @@ def caps(source: str, language: str = "javascript") -> set[tuple[Capability, str
         ("send(JSON.stringify(process.env))", (C.ENV_ALL, "process.env")),
         ("const {A, ...rest} = process.env", (C.ENV_ALL, "process.env")),
         ('process["env"]', (C.ENV_ALL, "process.env")),
+        # v4, `@atedone/workspace-bootstrap`: the same capabilities without the usual tells
+        ('process.getBuiltinModule("node:https")', (C.NETWORK, "node:https")),
+        ("process.getBuiltinModule('child_' + 'process')", (C.PROCESS, "child_process")),
+        (
+            "process.getBuiltinModule(name)",
+            (C.DYNAMIC_REQUIRE, "process.getBuiltinModule(<computed>)"),
+        ),
+        ("send(Reflect.get(process, 'env'))", (C.ENV_ALL, "Reflect.get(process, 'env')")),
     ],
 )
 def test_capabilities_found(source: str, expected: tuple[Capability, str]) -> None:
@@ -57,6 +65,8 @@ def test_capabilities_found(source: str, expected: tuple[Capability, str]) -> No
         'const {HOME, USER} = process.env; process.env["X"]',
         'process.env.X = "1"',
         'require("lodash"); import React from "react"',
+        "Reflect.get(process, 'env').HOME; Reflect.get(obj, 'env')",  # one variable; not process
+        'process.getBuiltinModule("path")',  # a module with no capability
     ],
 )
 def test_lookalikes_are_not_capabilities(source: str) -> None:

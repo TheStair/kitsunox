@@ -42,7 +42,7 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   aside) is LOW, weight 1, and says "Also in the previous version's file". A bundler's
   content-hashed chunk gets a new name whenever its content changes, so it is compared with
   the base's chunks of the same name without the hash (`dist/registry-BX6j2lnF.mjs` with
-  `dist/registry-CFQBxtE2.mjs`; `static.BaseFiles`, at most 4 of them): a doc comment naming
+  `dist/registry-CFQBxtE2.mjs`; `static.BaseFiles`; every base chunk of that name since 2026-10-31, worked out once per name: esbuild calls all its chunks `chunk-<HASH>.js`, and the first four rarely held the match, so `@wirecat/*` CLIs' bundled ngrok region table was HIGH in each release): a doc comment naming
   `*.trycloudflare.com` in `@camstack/*` addons was HIGH again on every release. Vite's
   8-character hash may have no digit and may contain `-` or `_` (`settings-panel-Bkki_GMk.js`,
   `-CnQC9-zc.js`); since 2026-10-31 such a suffix counts as a hash when it doesn't read as a

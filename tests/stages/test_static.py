@@ -285,6 +285,23 @@ def test_a_hashed_chunk_is_compared_with_the_base_chunk_of_the_same_name(tmp_pat
     assert by_path["dist/other-9QmZk1Pa.mjs"].severity is Severity.HIGH
 
 
+def test_every_base_chunk_of_a_name_is_compared(tmp_path: Path) -> None:
+    """`@wirecat/*`: esbuild calls every chunk `chunk-<HASH>.js`; the bundled ngrok region table
+    was in the base's sixth, and was HIGH again in each release."""
+    base = {f"dist/chunk-{c}AAAAAA1.js": b"export const x = 1" for c in "ABCDE"}
+    base["dist/chunk-FAAAAAA1.js"] = b'const regions = ["eu.ngrok.io"]'
+    new = {"dist/chunk-ZZZZZZZ9.js": b'const regions = ["eu.ngrok.io"]; // moved'}
+    trees = {"1.0.0": base, "1.0.1": new}
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: trees[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    (found,) = [f for f in result.findings if f.rule_id == "static.exfil-endpoint"]
+    assert found.severity is Severity.LOW
+
+
 @pytest.mark.parametrize(
     ("path", "name"),
     [

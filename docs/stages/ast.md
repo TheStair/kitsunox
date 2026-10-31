@@ -122,6 +122,19 @@ first version (`autotel-*`, `awaitly-*`); the narrowed rule loses none.
 inline hook named no file and its code went unread (`dependencykfeg`: a one-line DNS
 exfiltration of the working directory).
 
+**`binding.gyp` commands** (2026-10-31): a package with a `binding.gyp` is built with
+`node-gyp rebuild` when it is installed, a hook npm adds itself, and gyp runs commands while it
+builds: each `action`'s command, and each command expansion `<!(...)` / `<!@(...)`
+(`install.gyp_commands`). The files those commands name are install entries like a hook's, and
+code they pass to `node -e` / `-p` is profiled as `binding.gyp#commands.js`.
+`@atedone/workspace-bootstrap@0.0.1` had no install script; a gyp action ran
+`node scripts/write-state.js --install`, which went unread.
+
+**Extractor v4** (2026-10-31): `process.getBuiltinModule("fs")` loads a module as `require` does
+(a computed name is `dynamic-require`), and `Reflect.get(process, "env")` is `process.env`
+(the whole environment unless only one variable is read from it). The same package used both,
+so that its install code carried none of the usual tells.
+
 **`npm.install-script-changed`** (MEDIUM, weight 3; 2026-10-30) compares the files the install
 hooks name with the previous version's, byte for byte, and puts the changed lines in the
 evidence as a unified diff (one line of context, 40 lines and 200 characters a line at most;

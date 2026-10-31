@@ -158,7 +158,6 @@ _HASHED: Final = re.compile(r"[-.](?=[A-Za-z_]*[0-9])[A-Za-z0-9_]{8,20}(\.(?:m?j
 # Vite's 8-character base64url hash, which may have no digit and may contain `-` or `_`
 # (`settings-panel-Bkki_GMk.js`, `-CnQC9-zc.js`): taken for one when it doesn't read as a word.
 _VITE_HASH: Final = re.compile(r"-([A-Za-z0-9_-]{8})(\.(?:m?js|cjs))$")
-MAX_COUNTERPARTS: Final = 4  # base chunks of one name compared with a new one
 
 
 def unhashed(path: str) -> str | None:
@@ -180,11 +179,15 @@ class BaseFiles:
     """The base version's files a new file is compared with: the one at the same path, or for a
     content-hashed chunk, which gets a new name whenever its content changes, the base's chunks
     of the same name without the hash (`@camstack/addon-post-analysis` 1.2.654: a comment naming
-    `*.trycloudflare.com` was HIGH again on every release)."""
+    `*.trycloudflare.com` was HIGH again on every release). Every base chunk of that name counts,
+    and what they matched is worked out once per name: esbuild calls all its chunks
+    `chunk-<HASH>.js`, and the first four of them rarely held the match (`@wirecat/*` CLIs'
+    bundled ngrok region table, HIGH in each release, 2026-10-31)."""
 
     def __init__(self, tree: Tree | None) -> None:
         self.tree: Tree = tree or {}
         self._by_name: dict[str, list[str]] | None = None
+        self._keys: dict[tuple[str, str], frozenset[tuple[str, str]]] = {}
 
     def counterparts(self, path: str) -> list[bytes]:
         if path in self.tree:
@@ -197,16 +200,26 @@ class BaseFiles:
             for other in sorted(self.tree):
                 if (other_name := unhashed(other)) is not None:
                     self._by_name.setdefault(other_name, []).append(other)
-        return [self.tree[p] for p in self._by_name.get(name, ())[:MAX_COUNTERPARTS]]
+        return [self.tree[p] for p in self._by_name.get(name, ())]
+
+    def keys(self, path: str, cache: ContentCache) -> frozenset[tuple[str, str]]:
+        """What `path`'s counterparts matched (nothing if it has none), once per chunk name."""
+        name = None if path in self.tree else unhashed(path)
+        if path not in self.tree and name is None:
+            return frozenset()
+        memo = ("path", path) if name is None else ("name", name)
+        if memo not in self._keys:
+            self._keys[memo] = frozenset(
+                _key(m)
+                for content in self.counterparts(path)
+                for m in cache.matches(sha256_hex(content), content)
+            )
+        return self._keys[memo]
 
 
 def _base_keys(base: BaseFiles, path: str, cache: ContentCache) -> frozenset[tuple[str, str]]:
     """What the base version's counterparts of `path` matched (nothing if it had none)."""
-    return frozenset(
-        _key(m)
-        for content in base.counterparts(path)
-        for m in cache.matches(sha256_hex(content), content)
-    )
+    return base.keys(path, cache)
 
 
 def content_matches(

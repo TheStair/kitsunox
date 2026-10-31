@@ -2,6 +2,35 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-31 (morning): `binding.gyp` as install code, extractor v4, every chunk compared
+
+**Stage(s):** Stage 2 (hashed chunks), Stage 3 (install code, capability extractor)
+**Context:** Two items from the previous entry's review. `@atedone/workspace-bootstrap` ran
+code at install with no install script, through a `binding.gyp` action, and avoided the
+extractor's tells. Separately, the `@wirecat/*` CLIs reported HIGH in every release (about 10
+reports in two ticks) for a bundled ngrok region table the base already had.
+
+### Decisions
+- **`binding.gyp` commands are install commands** (`install.gyp_commands`). npm runs
+  `node-gyp rebuild` when a package has `binding.gyp` and no install script, and node-gyp runs
+  each target's `action` and every command expansion (`<!(...)`, `<!@(...)`). Their `node`
+  files are followed like a hook's, and inline `node -e`/`-p` code is read as
+  `binding.gyp#commands.js`.
+- **Extractor v4:** `process.getBuiltinModule(m)` counts as `require(m)` (a computed name is
+  `dynamic-require`), and `Reflect.get(process, 'env')` as `process.env` when the whole object
+  is used.
+- **Every base chunk with the same unhashed name is compared**, not the first 4. The esbuild
+  bundles split one name into many chunks, so the chunk holding the ngrok table was never
+  among the 4 compared. Keys are memoised per base, so the cost stays small.
+
+### Evaluation snapshot
+- `vm-day1`, against the previous entry: 2,503 → 2,506 malicious reported, benign unchanged.
+  The 3 are `awaitly-visualizer` (2.0.2, 13.0.1, 22.0.2), whose `index.js` runs at install
+  only through `binding.gyp`.
+
+### Open questions / next steps
+- Re-score the queue with these rules once the current re-score finishes.
+
 ## 2026-10-31 (early morning): Third precision pass, from the re-scored queue
 
 **Stage(s):** Stage 0 (diff base 3), Stage 2 (`exfil-endpoint` v4, hashed chunks), Stage 3
