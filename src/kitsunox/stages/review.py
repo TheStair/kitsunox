@@ -8,6 +8,7 @@ import itertools
 import math
 import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Final
@@ -40,6 +41,7 @@ from kitsunox.stages.repo import (
     RepoComparison,
     RepoMemory,
     compare,
+    compare_pool,
 )
 from kitsunox.stages.static import ArtifactFiles, Unavailable
 from kitsunox.util.http import FetchError, FetchMode, HttpFetcher, Snapshot, TransientFetchError
@@ -80,11 +82,11 @@ class NpmRepoLookup:
     failed on the same tarball (Stage 4 reads only versions Stage 2 read, and its fetches sit in
     the immutable index), marked it, and `collect` redoes the run from Stage 1 next tick."""
 
-    def __init__(self, fetcher: HttpFetcher) -> None:
+    def __init__(self, fetcher: HttpFetcher, *, pool: Executor | None = None) -> None:
         self.files = ArtifactFiles(NpmEcosystem(fetcher))
         self.github = GitHub(fetcher)
         self.locator = NpmLocator()
-        self.memory = RepoMemory()
+        self.memory = RepoMemory(pool=pool)
 
     def new_pass(self) -> None:
         self.memory.new_pass()
@@ -106,8 +108,8 @@ class NpmRepoLookup:
             return RepoComparison(unavailable=str(exc)[:300])
 
 
-def repo_lookup(fetcher: HttpFetcher) -> RepoLookup:
-    return NpmRepoLookup(fetcher)
+def repo_lookup(fetcher: HttpFetcher, *, pool: Executor | None = None) -> RepoLookup:
+    return NpmRepoLookup(fetcher, pool=pool)
 
 
 @dataclass
@@ -305,16 +307,22 @@ def run_watchlist(data: DataDir, manifest: RunManifest) -> Watchlist | None:
 
 
 def run_correlate_stage(
-    data: DataDir, run_id: str, *, workers: int = 8, client: httpx.Client | None = None
+    data: DataDir,
+    run_id: str,
+    *,
+    workers: int = 8,
+    client: httpx.Client | None = None,
+    seed: Snapshot | None = None,
 ) -> CandidateFile:
     """Stage 4 on a run Stage 3 has processed, with the run's watchlist. Repository and
-    dependency requests are recorded in `correlate-snapshot.json` next to the run. The caller
-    holds the lock."""
+    dependency requests are recorded in `correlate-snapshot.json` next to the run; a `seed`
+    (the run's own earlier snapshot, when re-scoring) serves what it holds as recorded. The
+    caller holds the lock."""
     run_dir = data.run_dir(run_id)
     manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
     labels_id = label_store(data).latest_id(NPM, not_after=manifest.as_of)
     labels = label_store(data).load(NPM, labels_id) if labels_id else None
-    snapshot = Snapshot()
+    snapshot = seed if seed is not None else Snapshot()
     fetcher = HttpFetcher(
         store=data.blobs,
         snapshot=snapshot,
@@ -329,13 +337,14 @@ def run_correlate_stage(
         dependencies=NpmDependencyLookup(fetcher, cap=dependency_cap(manifest.window)),
     )
     try:
-        candidates = correlate_run(
-            run_dir,
-            ctx,
-            CORRELATION_RULES,
-            repo=repo_lookup(fetcher),
-            workers=workers,
-        )
+        with compare_pool() as pool:  # archives are extracted in worker processes
+            candidates = correlate_run(
+                run_dir,
+                ctx,
+                CORRELATION_RULES,
+                repo=repo_lookup(fetcher, pool=pool),
+                workers=workers,
+            )
     finally:
         fetcher.close()
     snapshot.save(run_dir / CORRELATE_SNAPSHOT)

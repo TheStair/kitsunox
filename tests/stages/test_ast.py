@@ -163,3 +163,36 @@ def test_install_profile_covers_only_entry_files() -> None:
     assert change.before is None
     assert change.install is not None
     assert change.install.capabilities == {Capability.NETWORK, Capability.ENV_ALL}
+
+
+def test_a_previous_outside_the_batch_is_fetched() -> None:
+    """`@bike4mind/cli`: branch snapshots, each following its own branch's last snapshot. The
+    previous was neither the base nor in the batch, so its install code counted as new."""
+    trees = {"base": BASE, "branch-a.1": NEW, "branch-b.2": NEW, "branch-b.1": NEW}
+    fetched: list[str] = []
+    seen: list[CodeChange] = []
+
+    def tree_of(s: VersionSnapshot) -> dict[str, bytes]:
+        fetched.append(s.ref.version)
+        return trees[s.ref.version]
+
+    class Spy:
+        id = "test.spy"
+        version = 1
+
+        def evaluate_code(self, change: CodeChange) -> list[Finding]:
+            seen.append(change)
+            return []
+
+    batch = PackageBatch(
+        ecosystem="npm",
+        name="kx",
+        base=snap("base"),
+        versions=(
+            Candidate(change=Change(new=snap("branch-a.1"), previous=snap("base"))),
+            Candidate(change=Change(new=snap("branch-b.2"), previous=snap("branch-b.1"))),
+        ),
+    )
+    analyse_batch(batch, tree_of, CapabilityCache(None), [Spy()])
+    assert fetched == ["base", "branch-a.1", "branch-b.1", "branch-b.2"]
+    assert seen[1].before is not None and seen[1].added == frozenset()

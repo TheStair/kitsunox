@@ -171,21 +171,37 @@ def analyse_batch(
     or an earlier version in the batch), so a capability is attributed to the version that
     gained it, even if a later version in the burst drops it again. A version with no previous
     is a new package even if the batch holds an earlier placeholder (`0.0.0-stage` before
-    `1.4.0`): npm says nothing came before it, so it gained nothing. A previous whose files
-    were unavailable leaves nothing to compare with, so `before` is None as well."""
+    `1.4.0`): npm says nothing came before it, so it gained nothing. A previous that is
+    neither the base nor in the batch is fetched (`@bike4mind/cli` publishes snapshots of many
+    branches at once, each following its own branch's last snapshot; without its files every
+    capability of their install code counted as new). A previous whose files are unavailable
+    leaves nothing to compare with, so `before` is None as well."""
     profiles: dict[str, tuple[Profile, Profile | None, dict[str, bytes]]] = {}
+    unavailable: set[str] = set()
+
+    def load(snapshot: VersionSnapshot) -> None:
+        tree = trees(snapshot)
+        if isinstance(tree, Unavailable):
+            unavailable.add(snapshot.ref.version)
+            return
+        profiles[snapshot.ref.version] = (
+            profile(tree, cache),
+            _install_profile(tree, cache, install_entries),
+            install_files(tree, install_entries),
+        )
+
     if batch.base is not None:
-        base_tree = trees(batch.base)
-        if not isinstance(base_tree, Unavailable):
-            profiles[batch.base.ref.version] = (
-                profile(base_tree, cache),
-                _install_profile(base_tree, cache, install_entries),
-                install_files(base_tree, install_entries),
-            )
+        load(batch.base)
     updated = []
     for candidate in batch.versions:
         snapshot = candidate.change.new
         previous = candidate.change.previous
+        if (
+            previous is not None
+            and previous.ref.version not in profiles
+            and previous.ref.version not in unavailable
+        ):
+            load(previous)
         before, install_before, files_before = (
             profiles.get(previous.ref.version, (None, None, None))
             if previous

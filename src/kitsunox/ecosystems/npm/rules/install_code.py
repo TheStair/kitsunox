@@ -28,9 +28,13 @@ RISKY: Final = frozenset({C.NETWORK, C.PROCESS, C.ENV_ALL, C.DYNAMIC_CODE, C.DYN
 class InstallScriptCode(BaseRule):
     """The code an install hook runs reaches the network, runs processes, takes the whole
     environment or runs dynamic code. For an update, only capabilities the install code didn't
-    have before count."""
+    have before count.
+
+    v2 (2026-10-30): the install code includes the package files it loads by a constant path
+    (`install.followed_files`): +12 malicious `vm-day1` samples, +1 benign."""
 
     id = "npm.install-script-code"
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install script runs risky code"

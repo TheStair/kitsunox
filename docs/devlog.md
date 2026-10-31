@@ -2,6 +2,41 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-31 (small hours): Faster Stage 4, a missing-base fix, install imports, re-scoring
+
+**Stage(s):** Stage 3 (install profile, previous outside the batch), Stage 4 (worker
+processes), reports (`kitsunox rescore`)
+**Context:** The owner asked for the queue to be re-scored with the current rules, for Stage 4
+to be faster, and for install scripts' imports to be followed.
+
+### Decisions
+- **The slow ticks were mostly us.** The tick runs at `Nice=10`; Stage 4 took 24 minutes while
+  an eval and a re-analysis ran at normal priority beside it, and 3 minutes for a larger run
+  with nothing beside it. Side jobs now run at `nice 19`.
+- **Stage 4 extracts and compares in worker processes** (`repo.compare_pool`: three,
+  `forkserver`, each replaced after 25 comparisons). A replayed tick's Stage 4: 679 s in
+  threads, 325 s with the pool, byte-identical `correlate.jsonl`.
+- **Stage 3 fetches a previous that is neither the base nor in the batch.** `@bike4mind/cli`
+  publishes snapshots of many branches at once, each following its own branch's last snapshot;
+  with no `before`, `npm.install-script-code` counted all of their install code as new (the
+  explanation lacked "new to the install code"). 47 queued updates, 40 reported for that alone
+  (`@bike4mind/cli`, `@opencode/cli`, `@netlify/agent-runner-cli`).
+- **Install code follows what it loads** (`install.followed_files`): constant relative
+  `require`/`import`, `path.join(__dirname, ...)`, `new URL(..., import.meta.url)`, two levels,
+  20 files of at most 256 KiB. `vm-day1`: 2,506 malicious reported (was 2,494), none lost, 19
+  benign (one added).
+- **`kitsunox rescore`**: Stages 1-4 and the report again on finished runs, seeded with each
+  run's own Stage 2 and 4 snapshots, the tick's outputs kept under `before-rescore/`, the lock
+  taken per run. A driver (`session-scripts/rescore_driver.sh`) runs it between ticks.
+
+### Review
+- `luna-baileys@1.0.0`, a new Baileys fork: on every connection it fetches a channel list from
+  its author's GitHub and silently follows each channel with the user's WhatsApp account, and
+  `requestPairingCode` defaults to a fixed code. Inconclusive (covert account use, no
+  credential theft found); the owner may want to call it malicious.
+- `calculator-preinstall-hook-demo@1.1.0` runs `mshta.exe` on a bundled HTA from its
+  preinstall, a self-described harmless test fixture of that technique.
+
 ## 2026-10-30 (late night): Second precision pass: what still reports under the current rules
 
 **Stage(s):** Stage 2 (hashed chunks, docs-only matches), Stage 3 (`code.capability-gained`

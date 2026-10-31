@@ -104,6 +104,22 @@ of the newest one and writes:
   (`test_a_missing_report_alone_is_redone`). Version links are checked to resolve to the pages
   the run wrote (`test_every_version_link_resolves`).
 
+## Re-scoring (`kitsunox rescore`, 2026-10-30)
+
+A run's report is written once, by the rules of its tick, and stays in the queue until the run
+is pruned. `kitsunox rescore RUN... | --queued [--skip-rescored]` runs Stages 1-4 and the report
+again with the current rules (`collect.rescore_run`):
+
+- **From the run's recorded inputs:** its `changes.jsonl`, and its Stage 2 and 4 snapshots as
+  seeds, so every response they recorded (tarballs, refs, archives, packuments) is served as it
+  was then; only requests the current rules newly need (a version Stage 1 now routes to Stage
+  2) go to the network, and are recorded too.
+- **The tick's outputs are kept** under `before-rescore/` (the first re-score only), and
+  `rescore.json` says when and how many versions it reported before and after.
+- **Verdicts carry over** (they are by version), and the queue is rebuilt after each run.
+- **The lock is taken one run at a time**, so a scheduled tick can run between two runs; a
+  run busy with a tick stops the command (exit 3), and `--skip-rescored` resumes.
+
 ## First look (2026-10-28)
 
 A preview on the hour `20261028T031447Z-npm` (3,731 versions): 24 to review (0.6%), 10 with a

@@ -335,12 +335,15 @@ def record_static(
     *,
     workers: int = 8,
     client: httpx.Client | None = None,
+    seed: Snapshot | None = None,
 ) -> tuple[PackageBatch, ...]:
     """Stage 2 on a recorded, triaged run, fetching live. Tarballs go into the data directory's
     blob store (immutable, so a tarball already fetched is not fetched again), and the requests
-    are recorded in `static-snapshot.json` next to the run. The caller holds `DataDir.lock()`."""
+    are recorded in `static-snapshot.json` next to the run. A `seed` (the run's own earlier
+    snapshot, when re-scoring) serves what it holds as recorded and keeps it. The caller holds
+    `DataDir.lock()`."""
     run_dir = data.run_dir(run_id)
-    snapshot = Snapshot()
+    snapshot = seed if seed is not None else Snapshot()
     fetcher = HttpFetcher(
         store=data.blobs,
         snapshot=snapshot,

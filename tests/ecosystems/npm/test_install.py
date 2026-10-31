@@ -43,3 +43,31 @@ def test_install_sources_include_inline_code() -> None:
         "package.json#scripts.install.js": b"console.log(1)",
         "package.json#scripts.preinstall.js": b'require("https").get(u)',
     }
+
+
+def test_install_sources_follow_what_the_hook_loads() -> None:
+    """`@next2012/aistudio-runtime`: the hook's file only imports `lib/postinstall.js`."""
+    from kitsunox.ecosystems.npm import install
+    from kitsunox.ecosystems.npm.install import install_sources
+
+    files = {
+        "package.json": json.dumps({"scripts": {"postinstall": "node install.cjs"}}).encode(),
+        "install.cjs": b"import(pathToFileURL(join(__dirname, 'lib', 'postinstall.js')).href)",
+        "lib/postinstall.js": b"const s = require('./steps'); require('../escape.js')",
+        "lib/steps/index.js": b"require('./deep.cjs')",
+        "lib/steps/deep.cjs": b"third level: not followed",
+        "lib/big.js": b"x" * (install.MAX_FOLLOWED_BYTES + 1),
+        "README.md": b"",
+    }
+    files["install.cjs"] += b"; require('./lib/big'); require('./README.md'); require('fs')"
+    assert sorted(install_sources(files)) == [
+        "install.cjs",
+        "lib/postinstall.js",
+        "lib/steps/index.js",
+    ]
+    inline = {
+        "package.json": json.dumps({"scripts": {"install": "node -e \"require('./a')\""}}).encode(),
+        "a.js": b"spawn(process.execPath, [path.resolve(__dirname, 'b.js')])",
+        "b.js": b"payload",
+    }
+    assert sorted(install_sources(inline)) == ["a.js", "b.js", "package.json#scripts.install.js"]

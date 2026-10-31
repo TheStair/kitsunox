@@ -135,6 +135,24 @@ _QUERY: Final = f"""
  (#any-of? @obj "process" {_any_of(GLOBAL_OBJECTS)}))
 """
 
+# Where a file loads other files of its package from (`local_paths`): a relative `require`,
+# `import` or `export ... from`, `path.join` or `path.resolve` from `__dirname`, or
+# `new URL(rel, import.meta.url)`.
+_LOCAL_QUERY: Final = """
+((call_expression function: (identifier) @callee arguments: (arguments . (_) @arg))
+ (#eq? @callee "require"))
+(call_expression function: (import) arguments: (arguments . (_) @arg))
+(import_statement source: (string) @arg)
+(export_statement source: (string) @arg)
+((call_expression
+  function: [(identifier) @fn (member_expression property: (property_identifier) @fn)]
+  arguments: (arguments . (identifier) @base)) @join
+ (#any-of? @fn "join" "resolve")
+ (#eq? @base "__dirname"))
+((new_expression constructor: (identifier) @ctor arguments: (arguments . (_) @arg))
+ (#eq? @ctor "URL"))
+"""
+
 _TS_SUFFIXES: Final = (".ts", ".mts", ".cts")
 
 
@@ -146,6 +164,35 @@ def _language(language: str) -> tuple[ts.Language, ts.Query]:
         "tsx": lambda: ts.Language(tsts.language_tsx()),
     }[language]()
     return lang, ts.Query(lang, _QUERY)
+
+
+@cache
+def _local_query(language: str) -> ts.Query:
+    return ts.Query(_language(language)[0], _LOCAL_QUERY)
+
+
+def local_paths(content: bytes, language: str) -> tuple[str, ...]:
+    """The package files `content` names to load or run, relative to its own directory
+    (`./lib/x.js`, `../y`), in source order, each once. Only constant paths count; a
+    `path.join(__dirname, "lib", "x.js")` is `./lib/x.js`."""
+    if len(content) > MAX_SOURCE_BYTES:
+        return ()
+    parser, _ = _parser(language)
+    found: dict[str, None] = {}
+    matches = ts.QueryCursor(_local_query(language)).matches(parser.parse(content).root_node)
+    for _, match in sorted(matches, key=lambda m: _first_byte(m[1])):
+        if "join" in match:
+            arguments = match["join"][0].child_by_field_name("arguments")
+            rest = [fold_string(a) for a in (arguments.named_children[1:] if arguments else [])]
+            if rest and all(r is not None for r in rest):
+                found.setdefault("./" + "/".join(r or "" for r in rest), None)
+        elif (value := fold_string(match["arg"][0])) is not None and value.startswith("."):
+            found.setdefault(value, None)
+    return tuple(found)
+
+
+def _first_byte(match: dict[str, list[ts.Node]]) -> int:
+    return min(node.start_byte for nodes in match.values() for node in nodes)
 
 
 _local = threading.local()

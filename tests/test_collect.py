@@ -1,5 +1,6 @@
 """`kitsunox collect`: one unattended tick against a mocked registry."""
 
+import json
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
@@ -9,7 +10,15 @@ import pytest
 
 import kitsunox.collect
 from conftest import AS_OF, Router, save_watchlist
-from kitsunox.collect import REPORT_ONLY, _resume_from, collect, run_stages
+from kitsunox.collect import (
+    REPORT_ONLY,
+    RESCORE_INFO,
+    RESCORE_ORIGINALS,
+    _resume_from,
+    collect,
+    rescore_run,
+    run_stages,
+)
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL
 from kitsunox.evaluation.labels import LabelSet, label_store
@@ -205,3 +214,37 @@ def test_stage5_runs_only_with_a_results_root(tmp_path: Path, registry: Router) 
     assert line.startswith(f"sandbox {later.manifest.run_id}: 0 of "), line
     assert "export: 0 jobs in " in line
     assert (data.run_dir(later.manifest.run_id) / "sandbox.jsonl").exists()
+
+
+def test_a_rescore_redoes_the_stages_and_keeps_the_ticks_outputs(
+    tmp_path: Path, registry: Router
+) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    ignored: list[str] = []
+    first = collect(data, now=AS_OF, log=ignored.append, clients=registry.client).manifest
+    assert first is not None
+    run_dir = data.run_dir(first.run_id)
+    tick_output = (run_dir / "correlate.jsonl").read_bytes()
+
+    summary = rescore_run(data, first.run_id, registry.client, AS_OF + timedelta(days=1))
+    assert "triaged" in summary and summary.endswith(
+        "1 to review (report/index.md); was 1 to review"
+    )
+    originals = run_dir / RESCORE_ORIGINALS
+    assert (originals / "correlate.jsonl").read_bytes() == tick_output
+    assert (originals / "report" / "index.md").exists()
+    # The same rules on the same recorded inputs: the same Stage 4 output.
+    assert (run_dir / "correlate.jsonl").read_bytes() == tick_output
+    info = json.loads((run_dir / RESCORE_INFO).read_bytes())
+    assert info["rescored_at"].startswith("2026") and (
+        info["reported_before"],
+        info["reported"],
+    ) == (1, 1)
+
+    # A second re-score keeps the first originals.
+    rescore_run(data, first.run_id, registry.client, AS_OF + timedelta(days=2))
+    assert (originals / "correlate.jsonl").read_bytes() == tick_output
+    assert not (run_dir / f"{RESCORE_ORIGINALS}.partial").exists()

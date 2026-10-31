@@ -54,9 +54,19 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
   [0008](../decisions/0008-stage2-routing-and-tarball-capture.md).
 - **Profile:** a version's capabilities, the union over its files, with where each is used.
   The **install profile** covers only the files its install hooks run (`node setup.js` →
-  `setup.js`; `ecosystems/npm/install.py`).
-- **Delta:** each version is compared with its `change.previous` (the base, or an earlier
-  version in the batch). A capability is attributed to the version that gained it, even if a
+  `setup.js`; `ecosystems/npm/install.py`), and since 2026-10-30 the package files those
+  load or run by a constant path (`require("./lib/x")`, `import`, `export ... from`,
+  `path.join(__dirname, "lib", "x.js")`, `new URL("./x", import.meta.url)`; `local_paths`
+  in `lang/javascript.py`): two levels deep, at most 20 files of at most 256 KiB, so a hook
+  that loads the whole library doesn't make it all install code. `@next2012/aistudio-runtime`'s
+  hook only imported `lib/postinstall.js`. On `vm-day1`: +12 malicious samples (the
+  `@emilgroup/*` SDK series, `free-anthropic-claude`, `github-badge-bot`, `aicp-tracker`),
+  none lost, +1 benign (`domain-driver@0.8.2`).
+- **Delta:** each version is compared with its `change.previous` (the base, an earlier
+  version in the batch, or, since 2026-10-30, fetched on its own: `@bike4mind/cli` publishes
+  snapshots of many branches at once, each following its own branch's last snapshot, and
+  without that previous every capability of their install code counted as new: 47 queued
+  updates, 40 reported for that alone). A capability is attributed to the version that gained it, even if a
   later version in the burst drops it. A version with no previous is a new package, even when
   the batch holds a staged-publishing placeholder before it (`0.0.0-stage`, then `1.4.0`).
   Comparing with the placeholder made every capability "gained": 37 of the 44 versions Stage 3

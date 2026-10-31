@@ -20,15 +20,19 @@ questions (`ReleaseSource`); the comparison itself is not.
 
 from __future__ import annotations
 
+import multiprocessing
 import threading
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import Executor, ProcessPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Final, Protocol
 
 from kitsunox.core.models import Change, Record
-from kitsunox.githost.github import ARCHIVE_PREFIX, GitHub, GitHubRepo
+from kitsunox.githost.github import ARCHIVE_PREFIX, GitHub, GitHubRepo, extract_archive
 from kitsunox.lang.javascript import language_for
+from kitsunox.util.archive import ExtractLimits
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import FetchError, TransientFetchError
 
@@ -203,6 +207,21 @@ def _archive_url(repo: GitHubRepo, commit: str) -> str:
 
 
 ARCHIVES_IN_MEMORY: Final = 3
+# A pool worker is replaced after this many comparisons, so the memory one large repository
+# left fragmented is given back.
+COMPARISONS_PER_WORKER: Final = 25
+
+
+def compare_pool() -> ProcessPoolExecutor:
+    """Worker processes for `RepoMemory(pool=...)`: one per extraction slot. Extracting an
+    archive is pure-Python `tarfile` work, so threads ran it one at a time under the GIL:
+    about 85% of Stage 4 on 2026-10-30 (373 distinct archives for 404 comparisons, 25 minutes).
+    `forkserver`, not `fork`: Stage 4's process has threads running."""
+    return ProcessPoolExecutor(
+        max_workers=ARCHIVES_IN_MEMORY,
+        mp_context=multiprocessing.get_context("forkserver"),
+        max_tasks_per_child=COMPARISONS_PER_WORKER,
+    )
 
 
 class RepoMemory:
@@ -229,9 +248,17 @@ class RepoMemory:
       holding one, with allocator fragmentation on top, took Stage 4 on a 110k-version run to
       18 GB on 2026-10-30. Downloads stay parallel; `archive` holds a slot from extraction
       until the caller is done with the tree.
+    - **With a `pool`** (`compare_pool`), extraction and the comparison run in its worker
+      processes (`compared_in_pool`), still one slot each; without one, in the thread.
     """
 
-    def __init__(self, refs: dict[GitHubRepo, Mapping[str, str] | None] | None = None) -> None:
+    def __init__(
+        self,
+        refs: dict[GitHubRepo, Mapping[str, str] | None] | None = None,
+        *,
+        pool: Executor | None = None,
+    ) -> None:
+        self.pool = pool
         self._lock = threading.Lock()
         self._refs = refs if refs is not None else {}
         self._request_locks: dict[_Request, threading.Lock] = {}
@@ -288,6 +315,31 @@ class RepoMemory:
                 raise
             del body
             yield tree
+
+    def compared_in_pool(
+        self, github: GitHub, repo: GitHubRepo, commit: str, directory: str, job: _Job
+    ) -> RepoComparison:
+        """`job` (`_extract_and_compare` with the release bound) on the archive at `commit`,
+        in a pool worker. An unreadable archive raises `ValueError`, as `archive` does."""
+        pool = self.pool
+        if pool is None:
+            raise RuntimeError("compared_in_pool needs a RepoMemory with a pool")
+        url = _archive_url(repo, commit)
+        request = _Request(repo, commit)
+        body = self._archive_body(github, url, request)
+        with self._lock:
+            unreadable = self._unreadable.get((request, directory))
+        if unreadable is not None:
+            raise ValueError(str(unreadable))  # the same text for every version
+        with self._slots:
+            outcome = pool.submit(job, body).result()
+        del body
+        if isinstance(outcome, str):
+            error = ValueError(outcome)
+            with self._lock:
+                self._unreadable[(request, directory)] = error
+            raise error
+        return outcome
 
     def _archive_body(self, github: GitHub, url: str, request: _Request) -> bytes:
         def fetch() -> bytes:
@@ -352,6 +404,16 @@ def compare(
         return RepoComparison(unavailable="no commit or tag for this version")
     commit, how = found
     source = ReleaseSource(repo=str(repo), directory=directory, commit=commit, how=how)
+    if memory.pool is not None:
+        job = partial(
+            _extract_and_compare, github.limits, change, package, locator, source, directory
+        )
+        try:
+            return memory.compared_in_pool(github, repo, commit, directory, job)
+        except TransientFetchError:
+            raise
+        except (FetchError, ValueError) as exc:
+            return RepoComparison(source=source, unavailable=f"archive: {exc}"[:300])
     with ExitStack() as held:  # the extraction slot, until the comparison is done
         try:
             tree = held.enter_context(memory.archive(github, repo, commit, directory))
@@ -360,6 +422,29 @@ def compare(
         except (FetchError, ValueError) as exc:  # e.g. HTTP 404 (never pushed), size limits
             return RepoComparison(source=source, unavailable=f"archive: {exc}"[:300])
         return _compare_tree(change, package, locator, source, directory, tree)
+
+
+# The work `compared_in_pool` sends: the archive's body in, a comparison or the text of why
+# the archive can't be read out (an `ArchiveLimitError` doesn't survive pickling).
+_Job = Callable[[bytes], "RepoComparison | str"]
+
+
+def _extract_and_compare(
+    limits: ExtractLimits,
+    change: Change,
+    package: Tree,
+    locator: Locator,
+    source: ReleaseSource,
+    directory: str,
+    body: bytes,
+) -> RepoComparison | str:
+    """In a pool worker: extract the archive (only `directory`, if set) and compare."""
+    try:
+        tree = extract_archive(body, limits=limits, directory=directory)
+    except ValueError as exc:
+        return str(exc)
+    del body
+    return _compare_tree(change, package, locator, source, directory, tree)
 
 
 def _compare_tree(

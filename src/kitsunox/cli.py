@@ -15,8 +15,10 @@ import typer
 from kitsunox import __version__
 from kitsunox.collect import (
     DEFAULT_KEEP_DAYS,
+    RESCORE_INFO,
     SANDBOX_RESULTS_ENV,
     collect,
+    rescore_run,
     run_sandbox,
     run_stages,
     where,
@@ -488,6 +490,45 @@ def queue_cmd(
     if queue.skipped:
         typer.echo(f"unreadable reports left out: {', '.join(queue.skipped)}", err=True)
     typer.echo(f"saved to {directory}/index.md")
+
+
+@app.command("rescore")
+def rescore_cmd(
+    run_ids: Annotated[list[str] | None, typer.Argument(help="Runs to re-score.")] = None,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    queued: Annotated[
+        bool, typer.Option("--queued", help="Every run in the review queue's window.")
+    ] = False,
+    days: Annotated[int, typer.Option(min=1)] = DEFAULT_KEEP_DAYS,
+    skip_rescored: Annotated[
+        bool, typer.Option("--skip-rescored", help="Leave runs that were re-scored already.")
+    ] = False,
+) -> None:
+    """Run Stages 1-4 and the report again on finished runs with the current rules, from each
+    run's recorded inputs (only requests the current rules newly need go to the network), then
+    rebuild the queue. The tick's outputs are kept once under `before-rescore/`. Takes the lock
+    one run at a time, so a scheduled tick can run in between."""
+    data = DataDir(data_dir)
+    runs = list(run_ids or [])
+    if queued:
+        queue = build_queue(data, NPM, days=days)
+        runs += [r for r in (queue.runs if queue else ()) if r not in runs]
+    if skip_rescored:
+        runs = [r for r in runs if not (data.run_dir(r) / RESCORE_INFO).exists()]
+    if not runs:
+        typer.echo("no runs to re-score", err=True)
+        raise typer.Exit(code=2)
+    try:
+        for run_id in runs:
+            with data.lock():
+                summary = rescore_run(data, run_id, lambda: None, datetime.now(UTC))
+                queue = build_queue(data, NPM, days=days)
+                if queue is not None:
+                    write_queue(data, queue)
+            typer.echo(f"{run_id}: {summary}")
+    except DataDirBusyError as exc:
+        typer.echo(f"stopped before {run_id}: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
 
 
 @app.command("view")

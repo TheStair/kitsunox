@@ -30,6 +30,7 @@ from kitsunox.stages.repo import (
     RepoComparison,
     RepoMemory,
     compare,
+    compare_pool,
     compare_trees,
 )
 from kitsunox.util.archive import ArtifactTree
@@ -324,3 +325,31 @@ def test_a_hook_the_previous_release_shipped_too_is_low() -> None:
     first = Candidate(change=new.model_copy(update={"previous": change("1.2.9").new}))
     (high,) = InstallScriptNotInRepo().evaluate_candidate(first, ctx(comparison))
     assert high.severity is Severity.HIGH  # the release that adds the hook still fires
+
+
+def test_a_pool_compares_exactly_as_threads_do(tmp_path: Path, router: Router) -> None:
+    """`compare_pool`: extraction and comparison in worker processes, same results."""
+    router.add_bytes(REFS_URL, pkt(f"{T} refs/tags/v1.2.3\n") + b"0000")
+    router.add_bytes(
+        f"https://codeload.github.com/o/r/tar.gz/{T}",
+        make_tar_gz(
+            [
+                TarEntry(f"r-{T}/package.json", b'{"name": "workspace", "private": true}'),
+                TarEntry(f"r-{T}/packages/kx/package.json", b'{"name": "@s/kx"}'),
+                TarEntry(f"r-{T}/packages/kx/index.js", b"good"),
+            ]
+        ),
+    )
+    router.add_bytes(f"https://codeload.github.com/o/r/tar.gz/{'b' * 40}", b"not gzip")
+    package: Mapping[str, bytes] = {"package.json": b'{"name": "@s/kx"}', "index.js": b"evil"}
+    client = github(tmp_path, router)
+    bad = change(git_head="b" * 40)
+    threads = [compare(c, package, NpmLocator(), client) for c in (change(), bad)]
+    with compare_pool() as pool:
+        memory = RepoMemory(pool=pool)
+        pooled = [compare(c, package, NpmLocator(), client, memory=memory) for c in (change(), bad)]
+        again = compare(bad, package, NpmLocator(), client, memory=memory)  # remembered
+    assert pooled == threads
+    assert threads[0].differing == ("index.js",)
+    assert (threads[1].unavailable or "").startswith("archive: ")
+    assert again == threads[1]

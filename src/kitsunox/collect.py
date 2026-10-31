@@ -37,16 +37,21 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Final
 
 import httpx
 
+from kitsunox import __version__
 from kitsunox.core.models import PackageBatch
 from kitsunox.core.retention import prune
 from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import (
+    CORRELATE_SNAPSHOT,
+    STATIC_SNAPSHOT,
     DataDir,
     IngestDegradedError,
     IngestRequest,
@@ -73,7 +78,8 @@ from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.sandbox import OVERDUE_AFTER, run_sandbox_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
-from kitsunox.util.http import FetchError
+from kitsunox.util.files import atomic_write
+from kitsunox.util.http import FetchError, Snapshot
 
 WATCHLIST_MAX_AGE = timedelta(days=7)
 LABELS_MAX_AGE = timedelta(hours=20)
@@ -179,12 +185,23 @@ def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str
 
 
 def run_stages(
-    data: DataDir, run_id: str, client: Callable[[], httpx.Client | None], start: int = 1
+    data: DataDir,
+    run_id: str,
+    client: Callable[[], httpx.Client | None],
+    start: int = 1,
+    *,
+    seeded: bool = False,
 ) -> tuple[str, Report]:
     """Stages 1-4 and the report on one run, from Stage `start` (a catch-up resumes where
     outputs are missing; `REPORT_ONLY` redoes just the report). Each fetching stage gets its own
-    client (fetchers close theirs)."""
+    client (fetchers close theirs). `seeded` (a re-score) starts Stages 2 and 4 from the run's
+    own snapshots, so what they recorded is served as it was then."""
     run_dir = data.run_dir(run_id)
+
+    def seed(name: str) -> Snapshot | None:
+        path = run_dir / name
+        return Snapshot.load(path) if seeded and path.exists() else None
+
     parts = []
     if start <= 4:
         # The old report no longer matches what is about to be rewritten. Without its index
@@ -193,7 +210,9 @@ def run_stages(
     if start <= 2:
         manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
         candidates, _ = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
-        batches = record_static(data, run_id, NpmEcosystem, client=client())
+        batches = record_static(
+            data, run_id, NpmEcosystem, client=client(), seed=seed(STATIC_SNAPSHOT)
+        )
         decisions = [c.history[-1] for b in batches for c in b.versions]
         stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
         stage2 = sum(d.forwarded for d in decisions)
@@ -209,7 +228,7 @@ def run_stages(
             f"{sum(c.history[-1].forwarded for b in coded for c in b.versions)} flagged by Stage 3"
         )
     if start <= 4:
-        versions = run_correlate_stage(data, run_id, client=client())
+        versions = run_correlate_stage(data, run_id, client=client(), seed=seed(CORRELATE_SNAPSHOT))
         compared = sum(
             any(
                 f.rule_id == "repo.compared" and "No comparison" not in f.explanation
@@ -227,6 +246,58 @@ def run_stages(
         parts.append(f"{failing} dependency lookups failed (network)")
     parts.append(f"{report.reported} to review (report/index.md)")
     return "; ".join(parts), report
+
+
+# What a re-score rewrites, kept once under `RESCORE_ORIGINALS` as the tick wrote it.
+RESCORED_OUTPUTS: Final = (
+    "triage.jsonl",
+    "batches.jsonl",
+    "static.jsonl",
+    STATIC_SNAPSHOT,
+    "ast.jsonl",
+    "correlate.jsonl",
+    "correlate.json",
+    CORRELATE_SNAPSHOT,
+    REPORT_DIR,
+)
+RESCORE_ORIGINALS: Final = "before-rescore"
+RESCORE_INFO: Final = "rescore.json"
+
+
+def rescore_run(
+    data: DataDir, run_id: str, client: Callable[[], httpx.Client | None], now: datetime
+) -> str:
+    """Stages 1-4 and the report again on a finished run, with the current rules, from the
+    run's recorded inputs: its changes, and its Stage 2 and 4 snapshots as seeds (`run_stages`
+    with `seeded`), so only requests today's rules newly need go to the network. Reports
+    written by older rules otherwise stay in the queue until their run is pruned. The first
+    re-score keeps the tick's outputs under `before-rescore/`. Verdicts are by version, so they
+    carry over. The caller holds the lock."""
+    run_dir = data.run_dir(run_id)
+    if not (run_dir / "correlate.jsonl").exists():
+        raise ValueError(f"{run_id}: Stage 4 has not run; `collect` finishes it")
+    originals = run_dir / RESCORE_ORIGINALS
+    if not originals.exists():
+        staging = run_dir / f"{RESCORE_ORIGINALS}.partial"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir()
+        for name in RESCORED_OUTPUTS:
+            source = run_dir / name
+            if source.is_dir():
+                shutil.copytree(source, staging / name)
+            elif source.exists():
+                shutil.copy2(source, staging / name)
+        staging.rename(originals)
+    before = Report.model_validate_json((originals / REPORT_DIR / "report.json").read_bytes())
+    summary, report = run_stages(data, run_id, client, seeded=True)
+    info = {
+        "rescored_at": now.isoformat(),
+        "tool_version": __version__,
+        "reported_before": before.reported,
+        "reported": report.reported,
+    }
+    atomic_write(run_dir / RESCORE_INFO, json.dumps(info, indent=2).encode() + b"\n")
+    return f"{summary}; was {before.reported} to review"
 
 
 def run_sandbox(

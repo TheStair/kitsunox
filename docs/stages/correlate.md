@@ -81,6 +81,14 @@ the [0010 addendum](../decisions/0010-stage4-correlation-and-repo-comparison.md#
   timeouts. Other commits of the same repository are unaffected, and a request the fetcher
   already holds (this run's snapshot, or the immutable index for archives;
   `HttpFetcher.needs_network`) is always served, never refused.
+- **Extraction in worker processes** (2026-10-30): at most three archives are extracted at
+  once (`ARCHIVES_IN_MEMORY`), and `run_correlate_stage` does it in a pool of three worker
+  processes (`compare_pool`, `forkserver`; each replaced after 25 comparisons), which also
+  compare the trees and return the `RepoComparison`. Extracting is pure-Python `tarfile` work,
+  so threads did it one at a time under the GIL: about 85% of a replayed Stage 4. Downloads
+  stay in the threads. Results are the same either way (`test_a_pool_compares_exactly_as_
+  threads_do`); without a pool (tests, evaluation) it all runs in the thread. GitHub archives
+  also skip the strict second tar pass that looks for hidden entries.
 - **One explanation per failed request:** every version whose comparison failed on a request
   reads the same, whichever thread sent it: "No comparison: network: o/r refs unavailable." or
   "... network: o/r@<12-char commit> archive unavailable." (`RepoNetworkError`). The fetcher's

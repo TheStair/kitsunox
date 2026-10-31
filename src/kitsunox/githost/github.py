@@ -119,17 +119,25 @@ class GitHub:
 
     def extract(self, body: bytes, *, directory: str = "") -> ArtifactTree:
         """An archive's files, or only those under `directory` (paths relative to it)."""
-        prefix = f"{directory.strip('/')}/" if directory.strip("/") else ""
-        tree = extract_tar_gz(
-            body,
-            strip_components=1,  # `<repo>-<commit>/`
-            limits=self.limits,
-            include=lambda path: path.startswith(prefix),
-            hidden_entries=False,  # GitHub writes these archives; nothing is hidden in them
-        )
-        if not prefix:
-            return tree
-        return ArtifactTree(
-            files={path.removeprefix(prefix): content for path, content in tree.files.items()},
-            skipped=tree.skipped,
-        )
+        return extract_archive(body, limits=self.limits, directory=directory)
+
+
+def extract_archive(
+    body: bytes, *, limits: ExtractLimits = REPO_LIMITS, directory: str = ""
+) -> ArtifactTree:
+    """A GitHub archive's files, or only those under `directory` (paths relative to it). A
+    plain function, so a process pool can run it (`stages/repo.py`)."""
+    prefix = f"{directory.strip('/')}/" if directory.strip("/") else ""
+    tree = extract_tar_gz(
+        body,
+        strip_components=1,  # `<repo>-<commit>/`
+        limits=limits,
+        include=lambda path: path.startswith(prefix),
+        hidden_entries=False,  # GitHub writes these archives; nothing is hidden in them
+    )
+    if not prefix:
+        return tree
+    return ArtifactTree(
+        files={path.removeprefix(prefix): content for path, content in tree.files.items()},
+        skipped=tree.skipped,
+    )
