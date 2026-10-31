@@ -132,6 +132,19 @@ def test_tunnel_suffixes_and_region_hosts_still_count() -> None:
     assert fires("fetch('https://3f2a-81-2-69-142.ngrok-free.app/c')")
 
 
+def test_a_written_telegram_placeholder_is_documentation() -> None:
+    """`glimmervoid`: "open https://api.telegram.org/bot<token>/getUpdates in a browser"."""
+
+    def fires(text: str) -> bool:
+        return any(m.rule_id == "static.exfil-endpoint" for m in analyse(text.encode()))
+
+    assert not fires("then open https://api.telegram.org/bot<token>/getUpdates in a browser")
+    assert not fires("curl https://api.telegram.org/botYOUR_BOT_TOKEN/getMe")
+    assert not fires("https://api.telegram.org/bot.../sendMessage")
+    assert fires("fetch('https://api.telegram.org/bot7123456789:AAH4x/sendMessage')")
+    assert fires('fetch("https://api.telegram.org/bot" + t + "/sendMessage")')
+
+
 def test_a_real_looking_webhook_is_not_also_a_placeholder() -> None:
     ids = {
         m.rule_id

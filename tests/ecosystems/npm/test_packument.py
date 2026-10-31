@@ -10,6 +10,7 @@ from kitsunox.ecosystems.npm.packument import (
     PackumentError,
     is_registry_placeholder,
     normalize_repository_url,
+    platform_build,
 )
 
 WINDOW = Window(
@@ -200,6 +201,40 @@ def test_a_partial_publish_is_not_a_diff_base() -> None:
     # By unpacked size when a count is missing:
     sized = releases(("1.0.0", None, 900_000), ("1.0.1", None, 80_000), ("1.0.2", None, 900_000))
     assert sized.previous_version("1.0.2") == "1.0.0"
+
+
+def test_a_platform_build_is_not_a_release_s_diff_base() -> None:
+    """`@ozyman42/ozy-cli@0.5.4` was diffed against `0.5.4-latest-windows-x64`, published just
+    before it with one platform's binary and no postinstall."""
+    ozy = releases(("0.5.3", 40, None), ("0.5.4-latest-windows-x64", 30, None), ("0.5.4", 40, None))
+    assert ozy.previous_version("0.5.4") == "0.5.3"
+    assert ozy.previous_version("0.5.4", diff_base=2) == "0.5.4-latest-windows-x64"  # old runs
+    assert ozy.previous_version("0.5.4-latest-windows-x64") == "0.5.3"  # still analysed itself
+    daily = releases(
+        ("0.2.19-daily.20261029", 9, None),
+        ("0.2.19-daily.20261029.win32-x64", 9, None),
+        ("0.2.19-daily.20261030", 9, None),
+    )
+    assert daily.previous_version("0.2.19-daily.20261030") == "0.2.19-daily.20261029"
+    only = releases(("0.1.0-linux-x64", 30, None), ("0.1.0", 40, None))
+    assert only.previous_version("0.1.0") == "0.1.0-linux-x64"  # nothing else to diff against
+
+
+@pytest.mark.parametrize(
+    ("version", "build"),
+    [
+        ("0.1.19-linux-x64", True),
+        ("0.3.8-darwin-x64", True),
+        ("0.2.19-daily.20261029.win32-x64", True),
+        ("1.0.0-macos-arm64.2", True),
+        ("1.0.0", False),
+        ("1.0.0-beta.1", False),
+        ("1.0.0-linux", False),  # an OS alone: a release line, not a build
+        ("1.0.0+linux-x64", False),  # build metadata isn't a prerelease
+    ],
+)
+def test_platform_build(version: str, build: bool) -> None:
+    assert platform_build(version) is build
 
 
 def test_a_large_release_cannot_push_its_diff_base_back() -> None:

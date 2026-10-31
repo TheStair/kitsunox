@@ -122,6 +122,14 @@ sequenceDiagram
    already had its install script, say). The rule is recorded per run
    (`RunManifest.diff_base`; runs recorded before it read as 1) and a replay uses the run's.
    On the first VM day it changed the diff base of 41 of 101,232 updates (13 reported).
+   **A platform build is passed over** (diff base 3, since 2026-10-31) for a release that
+   isn't one: a prerelease naming an OS and a CPU (`0.5.4-latest-windows-x64`,
+   `0.1.19-linux-x64`, `0.2.19-daily.20261029.win32-x64`; `packument.platform_build`).
+   `@ozyman42/ozy-cli@0.5.4` was diffed against `0.5.4-latest-windows-x64`, published just
+   before it with one platform's binary and no postinstall, so its own postinstall read as
+   added (HIGH). 40 of 228,298 changes on the first two VM days had such a base, 8 of them
+   reported. A platform build is still analysed itself, and is still the base when nothing
+   else qualifies.
 6. **Popularity** (existing packages only; brand-new packages have no history). Three modes:
    - `watchlist` (default): membership in the newest watchlist built no later than `as_of`. The
      run records its id and SHA-256, and replay fails if the file has changed. No network.

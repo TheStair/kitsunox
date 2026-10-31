@@ -2,6 +2,69 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-10-31 (early morning): Third precision pass, from the re-scored queue
+
+**Stage(s):** Stage 0 (diff base 3), Stage 2 (`exfil-endpoint` v4, hashed chunks), Stage 3
+(`install-script-changed` v3, `capability-gained` v4)
+**Context:** Re-scoring the queue (previous entry) took the first eight runs from 211 reports
+to 120, with no malicious or inconclusive version dropped. Reviewing what was left, and the
+new ticks, showed five causes of noise that recur. Each change below was measured on `vm-day1`
+in a separate worktree before the ticks ran it.
+
+### Decisions
+- **A file a hook only loads counts as changed only when it adds a risky line**
+  (`install-script-changed` v3). Following imports (previous entry) made the rule see ordinary
+  library edits: 7 of the 120 re-scored reports came from that alone, all benign, 6 adding no
+  risky line. Cost: 3 `aicp-tracker` versions; the family is still reported through 1.0.7.
+- **Vite's hashes are recognised** (`static.unhashed`): an 8-character suffix with no digit or
+  with `-`/`_` (`settings-panel-Bkki_GMk.js`). Unrecognised, `glimmervoid`'s settings panel
+  was a new file each release, so its Telegram help text was HIGH in about 25 queued releases.
+- **Written Telegram placeholders are documentation** (`exfil-endpoint` v4): `bot<token>`,
+  `botYOUR_...`, `bot...`. A URL built from a variable still matches: dropping that cost 29
+  malicious samples last time (see 2026-10-30, second pass).
+- **After an empty placeholder base, gaining network plus another capability is LOW**
+  (`capability-gained` v4). 11 queued reports were first real releases after
+  `0.0.0-placeholder` or `1.0.0-reservation.0`.
+- **Diff base 3: a release isn't diffed against a platform build** (`0.5.4-latest-windows-x64`).
+  Such builds carry one binary and no postinstall, so the release's postinstall read as added,
+  HIGH: 8 reports in two days (`@ozyman42/ozy-cli`, `@kernaut/kernaut`, `@bitfun-test/bitfun`).
+  The rule is recorded per run, so older runs replay with diff base 2 and a re-score keeps
+  their bases.
+
+### Challenges
+- **The first `capability-gained` v4 cost 18 malicious samples.** Making every gain after an
+  empty base LOW dropped the `autotel-*` / `awaitly-*` family, which publishes an empty first
+  version and then an `eval(` payload: exactly the takeover shape the rule exists for.
+  - **Resolution:** `eval` stays MEDIUM after an empty base; only the network combination is
+    LOW.
+  - **Why it worked:** the final eval loses none of the 18, and the live first releases it
+    targets reach network through imports, not `eval`.
+- **The first eval run of `install-script-changed` v3 was stopped:** it decided which files the
+  hook names from the registry manifest, which eval samples may lack. It now works out loaded
+  files from the install files themselves (`install.loaded_files`).
+- **The previous commit (7d8333e) failed mypy** on one test (`(finding,) = ... or (None,)`).
+  Fixed here; all four gates pass.
+
+### Review
+- 56 more verdicts, all benign but one. `@atedone/workspace-bootstrap@0.0.1` is inconclusive:
+  no install scripts, but a `binding.gyp` *action* runs `node scripts/write-state.js` during
+  npm's implicit `node-gyp rebuild`, and the script avoids common tells
+  (`process.getBuiltinModule('fs')`, `Reflect.get(process, 'env')`). Today it only writes a
+  state file into the project, so it looks like a probe of what scanners read.
+- Large tarballs Stage 2 skips (16 MB cap) were read by hand where an install hook needed it
+  (`keyrouter`, a 9router rebrand; `vibelet`; `@safetech/inheriti-cli`).
+
+### Evaluation snapshot
+- `vm-day1`, against the previous entry's rules: 2,506 → 2,503 malicious reported (the three
+  `aicp-tracker` versions); benign reported 4 fewer (`domain-driver`, `@mastra/e2b`, two
+  `glimmervoid` releases).
+
+### Open questions / next steps
+- Read `binding.gyp` actions and command expansions (`<!(...)`) as install code, and treat
+  `process.getBuiltinModule(...)` and `Reflect.get(process, 'env')` as `require` and
+  `process.env` in the capability extractor (`@atedone/workspace-bootstrap`).
+- Re-score the runs re-scored before this pass, so the queue reflects it.
+
 ## 2026-10-31 (small hours): Faster Stage 4, a missing-base fix, install imports, re-scoring
 
 **Stage(s):** Stage 3 (install profile, previous outside the batch), Stage 4 (worker

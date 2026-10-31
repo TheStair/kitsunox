@@ -37,6 +37,18 @@ def test_gaining_network_with_env_is_medium() -> None:
     assert {e.path for e in finding.evidence} == {"lib/x.js"}
 
 
+def test_after_an_empty_placeholder_only_eval_stays_medium() -> None:
+    """A first real release after `0.0.0-placeholder` gains everything; `eval` still counts
+    (`autotel-*`, `awaitly-*` injected it after an empty first version)."""
+    empty = {"index.js": b"module.exports = {}"}
+    app = pkg(files={"lib/x.js": b"fetch(u, {body: JSON.stringify(process.env)})"})
+    (finding,) = CapabilityGained().evaluate_code(change(app, empty))
+    assert finding.severity is Severity.LOW
+    payload = pkg(files={"lib/x.js": b"eval(atob(s))"})
+    (finding,) = CapabilityGained().evaluate_code(change(payload, empty))
+    assert finding.severity is Severity.MEDIUM
+
+
 def test_gaining_the_environment_without_network_is_low() -> None:
     """v2: apps that start reading `process.env` were the commonest MEDIUM-only report."""
     env = pkg(files={"lib/x.js": b"const v = process.env"})
@@ -68,10 +80,7 @@ def test_gaining_dynamic_code_alone_is_medium_only_through_eval() -> None:
     )
     assert finding.severity is Severity.MEDIUM
     had = pkg(files={"lib/y.js": b"eval(z)"})
-    (finding,) = rule.evaluate_code(
-        change(pkg(files={"lib/y.js": b"eval(z); Function(b)"}), had)
-    ) or (None,)
-    assert finding is None
+    assert rule.evaluate_code(change(pkg(files={"lib/y.js": b"eval(z); Function(b)"}), had)) == ()
 
 
 def test_gaining_only_network_is_low_and_nothing_for_new_packages() -> None:
@@ -164,6 +173,25 @@ def test_an_install_file_that_changed_only_its_line_endings_is_unchanged() -> No
     edited = pkg("node i.js", {"i.js": b"const a = 2;\nrun(a);\n"})
     (found,) = InstallScriptChanged().evaluate_code(change(edited, old))
     assert "i.js (+1 -1 lines)" in found.explanation
+
+
+def test_a_loaded_install_file_counts_only_when_it_adds_a_risky_use() -> None:
+    """`openyida`: the hook's script imports the library, whose ordinary changes aren't news.
+    A loaded file's change counts when it adds a network, process, environment or eval use."""
+    hook = {"setup.js": b'require("./lib/util")\n'}
+    old = pkg("node setup.js", hook | {"lib/util.js": b'const https = require("https")\nf(1)\n'})
+    edited = pkg("node setup.js", hook | {"lib/util.js": b'const https = require("https")\nf(2)\n'})
+    assert InstallScriptChanged().evaluate_code(change(edited, old)) == ()
+    worse = pkg(
+        "node setup.js",
+        hook | {"lib/util.js": b'const https = require("https")\nrequire("child_process")\n'},
+    )
+    (found,) = InstallScriptChanged().evaluate_code(change(worse, old))
+    assert "lib/util.js (+1 -1 lines)" in found.explanation
+    named = pkg("node setup.js", {"setup.js": b'require("./lib/util")\nf(3)\n'})
+    named["lib/util.js"] = old["lib/util.js"]
+    (found,) = InstallScriptChanged().evaluate_code(change(named, old))
+    assert "setup.js (+1 -0 lines)" in found.explanation  # the hook's own file: any change
 
 
 def test_inline_install_code_is_read() -> None:

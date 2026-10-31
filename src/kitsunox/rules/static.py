@@ -87,9 +87,11 @@ class ExfilEndpoint(RegexRule):
     # them, but dropping the first two cost 29 malicious `vm-day1` samples caught by nothing
     # else (against 3 benign), and dropping region hosts cost 11 (`gina`, `cro-pricing`, ...)
     # to clear 6 benign packages. See docs/stages/static.md.
+    # v4 (2026-10-31): `bot` followed by a written placeholder (`bot<token>`, `botYOUR_TOKEN`,
+    # `bot...`) is documentation: `glimmervoid`'s settings help text was HIGH in 25 releases.
 
     id = "static.exfil-endpoint"
-    version = 3
+    version = 4
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -104,8 +106,14 @@ class ExfilEndpoint(RegexRule):
     )
 
     def accept(self, match: re.Match[str]) -> bool:
+        if match.group(0).lower().endswith("/bot"):
+            return _TELEGRAM_PLACEHOLDER.match(match.string, match.end()) is None
         webhook_id = match.group("discord") or match.group("slack")
         return webhook_id is None or not _placeholder_id(webhook_id)
+
+
+# What documentation writes after `api.telegram.org/bot` instead of a token.
+_TELEGRAM_PLACEHOLDER: Final = re.compile(r"<|\[|YOUR_|\.\.\.")
 
 
 def _placeholder_id(webhook_id: str) -> bool:

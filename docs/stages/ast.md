@@ -83,7 +83,7 @@ is the malicious set.
 
 | Rule | Fires when | Severity | Benign (updates / new) | Malicious (updates / new) |
 |---|---|---|---|---|
-| `code.capability-gained` (v3) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
+| `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 
 New packages get no `capability-gained` finding: with no previous version everything is
@@ -108,6 +108,14 @@ payloads (`autotel-*`, `awaitly-*`), so none is lost. `Function` or `vm` togethe
 file, so a file's first three `new Function(x)` calls no longer crowd out a later `eval(x)`,
 and the evidence shows `eval` first.
 
+`code.capability-gained` v4 (2026-10-31): after a base whose code used no capability at all
+(a placeholder release such as `0.0.0-placeholder` or `1.0.0-reservation.0`), gaining
+`network` with another capability is LOW, as it would be for a new package; gaining `eval` is
+still MEDIUM. 11 unreviewed live reports were first real releases after a placeholder
+(`inki-cli`, `kurage`, `vexla`, `@yozz.app/cli`, ...). The first version made `eval` LOW too
+and cost 18 `vm-day1` malicious samples, every one an `eval(` payload published after an empty
+first version (`autotel-*`, `awaitly-*`); the narrowed rule loses none.
+
 **Inline install code** (2026-10-30): the code a hook passes to `node -e`, `--eval`, `-p` or
 `--print` is profiled as `package.json#scripts.<hook>.js`
 (`ecosystems.npm.install.install_sources`), so the install-code rules read it. Before, an
@@ -126,6 +134,15 @@ values took 45 s). Each file is kept up to 256 KiB for the comparison. Stage 1 f
 update with an install hook so this rule sees them. On the first VM day it fired on 47 of the
 601 hook updates whose two tarballs were captured (7.8%), and not on `@pulumi/*`, whose
 `install-pulumi-plugin.js` didn't change.
+
+`npm.install-script-changed` v3 (2026-10-31): since install code follows what a hook loads,
+the rule also saw ordinary library changes two files down. A file another install file loads
+(`install.loaded_files`) now counts only when its change adds a line with a risky use
+(network, process, the whole environment or dynamic code). The files the hooks name, and
+inline code, count on any change as before. On the first 120 re-scored live reports, 7 were
+reported through a loaded file alone, all benign (`openyida`'s auth library, `warp-agent-mcp`'s
+tool descriptions); 6 of them add no risky line. `vm-day1`: 3 malicious lost, all
+`aicp-tracker` (the family is still reported through 1.0.7, which adds one), 1 benign.
 
 ## Evaluation
 

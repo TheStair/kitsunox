@@ -46,7 +46,8 @@ class DownloadCounts(Record):
 # (`RunManifest.diff_base`), so a replay uses the rule its run was recorded with.
 # 1: the highest earlier semver below it (else the latest earlier release).
 # 2: the same, passing over a partial publish (npm: `Packument.previous_version`).
-DIFF_BASE: Final = 2
+# 3: the same, passing over a platform build for a release that isn't one.
+DIFF_BASE: Final = 3
 
 
 class Ecosystem(Protocol):

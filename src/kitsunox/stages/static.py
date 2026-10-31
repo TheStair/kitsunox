@@ -155,13 +155,25 @@ def _demoted(match: FileMatch, path: str, before: frozenset[tuple[str, str]]) ->
 # A bundler's content hash before the extension: `-BX6j2lnF.mjs` (Vite, Rollup), `.3f2a9b1c.js`
 # (webpack). It has a digit, so a word (`-registry.js`) is not taken for one.
 _HASHED: Final = re.compile(r"[-.](?=[A-Za-z_]*[0-9])[A-Za-z0-9_]{8,20}(\.(?:m?js|cjs))$")
+# Vite's 8-character base64url hash, which may have no digit and may contain `-` or `_`
+# (`settings-panel-Bkki_GMk.js`, `-CnQC9-zc.js`): taken for one when it doesn't read as a word.
+_VITE_HASH: Final = re.compile(r"-([A-Za-z0-9_-]{8})(\.(?:m?js|cjs))$")
 MAX_COUNTERPARTS: Final = 4  # base chunks of one name compared with a new one
 
 
 def unhashed(path: str) -> str | None:
     """`path` without its content hash (`dist/a-BX6j2lnF.mjs` -> `dist/a.mjs`), or None."""
-    match = _HASHED.search(path)
-    return path[: match.start()] + match.group(1) if match else None
+    if match := _HASHED.search(path):
+        return path[: match.start()] + match.group(1)
+    if (match := _VITE_HASH.search(path)) and _random_looking(match.group(1)):
+        return path[: match.start()] + match.group(2)
+    return None
+
+
+def _random_looking(text: str) -> bool:
+    """Not a word: it has a digit, `_` or `-`, or upper case past the first letter
+    (`DPGhQMPB`, not `registry` or `Markdown`)."""
+    return any(c.isdigit() or c in "_-" for c in text) or any(c.isupper() for c in text[1:])
 
 
 class BaseFiles:

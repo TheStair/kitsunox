@@ -38,6 +38,13 @@ C = Capability
 # `dynamic-code` (`new Function(body)` in template and test helpers, `import vm` for expression
 # sandboxes), while all 35 `vm-day1` malicious samples reported through it alone were injected
 # `eval(` payloads (`autotel-*`, `awaitly-*`). With `network` they stay MEDIUM.
+#
+# v4 (2026-10-31): after a base whose code used no capability at all (a placeholder release:
+# `0.0.0-placeholder`, `1.0.0-reservation.0`), gaining network with another of WITH_NETWORK is
+# LOW, as for a new package; `eval` stays MEDIUM. 11 of the live queue's unreviewed reports
+# were such first real releases. Making `eval` LOW too cost 18 `vm-day1` malicious samples,
+# every one an `eval(` payload after an empty first version (`autotel-*`, `awaitly-*`); this
+# way none is lost and one benign sample is no longer reported.
 WITH_NETWORK: Final = frozenset({C.ENV_ALL, C.PROCESS, C.DYNAMIC_CODE})
 EVIDENCE_PER_CAPABILITY: Final = 2
 
@@ -71,7 +78,7 @@ class CapabilityGained(BaseRule):
     """An update's code can do something the previous version's couldn't."""
 
     id = "code.capability-gained"
-    version = 3
+    version = 4
     severity = Severity.LOW
     weight = 1.0
     title = "Code gained capabilities"
@@ -85,7 +92,8 @@ class CapabilityGained(BaseRule):
         evals = C.DYNAMIC_CODE in gained and any(
             evaluates(u.use) for u in change.after.where(C.DYNAMIC_CODE)
         )
-        strong = evals or (C.NETWORK in gained and bool(gained & WITH_NETWORK))
+        combined = C.NETWORK in gained and bool(gained & WITH_NETWORK)
+        strong = evals or (combined and bool(change.before.capabilities))
         names = ", ".join(sorted(c.value for c in gained))
         return (
             self.finding(

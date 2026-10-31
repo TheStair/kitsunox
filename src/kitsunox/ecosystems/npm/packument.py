@@ -35,6 +35,14 @@ PARTIAL_RATIO: Final = 4
 MIN_FULL_FILES: Final = 20  # below this many files, a smaller release isn't called partial
 MIN_FULL_BYTES: Final = 64 * 1024  # the same by unpacked size, when a count is missing
 MAX_PARTIAL_SKIPS: Final = 3
+# A prerelease naming an OS and CPU (`0.5.4-latest-windows-x64`, `0.1.19-linux-x64`,
+# `0.2.19-daily.20261029.win32-x64`): one platform's build of a release (diff base 3).
+_PLATFORM_BUILD: Final = re.compile(
+    r"(?:^|[.-])(?:win32|windows|darwin|macos|linux|android|freebsd|openbsd|sunos|aix)"
+    r"[.-](?:x64|x86_64|amd64|arm64|aarch64|ia32|x86|arm|armv7l?|ppc64le?|s390x|riscv64)"
+    r"(?:$|[.-])",
+    re.IGNORECASE,
+)
 
 _GITHUB_REPO = re.compile(
     r"^(?:git\+)?(?:https?|git|ssh)://(?:git@)?(?:www\.)?github\.com[/:]"
@@ -128,8 +136,16 @@ class Packument:
         only is never passed over: a release can't push its diff base back by being large, so
         it can't skip to an older version that, say, already had its install script. The
         partial release itself is still analysed, against the release before it, and at most
-        `MAX_PARTIAL_SKIPS` are passed over."""
+        `MAX_PARTIAL_SKIPS` are passed over.
+
+        Diff base 3 also passes over a platform build (`_PLATFORM_BUILD`) for a release that
+        isn't one: `@ozyman42/ozy-cli@0.5.4` was diffed against `0.5.4-latest-windows-x64`,
+        published just before it with a single platform's binary and no postinstall, so the
+        release's own postinstall read as added (8 live reports on the first two VM days). A
+        platform build is still analysed itself, and is still a base if nothing else is."""
         ranked = self._diff_bases(version)
+        if diff_base >= 3 and not platform_build(version):
+            ranked = [v for v in ranked if not platform_build(v)] or ranked
         if not ranked:
             return None
         if diff_base < 2:
@@ -287,3 +303,9 @@ def normalize_repository_url(raw: str) -> str | None:
         (match.group(i), match.group(i + 1)) for i in (1, 3, 5) if match.group(i) is not None
     )
     return f"https://github.com/{owner}/{repo}"
+
+
+def platform_build(version: str) -> bool:
+    """`version`'s prerelease names an OS and CPU: one platform's build of a release."""
+    prerelease = version.split("+", 1)[0].partition("-")[2]
+    return bool(prerelease) and _PLATFORM_BUILD.search(prerelease) is not None

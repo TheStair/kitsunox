@@ -17,6 +17,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
+from kitsunox.ecosystems.npm.install import loaded_files
 from kitsunox.lang.javascript import Capability
 from kitsunox.rules.capabilities import evidence
 from kitsunox.stages.ast import CodeChange
@@ -75,10 +76,16 @@ class InstallScriptChanged(BaseRule):
     compared; a new package has nothing to compare with.
 
     First VM day (2026-10-30): 39 of 52 changed hook commands changed only their own version
-    string (`@pulumi/*`); their files are what this rule compares."""
+    string (`@pulumi/*`); their files are what this rule compares.
+
+    v3 (2026-10-31): a file another install file loads (`install.loaded_files`: the followed
+    ones) counts only when its change adds a risky use (`_adds_risky`). Library code a hook
+    imports changes with most releases: 7 of the first 120 re-scored live reports were that
+    alone, all benign (6 add no risky use). `vm-day1`: 2,503 malicious reported (was 2,506:
+    three `aicp-tracker` versions, a family still reported through 1.0.7), 20 benign (was 21)."""
 
     id = "npm.install-script-changed"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Code an install script runs changed"
@@ -89,10 +96,12 @@ class InstallScriptChanged(BaseRule):
             return ()
         old_version = (change.previous_version or "").encode()
         new_version = change.snapshot.ref.version.encode()
+        loaded = loaded_files(change.install_files)
         changed = [
             path
             for path, data in sorted(change.install_files.items())
             if not _same(before.get(path), data, old_version, new_version)
+            and (path not in loaded or _adds_risky(change, path, before.get(path), data))
         ]
         if not changed:
             return ()
@@ -128,6 +137,31 @@ def _same(old: bytes | None, new: bytes, old_version: bytes, new_version: bytes)
     return old == new or (
         bool(old_version) and old_version in old and old.replace(old_version, new_version) == new
     )
+
+
+def _adds_risky(change: CodeChange, path: str, old: bytes | None, new: bytes) -> bool:
+    """The change to `path` adds a line with a risky use (RISKY: a network or process module,
+    the whole environment, dynamic code). A file too long to diff counts if it has one. Lines
+    are split on LF only, as the parser numbers them."""
+    lines = {
+        u.use.line
+        for u in (change.install.uses if change.install else ())
+        if u.path == path and u.use.capability in RISKY
+    }
+    if not lines:
+        return False
+    a = (old or b"").decode("utf-8", "replace").split("\n")
+    b = new.decode("utf-8", "replace").split("\n")
+    if not _diffable(a, b):
+        return True
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    added = {
+        n + 1
+        for tag, _, _, j1, j2 in matcher.get_opcodes()
+        if tag in ("replace", "insert")
+        for n in range(j1, j2)
+    }
+    return bool(lines & added)
 
 
 def _lf(data: bytes) -> bytes:

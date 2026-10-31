@@ -103,6 +103,21 @@ def followed_files(sources: Mapping[str, bytes], files: Mapping[str, bytes]) -> 
     return found
 
 
+def loaded_files(sources: Mapping[str, bytes]) -> frozenset[str]:
+    """The files of `sources` that another of them loads by a constant relative path: in
+    `install_sources`' result, the followed files (and a named file another one imports)."""
+    loaded = set()
+    for path, content in sources.items():
+        language = "javascript" if path.startswith(INLINE_PREFIX) else language_for(path)
+        if language is None:
+            continue
+        for specifier in local_paths(content, language):
+            target = _resolve(path, specifier, sources)
+            if target is not None and target != path:
+                loaded.add(target)
+    return frozenset(loaded)
+
+
 def _resolve(importer: str, specifier: str, files: Mapping[str, bytes]) -> str | None:
     """The package file `specifier` names from `importer` (Node's extension and `index`
     lookup), if it is JavaScript or TypeScript in the package."""

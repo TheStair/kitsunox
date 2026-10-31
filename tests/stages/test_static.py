@@ -291,6 +291,11 @@ def test_a_hashed_chunk_is_compared_with_the_base_chunk_of_the_same_name(tmp_pat
         ("dist/clip-model-registry-BX6j2lnF.mjs", "dist/clip-model-registry.mjs"),
         ("static/js/main.3f2a9b1c.js", "static/js/main.js"),
         ("chunk-ABCD1234.cjs", "chunk.cjs"),
+        # glimmervoid 0.48.x: Vite hashes without a digit, or with `-`
+        ("dist/client/assets/settings-panel-Bkki_GMk.js", "dist/client/assets/settings-panel.js"),
+        ("dist/client/assets/settings-panel-DPGhQMPB.js", "dist/client/assets/settings-panel.js"),
+        ("dist/client/assets/settings-panel-CnQC9-zc.js", "dist/client/assets/settings-panel.js"),
+        ("dist/editor-Markdown.js", None),
         ("dist/model-registry.js", None),  # a word, not a hash
         ("dist/a-BX6j2lnF.css", None),
         ("lib/index.js", None),

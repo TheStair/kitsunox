@@ -43,7 +43,11 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   content-hashed chunk gets a new name whenever its content changes, so it is compared with
   the base's chunks of the same name without the hash (`dist/registry-BX6j2lnF.mjs` with
   `dist/registry-CFQBxtE2.mjs`; `static.BaseFiles`, at most 4 of them): a doc comment naming
-  `*.trycloudflare.com` in `@camstack/*` addons was HIGH again on every release. A match
+  `*.trycloudflare.com` in `@camstack/*` addons was HIGH again on every release. Vite's
+  8-character hash may have no digit and may contain `-` or `_` (`settings-panel-Bkki_GMk.js`,
+  `-CnQC9-zc.js`); since 2026-10-31 such a suffix counts as a hash when it doesn't read as a
+  word (a digit, `_` or `-`, or a capital past the first letter). Before, `glimmervoid`'s
+  settings panel was a "new" file, HIGH, in about 25 queued releases. A match
   only in a file that never runs (`NON_EXECUTING`: README and other docs, `.md`, `.d.ts`,
   source maps, `docs/`, `examples/`, `test/`) is LOW as well; at first only for
   `exfil-endpoint`, for every rule since the second pass (no malicious `vm-day1` sample lost;
@@ -201,6 +205,15 @@ counting-up ids. Measured before adopting it:
 - **Adopted:** v3 plus `static.webhook-placeholder` (MEDIUM, weight 3) for exactly what v2
   matched and v3 rejects. Stage 2 flags the same samples as v2 (0 differences out of 4,943),
   and placeholder findings now say what they are and score 3 instead of 5.
+
+### `exfil-endpoint` v4: written Telegram placeholders (2026-10-31)
+
+`api.telegram.org/bot` followed by `<`, `[`, `YOUR_` or `...` (`bot<token>`,
+`botYOUR_BOT_TOKEN`) is documentation, not code that sends anywhere, and no longer matches.
+`glimmervoid`'s settings help ("open https://api.telegram.org/bot<token>/getUpdates in a
+browser") was HIGH in every release. A URL built from a variable (`bot${token}`) still matches,
+for the reasons below. `vm-day1`: no malicious sample lost; with the Vite-hash change, two
+benign `glimmervoid` releases are no longer reported.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 
