@@ -116,10 +116,16 @@ class KnownMalwareDependency(BaseRule):
     malicious samples it fires on (a tailwind-icon campaign, `vite-support-kit`) have `fs:
     ^0.0.1-security` too, so it still counts towards the score; every one of the 6 is reported
     through other rules either way. The specifier is the package's own text, read here, not a
-    takedown (decision 0016)."""
+    takedown (decision 0016).
+
+    v3 (2026-11-01): a Unity (UPM) package (its `package.json` has Unity's `unity` field)
+    depending on a `com.unity.*` name is LOW too: Unity resolves those built-in modules from its
+    own registry, while on npm the names are squats OSV calls malware. 41 `net.dreditor.*`
+    releases in one live hour and `com.hidano.shadow-only-shader` were exactly that; no `vm-day1`
+    sample has such a dependency. Anyone can add the `unity` field, so the finding stays (LOW)."""
 
     id = "npm.dependency.known-malware"
-    version = 2
+    version = 3
     severity = Severity.HIGH
     weight = 5.0
     title = "Depends on a known-malicious package"
@@ -145,12 +151,21 @@ class KnownMalwareDependency(BaseRule):
                 "every version."
             )
             held = bool(_HOLDER_SPEC.fullmatch(_alias_range(spec)))
+            unity = isinstance(change.new.manifest.get("unity"), str) and target.startswith(
+                "com.unity."
+            )
             if held:
                 explanation += (
                     " The specifier only matches npm's empty `0.0.1-security` holding package, "
                     "so it installs nothing (benign authors who ran `npm install` on the name "
                     "have it too)."
                 )
+            elif unity:
+                explanation += (
+                    " This is a Unity (UPM) package, and Unity resolves `com.unity.*` modules "
+                    "from its own registry, not npm."
+                )
+            held = held or unity
             findings.append(
                 self.finding(
                     explanation,

@@ -59,6 +59,7 @@ LABELS = LabelSet(
         "evil": (label(T0, AffectedRange(introduced="0")),),
         "later": (label(datetime(2026, 11, 1, tzinfo=UTC), AffectedRange(introduced="0")),),
         "chalk": (label(T0, versions=("5.6.1",)),),  # one compromised release of a real package
+        "com.unity.ugui": (label(T0, AffectedRange(introduced="0")),),  # an npm squat
     },
 )
 
@@ -131,3 +132,17 @@ def test_revived_with_new_dependency() -> None:
         }
     )
     assert not rule.evaluate_candidate(typed, ctx)
+
+
+def test_a_unity_package_s_built_in_module_is_low() -> None:
+    rule, ctx = KnownMalwareDependency(), CorrelationContext(as_of=T0, known_bad=LABELS)
+    deps = {"dependencies": {"com.unity.ugui": "2.0.0"}}
+    (upm,) = rule.evaluate_candidate(cand(snap("1", {**deps, "unity": "6000.4"})), ctx)
+    assert (upm.severity, upm.weight) == (Severity.LOW, 1.0)
+    assert "Unity (UPM) package" in upm.explanation
+    (plain,) = rule.evaluate_candidate(cand(snap("1", deps)), ctx)  # not a UPM package
+    assert plain.severity is Severity.HIGH
+    (evil,) = rule.evaluate_candidate(
+        cand(snap("1", {"dependencies": {"evil": "1"}, "unity": "6000.4"})), ctx
+    )
+    assert evil.severity is Severity.HIGH  # only Unity's own namespace
