@@ -7,9 +7,10 @@
 # 2026-11-01):
 #   1. installs Docker (Ubuntu's docker.io). Your user is NOT added to the docker group: that
 #      group is root-equivalent, and only root's timer talks to Docker;
-#   2. pulls package-analysis rel-38's analysis and dynamic-analysis images by digest (the pins
-#      in docs/stages/sandbox.md) and loads the sandbox image into a podman store of its own,
-#      /srv/kitsunox-sandbox/store, never the host's /var/lib/containers;
+#   2. pulls package-analysis rel-38's analysis image by digest into Docker, and has its podman
+#      pull the dynamic-analysis sandbox image by digest (the pins in docs/stages/sandbox.md)
+#      into a podman store of its own, /srv/kitsunox-sandbox/store, never the host's
+#      /var/lib/containers;
 #   3. installs a root-owned copy of the runner (/usr/local/sbin/kitsunox-sandbox-run), its
 #      config (/etc/kitsunox-sandbox.json) and an hourly root timer (kitsunox-sandbox.timer);
 #   4. points Kitsunox at the results root (KITSUNOX_SANDBOX_RESULTS in .env, which it also
@@ -60,10 +61,8 @@ if id -nG "$OWNER" | tr ' ' '\n' | grep -qx docker; then
 fi
 docker version --format 'Docker {{.Server.Version}}'
 
-step "2/6 Images, pinned by digest"
+step "2/6 Analysis image, pinned by digest"
 docker pull -q "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST"
-docker pull -q "$SANDBOX_IMAGE@$SANDBOX_DIGEST"
-docker tag "$SANDBOX_IMAGE@$SANDBOX_DIGEST" "$SANDBOX_IMAGE:$RELEASE"
 
 step "3/6 Directories"
 install -d -m 0755 -o root -g root "$ROOT_DIR"
@@ -71,29 +70,26 @@ install -d -m 0700 -o root -g root "$ROOT_DIR/store" "$ROOT_DIR/work"
 install -d -m 0750 -o "$OWNER_UID" -g "$OWNER_GID" "$ROOT_DIR/results"
 
 step "4/6 Sandbox image into the sandbox's own podman store"
-TARBALL="$ROOT_DIR/work/dynamic-analysis-$RELEASE.tar"
-docker save -o "$TARBALL" "$SANDBOX_IMAGE:$RELEASE"
+# The analysis container's podman pulls the sandbox image itself, by digest, as package-analysis
+# does. (Copying it from Docker with `docker save | podman load` broke on Docker 29: podman
+# loaded its OCI archive as localhost/rel-38 and the expected name never existed.) This setup
+# container has the network; the runner's never do.
 in_analysis() {
-    docker run --rm --privileged --cgroupns=host --network none \
-        -v "$ROOT_DIR/store:/var/lib/containers" "$@"
+    docker run --rm --privileged --cgroupns=host --network "$NET" \
+        -v "$ROOT_DIR/store:/var/lib/containers" "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" "$@"
 }
-LOADED_OUT="$(in_analysis -v "$TARBALL:/sandbox.tar:ro" "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" \
-    podman load -q -i /sandbox.tar)"
-rm -f "$TARBALL"
-echo "$LOADED_OUT"
-# Newer Docker exports an OCI archive whose only name is the tag ("rel-38"), which podman
-# loads as localhost/rel-38:latest. Give the loaded image the name package-analysis runs.
-LOADED="$(printf '%s\n' "$LOADED_OUT" | sed -n 's/^Loaded image[^:]*: *//p' | tail -n 1)"
-if [[ -z "$LOADED" || "$LOADED" == *,* ]]; then
-    echo "podman load didn't name exactly one image: $LOADED_OUT" >&2
-    exit 1
-fi
-if [[ "$LOADED" != "$SANDBOX_IMAGE:$RELEASE" ]]; then
-    in_analysis "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" podman tag "$LOADED" "$SANDBOX_IMAGE:$RELEASE"
-    in_analysis "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" podman untag "$LOADED"
-fi
-SANDBOX_ID="$(in_analysis "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" \
+show_store() {
+    echo "What the sandbox's podman store holds now:" >&2
+    NET=none in_analysis podman images --all --digests >&2 || true
+}
+trap show_store ERR
+NET=bridge in_analysis podman pull -q "$SANDBOX_IMAGE@$SANDBOX_DIGEST"
+NET=none in_analysis podman tag "$SANDBOX_IMAGE@$SANDBOX_DIGEST" "$SANDBOX_IMAGE:$RELEASE"
+# A name left by an earlier, failed setup (docker save | podman load), if any.
+NET=none in_analysis podman untag localhost/rel-38:latest >/dev/null 2>&1 || true
+SANDBOX_ID="$(NET=none in_analysis \
     podman image inspect --format '{{.Id}}' "$SANDBOX_IMAGE:$RELEASE")"
+trap - ERR
 echo "sandbox image in the store: $SANDBOX_ID"
 
 step "5/6 Runner, config, timer, Kitsunox setting"

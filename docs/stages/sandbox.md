@@ -238,8 +238,10 @@ sudo systemctl enable --now kitsunox-sandbox.timer   # after reviewing the smoke
 ```
 
 - `setup.sh` installs Docker (the user stays out of the `docker` group), pulls the rel-38
-  analysis and dynamic-analysis images by digest, loads the sandbox image into its own podman
-  store (`/srv/kitsunox-sandbox/store`), installs a root-owned runner
+  analysis image by digest, has that image's podman pull the dynamic-analysis sandbox image by
+  digest into its own store (`/srv/kitsunox-sandbox/store`; `docker save | podman load`
+  named the image `localhost/rel-38` on Docker 29, so the setup no longer copies it from
+  Docker), installs a root-owned runner
   (`/usr/local/sbin/kitsunox-sandbox-run`, from `tools/sandbox/kitsunox_sandbox_run.py`), its
   config (`/etc/kitsunox-sandbox.json`) and a root timer (hourly at :25), sets
   `KITSUNOX_SANDBOX_RESULTS=/srv/kitsunox-sandbox/results` in `.env` (and makes `.env` 600),
