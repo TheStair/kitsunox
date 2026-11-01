@@ -85,7 +85,7 @@ is the malicious set.
 |---|---|---|---|---|
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
-| `npm.install-script-obfuscated` (2026-10-31) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 72 of 2,539 / 24 of 905 |
+| `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 
 New packages get no `capability-gained` finding: with no previous version everything is
 "gained", and 34% of benign new packages would fire. They are covered by what their install
@@ -142,6 +142,13 @@ can answer, and HIGH puts it in front of Stage 5's per-run cap of 30 and of the 
 packages reviewed inconclusive for this reason (`sppurt`, `motionchart-cli`, `sino-bc-cli`,
 `whybug`, `calculatorscool346`) scored 3-11 without it. On `vm-day1` it changes no reporting
 decision (every malicious sample it fires on was reported) and fires on no benign sample.
+v2 (2026-11-01) adds the rotation prologue, which only javascript-obfuscator writes, for output
+whose identifiers were renamed: `sino-bc-cli`'s `dist/index.js` has no `_0x` at all. `vm-day1`:
++4 malicious samples (`analytics-browser`, `qdrant-js`, `react-native-country-select`,
+`tailwin`), still no benign. Known limit: install code that starts a script through
+`execFileSync(process.execPath, ['dist/cli.js'])` isn't followed (only `require`/`import` and
+the command line are), and a followed file over 256 KiB is skipped, so `sppurt`'s 3 MB obfuscated
+CLI, run from an inline `node -e` hook, is not seen.
 
 **`npm.install-script-changed`** (MEDIUM, weight 3; 2026-10-30) compares the files the install
 hooks name with the previous version's, byte for byte, and puts the changed lines in the

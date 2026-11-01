@@ -228,3 +228,20 @@ def test_obfuscated_install_code_is_high_and_new_or_changed_on_updates() -> None
     # Obfuscated code no hook runs is Stage 2's `static.obfuscated`, not this.
     assert rule.evaluate_code(change(pkg("node index.js", {"lib.js": OBFUSCATED}), None)) == ()
     assert rule.evaluate_code(change(pkg("node setup.js", {"setup.js": b"go()"}), None)) == ()
+
+
+def test_renamed_obfuscator_output_is_found_by_its_rotation_prologue() -> None:
+    """`sino-bc-cli`'s shape: javascript-obfuscator with renamed identifiers, no `_0x`."""
+    code = (
+        b"#!/usr/bin/env node\n'use strict';const bg=b;(function(c,d){const bf=b,e=c();"
+        b"while(!![]){try{const f=parseInt(bf(0xa2a))/0x1+-parseInt(bf(0x1f3))/0x2;"
+        b"if(f===d)break;else e['push'](e['shift']());}catch(g){e['push'](e['shift']());}}"
+        b"}(a,0x5a1b2));"
+    )
+    (found,) = InstallScriptObfuscated().evaluate_code(
+        change(pkg("node dist/index.js", {"dist/index.js": code}), None)
+    )
+    assert found.evidence[0].line_start == 2
+    assert found.evidence[0].snippet is not None and "rotation" in found.evidence[0].snippet
+    plain = pkg("node run.js", {"run.js": b"while (!done) { try { step() } catch {} }"})
+    assert InstallScriptObfuscated().evaluate_code(change(plain, None)) == ()

@@ -213,6 +213,13 @@ def _diff_evidence(path: str, old: bytes | None, new: bytes) -> Evidence:
     )
 
 
+# javascript-obfuscator's string-array rotation, minified or not: it shuffles the string array
+# until a checksum of parseInt'd entries matches. Identifier renaming doesn't change it.
+ROTATION_PROLOGUE: Final = re.compile(
+    r"while\s*\(\s*!!\[\]\s*\)\s*\{\s*try\s*\{\s*(?:const|let|var)\s+[\w$]+\s*=\s*-?\(?\s*-?parseInt\("
+)
+
+
 class InstallScriptObfuscated(BaseRule):
     """A file `npm install` runs is obfuscated (javascript-obfuscator's `_0x` identifiers, the
     `static.obfuscated` test, on the first 256 KiB kept of each install file). The code runs
@@ -223,9 +230,15 @@ class InstallScriptObfuscated(BaseRule):
 
     Added 2026-10-31 at the owner's request ("flag it"): five packages reviewed as inconclusive
     run obfuscated code at install (`sppurt`, `motionchart-cli`, `sino-bc-cli`, `whybug`,
-    `calculatorscool346`), scored 3-11, some outside Stage 5's cap of 30."""
+    `calculatorscool346`), scored 3-11, some outside Stage 5's cap of 30.
+
+    v2 (2026-11-01): also javascript-obfuscator output whose identifiers were renamed (no
+    `_0x`), by its string-array rotation prologue, `while(!![]){try{const x=parseInt(`, which
+    only that tool writes. `sino-bc-cli`'s `dist/index.js` (`const bg=b;(function(c,d){...`)
+    has it and no `_0x` identifier at all."""
 
     id = "npm.install-script-obfuscated"
+    version = 2
     severity = Severity.HIGH
     weight = 4.0
     title = "Install script runs obfuscated code"
@@ -237,12 +250,21 @@ class InstallScriptObfuscated(BaseRule):
         for path, data in sorted(change.install_files.items()):
             if before.get(path) == data:
                 continue
-            matches = self._detector.evaluate_text(data.decode("utf-8", "replace"))
-            if matches:
-                found.append((path, matches[0]))
+            text = data.decode("utf-8", "replace")
+            if matches := self._detector.evaluate_text(text):
+                found.append(
+                    (path, matches[0].line, f"{matches[0].explanation} {matches[0].snippet}")
+                )
+            elif rotation := ROTATION_PROLOGUE.search(text):
+                line = text.count("\n", 0, rotation.start()) + 1
+                start = max(0, rotation.start() - 60)
+                snippet = text[start : rotation.end() + 60].replace("\n", " ")
+                found.append(
+                    (path, line, f"javascript-obfuscator's string-array rotation: {snippet}")
+                )
         if not found:
             return ()
-        paths = ", ".join(path for path, _ in found)
+        paths = ", ".join(path for path, _, _ in found)
         new = " (new or changed since the previous version)" if change.before is not None else ""
         return (
             self.finding(
@@ -252,11 +274,11 @@ class InstallScriptObfuscated(BaseRule):
                     Evidence(
                         kind=EvidenceKind.FILE_SPAN,
                         path=path,
-                        line_start=match.line,
-                        line_end=match.line,
-                        snippet=f"{match.explanation} {match.snippet}",
+                        line_start=line,
+                        line_end=line,
+                        snippet=snippet,
                     )
-                    for path, match in found[:MAX_FILES_SHOWN]
+                    for path, line, snippet in found[:MAX_FILES_SHOWN]
                 ),
             ),
         )

@@ -70,6 +70,12 @@ after the fact".
   `npm install` runs has javascript-obfuscator identifiers; on updates only new or changed
   ones). `vm-day1`: fires on 96 malicious samples and 0 of 1,500 benign, changes no reporting
   decision; it raises rank, so these versions lead the queue and Stage 5's per-run cap of 30.
+  After the re-score of four runs it flagged only `motionchart-cli`: `sino-bc-cli` is
+  javascript-obfuscator output with renamed identifiers (no `_0x`), so v2 also recognises the
+  tool's string-array rotation prologue (`vm-day1`: 100 malicious samples, was 96; 0 benign);
+  `whybug` has no install hook; `sppurt` starts its 3 MB obfuscated CLI through
+  `execFileSync(process.execPath, ['dist/cli.js'])` from inline `node -e`, which install-code
+  following doesn't trace and whose size is over the followed-file cap (a known limit).
 - **`npm.dependency.known-malware` v2: LOW for a specifier only npm's holder satisfies.**
   Skipping them was the first idea (3 of the rule's 4 live false positives pin
   `0.0.1-security`, which installs nothing). `vm-day1` showed why not: 6 of the 12 malicious
