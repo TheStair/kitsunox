@@ -26,6 +26,9 @@ its run is kept. The queue page opens with the tally ("Verified malicious: N"), 
 daily Discord summary. A new release of a reviewed package comes back to the queue: verdicts are
 per version.
 
+A queued version that looks like one you cleared (same package, publisher and rules as a
+version with a benign verdict) says "like 1.2.3, which you cleared"; it stays in the queue.
+
 A version that npm has since removed, or that an OSV `MAL-` record covers, is marked
 **Confirmed since** on the queue, verdict and entry pages, and the queue page lists benign or
 inconclusive verdicts confirmed since under "Review these again" (a check, never part of a

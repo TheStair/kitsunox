@@ -13,6 +13,11 @@ A run's `report.json` lists reported *versions*. Across runs that has two proble
 Versions a reviewer has given a verdict (`reporting.verdicts`: malicious, inconclusive, benign)
 are left out; the counts say how many, and the verdict tally rides along.
 
+**Like a cleared version:** a queued version whose package has a version reviewed benign with
+the same publisher and the same rules carries that version in `like`. It is a hint to speed the
+review, never a verdict: the version stays in the queue (a benign 1.1.1 and a malicious 1.1.2 of
+`calculator-preinstall-hook-demo` had one publisher; only their rules differed).
+
 **Confirmed after the fact** (`evaluation.confirmations`): a version the registry later removed
 as malware, or that an OSV `MAL-` record covers, carries those confirmations, in the queue and
 in `confirmed` for versions with a verdict. They are a check on the pipeline and the reviewer,
@@ -28,7 +33,7 @@ each run's per-version pages. Package strings are untrusted and go through `mark
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final
@@ -40,7 +45,14 @@ from kitsunox.core.run import DataDir, RunManifest
 from kitsunox.evaluation.confirmations import Confirmation, Confirmations, load_confirmations
 from kitsunox.reporting.markdown import page_name, text
 from kitsunox.reporting.report import REPORT_DIR, Report, ReportEntry
-from kitsunox.reporting.verdicts import KINDS, VerdictRecord, current, read_verdicts, tally
+from kitsunox.reporting.verdicts import (
+    KINDS,
+    VerdictRecord,
+    current,
+    entry_rules,
+    read_verdicts,
+    tally,
+)
 from kitsunox.util.files import atomic_write
 
 QUEUE_DIR: Final = "queue"
@@ -59,6 +71,11 @@ class QueueVersion(Record):
     page: str = Field(description="The version's page, relative to the queue directory.")
     confirmed: tuple[Confirmation, ...] = Field(
         default=(), description="Registry takedowns and OSV records since (not in any score)."
+    )
+    like: str | None = Field(
+        default=None,
+        description="A version of the package reviewed benign with the same publisher and "
+        "the same rules (a hint, not a verdict).",
     )
 
 
@@ -156,8 +173,16 @@ def build_queue(
             sighting = _Sighting.of(report.run_id, entry, confirmations)
             if key not in best or sighting.strength > best[key].strength:
                 best[key] = sighting
+    cleared = _cleared(verdicts)
     by_package: dict[str, list[_Sighting]] = {}
     for sighting in best.values():
+        like = (
+            cleared.get((sighting.name, sighting.publisher, sighting.fired))
+            if sighting.publisher is not None
+            else None
+        )
+        if like is not None:
+            sighting = sighting.with_like(like)
         by_package.setdefault(sighting.name, []).append(sighting)
 
     unranked = [_package(name, sightings) for name, sightings in by_package.items()]
@@ -180,6 +205,20 @@ def build_queue(
         verdicts=tally(verdicts),
         confirmed=_confirmed_verdicts(verdicts, confirmations),
     )
+
+
+def _cleared(
+    verdicts: Mapping[tuple[str, str], VerdictRecord],
+) -> dict[tuple[str, str, frozenset[str]], str]:
+    """(package, publisher, rules) of each benign verdict -> the newest such version."""
+    found: dict[tuple[str, str, frozenset[str]], VerdictRecord] = {}
+    for record in verdicts.values():
+        if record.verdict != "benign" or record.publisher is None:
+            continue
+        key = (record.name, record.publisher, frozenset(record.rules))
+        if key not in found or (record.at, record.version) > (found[key].at, found[key].version):
+            found[key] = record
+    return {key: record.version for key, record in found.items()}
 
 
 def _confirmed_verdicts(
@@ -243,7 +282,11 @@ def render_queue(queue: Queue) -> str:
         "|---|---|---|---|---|---|---|---|",
     ]
     for entry in queue.entries:
-        shown = ", ".join(f"[{text(v.version)}]({v.page})" for v in entry.versions[:VERSIONS_SHOWN])
+        shown = ", ".join(
+            f"[{text(v.version)}]({v.page})"
+            + (f" (like {text(v.like)}, cleared)" if v.like else "")
+            for v in entry.versions[:VERSIONS_SHOWN]
+        )
         more = len(entry.versions) - VERSIONS_SHOWN
         if more > 0:
             shown += f" and {more} more"
@@ -295,6 +338,8 @@ class _Sighting:
     version: QueueVersion
     rules: tuple[str, ...]
     watched: bool
+    publisher: str | None = None
+    fired: frozenset[str] = frozenset()  # every rule that fired, as a verdict records them
 
     @classmethod
     def of(cls, run_id: str, entry: ReportEntry, confirmations: Confirmations) -> _Sighting:
@@ -309,7 +354,17 @@ class _Sighting:
             confirmed=confirmations.of(entry.name, entry.version, entry.published_at),
         )
         rules = tuple(t.rule_id for t in entry.score_terms)
-        return cls(name=entry.name, version=version, rules=rules, watched=entry.watched)
+        return cls(
+            name=entry.name,
+            version=version,
+            rules=rules,
+            watched=entry.watched,
+            publisher=entry.publisher,
+            fired=frozenset(entry_rules(entry)),
+        )
+
+    def with_like(self, like: str) -> _Sighting:
+        return replace(self, version=self.version.model_copy(update={"like": like}))
 
     @property
     def strength(self) -> tuple[int, float]:

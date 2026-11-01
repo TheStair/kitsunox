@@ -88,13 +88,19 @@ def verdict_record(
         rank=entry.rank,
         score=entry.score,
         severity=entry.severity.value,
-        rules=tuple(
-            dict.fromkeys(
-                [*(t.rule_id for t in entry.score_terms), *(f.rule_id for f in entry.findings)]
-            )
-        ),
+        rules=entry_rules(entry),
         publisher=entry.publisher,
         published_at=entry.published_at,
+    )
+
+
+def entry_rules(entry: ReportEntry) -> tuple[str, ...]:
+    """The rules that fired on an entry, as a verdict record keeps them: score terms first,
+    then every finding's rule, each once."""
+    return tuple(
+        dict.fromkeys(
+            [*(t.rule_id for t in entry.score_terms), *(f.rule_id for f in entry.findings)]
+        )
     )
 
 

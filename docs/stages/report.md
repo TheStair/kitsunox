@@ -98,6 +98,12 @@ of the newest one and writes:
   listed in `skipped` and left out. It doesn't stop the queue.
 - `collect` rebuilds the queue after prune (best-effort), so pruned runs drop out after
   `--days`. Their report pages stay, so the links keep working.
+- **Like a cleared version** (2026-11-01): a queued version whose package has a version
+  reviewed benign with the same publisher and the same rules is marked "(like 1.2.3,
+  cleared)" (`QueueVersion.like`). It stays in the queue: a hint for a quick package-level
+  verdict, never a verdict, because a malicious release can follow a benign one from the same
+  account (`calculator-preinstall-hook-demo` 1.1.1 and 1.1.2 differed only in their rules).
+  Of the 968 benign verdicts so far, 158 were such repeats.
 - **Confirmed since** ([decision 0016](../decisions/0016-after-the-fact-confirmations.md)):
   each version carries the registry takedowns published after it (npm's `0.0.1-security`
   holder, found in the runs' feeds by `collect` and kept in `data/takedowns/npm.json`; also

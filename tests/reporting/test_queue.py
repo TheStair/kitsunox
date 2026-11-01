@@ -214,3 +214,26 @@ def test_versions_confirmed_since_are_flagged_never_scored(tmp_path: Path) -> No
     )
     assert "stealer@1.0.0" not in page  # confirmed malicious: counted, not listed
     assert page.rstrip().endswith("| removed by the registry 2026-10-29 |")
+
+
+def test_a_version_like_one_reviewed_benign_is_hinted_not_dropped(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    old = report_entry(1, "cli", "1.0.0", 5, MEDIUM, "a", published_at=T - timedelta(hours=5))
+    old = old.model_copy(update={"publisher": "alice"})
+    same = report_entry(2, "cli", "1.0.1", 5, MEDIUM, "a").model_copy(update={"publisher": "alice"})
+    other = report_entry(3, "cli", "1.0.2", 5, MEDIUM, "b").model_copy(
+        update={"publisher": "alice"}
+    )
+    taken = report_entry(4, "cli", "1.0.3", 5, MEDIUM, "a").model_copy(update={"publisher": "eve"})
+    save(data, make_report("r", old, same, other, taken))
+    report = Report.load_json((data.run_dir("r") / "report" / "report.json").read_bytes())
+    reviewed = {("cli", "1.0.0"): verdict_record(report, report.entries[0], "benign", by="x", at=T)}
+    queue = build_queue(data, "npm", days=7, reviewed=reviewed)
+    assert queue is not None
+    (entry,) = queue.entries
+    assert {v.version: v.like for v in entry.versions} == {
+        "1.0.1": "1.0.0",  # same publisher, same rules
+        "1.0.2": None,  # another rule fired
+        "1.0.3": None,  # another publisher
+    }
+    assert "(like 1.0.0, cleared)" in render_queue(queue)

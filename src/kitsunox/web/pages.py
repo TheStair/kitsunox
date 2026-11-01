@@ -273,7 +273,9 @@ def _queue_row(entry: QueueEntry, token: str | None = None) -> str:
         href = entry_href(v.run_id, v.rank)
         shown = internal(href, label) if href else label
         form = verdict_form(token, v.run_id, v.rank, "/", note=False) if token and href else ""
-        flag = _confirmation(v.confirmed)
+        flag = _confirmation(v.confirmed) + (
+            f' <span class="note">like {esc(v.like)}, which you cleared</span>' if v.like else ""
+        )
         versions.append(f'<li>{shown} <span class="note">{v.score:g}</span>{flag}{form}</li>')
     rules = "".join(f"<li><code>{esc(r.rule_id)}</code> ({r.versions})</li>" for r in entry.rules)
     whole = package_form(token, entry) if token and len(entry.versions) > 1 else ""
