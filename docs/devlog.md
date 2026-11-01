@@ -2,6 +2,51 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-01 (afternoon): The local sandbox runs; three setup failures on the way
+
+**Stage(s):** Stage 5 (local Docker runner, `tools/sandbox/`)
+**Context:** The owner ran `sudo bash tools/sandbox/setup.sh` on the VM (Ubuntu, Docker 29.7.2)
+and sent the output of each attempt. I can't run Docker myself (no root, not in the `docker`
+group), so every fix was made from their pasted output.
+
+### Challenges
+- **`docker save | podman load` lost the image's name.** Docker 29 exports an OCI archive whose
+  only ref name is the tag, so podman loaded it as `localhost/rel-38:latest`, and the inspect
+  by `gcr.io/ossf-malware-analysis/dynamic-analysis:rel-38` failed. Re-tagging the loaded name
+  (0b7122e) failed the same way on the owner's rerun, for a reason I couldn't see without root.
+  - **Resolution:** 73f8c1e: the analysis container's podman pulls the sandbox image itself by
+    its pinned digest (network for that setup container only), as package-analysis normally
+    does, and the setup prints the store's images on any failure.
+  - **Why it worked:** the owner's next run printed the image id
+    (`ce9afdef4d4e…`) in step 4.
+- **The smoke test "passed" with no result.** Docker exited 0 and wrote nothing; the runner
+  printed the analyser's output only on a nonzero exit.
+  - **Resolution:** ec35f6b: a failed smoke run lists every file the job wrote and the last
+    60 lines of output. That showed the real failure: "failed to start packet capture
+    (couldn't query interface cni-analysis)". rel-38 starts its pcap on podman's analysis
+    bridge even with `-offline`, where the sandbox joins no network and the bridge never
+    exists, so every offline run aborted before the install, and `analyze` still exits 0.
+  - **Resolution:** ff171b9: the runner starts `analyze` through a fixed `/bin/sh -c` shim that
+    adds an empty dummy `cni-analysis` interface in the analysis container's own namespace
+    (rel-38's capture opens the interface by name, with no filter or address lookup). Job
+    values pass as `"$@"`.
+  - **Why it worked:** the smoke run then wrote `1.0.0.json`. The install phase shows
+    `npm install` of the tarball and the postinstall `node -e "console.log('kitsunox smoke')"`
+    inside gVisor (systrap, no `/dev/kvm` on this VM); the only socket is npm's DNS attempt to
+    127.0.0.1:53. Kitsunox's importer accepted it (1,529 observations, bait values masked) and
+    the sandbox rules gave only `sandbox.ran` and `sandbox.quiet` (INFO).
+- **Review gate:** the owner enabled `kitsunox-sandbox.timer` before I had read the smoke
+  result; I read it right after (above), and nothing in it argues against running.
+
+### Open questions / next steps
+- First real jobs: the 19:28 UTC tick exported 10 (5 as offline bundles); the timer runs at
+  :25. Check the first imported results for false positives from the dummy interface (none
+  expected: it carries no packets) and for installs that fail offline.
+- Runs collected before `KITSUNOX_SANDBOX_RESULTS` was set exported nothing; their
+  inconclusive obfuscated-install versions (`motionchart-cli`, `sppurt`,
+  `@routinecrew/routinecode`, `calculatorscool346@1.0.1`) can be exported with
+  `kitsunox sandbox <run_id>` while their runs are kept.
+
 ## 2026-11-01 (morning): Bug-bounty probes: judged by behaviour, tagged `probe`
 
 **Stage(s):** reviewer verdicts (`reporting.verdicts`, viewer, CLI, daily summary)
