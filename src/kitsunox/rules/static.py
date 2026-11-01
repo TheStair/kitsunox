@@ -15,6 +15,7 @@ from typing import ClassVar, Final
 
 from kitsunox.core.models import Severity
 from kitsunox.core.rules import FileMatch
+from kitsunox.rules.signatures import KnownSignature
 
 MAX_MATCHES_PER_RULE: Final = 3
 SNIPPET_RADIUS: Final = 60
@@ -415,6 +416,7 @@ class Network(RegexRule):
 
 
 RULES: Final = (
+    KnownSignature(),
     ExfilEndpoint(),
     WebhookPlaceholder(),
     EncodedUrl(),

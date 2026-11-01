@@ -54,7 +54,16 @@ reposted malware at once (next entry).
 
 ### Open questions / next steps
 - First sandbox results: confirm bundles install offline (sandbox.md's evaluation step 1).
-- Signatures for reposted malware (owner approved).
+- **Signatures for reposted malware: `static.known-signature`** (Stage 2; owner: "make
+  signatures based on known threats to immediately classify that malware that was re-posted").
+  Nine signatures from our malicious verdicts: endpoints, accounts, wallets, and for the tavern
+  stealer the API calls every republish decodes to (its four copies share 1,705 of 1,715
+  decoded strings; only the XOR key changes). Matching sees through one-byte-XOR string tables,
+  javascript-obfuscator arrays and base64 literals. HIGH, weight 6, never demoted as "not new".
+  Over 814 benign, 26 inconclusive and 6,004 other captured tarballs it matched only the benign
+  `calculator-preinstall-hook-demo@1.1.1` (same webhook as its malicious successor) and
+  `dependencykfeg@25.1.9`, an unreported release of a confirmed probe family. Not measured on
+  `vm-day1` on purpose: signatures built from our verdicts would only re-find their sources.
 
 ## 2026-10-31 (evening): Confirmed after the fact, a Baileys policy, a fourth stealer republish
 

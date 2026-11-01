@@ -38,6 +38,7 @@ from kitsunox.core.models import (
 from kitsunox.core.rules import ArtifactRule, FileMatch, FileRule, rules_fingerprint
 from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
+from kitsunox.rules.signatures import KnownSignature
 from kitsunox.rules.static import RULES
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
@@ -135,6 +136,10 @@ def _key(match: FileMatch) -> tuple[str, str]:
     return (match.rule_id, _NUMBER.sub("#", match.explanation))
 
 
+# Never "not new": a known family's payload in the previous version too is still the payload.
+ALWAYS_NEW: Final = frozenset({KnownSignature.id})
+
+
 def _demoted(
     match: FileMatch,
     path: str,
@@ -143,7 +148,7 @@ def _demoted(
 ) -> FileMatch:
     if match.severity in (Severity.INFO, Severity.LOW):
         return match
-    if _key(match) in before:
+    if _key(match) in before and match.rule_id not in ALWAYS_NEW:
         note = previous_note
     elif NON_EXECUTING.search(path):
         note = DOCS_NOTE

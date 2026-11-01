@@ -94,6 +94,46 @@ attributed.
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
 
+### Known-family signatures (`static.known-signature`, `rules/signatures.py`, 2026-11-01)
+
+A repost of malware we have already confirmed should be known on arrival, not rediscovered: the
+tavern LLM-credential stealer came back three times under new names and scored 5-6 each time,
+from `static.obfuscated` alone. Each signature is taken from our own malicious verdicts (never
+from a takedown or an outside list, decision 0016) and names them: a family's endpoints,
+accounts and wallets, or strings its payload always carries. It fires (HIGH, weight 6) when all
+of its patterns match the file's text plus the strings its obfuscation hides
+(`decoded_strings`: one-byte-XOR base64 string tables, javascript-obfuscator's base64 arrays in
+files with its `_0x` identifiers, and plain base64 literals of 16+ characters). Unlike other
+Stage 2 matches it is never demoted as "also in the previous version" (`static.ALWAYS_NEW`); a
+match only in documentation, types or tests is still demoted. `SIGNATURES_VERSION` is the
+rule's version, so changing the set changes the rules fingerprint (and Stage 2's cache).
+
+| Id | Family | Matches on | Taken from |
+|---|---|---|---|
+| KX-0001 | tavern LLM-credential stealer | `/create-foundation-model-agreement`, `AWSInvoicingService.ListInvoiceSummaries` and `Action=GetCallerIdentity&...` together (decoded) | `tavern-ai-sdk`, `char-ai-sdk`, `character-ai-sdk`, `persona-ai-sdk` |
+| KX-0002 | the same family's TRON wallets | two addresses | the same |
+| KX-0003 | `claims-*` install-time recon | `GamerD11/ping_test` | `claims-acct-unlock`, `claims-ac1` |
+| KX-0004 | depconf probe (user, host, directory) | `38.242.235.206` | `internal-renderers`, `ms-client-portal`, `pandafortunerush` |
+| KX-0005 | notsemz probes | their webhook.site token, `130.162.231.177` | `@pcb-dp/qa-commons`, `ssite-mock-server` |
+| KX-0006 | probe authors' out-of-band beacon ids | an interactsh and a Burp Collaborator id | `@mobile-platform/magnetic-components`, `dependencykfeg` |
+| KX-0007 | `calculator-preinstall-hook-demo`'s Discord webhook | its webhook id | `calculator-preinstall-hook-demo@1.1.2` |
+| KX-0008 | Baileys forks following hard-coded channels | a `...@newsletter` id, `FOLLOW` and `newsletterWMexQuery` in one file | `@chatbridgeworld/baileys`, `kevinx-baileys`, `@bil-rgb/baileys` |
+| KX-0009 | Baileys forks fetching their channel list | `noxXza/data`, `push-saurus.yorunime.sbs` | `luna-baileys`, `sauruspro-bail` |
+
+Measured on 2026-11-01 over every captured tarball with a verdict and every 18th other captured
+tarball (6,004): each family's captured malicious versions match (KX-0001 and KX-0002: 4 of 4,
+KX-0003: 4, KX-0004: 6, KX-0005 and KX-0006: 2 each, KX-0008: 1; the other Baileys forks
+weren't captured), no benign (814) or inconclusive (26) version matches except
+`calculator-preinstall-hook-demo@1.1.1`, the benign predecessor that posts fixed text to the same
+webhook, and among the others only `dependencykfeg@25.1.9`, a release of the `weqwe` probe family
+the pipeline never reported. No file took over 5 s. The upstream Baileys API
+(`newsletterFollow` calling `newsletterWMexQuery(jid, FOLLOW)`) doesn't match KX-0008: it has no
+channel id of its own.
+
+Adding one: take the family's endpoints or the strings every sample decodes to (not decoy
+padding, not a library's), add the verdicts to `seen_in`, bump `SIGNATURES_VERSION`, and measure
+again over the captured tarballs before deploying.
+
 ### Metadata vs. tarball (npm, `ecosystems/npm/rules/artifact.py`)
 
 These rules see a version's registry metadata and its whole extracted tarball (the
