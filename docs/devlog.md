@@ -70,7 +70,12 @@ after the fact".
   `npm install` runs has javascript-obfuscator identifiers; on updates only new or changed
   ones). `vm-day1`: fires on 96 malicious samples and 0 of 1,500 benign, changes no reporting
   decision; it raises rank, so these versions lead the queue and Stage 5's per-run cap of 30.
-- `npm.dependency.known-malware`: skip a dependency whose spec can only resolve to the holder.
+- **`npm.dependency.known-malware` v2: LOW for a specifier only npm's holder satisfies.**
+  Skipping them was the first idea (3 of the rule's 4 live false positives pin
+  `0.0.1-security`, which installs nothing). `vm-day1` showed why not: 6 of the 12 malicious
+  samples the rule fires on have `fs: ^0.0.1-security` too (a tailwind-icon campaign,
+  `vite-support-kit`); attackers run `npm install fs` as carelessly as anyone. Neither variant
+  changes a reporting decision (2,505 / 17); LOW keeps the evidence and part of the score.
 
 ## 2026-10-31 (afternoon): Re-score results, a prerelease downgrade, three skipped ticks
 

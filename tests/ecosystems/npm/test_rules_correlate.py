@@ -81,6 +81,22 @@ def test_known_malware_dependency() -> None:
     )
 
 
+def test_a_dependency_only_npm_s_holder_satisfies_is_low() -> None:
+    """`npm install fs` writes `^0.0.1-security`: the empty package npm holds the name with."""
+    rule, ctx = KnownMalwareDependency(), CorrelationContext(as_of=T0, known_bad=LABELS)
+
+    def found(spec: str) -> Finding:
+        (only,) = rule.evaluate_candidate(cand(snap("1", {"dependencies": {"evil": spec}})), ctx)
+        return only
+
+    for spec in ("0.0.1-security", "^0.0.1-security", "~0.0.1-security", "npm:evil@0.0.1-security"):
+        held = found(spec)
+        assert (held.severity, held.weight) == (Severity.LOW, 1.0), spec
+        assert "installs nothing" in held.explanation
+    for spec in (">=0.0.1-security", "*", "0.0.1-security || 1.x", "npm:evil@1.0.0"):
+        assert found(spec).severity is Severity.HIGH, spec
+
+
 def test_revived_with_new_dependency() -> None:
     def low(rule_id: str) -> Finding:
         return Finding(

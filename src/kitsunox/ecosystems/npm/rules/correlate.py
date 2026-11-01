@@ -98,12 +98,28 @@ def _dependency_name(name: str, spec: str) -> str:
     return target[:at] if at > 0 else target
 
 
+# A specifier only npm's security holding package satisfies: `npm install fs` writes
+# `"fs": "^0.0.1-security"` because npm holds the name (`packument.SECURITY_HOLDER_VERSION`).
+_HOLDER_SPEC: Final = re.compile(r"[\^~=v\s]*0\.0\.1-security\s*")
+
+
 class KnownMalwareDependency(BaseRule):
     """The release adds a dependency that an OSV `MAL-` record, published by the run's
     `as_of`, calls malware in every version. Only whole-package records count (see
-    `LabelSet.known_malware`). On `day1`: 11 of 905 malicious new packages, no benign sample."""
+    `LabelSet.known_malware`). On `day1`: 11 of 905 malicious new packages, no benign sample.
+
+    v2 (2026-10-31): a dependency whose specifier only npm's empty `0.0.1-security` holding
+    package satisfies is LOW (weight 1): it installs nothing, and benign authors who ran
+    `npm install fs` have it. 3 of the rule's 4 live false positives were such specifiers (`fs:
+    0.0.1-security`, twice `tree-sitter-dockerfile: ^0.0.1-security`); the fourth is a Unity
+    module name, `com.unity.modules.terrain: 1.0.0`. Not skipped: on `vm-day1`, 6 of the 12
+    malicious samples it fires on (a tailwind-icon campaign, `vite-support-kit`) have `fs:
+    ^0.0.1-security` too, so it still counts towards the score; every one of the 6 is reported
+    through other rules either way. The specifier is the package's own text, read here, not a
+    takedown (decision 0016)."""
 
     id = "npm.dependency.known-malware"
+    version = 2
     severity = Severity.HIGH
     weight = 5.0
     title = "Depends on a known-malicious package"
@@ -122,19 +138,41 @@ class KnownMalwareDependency(BaseRule):
                 continue
             target = _dependency_name(name, spec)
             records = ctx.known_bad.known_malware(target, ctx.as_of) if target != own else ()
-            if records:
-                findings.append(
-                    self.finding(
-                        f"Depends on `{target}`, which {', '.join(records[:3])} "
-                        "lists as malware in every version.",
-                        Evidence(
-                            kind=EvidenceKind.MANIFEST_FIELD,
-                            path=f"package.json:dependencies.{name}",
-                            after=f"{name}: {spec}"[:300],
-                        ),
-                    )
+            if not records:
+                continue
+            explanation = (
+                f"Depends on `{target}`, which {', '.join(records[:3])} lists as malware in "
+                "every version."
+            )
+            held = bool(_HOLDER_SPEC.fullmatch(_alias_range(spec)))
+            if held:
+                explanation += (
+                    " The specifier only matches npm's empty `0.0.1-security` holding package, "
+                    "so it installs nothing (benign authors who ran `npm install` on the name "
+                    "have it too)."
                 )
+            findings.append(
+                self.finding(
+                    explanation,
+                    Evidence(
+                        kind=EvidenceKind.MANIFEST_FIELD,
+                        path=f"package.json:dependencies.{name}",
+                        after=f"{name}: {spec}"[:300],
+                    ),
+                    severity=Severity.LOW if held else None,
+                    weight=1.0 if held else None,
+                )
+            )
         return findings
+
+
+def _alias_range(spec: str) -> str:
+    """The version range of `npm:target@range`; a plain specifier as it is."""
+    if not spec.startswith("npm:"):
+        return spec
+    target = spec.removeprefix("npm:")
+    at = target.rfind("@")
+    return target[at + 1 :] if at > 0 else ""
 
 
 def scope(name: str) -> str | None:
