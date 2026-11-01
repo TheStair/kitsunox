@@ -116,6 +116,15 @@ def test_the_docker_command_has_no_network_read_only_input_and_limits(tmp_path: 
     assert "--memory" in command and "--pids-limit" in command and "--cpus" in command
     assert f"gcr.io/ossf-malware-analysis/analysis@sha256:{'1' * 64}" in command
     assert "evil pkg; rm -rf /" in command  # one argv element, never a shell word
+    shim = command.index("/bin/sh")
+    assert command[shim : shim + 5] == [
+        "/bin/sh",
+        "-c",
+        module.PCAP_SHIM,
+        "kitsunox-sandbox",
+        "analyze",
+    ]
+    assert "evil" not in module.PCAP_SHIM and command.index("evil pkg; rm -rf /") > shim + 4
     mounts = [command[i + 1] for i, a in enumerate(command) if a == "-v"]
     assert all(m.startswith(str(tmp_path)) for m in mounts)  # nothing else of the host
 

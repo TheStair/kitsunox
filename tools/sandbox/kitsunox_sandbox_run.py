@@ -72,6 +72,13 @@ JOB_DIRS: Final = {
     "analyzed": "/analyzedPackages",
     "strace": "/straceLogs",
 }
+# rel-38 starts its packet capture on podman's `cni-analysis` bridge even with `-offline`, where
+# the sandbox joins no network and the bridge never exists: the run fails before the package is
+# installed ("couldn't query interface cni-analysis"). An empty dummy interface of that name in
+# the analysis container's own network namespace lets the capture start; it sees no packets
+# (the sandbox has `--network=none`). The script is fixed text: the job's values reach
+# `analyze` as "$@", never as shell words.
+PCAP_SHIM: Final = 'ip link add cni-analysis type dummy && ip link set cni-analysis up && exec "$@"'
 BUCKETS: Final = (
     "-dynamic-bucket",
     "file:///results/",
@@ -183,7 +190,8 @@ def check_job(entry: Mapping[str, Any], export: Path) -> Job:
 def docker_command(config: Config, job: Job, work: Path) -> list[str]:
     """`docker run` for one job: run_analysis.sh's command (`--cgroupns=host --privileged
     --rm`, its mounts and `analyze` arguments) with `-fully-offline`'s `--network none`,
-    per-job directories, the tarball read-only, limits, and the image pinned by digest."""
+    per-job directories, the tarball read-only, limits, the image pinned by digest, and
+    `analyze` started through PCAP_SHIM."""
     mounts = [f"{config.store_dir}:/var/lib/containers"]
     mounts += [f"{work / name}:{target}" for name, target in JOB_DIRS.items()]
     mounts.append(f"{work / 'input' / (job.key + '.tgz')}:/{job.key}.tgz:ro")
@@ -212,6 +220,10 @@ def docker_command(config: Config, job: Job, work: Path) -> list[str]:
         command += ["-v", mount]
     command += [
         f"{ANALYSIS_IMAGE}@{config.analysis_digest}",
+        "/bin/sh",
+        "-c",
+        PCAP_SHIM,
+        "kitsunox-sandbox",  # $0
         "analyze",
         *BUCKETS,
         "-ecosystem",

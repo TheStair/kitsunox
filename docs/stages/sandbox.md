@@ -237,6 +237,14 @@ sudo bash tools/sandbox/setup.sh                 # once: Docker, pinned images, 
 sudo systemctl enable --now kitsunox-sandbox.timer   # after reviewing the smoke result
 ```
 
+- **rel-38's packet capture needs an interface offline.** `-offline` gives the sandbox no
+  network, so podman never creates its `cni-analysis` bridge, yet `analyze` still starts its
+  pcap there and fails before installing anything ("couldn't query interface cni-analysis",
+  found by the first smoke test). The runner starts `analyze` through a fixed `/bin/sh -c`
+  shim that first adds an empty dummy interface of that name in the analysis container's own
+  network namespace (`PCAP_SHIM`; the job's values pass as `"$@"`, never as shell words). The
+  capture records nothing, which is what an offline run's pcap would record anyway; DNS and
+  socket observations come from gVisor's strace.
 - `setup.sh` installs Docker (the user stays out of the `docker` group), pulls the rel-38
   analysis image by digest, has that image's podman pull the dynamic-analysis sandbox image by
   digest into its own store (`/srv/kitsunox-sandbox/store`; `docker save | podman load`
