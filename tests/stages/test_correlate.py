@@ -100,6 +100,13 @@ def test_an_unwatched_downgrade_alone_is_not_reported() -> None:
     assert decide([finding("npm.publish-method.downgrade", Severity.HIGH, 5.0)]).forwarded
 
 
+def test_capability_gains_and_webhook_placeholders_alone_are_not_reported() -> None:
+    for rule_id in ("code.capability-gained", "static.webhook-placeholder"):
+        weak = finding(rule_id, Severity.MEDIUM, 3.0)
+        assert not decide([weak]).forwarded, rule_id
+        assert decide([weak, finding("m", Severity.MEDIUM, 1.0)]).forwarded, rule_id
+
+
 class Echo:
     """Adds a LOW finding naming how many findings it saw."""
 

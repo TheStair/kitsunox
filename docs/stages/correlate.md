@@ -218,10 +218,16 @@ dependency's packument.
 - **Report** a version when any finding is MEDIUM or above, or its score reaches
   `REPORT_SCORE` (6). The first keeps recall at least that of Stages 1-3 together; the second
   lets LOW findings add up. Since 2026-10-30 a MEDIUM finding from a rule in `WEAK_ALONE` only
-  reports through the score or beside another MEDIUM: today that is
-  `npm.publish-method.downgrade` on an unwatched package (MEDIUM, weight 3). On `vm-day1` no
-  malicious sample was reported by it alone; on the first live days it was the commonest
-  reason for a report. Measured before choosing it: "HIGH or score 6" for every rule would have
+  reports through the score or beside another MEDIUM: `npm.publish-method.downgrade` on an
+  unwatched package (MEDIUM, weight 3). On `vm-day1` no malicious sample was reported by it
+  alone; on the first live days it was the commonest reason for a report. Since 2026-11-01
+  also `code.capability-gained` and `static.webhook-placeholder`: of the 888 live benign
+  verdicts still reported, 60 and 3 were carried by one of them alone, and no malicious or
+  inconclusive verdict nor any `vm-day1` malicious sample was. Simulated and not adopted the
+  same day (each loses real attacks): `revived-with-new-dependency` (-83 benign, loses
+  `xrpl@2.14.2`), `install-script-changed` (-105, loses `aicp-tracker`'s last reported
+  release, `fooobar` and 2 inconclusive), `fresh-foreign` (-9, loses 2), and requiring two
+  MEDIUM rules (-438, loses 169 `vm-day1` samples and 11 of 27 live malicious). Measured before choosing it: "HIGH or score 6" for every rule would have
   lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.

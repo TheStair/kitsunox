@@ -54,8 +54,9 @@ STAGE_ID: Final = "correlate"
 # the same passes and under the same outage guard as repository lookups. 6: a missing file
 # whose content is elsewhere in the repository is explained, and an install hook a repository
 # file writes is noted (`ManifestDifference.built_by`). 7: LOW findings together add at most
-# `LOW_CAP` to the score. Output without the field is 1.
-STAGE_VERSION: Final = 7
+# `LOW_CAP` to the score. 8: `code.capability-gained` and `static.webhook-placeholder` join
+# `WEAK_ALONE`. Output without the field is 1.
+STAGE_VERSION: Final = 8
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -271,10 +272,16 @@ def unevaluated(candidates: Iterable[Candidate]) -> int:
 
 
 # MEDIUM findings that don't report a version on their own, only through the score or beside
-# another MEDIUM: an unwatched package published by hand after CI releases (242 versions in two
-# live days, almost all a maintainer's own manual publish; 0 malicious `vm-day1` samples
-# reported by it alone).
-WEAK_ALONE: Final = frozenset({"npm.publish-method.downgrade"})
+# another MEDIUM:
+# - an unwatched package published by hand after CI releases (242 versions in two live days,
+#   almost all a maintainer's own manual publish; 0 malicious `vm-day1` samples reported by it
+#   alone);
+# - (2026-11-01) code that gains capabilities, and a webhook URL with a placeholder id: 60 and 3
+#   of the 888 live benign verdicts still reported were carried by one of them alone; no
+#   malicious or inconclusive verdict, and no `vm-day1` malicious sample, is.
+WEAK_ALONE: Final = frozenset(
+    {"npm.publish-method.downgrade", "code.capability-gained", "static.webhook-placeholder"}
+)
 
 
 def _severe(finding: Finding) -> bool:
