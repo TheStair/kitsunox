@@ -227,6 +227,38 @@ one). One results directory per job is required, because results of two packages
 same version would otherwise overwrite each other. The tarballs are untrusted; the export
 directory is for package-analysis only.
 
+## Local Docker sandbox (2026-11-01)
+
+Since [decision 0014's addendum](../decisions/0014-stage5-uses-ossf-package-analysis.md#addendum-2026-11-01-package-analysis-in-docker-on-the-kitsunox-vm),
+package-analysis runs on the Kitsunox VM in Docker, through `tools/sandbox/`:
+
+```sh
+sudo bash tools/sandbox/setup.sh                 # once: Docker, pinned images, runner, smoke test
+sudo systemctl enable --now kitsunox-sandbox.timer   # after reviewing the smoke result
+```
+
+- `setup.sh` installs Docker (the user stays out of the `docker` group), pulls the rel-38
+  analysis and dynamic-analysis images by digest, loads the sandbox image into its own podman
+  store (`/srv/kitsunox-sandbox/store`), installs a root-owned runner
+  (`/usr/local/sbin/kitsunox-sandbox-run`, from `tools/sandbox/kitsunox_sandbox_run.py`), its
+  config (`/etc/kitsunox-sandbox.json`) and a root timer (hourly at :25), sets
+  `KITSUNOX_SANDBOX_RESULTS=/srv/kitsunox-sandbox/results` in `.env` (and makes `.env` 600),
+  and runs an inert package through the whole chain. It leaves the timer off: the review gate
+  says the owner looks at that benign result first (`/srv/kitsunox-sandbox/smoke-result`).
+- With the results root set, every tick exports its reported versions with install hooks
+  (cap 30 a run, highest score first) and imports whatever results are there.
+- The runner, each hour: checks the sandbox image's id in the store; reads every export's
+  `jobs.json`; refuses any job whose fields or arguments differ from what
+  `spool.analysis_args` writes; copies each tarball after checking its size and sha256; runs
+  the analysis image by digest with `--network none`, the tarball read-only, per-job
+  directories, 6 GB of memory, 2 CPUs, 4,096 processes and a 20-minute timeout; and renames the
+  job's results into the results root as `<key>/`. At most 12 jobs a run; an infrastructure
+  failure is tried once more on a later run. Logs: `journalctl -u kitsunox-sandbox`.
+- `tools/sandbox/uninstall.sh` removes the runner, timer, config, store and images.
+- gVisor runs on its systrap platform, so the VM needs no nested virtualisation (it has none).
+
+The steps below, for a separate airgapped VM, still work and remain the stronger isolation.
+
 ## How the owner runs package-analysis
 
 Kitsunox ships no install script, container runner, Docker or gVisor setup, and no image

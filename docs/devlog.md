@@ -2,6 +2,60 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-01 (early morning): False-positive cuts that keep the attacks, a local sandbox
+
+**Stage(s):** Stage 4 (report decision, `npm.dependency.known-malware` v3), review queue,
+Stage 5 (local runner)
+**Context:** The owner: "I feel like 968 benign is a lot. Is there a way we can bring down the
+false positives while retaining the true positives?", then asked for sandbox setup scripts and
+chose Docker on this VM over a separate airgapped VM, and asked for signatures to classify
+reposted malware at once (next entry).
+
+### Decisions
+- **Measure every cut against both the eval set and the live verdicts.** Simulated report
+  decisions over the `vm-day1` dump and the current reports of all 1,020 verdicts
+  (`session-scripts/policy/sim_weak.py`). Of 888 benign verdicts still reported, the big rules
+  look benign-only live but carry real attacks in the eval set: demoting
+  `revived-with-new-dependency` (-83) loses `xrpl@2.14.2`; `install-script-changed` (-105) loses
+  `aicp-tracker`'s last reported release and `fooobar`; requiring two MEDIUM rules (-438) loses
+  169 eval samples and 11 of 27 live malicious. Narrowing `revived` to unpopular dependencies
+  fails too (`xrpl`, `is@3.3.1`, `vant` added popular ones), and literal-only install-script
+  changes are only 24 of 146 and include URL swaps.
+- **Adopted: `code.capability-gained` and `static.webhook-placeholder` join `WEAK_ALONE`**
+  (Stage 4 v8): -63 live benign, nothing lost anywhere.
+- **Adopted: "like a cleared version" in the queue.** 158 of 968 benign verdicts repeated a
+  benign version's publisher and rules; the queue now says so next to the version. Not a
+  suppressor: `calculator-preinstall-hook-demo` 1.1.1 (benign) and 1.1.2 (malicious) had one
+  publisher.
+- **`npm.dependency.known-malware` v3**: a Unity (UPM) package's `com.unity.*` dependencies are
+  LOW. The 03:12 tick reported 41 `net.dreditor.*` Unity packages HIGH for depending on
+  `com.unity.ugui` and friends, which are malware squats on npm but Unity's own modules in
+  Unity's registry. With v2 (npm's holder), all four live false-positive kinds are now LOW.
+- **package-analysis runs in Docker on this VM** (the owner's decision;
+  [0014 addendum](decisions/0014-stage5-uses-ossf-package-analysis.md#addendum-2026-11-01-package-analysis-in-docker-on-the-kitsunox-vm)).
+  The risk was put plainly first: the analysis container is privileged, so gVisor is the
+  boundary; an escape would hold this VM (a read-only PAT and the webhook, rotatable), not the
+  host. `tools/sandbox/` holds a one-time `setup.sh`, a root-owned runner that checks each job
+  against the exact export shape and runs it with no network, read-only input and limits, and
+  `uninstall.sh`. The owner worried the VM lacks nested virtualisation; package-analysis's
+  runsc (gVisor 20260216) uses the systrap platform by default, which needs no `/dev/kvm`.
+  The setup leaves the timer off until the smoke result is reviewed (0014's review gate).
+
+### Challenges
+- **The re-score lesson again, avoided:** the 03:12 run was re-scored at 03:22, right after
+  its tick (50 -> 11 versions in its report).
+- **Found while checking permissions:** `.env` was 664 (world-readable); the setup makes it 600.
+  The owner's account is in `lxd`, which is root-equivalent on its own.
+
+### Evaluation snapshot
+- `vm-day1`: 2,505 malicious and 15 benign reported before and after both Stage 4 changes.
+  Live: 888 -> 825 benign verdicts still reported; 27 / 27 malicious and 18 / 18 inconclusive
+  kept. Last 26 ticks: 324 reported of 96,550 versions, 307 benign.
+
+### Open questions / next steps
+- First sandbox results: confirm bundles install offline (sandbox.md's evaluation step 1).
+- Signatures for reposted malware (owner approved).
+
 ## 2026-10-31 (evening): Confirmed after the fact, a Baileys policy, a fourth stealer republish
 
 **Stage(s):** Review queue and viewer (`evaluation/confirmations.py`, `reporting/queue.py`,

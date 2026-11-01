@@ -273,3 +273,45 @@ queue order.
   Node.js 24 image.
 - **The review gate stands:** no real malicious sample is analysed before the owner has
   reviewed package-analysis's results on benign packages.
+
+## Addendum 2026-11-01: package-analysis in Docker on the Kitsunox VM
+
+**The owner's decision** ("I think we should try to securely do it in docker"), after weighing
+the risk below: package-analysis runs on the Kitsunox VM itself, not on a separate airgapped
+VM. Everything else in this decision stands: the same pinned release and images, the same
+`-offline -nopull` jobs Kitsunox exports, results read as hostile data, Stage 5 never lowering
+a score, and the review gate (no real sample before the owner has seen a benign result).
+
+**The risk, as put to the owner.** package-analysis needs its analysis container
+`--privileged` (to run podman and gVisor), which is root on the VM; the package itself runs in
+the sandbox container under gVisor (runsc, systrap platform, which needs no `/dev/kvm`: this VM
+has no nested virtualisation). So gVisor is the wall that matters. Escaping it takes a gVisor
+vulnerability; npm malware is commodity credential theft and sandbox-aware samples go quiet
+rather than escape. If one did, it would hold this VM: a read-only GitHub PAT and the Discord
+webhook (both rotatable), the pipeline's data and verdicts, and the VM's network; the host
+machine is still behind VMware. The likelier failures are configuration: the user in the
+`docker` group (root-equivalent), a job with the network on, `data/` mounted into a container,
+a disk filled.
+
+**What limits it** (`tools/sandbox/`, a root-owned runner, not Kitsunox code: Kitsunox still
+never runs Docker):
+
+- Only root's systemd timer talks to Docker; the Kitsunox user is not in the `docker` group,
+  and the runner it executes is a root-owned copy in `/usr/local/sbin`.
+- Each job is checked against the exact shape `spool.analysis_args` writes (key, file name,
+  analyser, the 16 arguments in order); anything else is refused. Package names and versions
+  are single argv elements, never shell text.
+- The tarball is copied into a root-only directory after its size and sha256 are checked, and
+  mounted read-only; every other mount is a per-job directory (the stock script shares
+  `/tmp/...` directories between jobs). No mount of `data/`, `.env` or the home directory.
+- `--network none` on the analysis container and `-offline` (`--network=none`) on the sandbox;
+  `-nopull` and the images pinned by digest; the sandbox image is in a podman store of its own
+  (`/srv/kitsunox-sandbox/store`) and its id is checked before every run.
+- Memory, CPU, process limits, a 20-minute timeout, a 256 MiB cap on a job's results, CPU
+  shares below the hourly tick's.
+- Results reach the results root in one rename, owned by the Kitsunox user, and are imported
+  as hostile data as before.
+- `.env` is made readable by its owner only (it was 664).
+
+Not addressed by this setup: the owner's account is in the `lxd` group, which is
+root-equivalent by itself on Ubuntu; leaving it makes the `docker` group question moot.

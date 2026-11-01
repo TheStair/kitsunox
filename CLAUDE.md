@@ -125,6 +125,7 @@ uv run kitsunox ast <run_id>                       # Stage 3 on a run Stage 2 pr
 uv run kitsunox correlate <run_id>                 # Stage 4: correlation, repo comparison, score
 uv run kitsunox report <run_id>                    # report.json + Markdown queue (data/runs/<id>/report/)
 uv run kitsunox sandbox <run_id> --results DIR     # Stage 5: import package-analysis results, export for the airgapped VM
+sudo bash tools/sandbox/setup.sh                   # Stage 5 locally: Docker + pinned package-analysis + root runner timer (decision 0014 addendum)
 uv run kitsunox queue                              # review queue across runs, by package (data/queue/)
 uv run kitsunox takedowns                          # npm takedowns seen in the feed (flags only, decision 0016)
 uv run kitsunox view                               # local web viewer on 127.0.0.1:8000: queue, runs, verdicts (docs/viewer.md)
@@ -159,8 +160,10 @@ data/               # caches, raw downloads, results, malicious samples (gitigno
 ```
 
 Not created until needed: `modules/` (optional add-ons such as a future Claude analysis stage or
-extra feeds). Stage 5 has no runner of its own: it exports tarballs for OpenSSF package-analysis,
-which the owner runs, and imports the results (`src/kitsunox/sandbox/`, decision 0014).
+extra feeds). Stage 5 exports tarballs for OpenSSF package-analysis and imports the results
+(`src/kitsunox/sandbox/`, decision 0014); Kitsunox itself never runs Docker. Since 2026-11-01 a
+root-owned runner in `tools/sandbox/` (installed by its `setup.sh`, run by a root timer) runs
+the exported jobs in Docker on this VM (decision 0014 addendum).
 
 ---
 
