@@ -160,3 +160,13 @@ def test_the_smoke_package_is_inert_and_stable() -> None:
     with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as tar:
         manifest = json.loads(tar.extractfile("package/package.json").read())  # type: ignore[union-attr]
     assert manifest["scripts"] == {"postinstall": "node -e \"console.log('kitsunox smoke')\""}
+
+
+def test_a_failed_smoke_run_shows_its_files_and_output(tmp_path: Path) -> None:
+    module = runner()
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "analyze.log").write_bytes(b"x" * 5)
+    shown = module.smoke_diagnosis(tmp_path, b"", b"line one\nfailed: \x1b[31mred\n", lines=1)
+    assert "         5  logs/analyze.log" in shown
+    assert "analyser stderr (last 1 lines):\n  failed: ?[31mred" in shown
+    assert "line one" not in shown

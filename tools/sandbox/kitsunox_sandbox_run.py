@@ -443,13 +443,26 @@ def smoke(config: Config, keep: Path | None = None) -> int:
             shutil.copytree(work / "results", keep)
             chown_tree(keep, config.owner_uid, config.owner_gid)
             print(f"smoke: result kept for review in {keep}")
-        if done.returncode != 0:
-            tail = done.stderr.decode("utf-8", "replace").strip().splitlines()[-15:]
-            print("\n".join(tail))
+        if done.returncode != 0 or not found:
+            print(smoke_diagnosis(work, done.stdout, done.stderr))
         return 0 if done.returncode == 0 and found else 1
     finally:
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(export, ignore_errors=True)
+
+
+def smoke_diagnosis(work: Path, stdout: bytes, stderr: bytes, lines: int = 60) -> str:
+    """What a failed smoke run left: every file in its job directories (size and path) and the
+    tail of the analyser's output. The smoke package is Kitsunox's own, so this is safe to show."""
+    parts = ["smoke: files the job wrote:"]
+    for path in sorted(work.rglob("*")):
+        if path.is_file() and not path.is_symlink():
+            parts.append(f"  {path.stat().st_size:>10}  {path.relative_to(work)}")
+    for label, raw in (("stdout", stdout), ("stderr", stderr)):
+        tail = raw.decode("utf-8", "replace").strip().splitlines()[-lines:]
+        parts.append(f"smoke: analyser {label} (last {len(tail)} lines):")
+        parts.extend(f"  {CONTROL.sub('?', line)[:400]}" for line in tail)
+    return "\n".join(parts)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
