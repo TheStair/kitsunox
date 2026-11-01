@@ -77,9 +77,21 @@ in_analysis() {
     docker run --rm --privileged --cgroupns=host --network none \
         -v "$ROOT_DIR/store:/var/lib/containers" "$@"
 }
-in_analysis -v "$TARBALL:/sandbox.tar:ro" "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" \
-    podman load -q -i /sandbox.tar
+LOADED_OUT="$(in_analysis -v "$TARBALL:/sandbox.tar:ro" "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" \
+    podman load -q -i /sandbox.tar)"
 rm -f "$TARBALL"
+echo "$LOADED_OUT"
+# Newer Docker exports an OCI archive whose only name is the tag ("rel-38"), which podman
+# loads as localhost/rel-38:latest. Give the loaded image the name package-analysis runs.
+LOADED="$(printf '%s\n' "$LOADED_OUT" | sed -n 's/^Loaded image[^:]*: *//p' | tail -n 1)"
+if [[ -z "$LOADED" || "$LOADED" == *,* ]]; then
+    echo "podman load didn't name exactly one image: $LOADED_OUT" >&2
+    exit 1
+fi
+if [[ "$LOADED" != "$SANDBOX_IMAGE:$RELEASE" ]]; then
+    in_analysis "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" podman tag "$LOADED" "$SANDBOX_IMAGE:$RELEASE"
+    in_analysis "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" podman untag "$LOADED"
+fi
 SANDBOX_ID="$(in_analysis "$ANALYSIS_IMAGE@$ANALYSIS_DIGEST" \
     podman image inspect --format '{{.Id}}' "$SANDBOX_IMAGE:$RELEASE")"
 echo "sandbox image in the store: $SANDBOX_ID"
