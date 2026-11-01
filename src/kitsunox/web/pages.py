@@ -21,7 +21,7 @@ from kitsunox.core.models import Evidence, Finding, Severity
 from kitsunox.evaluation.confirmations import Confirmation
 from kitsunox.reporting.queue import Queue, QueueEntry, confirmed_text
 from kitsunox.reporting.report import Report, ReportEntry, score_rule, stage_of
-from kitsunox.reporting.verdicts import KINDS, MAX_NOTE_CHARS, VerdictRecord
+from kitsunox.reporting.verdicts import KINDS, MAX_NOTE_CHARS, TAG_LABELS, VerdictRecord
 from kitsunox.web.html import (
     block,
     error_box,
@@ -91,7 +91,7 @@ def verdict_form(token: str, run_id: str, rank: int, back: str, *, note: bool) -
     )
     text = (
         f'<label>Note <textarea name="note" maxlength="{MAX_NOTE_CHARS}" rows="3">'
-        "</textarea></label>"
+        f"</textarea></label>{_tag_boxes()}"
         if note
         else ""
     )
@@ -101,6 +101,18 @@ def verdict_form(token: str, run_id: str, rank: int, back: str, *, note: bool) -
         for kind in KINDS
     )
     return f'<form method="post" action="/verdict" class="verdict">{hidden}{text}{buttons}</form>'
+
+
+def _tag_boxes() -> str:
+    """A checkbox per verdict tag (`reporting.verdicts.TAGS`); the server checks the values."""
+    return "".join(
+        f'<label class="tag-box"><input type="checkbox" name="tag" value="{tag}"> {label}</label>'
+        for tag, label in TAG_LABELS.items()
+    )
+
+
+def _tags(record: VerdictRecord) -> str:
+    return "".join(f' <span class="tag">{TAG_LABELS[t]}</span>' for t in record.tags)
 
 
 def package_form(token: str, entry: QueueEntry) -> str:
@@ -120,7 +132,7 @@ def package_form(token: str, entry: QueueEntry) -> str:
     count = min(len(entry.versions), MAX_PACKAGE_VERSIONS)
     return (
         f'<form method="post" action="/verdict" class="verdict package">{hidden}'
-        f'<span class="note">All {count} versions:</span>{buttons}</form>'
+        f'<span class="note">All {count} versions:</span>{_tag_boxes()}{buttons}</form>'
     )
 
 
@@ -147,8 +159,10 @@ def _tally(verdicts: Verdicts) -> str:
     items = ", ".join(
         f"{internal(f'/verdicts/{kind}', VERDICT_LABELS[kind])}: {counts[kind]}" for kind in KINDS
     )
+    probes = sum(1 for r in verdicts.now.values() if r.verdict == "malicious" and "probe" in r.tags)
+    of_which = f" (research probes: {probes})" if probes else ""
     return (
-        f'<p class="tally"><strong>Verified malicious: {counts["malicious"]}</strong>. '
+        f'<p class="tally"><strong>Verified malicious: {counts["malicious"]}</strong>{of_which}. '
         f"Reviewed: {items}.</p>"
     )
 
@@ -462,7 +476,7 @@ def _review(
     if now is not None:
         parts.append(
             f'<p class="verdict-now v-{now.verdict}"><strong>{VERDICT_LABELS[now.verdict]}</strong>'
-            f" ({esc(now.by)}, {when(now.at)}). Not in the review queue.</p>"
+            f"{_tags(now)} ({esc(now.by)}, {when(now.at)}). Not in the review queue.</p>"
         )
     else:
         parts.append("<p>No verdict yet: this version is in the review queue.</p>")
@@ -475,7 +489,7 @@ def _review(
     history = verdicts.history(entry.name, entry.version)
     if history:
         items = "".join(
-            f"<li>{when(r.at)}: {VERDICT_LABELS[r.verdict]} ({esc(r.by)})"
+            f"<li>{when(r.at)}: {VERDICT_LABELS[r.verdict]}{_tags(r)} ({esc(r.by)})"
             + (f"<br>{esc(r.note)}" if r.note else "")
             + "</li>"
             for r in reversed(history)
@@ -541,7 +555,7 @@ def _verdict_row(
         f'<td><ul class="flat">{rules}</ul></td>'
         f"<td>{when(record.published_at)} by {esc(record.publisher or 'unknown')}</td>"
         f"<td>{when(record.at)} ({esc(record.by)})</td>"
-        f"<td>{esc(record.note)}{_confirmation(confirmed)}</td>"
+        f"<td>{esc(record.note)}{_tags(record)}{_confirmation(confirmed)}</td>"
         f"<td>{reopen}</td></tr>"
     )
 

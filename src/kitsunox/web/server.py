@@ -51,7 +51,7 @@ from typing import Any, Final, cast
 from urllib.parse import parse_qs
 
 from kitsunox.reporting.report import Report
-from kitsunox.reporting.verdicts import MAX_NOTE_CHARS, OWNER, VERDICTS, verdict_record
+from kitsunox.reporting.verdicts import MAX_NOTE_CHARS, OWNER, TAGS, VERDICTS, verdict_record
 from kitsunox.web.html import STYLESHEET
 from kitsunox.web.library import RUN_ID, Library
 from kitsunox.web.pages import (
@@ -227,6 +227,10 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
         return _html(failure(400, "Bad request", "The form names no verdict on an entry."))
     if len(note) > MAX_NOTE_CHARS:
         return _html(failure(400, "Bad request", f"A note is at most {MAX_NOTE_CHARS} characters."))
+    named = fields.get("tag", [])
+    if any(t not in TAGS for t in named) or (named and verdict == "reopened"):
+        return _html(failure(400, "Bad request", "The form names a tag this viewer doesn't have."))
+    tags = [TAGS[t] for t in named]
     records = []
     now = datetime.now(UTC)
     for run, rank in targets:
@@ -239,7 +243,7 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
         if not isinstance(report, Report) or entry is None:
             return _html(not_found("That run or entry is not on disk any more."))
         records.append(
-            verdict_record(report, entry, VERDICTS[verdict], by=OWNER, note=note, at=now)
+            verdict_record(report, entry, VERDICTS[verdict], by=OWNER, note=note, tags=tags, at=now)
         )
     if len({r.name for r in records}) > 1:
         return _html(failure(400, "Bad request", "One form gives a verdict on one package."))

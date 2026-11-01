@@ -2,6 +2,47 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-01 (morning): Bug-bounty probes: judged by behaviour, tagged `probe`
+
+**Stage(s):** reviewer verdicts (`reporting.verdicts`, viewer, CLI, daily summary)
+**Context:** About a third of the verified-malicious tally is dependency-confusion and
+bug-bounty probes. The owner: "I am uncertain whether or not to report those seemingly benign
+bug bounty entries as malicious those are likely mass produced legitimate bounties by AI.
+However, I could see real malware diguising itself as a bounty placeholder or PoC". They
+accepted both proposals: a behaviour rule and a tag
+([decision 0015 addendum](decisions/0015-reviewer-verdicts.md)).
+
+### Decisions
+- **Malicious if identifying data leaves the machine or code is fetched and run**, whatever the
+  "authorized test" notice says; benign if only local (calc.exe, a marker file). The notice is
+  free text an attacker can copy, and `claims-ac1` showed a "probe" family moving to fetched
+  code. The four packages npm removed after we reported them were all probes that sent machine
+  data out, so this matches the registry's own line.
+- **A `probe` tag, not a fourth verdict.** A fourth verdict would merge the harmless calc.exe
+  PoCs with the ones that send `whoami` to Burp Collaborator, and give disguised malware the
+  mild label. The tag is orthogonal: counts can say "26 malicious, 16 of them probes".
+
+### Challenges
+- **Earlier verdicts didn't follow one line.** `@mobile-platform/magnetic-components@0.0.1`
+  (writes a local marker file only) was malicious, while `calculatorscool346@1.0.0` (spawns
+  calc.exe only) was benign.
+  - **Resolution:** 0.0.1 re-recorded benign; its 0.0.3, which adds the oast.me DNS beacon,
+    stays malicious. 22 verdicts re-recorded with the tag (16 malicious, 6 benign) by a script
+    that finds each entry by name and version in its run's current report, since re-scores
+    moved ranks (`dependencykfeg@1.5.6`: 368 → 59). Tally: 26 malicious (16 probes),
+    27 inconclusive, 976 benign (6 probes).
+- **Edge kept benign:** `calculator-preinstall-hook-demo@1.1.1` posts a fixed text to a Discord
+  webhook. The post says nothing about the machine, and the webhook owner doesn't see the IP,
+  so nothing identifying leaves; its 1.1.2 adds hostname and user name and is malicious.
+- **Kept inconclusive:** `@jarvis_1234/env-preloader@1.0.6` collects secret env-var names, user
+  and host but sends them only to 127.0.0.1:9; `@atedone/workspace-bootstrap@0.0.1` hides an
+  install step in `binding.gyp` but only writes a local file. Both look staged; their next
+  versions decide.
+
+### Open questions / next steps
+- Turn verdicts into evaluation samples with the tag kept, so recall can be reported with and
+  without probes.
+
 ## 2026-11-01 (early morning): False-positive cuts that keep the attacks, a local sandbox
 
 **Stage(s):** Stage 4 (report decision, `npm.dependency.known-malware` v3), review queue,

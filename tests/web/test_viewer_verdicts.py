@@ -85,6 +85,17 @@ def test_a_verdict_takes_the_version_out_of_the_queue(library: Library) -> None:
     assert pages.verdicts_page(library, "nonsense") is None
 
 
+def test_a_probe_tag_is_recorded_and_shown(library: Library) -> None:
+    entry = pages.entry_page(library, RUN, 1, TOKEN)
+    assert entry is not None and 'name="tag" value="probe"' in entry.html
+    post(library, {"run": RUN, "rank": "1", "verdict": "malicious", "tag": "probe"})
+    (saved,) = read_verdicts(library.root, "npm")
+    assert saved.tags == ("probe",)
+    assert "Verified malicious: 1</strong> (research probes: 1)" in pages.queue_page(library).html
+    listed = pages.verdicts_page(library, "malicious")
+    assert listed is not None and '<span class="tag">Research probe</span>' in listed.html
+
+
 def test_package_text_stays_inert_in_forms_and_verdict_pages(library: Library) -> None:
     queued = pages.queue_page(library, TOKEN).html
     post(library, {"run": RUN, "rank": "2", "verdict": "benign", "note": CRAFTED})
@@ -107,6 +118,8 @@ def test_package_text_stays_inert_in_forms_and_verdict_pages(library: Library) -
         ({"run": "../etc"}, {}, 400),
         ({"rank": "7"}, {}, 404),
         ({"note": "x" * 2001}, {}, 400),
+        ({"tag": "evil"}, {}, 400),
+        ({"verdict": "reopened", "tag": "probe"}, {}, 400),
     ],
 )
 def test_bad_posts_record_nothing(

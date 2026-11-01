@@ -42,7 +42,7 @@ from kitsunox.core.models import Persisted, Record, Severity
 from kitsunox.core.run import RunManifest
 from kitsunox.reporting.markdown import strip_controls
 from kitsunox.reporting.report import Report, ReportEntry
-from kitsunox.reporting.verdicts import VerdictRecord, current, tally
+from kitsunox.reporting.verdicts import VerdictRecord, current, probes, tally
 from kitsunox.util.files import atomic_write
 
 WEBHOOK_ENV: Final = "KITSUNOX_DISCORD_WEBHOOK"
@@ -218,9 +218,12 @@ def render_daily(
         now = current(verdicts)
         counts = tally(now)
         that_day = Counter(r.verdict for r in now.values() if r.at.date() == day)
+        probed = probes(now, "malicious")
+        of_which = f", research probes {probed}" if probed else ""
         lines.append(
             f"**Verified malicious: {counts['malicious']:,}** "
-            f"(+{that_day['malicious']} that day); inconclusive {counts['inconclusive']:,}, "
+            f"(+{that_day['malicious']} that day{of_which}); "
+            f"inconclusive {counts['inconclusive']:,}, "
             f"benign {counts['benign']:,}."
         )
     gaps = [t for t in runs if t.chained is False]

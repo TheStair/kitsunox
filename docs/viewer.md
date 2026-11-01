@@ -38,9 +38,32 @@ score; [decision 0016](decisions/0016-after-the-fact-confirmations.md)). The fla
 The log is `data/verdicts/npm.jsonl` (`reporting.verdicts`), append-only: the last record for a
 version is its verdict, and the whole history is kept. Each record copies the entry as reviewed,
 so the verdict pages outlive the run's 7 days. From a shell, `kitsunox verdict <run_id> <rank>
-malicious|inconclusive|benign|reopened [--note TEXT] [--by NAME]` records the same thing
+malicious|inconclusive|benign|reopened [--note TEXT] [--by NAME] [--probe]` records the same thing
 (an analyst records under its own name, so the owner can tell its verdicts from theirs and
 override them), and `kitsunox verdicts [KIND]` lists them with the tally.
+
+### What counts as malicious
+
+A verdict follows what the code does, not what it says about itself. Security researchers
+publish dependency-confusion and bug-bounty probes, often in bulk, and many carry an
+"authorized test" notice; malware can carry the same notice, and nothing checks it. So
+(owner policy 2026-11-01):
+
+- **Malicious** if, at install or import, anything identifying leaves the machine (user name,
+  hostname, working directory, home directory, environment, a DNS or HTTP beacon to a host the
+  author controls), or code is fetched and run. The claimed authorization doesn't change this.
+  npm and OSV agree: every probe npm removed after we reported it sent machine data out.
+- **Benign** if it only does something local with no network: opens calc.exe, writes a marker
+  file in the package or project.
+- **Inconclusive** when what it would do can't be read (obfuscated install code waits for the
+  sandbox), or when it is staged but not yet armed (it collects data but only sends it to
+  127.0.0.1).
+
+Tick **Research probe** on the entry page (or the package form, or `kitsunox verdict ...
+--probe`) for any version that is a researcher's probe or PoC, whatever its verdict. The tag
+leaves the verdict as it is; the queue page, the `kitsunox verdicts` tally and the daily Discord
+summary count tagged versions apart, so probes can be told from commodity malware while both
+stay detected.
 
 ## Running it
 

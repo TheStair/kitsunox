@@ -11,6 +11,10 @@ the viewer at once) and is listed on its verdict's page; `reopened` puts it back
 - **A verdict outlives its run.** Runs are pruned after a week, so each record copies what
   the reviewer saw: score, severity, rules, publisher and publish time, and the run and rank
   it came from (the link works while the run is kept).
+- **Tags qualify a verdict.** `probe` marks a security researcher's probe (a
+  dependency-confusion or bug-bounty test) so counts can tell them from commodity malware. The
+  verdict itself follows what the code does, not what it claims (`docs/viewer.md`, "What
+  counts as malicious").
 - **Package text stays untrusted.** Names, versions and rule ids come from the run's report
   (never from a form), and every renderer escapes them and the note.
 """
@@ -34,6 +38,9 @@ VERDICTS_DIR: Final = "verdicts"
 Verdict = Literal["malicious", "inconclusive", "benign", "reopened"]
 KINDS: Final[tuple[Verdict, ...]] = ("malicious", "inconclusive", "benign")
 VERDICTS: Final[Mapping[str, Verdict]] = {v: v for v in get_args(Verdict)}  # parses a form
+Tag = Literal["probe"]
+TAGS: Final[Mapping[str, Tag]] = {t: t for t in get_args(Tag)}  # parses a form
+TAG_LABELS: Final[Mapping[Tag, str]] = {"probe": "Research probe"}
 MAX_NOTE_CHARS: Final = 2000
 MAX_LOG_BYTES: Final = 64 * 2**20  # a longer log is read up to here
 REVIEWER: Final = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
@@ -50,6 +57,7 @@ class VerdictRecord(Record):
     at: datetime
     by: str = Field(description="Who recorded it: `owner` from the viewer, or a CLI name.")
     note: str = ""
+    tags: tuple[Tag, ...] = ()
     run_id: str
     rank: int
     score: float
@@ -70,12 +78,16 @@ def verdict_record(
     *,
     by: str,
     note: str = "",
+    tags: Iterable[Tag] = (),
     at: datetime,
 ) -> VerdictRecord:
     """The record for `entry` of `report`. `by` must match `REVIEWER`; the note is cut at
-    MAX_NOTE_CHARS."""
+    MAX_NOTE_CHARS. Tags are kept once each, in `TAGS` order; `reopened` takes none."""
     if not REVIEWER.fullmatch(by):
         raise ValueError("a reviewer name is 1-32 of a-z, 0-9, _ and -")
+    given = set(tags)
+    if given and verdict == "reopened":
+        raise ValueError("a reopened version has no tags")
     return VerdictRecord(
         ecosystem=report.ecosystem,
         name=entry.name,
@@ -84,6 +96,7 @@ def verdict_record(
         at=at,
         by=by,
         note=note.strip()[:MAX_NOTE_CHARS],
+        tags=tuple(t for t in TAGS.values() if t in given),
         run_id=report.run_id,
         rank=entry.rank,
         score=entry.score,
@@ -151,3 +164,8 @@ def current(records: Iterable[VerdictRecord]) -> dict[tuple[str, str], VerdictRe
 def tally(verdicts: Mapping[tuple[str, str], VerdictRecord]) -> dict[str, int]:
     """Versions per verdict, in `KINDS` order."""
     return {kind: sum(1 for r in verdicts.values() if r.verdict == kind) for kind in KINDS}
+
+
+def probes(verdicts: Mapping[tuple[str, str], VerdictRecord], kind: str) -> int:
+    """How many of the versions whose verdict is `kind` are tagged `probe`."""
+    return sum(1 for r in verdicts.values() if r.verdict == kind and "probe" in r.tags)

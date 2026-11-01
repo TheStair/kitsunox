@@ -41,3 +41,20 @@ tally of verified malicious releases. Until now the viewer was strictly read-onl
   a page can record a verdict; that is the machine's own user.
 - Verdicts are the first labels from live data: a later step can turn them into evaluation
   samples (verified malicious against what the rules caught).
+
+## Addendum 2026-11-01: the `probe` tag and what counts as malicious
+
+The owner was unsure whether bug-bounty probes, "likely mass produced legitimate bounties",
+should count as malicious, "However, I could see real malware disguising itself as a bounty
+placeholder or PoC". Decided (the owner: "Yes for both"):
+
+- **Judge by behaviour.** Malicious if anything identifying leaves the machine or code is
+  fetched and run, whatever the package claims; benign if it only acts locally with no network
+  ([viewer.md](../viewer.md), "What counts as malicious"). An "authorized test" notice is a
+  free string, and npm and OSV classify these probes as malware too.
+- **A `probe` tag on the record** (`VerdictRecord.tags`, empty on older lines), set in the
+  viewer or with `kitsunox verdict --probe`, any verdict but `reopened`. Tallies count tagged
+  versions apart. The tag never feeds a score: like a verdict, it is a label on what the rules
+  found.
+- **Alternative rejected:** a fourth verdict, "probe". It would hide whether a probe exfiltrates,
+  and a disguised attack would get the mild label.

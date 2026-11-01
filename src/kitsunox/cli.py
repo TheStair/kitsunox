@@ -77,6 +77,7 @@ from kitsunox.reporting.verdicts import (
     VERDICTS,
     append_verdict,
     current,
+    probes,
     read_verdicts,
     tally,
     verdict_record,
@@ -594,6 +595,9 @@ def verdict_cmd(
     verdict: Annotated[str, typer.Argument(help="malicious, inconclusive, benign or reopened.")],
     note: Annotated[str, typer.Option(help="Why (shown with the verdict).")] = "",
     by: Annotated[str, typer.Option(help="Who records it (a-z, 0-9, _ and -).")] = OWNER,
+    probe: Annotated[
+        bool, typer.Option("--probe", help="Tag it a security researcher's probe.")
+    ] = False,
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
 ) -> None:
     """Record a verdict on entry RANK of run RUN_ID's report, as the viewer does: the version
@@ -613,12 +617,21 @@ def verdict_cmd(
         typer.echo(f"run {run_id} has no entry {rank}", err=True)
         raise typer.Exit(code=2)
     try:
-        record = verdict_record(report, entry, parsed, by=by, note=note, at=datetime.now(UTC))
+        record = verdict_record(
+            report,
+            entry,
+            parsed,
+            by=by,
+            note=note,
+            tags=("probe",) if probe else (),
+            at=datetime.now(UTC),
+        )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
     append_verdict(data.root, record)
-    typer.echo(f"{entry.name}@{entry.version}: {parsed} (by {by})")
+    tags = "".join(f" [{t}]" for t in record.tags)
+    typer.echo(f"{entry.name}@{entry.version}: {parsed}{tags} (by {by})")
 
 
 @app.command("verdicts")
@@ -629,12 +642,18 @@ def verdicts_cmd(
     """The versions reviewers have given a verdict, most recent first, and the tally."""
     now = current(read_verdicts(DataDir(data_dir).root, NPM))
     counts = tally(now)
-    typer.echo(", ".join(f"{n} {k}" for k, n in counts.items()))
+    typer.echo(
+        ", ".join(
+            f"{n} {k}" + (f" (probes: {p})" if (p := probes(now, k)) else "")
+            for k, n in counts.items()
+        )
+    )
     for record in sorted(now.values(), key=lambda r: r.at, reverse=True):
         if kind is None or record.verdict == kind:
             note = f": {record.note}" if record.note else ""
+            tags = "".join(f" [{t}]" for t in record.tags)
             typer.echo(
-                f"{record.verdict:12} {record.name}@{record.version} ({record.by}, "
+                f"{record.verdict:12} {record.name}@{record.version}{tags} ({record.by}, "
                 f"{record.at:%Y-%m-%d %H:%M}){note}"
             )
 

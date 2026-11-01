@@ -295,3 +295,6 @@ def test_the_daily_summary_carries_the_verdict_tally() -> None:
     assert "**Verified malicious: 2** (+1 that day); inconclusive 0, benign 0." in content
     flipped = render_daily(DAY, ticks_of_a_day(), [a], [earlier, benign])
     assert "**Verified malicious: 0** (+0 that day); inconclusive 0, benign 1." in flipped
+    probe = other.model_copy(update={"tags": ("probe",)})
+    tagged = render_daily(DAY, ticks_of_a_day(), [a], [earlier, probe])
+    assert "(+1 that day, research probes 1); inconclusive 0" in tagged

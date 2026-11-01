@@ -320,7 +320,13 @@ def test_verdict_records_from_the_shell_and_verdicts_lists_them(tmp_path: Path) 
     listed = runner.invoke(app, ["verdicts", *args])
     assert listed.stdout.splitlines()[0] == "1 malicious, 0 inconclusive, 0 benign"
     assert "evil-pkg@1.0.3 (claude," in listed.stdout and listed.stdout.rstrip().endswith(": exfil")
+    probe = runner.invoke(app, ["verdict", run_id, "1", "malicious", "--probe", *args])
+    assert probe.stdout.strip() == "evil-pkg@1.0.3: malicious [probe] (by owner)"
+    listed = runner.invoke(app, ["verdicts", *args])
+    assert listed.stdout.splitlines()[0] == "1 malicious (probes: 1), 0 inconclusive, 0 benign"
+    assert "evil-pkg@1.0.3 [probe] (owner," in listed.stdout
     for bad in (
+        ["verdict", run_id, "1", "reopened", "--probe", *args],
         ["verdict", run_id, "1", "evil", *args],
         ["verdict", run_id, "9", "benign", *args],
         ["verdict", "20261029T000000Z-npm", "1", "benign", *args],

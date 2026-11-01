@@ -127,4 +127,6 @@ button.v-inconclusive, .verdict-now.v-inconclusive strong { color: var(--medium)
 button.v-benign, .verdict-now.v-benign strong { color: var(--low); }
 
 /* After-the-fact confirmation (registry takedown, OSV record): a flag, not a score. */
+.tag { display: inline-block; margin-left: 0.4rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: 0.8rem; }
+form.verdict label.tag-box { flex-direction: row; gap: 0.3rem; width: auto; align-items: center; }
 .confirmed { display: inline-block; margin-left: 0.4rem; padding: 0 0.3rem; border: 1px solid var(--high); border-radius: 3px; color: var(--high); font-size: 0.8rem; }

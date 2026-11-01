@@ -13,8 +13,10 @@ from kitsunox.reporting.queue import build_queue, render_queue
 from kitsunox.reporting.report import write_report
 from kitsunox.reporting.verdicts import (
     MAX_NOTE_CHARS,
+    VerdictRecord,
     append_verdict,
     current,
+    probes,
     read_verdicts,
     tally,
     verdict_record,
@@ -64,6 +66,20 @@ def test_reviewer_names_and_notes_are_bounded() -> None:
     assert len(long.note) == MAX_NOTE_CHARS
     with pytest.raises(ValueError):
         verdicts_path(Path("/x"), "../etc")
+
+
+def test_a_probe_tag_qualifies_a_verdict_and_is_counted(tmp_path: Path) -> None:
+    tagged = record(1, "malicious", tags=["probe", "probe"])
+    assert tagged.tags == ("probe",)
+    with pytest.raises(ValueError, match="no tags"):
+        record(1, "reopened", tags=["probe"])
+    append_verdict(tmp_path, tagged)
+    append_verdict(tmp_path, record(3, "malicious"))
+    now = current(read_verdicts(tmp_path, "npm"))
+    assert (probes(now, "malicious"), probes(now, "benign")) == (1, 0)
+    untagged = tagged.model_dump(mode="json")
+    del untagged["tags"]  # a line written before tags existed
+    assert VerdictRecord.model_validate(untagged).tags == ()
 
 
 def test_the_queue_leaves_reviewed_versions_out(tmp_path: Path) -> None:
