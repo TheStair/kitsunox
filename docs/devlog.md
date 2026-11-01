@@ -46,6 +46,12 @@ after the fact".
   working directory and platform to it. Stage 4 sees only the first hop
   (`npm.dependency.non-registry`, MEDIUM); the payload is two non-registry tarballs away.
   Reading non-registry dependency tarballs is a possible Stage 4 addition, not started.
+- **A re-score skipped the 01:58 tick (again).** Re-scoring the two `sino-bc-cli` runs
+  (23k versions each, about 35 minutes) held `DataDir.lock()` when the timer fired, so
+  `collect` logged "skipped, data is in use" — the same mistake as the morning's, with a
+  smaller job. Nothing was lost: the checkpoint didn't move, and a catch-up tick started by hand
+  at 02:12 chained from the 00:57 run. A re-score of a large run has to start right after a
+  tick, or go through the driver with its gap check.
 - **`npm.dependency.known-malware` fired on `modulus-firewall@0.1.1`**, whose dependency is
   `tree-sitter-dockerfile@^0.0.1-security`: the spec names npm's own holder, which installs
   nothing. Same publisher as the earlier `modulus-security` false positive.
@@ -57,7 +63,15 @@ after the fact".
   `@onescience/onecode`, `@vibelet/cli`, `codeam-cli`); none covers a version we cleared.
 - Queue: 96 versions from seven ticks reviewed to empty: 3 new malicious (`persona-ai-sdk`,
   `claims-ac1`, `@chatbridgeworld/baileys`), the rest benign (27 Meta `@astryxdesign/cli`
-  canaries, 16 `@ejfkdev/*` binary installers, placeholders and fixtures).
+  canaries, 16 `@ejfkdev/*` binary installers, placeholders and fixtures). Four more ticks
+  through 02:16 on 2026-11-01: one more malicious, `calculator-preinstall-hook-demo@1.1.2`
+  (a "private test fixture" whose preinstall now posts the hostname and username to a Discord
+  webhook; 1.1.1 sent fixed text and is benign). Tally: 27 malicious, 25 inconclusive, 968
+  benign.
+- After re-scoring with `install-script-obfuscated` v2: `motionchart-cli` 1.0.3 and 1.0.4
+  (8, 9) and four `sino-bc-cli` betas (7) are HIGH. `whybug` (no hook) and `sppurt` (known
+  limit) are not; the earliest `sino-bc-cli` betas and `calculatorscool346` are in the
+  110k-version first run, not re-scored.
 - One recall miss in hindsight: `tailwindcss-visual-kit@1.3.7` (2026-10-29) added a dependency,
   `@nexlayerlabs/postcss-keyframe-utils`, that npm removed the next day; we scored it 1. Its
   malicious versions predate our feed, so no stage saw the code.
