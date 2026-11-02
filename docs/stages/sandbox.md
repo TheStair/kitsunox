@@ -561,9 +561,9 @@ Weights are starting points, to be set from evaluation.
 | `sandbox.truncated` | the importer hit a cap (`SandboxRun.cuts`), or a phase timed out | MEDIUM | 3 |
 | `sandbox.npm-publish` | a command publishes a package (`npm publish`, `npm-cli.js publish`, through a shell) or uploads to a registry with an HTTP client | CRITICAL | 10 |
 | `sandbox.bait-exfil` | a masked bait value in a command line, DNS name, file path or another variable (CRITICAL); or a bait's *shape* (AWS key ID, PEM private-key header) there (HIGH) | CRITICAL / HIGH | 10 / 5 |
-| `sandbox.sensitive-read` | a credential, browser or wallet store read or probed, outside `/app/node_modules`; npm's own `.npmrc` reads in `install` excepted | HIGH | 5 |
+| `sandbox.sensitive-read` (v5) | a credential, browser or wallet store read or probed, outside `/app/node_modules`; npm's own `.npmrc` reads excepted (in `install`, and in `import` when npm or npx ran there). MEDIUM when every path is a pid's `/proc/<pid>/environ` read in a phase where `ps` ran (procps's `ps` reads them all for its command column) | HIGH / MEDIUM | 5 / 3 |
 | `sandbox.persistence-write` | a write to shell startup files, autostart, systemd units, crontabs, sudoers, `ld.so.preload`, CI workflows, git hooks, `authorized_keys`, any `.npmrc`, the project's `package.json`, or `node_modules` outside the package (the last two only in `import`) | HIGH | 5 |
-| `sandbox.download-exec` | a file written in a phase is executed in that or a later phase (as the program, or as an interpreter's script) | HIGH | 5 |
+| `sandbox.download-exec` (v5) | a file written in a phase is executed in that or a later phase (as the program, or as an interpreter's script); or a file in the package's directory the tarball doesn't have is executed, unless it was never written and nothing but npm had written any file up to that phase (then it is a link or rename of shipped files: a native CLI linking its platform binary) | HIGH | 5 |
 | `sandbox.dns-tunnel-shape` | a DNS question whose labels look like encoded data | HIGH | 4 |
 | `sandbox.network` | DNS questions or sockets beyond loopback, minus npm's registry traffic in `install` and the forced resolvers. LOW if every name is a known benign host (`github.com`, `objects.githubusercontent.com`, `codeload.github.com`, `registry.npmjs.org`, `nodejs.org`) and every address was resolved from a name; MEDIUM otherwise | LOW / MEDIUM | 1 / 3 |
 | `sandbox.process-spawn` | a command other than the driver, npm (except account commands such as `whoami`, `token`, `owner`), node, `sh -c`, node-gyp and its build tools, and a few known probes | MEDIUM | 3 |
@@ -693,6 +693,31 @@ Exports are deleted with their run, and a result arriving after that is never im
 - **Asynchronous.** A selected version is `pending` until the owner has run package-analysis
   and a later call imports the result; until then the report says so, and after
   `overdue_after` the run is listed as overdue.
+
+## First results (2026-11-02)
+
+The first 138 accepted results (the local sandbox's first day, all real reported versions):
+
+- **Nothing malicious was found that Stages 1-4 missed.** Three versions recorded malicious
+  ran (`sol-wallet-adapter`, `wallet-adapter-base`, `contracts-upgradeable`: a `preinstall`
+  that posts the hostname and user name to a Discord webhook) and scored +0: with no network
+  the lookup of `discord.com` fails, the script throws, and the record shows only a failed
+  install. package-analysis takes DNS names from its packet capture, which sees nothing in an
+  airgapped run, and every run (npm's own included) opens a socket to the resolver at
+  `127.0.0.1:53`, so that socket says nothing.
+- **45 installs failed, 37 of them for want of the network** (the hook's own request threw).
+  That is the moment the stage exists to see. `docs/proposals/sandbox-sinkhole.md` proposes a
+  sinkhole network that keeps the airgap but answers and records.
+- **21 versions gained score** (`sandbox.process-spawn` 21, `download-exec` 5,
+  `persistence-write` 2, `sensitive-read` 2), every one reviewed so far benign. Three shapes
+  were false positives and are tuned (v5 of both rules; re-applied to the 138 results, these
+  four findings changed and nothing else): native CLIs that link their platform binary into
+  place (`devlanes`, `@deadbolt/cli`), `ps` reading every process's environment (`triflux`,
+  now MEDIUM), and a package's own `npm install` reading `~/.npmrc` in `import`
+  (`cs-devtest`).
+- **As review evidence it was useful:** what a hook writes and starts settled several reviews
+  quickly (a documented systemd unit, a quota HUD copied into `~/.claude`, an obfuscated
+  `preinstall` that only prints).
 
 ## Evaluation (planned)
 

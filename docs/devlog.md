@@ -2,6 +2,59 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-02: What the sandbox's first day showed, three false-positive shapes tuned, a sinkhole proposed
+
+**Stage(s):** Stage 5 (rules, evaluation), Stage 2 signatures, review
+**Context:** The owner asked whether the sandbox has made an impact. I re-applied the Stage 5
+rules to all 138 accepted results (`~/kitsunox-scratch/session-scripts/tune/rerules.py`, data
+only; it reproduced production's findings exactly) and set them against the verdicts.
+
+### Decisions
+- **Answer: not yet, and why.** Stage 5 only exports versions already in the queue, and only
+  adds score, so it can't shrink the queue. It added score to 21 versions, every reviewed one
+  benign, and missed all three malicious versions it ran (the Discord-webhook squats scored +0:
+  offline, the lookup fails and the record shows a failed install). 37 of 45 failed installs
+  failed for want of the network. Where it helped was as review evidence.
+- **Tuned three false-positive shapes** (`sandbox.download-exec` v5, `sandbox.sensitive-read`
+  v5), each measured on the 138 results (exactly the four intended findings changed):
+  - A file the tarball doesn't have, never written, run before anything but npm had written a
+    file (node's compile cache counted as npm's) can only be a link or rename of shipped files:
+    no longer `download-exec` (`devlanes`, `@deadbolt/cli`). A write first, `/tmp` included,
+    keeps a renamed dropper HIGH. Rejected: matching the binary's name to a shipped file
+    (fuzzy and gameable).
+  - `/proc/<pid>/environ` reads in a phase where `ps` ran are MEDIUM, not HIGH: procps-ng's
+    `ps -o command` opens every process's environment (measured on the host: 384 opens; none
+    with `-o pid=`). Not dropped, because harvesting environments is a stealer's move; any
+    other credential path, `/proc/self/environ`, or a `ps` in the package keeps it HIGH
+    (`triflux`).
+  - `.npmrc` reads in `import` are npm's when npm or npx ran in that phase, as they already
+    were in `install` (`cs-devtest` runs its own `npm install`).
+  - Left HIGH: `bug-killer` writing its launcher and running it, and `triflux` copying its
+    HUD into `~/.claude/hud` and running it. Both are indistinguishable from a dropper in the
+    trace.
+- **Proposed a sinkhole network** ([proposals/sandbox-sinkhole.md](proposals/sandbox-sinkhole.md)):
+  airgapped still, but a sink container owns the network namespace, answers DNS with
+  synthetic addresses, and records names, TLS SNI and plaintext HTTP. Awaiting the owner's
+  review; it changes decision 0014's network mode.
+
+### Challenges
+- **Verdict corrections and new finds this round** (by claude): `triflux@10.93.0`,
+  `cs-devtest@1.4.0` benign; `atlassian-wallboard-plugin1@10.0.88` benign and tagged probe
+  (JSFuck that decodes to `console.log("a")`; the sandbox confirmed it only printed `a`).
+- **pytest silently ran the main checkout's code** from the worktree (the venv's editable
+  install wins). A new test "failed" for the old code while 55 others passed.
+  - **Resolution:** `PYTHONPATH=src` for every gate in a worktree (already noted for scripts;
+    true for pytest too).
+
+### Evaluation snapshot
+- Stage 5 on 138 results: malicious versions given a sandbox finding 0 of 3. Versions with a
+  HIGH sandbox finding 8 → 5 (all benign; `jive` x2 keep `persistence-write` for a documented
+  systemd unit, `bug-killer` x2 and `triflux` keep `download-exec`).
+
+### Open questions / next steps
+- The owner's call on the sinkhole proposal (four open questions in it).
+- `@deadbolt/cli` dev builds: tarball not captured, code unread; same binary-link shape.
+
 ## 2026-11-01 (afternoon): The local sandbox runs; three setup failures on the way
 
 **Stage(s):** Stage 5 (local Docker runner, `tools/sandbox/`)

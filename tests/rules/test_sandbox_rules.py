@@ -553,6 +553,50 @@ def test_npmrc_and_ssh_reads_in_import_are_high(path: str) -> None:
     assert "Upstream evidence: package-analysis Files (Read) (import)." in finding.explanation
 
 
+def test_npmrc_in_import_is_npms_when_npm_ran_there() -> None:
+    for runner in (
+        ex("npm", "install", "--ignore-scripts", phase="import"),
+        ex("npx", "husky", "init", phase="import"),
+    ):
+        observations = [*baseline(), runner, op("/root/.npmrc", "read", phase="import")]
+        assert "sandbox.sensitive-read" not in ids(findings(observations))
+    # npm in install only, or another credential path beside npm: still the package's.
+    alone = [*baseline(), op("/root/.npmrc", "read", phase="import")]
+    assert only("sandbox.sensitive-read", findings(alone)).severity is Severity.HIGH
+    npm = ex("npm", "install", phase="import")
+    ssh = [*baseline(), npm, op("/root/.ssh/id_rsa", "read", phase="import")]
+    assert paths(only("sandbox.sensitive-read", findings(ssh))) == ["/root/.ssh/id_rsa"]
+
+
+PS = ex("ps", "-axo", "pid=,command=")
+
+
+def test_pid_environments_beside_ps_are_medium() -> None:
+    observations = [*baseline(), PS, op("/proc/1/environ", "read"), op("/proc/22/environ", "read")]
+    finding = only("sandbox.sensitive-read", findings(observations))
+    assert finding.severity is Severity.MEDIUM and finding.weight == 3.0
+    assert "may be ps's own reads" in finding.explanation
+    assert "Upstream evidence: package-analysis Files (Read) and Commands (install)." in (
+        finding.explanation
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [op("/proc/1/environ", "read")],  # no ps
+        [PS, op("/proc/1/environ", "read"), op("/root/.ssh/id_rsa", "read")],
+        [PS, op("/proc/self/environ", "read")],
+        [PS, op("/proc/1/environ", "read", phase="import")],  # ps in another phase
+        [ex("/app/node_modules/kx-fixture/bin/ps"), op("/proc/1/environ", "read")],
+    ],
+)
+def test_other_environment_reads_stay_high(extra: list[Observation]) -> None:
+    finding = only("sandbox.sensitive-read", findings([*baseline(), *extra]))
+    assert finding.severity is Severity.HIGH and finding.weight == 5.0
+    assert "ps's own" not in finding.explanation
+
+
 def test_a_relative_path_is_matched_as_recorded() -> None:
     finding = only("sandbox.sensitive-read", findings([op("./.ssh/../.ssh/id_ed25519", "read")]))
     assert paths(finding) == [".ssh/id_ed25519"]
@@ -683,6 +727,7 @@ def test_a_dropper_writing_into_its_own_directory_is_download_exec() -> None:
 def test_running_a_path_the_tarball_does_not_ship_is_download_exec() -> None:
     observations = [
         *baseline(),
+        op("/tmp/.stage", "write"),  # staged, then renamed into place
         ex(f"{PKG}/bin/dropped", phase="import"),  # renamed into place: no write recorded
         ex("node", f"{PKG}/lib/../.cache/x.js"),
         ex(f"{PKG}/bin/tool", "--version"),  # shipped
@@ -699,6 +744,51 @@ def test_running_a_path_the_tarball_does_not_ship_is_download_exec() -> None:
         f"{PKG}/bin/dropped": "not in the tarball, exec (import); in the package",
         f"{PKG}/node_modules/dep/bin/x": "not in the tarball, exec (install); in dependency dep",
     }
+
+
+def native_cli_link(*extra: Observation) -> list[Observation]:
+    """A native CLI's hook linking its platform binary into place and checking it: no write
+    but npm's (its compile cache included), as devlanes and @deadbolt/cli record it."""
+    return [
+        *baseline(),
+        op("/tmp/node-compile-cache/v24.15.0-x64-cf738c9d-0/16ad2109.xkh51M", "write"),
+        op(f"{PKG}/bin/tool", "read", "write"),  # shipped: npm unpacking it
+        ex(f"{PKG}/bin/.tool.35.tmp", "--version"),
+        ex(f"{PKG}/bin/tool.link", "--version"),
+        *extra,
+    ]
+
+
+def test_an_unwritten_file_run_before_anything_but_npm_wrote_is_a_link() -> None:
+    found = findings(native_cli_link(), shipped=SHIPPED)
+    assert "sandbox.download-exec" not in ids(found)
+    assert "sandbox.process-spawn" in ids(found)  # running it is still reported
+
+
+@pytest.mark.parametrize(
+    "staged",
+    [
+        op("/tmp/payload", "write"),
+        op(f"{PKG}/lib/stage.bin", "write"),  # dropped into its own directory
+        op("/tmp/node-compile-cache/x/16ad2109.xkh51M", "write"),  # not node's naming
+        op("/root/.cache/x", "write"),
+    ],
+)
+def test_a_write_before_the_run_keeps_an_unwritten_file_a_dropper(staged: Observation) -> None:
+    finding = only("sandbox.download-exec", findings(native_cli_link(staged), shipped=SHIPPED))
+    assert "not in the tarball, exec (install); in the package" in [
+        e.after for e in finding.evidence
+    ]
+
+
+def test_only_writes_up_to_the_run_s_phase_count() -> None:
+    later = op("/tmp/payload", "write", phase="import")
+    assert "sandbox.download-exec" not in ids(findings(native_cli_link(later), shipped=SHIPPED))
+    run_later = ex(f"{PKG}/bin/other", phase="import")
+    finding = only(
+        "sandbox.download-exec", findings(native_cli_link(later, run_later), shipped=SHIPPED)
+    )
+    assert paths(finding) == [f"{PKG}/bin/other"]
 
 
 def test_node_gyp_build_output_is_not_a_dropper() -> None:
@@ -1414,7 +1504,12 @@ def bundled(observations: Sequence[Observation]) -> tuple[Finding, ...]:
 
 
 def test_apply_rules_takes_a_frozenset_file_list() -> None:
-    observations = [*baseline(), ex(f"{PKG}/lib/dropped.js"), ex("node", f"{PKG}/install.js")]
+    observations = [
+        *baseline(),
+        op("/tmp/.stage", "write"),
+        ex(f"{PKG}/lib/dropped.js"),
+        ex("node", f"{PKG}/install.js"),
+    ]
     found = apply_rules(CANDIDATE, make_run(), observations, shipped=frozenset(SHIPPED))
     finding = only("sandbox.download-exec", found)
     assert finding.severity is Severity.HIGH and finding.weight == 5.0

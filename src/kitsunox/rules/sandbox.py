@@ -1503,10 +1503,29 @@ SENSITIVE_PATH: Final = re.compile(
 )
 SSH_BAIT: Final = f"{HOME}/.ssh/id_rsa"
 NPMRC_NOTE: Final = (
-    " Not counted: ~/.npmrc and /app/.npmrc read in install. npm reads them on every start and "
-    "package-analysis records no process per file, so a hook's read is indistinguishable from "
-    "npm's own; .npmrc reads count only in import."
+    " Not counted: ~/.npmrc and /app/.npmrc read in install, or in import when npm ran there. "
+    "npm reads them on every start and package-analysis records no process per file, so a "
+    "hook's read is indistinguishable from npm's own; .npmrc reads count only in import, and "
+    "only where nothing ran npm."
 )
+# Another process's environment by pid. procps's `ps` opens every process's for its command
+# column (`ps -o command`, `ps aux`; measured: procps-ng 4.0.6), so a phase that ran `ps`
+# records these reads whoever made them.
+PID_ENVIRON: Final = re.compile(r"^/proc/\d+/environ$")
+PS_NOTE: Final = (
+    " Only other processes' environments, read in a phase where ps ran: ps reads "
+    "/proc/<pid>/environ of every process for its command column, and package-analysis records "
+    "no process per file, so these may be ps's own reads. MEDIUM, not HIGH; any other "
+    "credential path read keeps it HIGH."
+)
+
+
+def is_ps(argv: Sequence[str]) -> bool:
+    return bool(argv) and _image_or_bare(argv[0], ("ps",))
+
+
+def runs_npm(argv: Sequence[str]) -> bool:
+    return npm_args(argv) is not None or npx_args(argv) is not None
 
 
 class SensitiveRead(SandboxRuleBase):
@@ -1514,9 +1533,17 @@ class SensitiveRead(SandboxRuleBase):
     `Read`: an open for reading or any `stat`, successful or not, so probing for `~/.npmrc` or
     `~/.ssh/id_rsa` counts). Left out: anything under `/app/node_modules` (packages' shipped
     files, such as a `.env.example`), and in `install` npm's own config files (`/root/.npmrc`,
-    `/app/.npmrc`), which npm reads on every start. In `import` npm doesn't run, so a read of
-    `~/.npmrc` or of anything in `~/.ssh` there is the package's (or a dependency's) own code,
-    and is reported HIGH like every other path here.
+    `/app/.npmrc`), which npm reads on every start, and the same files in `import` when npm ran
+    there too (the package started `npm` or `npx` itself; that is `sandbox.process-spawn`'s).
+    Otherwise npm doesn't run in `import`, so a read of `~/.npmrc` or of anything in `~/.ssh`
+    there is the package's (or a dependency's) own code, and is reported HIGH like every other
+    path here.
+
+    **ps** (MEDIUM, weight 3; v5): procps's `ps` opens `/proc/<pid>/environ` of every process
+    for its command column, so when every path read is a pid's environment and each was read
+    in a phase where the image's `ps` ran, the reads may be `ps`'s own (Files names no
+    process). Harvesting other processes' environments is also a stealer's move, so it stays
+    a finding; any other credential path, or `/proc/self/environ`, keeps it HIGH.
 
     Token stealers in `install` (a `postinstall` that reads `~/.npmrc` and sends it off, the
     commonest npm attack shape) are a known recall gap: Files records no process per file and
@@ -1530,6 +1557,8 @@ class SensitiveRead(SandboxRuleBase):
     recorded. The read path is the target, not the reader, so evidence names no origin."""
 
     id = "sandbox.sensitive-read"
+    # 5: `.npmrc` in import is npm's when npm ran there; pid environments beside `ps` MEDIUM.
+    version = 5
     severity = Severity.HIGH
     weight = 5.0
     title = "Package reads credentials"
@@ -1538,6 +1567,9 @@ class SensitiveRead(SandboxRuleBase):
         evidence: list[Item] = []
         phases: set[str] = set()
         bait = False
+        npm_ran = activity.phases_with(runs_npm)
+        ps_ran = activity.phases_with(is_ps)
+        only_ps = True  # every read is a pid's environment in a phase where ps ran
         for o in activity.of(K.OPEN):
             if not o.path or "read" not in o.flags:
                 continue
@@ -1547,8 +1579,9 @@ class SensitiveRead(SandboxRuleBase):
             anchored = path if path.startswith("/") else f"/{path}"
             if _inside(path, NODE_MODULES) or not SENSITIVE_PATH.search(anchored):
                 continue
-            if phase == INSTALL and path in NPM_CONFIG_FILES:
+            if path in NPM_CONFIG_FILES and (phase == INSTALL or phase in npm_ran):
                 continue
+            only_ps &= phase in ps_ran and PID_ENVIRON.fullmatch(path) is not None
             bait |= path == SSH_BAIT
             phases.add(phase)
             evidence.append((clip(path), f"read ({phase})", None))
@@ -1557,11 +1590,25 @@ class SensitiveRead(SandboxRuleBase):
         text = f"{len({e[0] for e in evidence})} credential paths read or probed"
         text += ", including the SSH key package-analysis plants for this run." if bait else "."
         if "import" in phases:
-            text += " Reads in import are the package's own code: npm doesn't run there."
+            text += (
+                " Reads in import are the package's own code: the driver's npm doesn't run there."
+            )
         text += NPMRC_NOTE
-        return (self.report(text, evidence, uses="Files (Read)", phases=phases),)
+        if only_ps:
+            text += PS_NOTE
+        return (
+            self.report(
+                text,
+                evidence,
+                uses="Files (Read) and Commands" if only_ps else "Files (Read)",
+                phases=phases,
+                severity=Severity.MEDIUM if only_ps else None,
+                weight=3.0 if only_ps else None,
+            ),
+        )
 
 
+PROJECT_MANIFEST: Final = re.compile(rf"^{APP}/package(?:-lock)?\.json$")
 PERSISTENCE: Final = (
     (
         "shell startup file",
@@ -1587,7 +1634,7 @@ PERSISTENCE: Final = (
         "system program directory",
         re.compile(r"^/(?:usr/(?:local/)?)?s?bin/|^/usr/(?:local/)?lib/node_modules/"),
     ),
-    ("project manifest", re.compile(rf"^{APP}/package(?:-lock)?\.json$")),
+    ("project manifest", PROJECT_MANIFEST),
     # Tools' caches (`node_modules/.cache`, find-cache-dir's convention) are not persistence.
     ("node_modules", re.compile(rf"^{NODE_MODULES}/(?!\.cache/)")),
 )
@@ -1645,6 +1692,11 @@ INTERPRETERS: Final = frozenset(
 # shelljs's synchronous exec writes a script to /tmp/shelljs_* and runs it with node: in
 # package-analysis's known-good list (docs/queries.md).
 SHELLJS_TEMP: Final = re.compile(r"/tmp/shelljs_[^/]+")  # noqa: S108 (a sandbox path)
+# Node's compile cache (npm turns it on for its own process): V8 code cache written to a temp
+# name, `<8 hex>.<6 random>`, then renamed, under `<version>-<arch>-<hash>-<uid>/`.
+NODE_COMPILE_CACHE: Final = re.compile(
+    r"/tmp/node-compile-cache/v\d+\.\d+\.\d+-\w+-[0-9a-f]{8}-\d+/[0-9a-f]{8}(?:\.\w{6})?"  # noqa: S108
+)
 
 
 # Interpreter options after which the next word is code, not a script (`node -e`, `sh -c`).
@@ -1686,7 +1738,13 @@ class DownloadExec(SandboxRuleBase):
       there in `install`, and any exec of an absolute path there (a rename into place isn't
       traced, so the exec alone counts). In an airgapped or bundled run npm installs nothing
       under the package's `node_modules/` (`Activity.closed_modules`), so a bundled
-      dependency's folder is checked the same way.
+      dependency's folder is checked the same way. Not counted (v5): such a file that was never
+      written, run in a phase up to which nothing but npm wrote any file (npm's `install`
+      writes of the project manifest, of the files it unpacks and of node's compile cache).
+      With no write, the file can only be a link or rename of files already there, the
+      tarball's or a bundled dependency's (a native CLI linking its platform binary into
+      place): running it is running shipped code, which `sandbox.process-spawn` reports. A
+      file written anywhere first (`/tmp` included) and then renamed into place still counts.
 
     Evidence says whose directory the file is in ("in the package", "in dependency <dep>"). Not
     counted: other writes under `/app/node_modules` in `install` (npm unpacks every package
@@ -1701,6 +1759,8 @@ class DownloadExec(SandboxRuleBase):
     never count as "not in the tarball" (a dependency's hook runs in its own directory)."""
 
     id = "sandbox.download-exec"
+    # 5: an unwritten file run before anything but npm wrote one is a link of shipped files.
+    version = 5
     severity = Severity.HIGH
     weight = 5.0
     title = "Package runs a file it wrote"
@@ -1708,6 +1768,7 @@ class DownloadExec(SandboxRuleBase):
     def check(self, run: SandboxRun, activity: Activity) -> Sequence[Finding]:
         building = activity.phases_with(is_node_gyp)
         written: dict[str, int] = {}
+        first_write = len(PHASES)  # the first phase in which something but npm wrote a file
         for o in activity.of(K.OPEN):
             if not o.path or "write" not in o.flags or not o.path.startswith("/"):
                 continue
@@ -1725,6 +1786,11 @@ class DownloadExec(SandboxRuleBase):
                 continue
             rank = PHASES.index(phase)
             written[path] = min(written.get(path, rank), rank)
+            if phase == INSTALL and (
+                PROJECT_MANIFEST.fullmatch(path) or NODE_COMPILE_CACHE.fullmatch(path)
+            ):
+                continue  # npm's
+            first_write = min(first_write, rank)
         evidence: list[Item] = []
         phases: set[str] = set()
         origins: list[str | None] = []
@@ -1743,7 +1809,9 @@ class DownloadExec(SandboxRuleBase):
                 if path in written and written[path] <= rank:
                     add(path, o, f"written, then exec ({phase})")
             for path in self._absolute(o.argv):
-                if path not in written and activity.unshipped(path, built):
+                if path in written or not activity.unshipped(path, built):
+                    continue
+                if rank >= first_write:  # else a link or rename of files already there
                     add(path, o, f"not in the tarball, exec ({phase})")
         if not evidence:
             return ()
