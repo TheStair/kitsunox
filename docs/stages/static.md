@@ -119,6 +119,8 @@ rule's version, so changing the set changes the rules fingerprint (and Stage 2's
 | KX-0007 | `calculator-preinstall-hook-demo`'s Discord webhook | its webhook id | `calculator-preinstall-hook-demo@1.1.2` |
 | KX-0008 | Baileys forks following hard-coded channels | a `...@newsletter` id, `FOLLOW` and `newsletterWMexQuery` in one file | `@chatbridgeworld/baileys`, `kevinx-baileys`, `@bil-rgb/baileys` |
 | KX-0009 | Baileys forks fetching their channel list | `noxXza/data`, `push-saurus.yorunime.sbs` | `luna-baileys`, `sauruspro-bail` |
+| KX-0010 | Discord webhook of the cutekitten/bigdevin55 crypto-name squats | its webhook id | `sol-wallet-adapter`, `wallet-adapter-base`, `contracts-upgradeable` |
+| KX-0011 | Baileys fork fetching a hidden channel list | `mmhdzaidie-dev/idch` (base64 in the source) | `@zaiilx/baileys`, `@zaidevx/baileys` |
 
 Measured on 2026-11-01 over every captured tarball with a verdict and every 18th other captured
 tarball (6,004): each family's captured malicious versions match (KX-0001 and KX-0002: 4 of 4,
@@ -129,6 +131,12 @@ webhook, and among the others only `dependencykfeg@25.1.9`, a release of the `we
 the pipeline never reported. No file took over 5 s. The upstream Baileys API
 (`newsletterFollow` calling `newsletterWMexQuery(jid, FOLLOW)`) doesn't match KX-0008: it has no
 channel id of its own.
+
+KX-0010 and KX-0011 (signatures v2, 2026-11-02) were measured the same way over 887 versions
+with a verdict and every Nth other captured tarball (3,045): each matches its captured family
+members (3 and 1), and no unreviewed tarball. KX-0011 also matched `@zaidevx/baileys@1.0.3`,
+which had a benign verdict from 2026-10-30, before the Baileys policy: it is the same code as
+`@zaiilx/baileys` (same author), and the verdict was re-recorded malicious.
 
 Adding one: take the family's endpoints or the strings every sample decodes to (not decoy
 padding, not a library's), add the verdicts to `seen_in`, bump `SIGNATURES_VERSION`, and measure

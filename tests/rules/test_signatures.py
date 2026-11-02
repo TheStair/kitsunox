@@ -44,6 +44,11 @@ def test_indicators_in_plain_and_base64_text() -> None:
     hidden = base64.b64encode(f"curl -sf {url}".encode()).decode()
     assert ids(f"const c = Buffer.from('{hidden}', 'base64')") == ["Signature KX-0003"]
     assert ids("fetch('http://38.242.235.206/depconf/x/preinstall?u=')") == ["Signature KX-0004"]
+    hook = "https://canary.discord.com/api/webhooks/1566232728179843243/abc"
+    assert ids(f"const WEBHOOK_URL = '{hook}';") == ["Signature KX-0010"]
+    channels = "https://raw.githubusercontent.com/mmhdzaidie-dev/idch/refs/heads/main/channel.json"
+    listed = base64.b64encode(channels.encode()).decode()
+    assert ids(f"const xl = Buffer.from('{listed}', 'base64')") == ["Signature KX-0011"]
 
 
 def test_a_baileys_fork_following_hard_coded_channels() -> None:

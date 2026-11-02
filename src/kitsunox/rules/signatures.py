@@ -37,7 +37,7 @@ from typing import ClassVar, Final
 from kitsunox.core.models import Severity
 from kitsunox.core.rules import FileMatch
 
-SIGNATURES_VERSION: Final = 1
+SIGNATURES_VERSION: Final = 2
 MAX_DECODED: Final = 20_000  # decoded strings kept per file
 MAX_LITERALS: Final = 5_000  # base64 literals tried per file
 SNIPPET: Final = 160
@@ -118,6 +118,18 @@ SIGNATURES: Final = (
         "Baileys forks fetching the channel list they follow (NOXLEYS, saurus)",
         _p(r"noxXza/data|push-saurus\.yorunime\.sbs"),
         ("luna-baileys@1.0.0", "sauruspro-bail@5.0.0"),
+    ),
+    Signature(
+        "KX-0010",
+        "Discord webhook of the cutekitten/bigdevin55 crypto-name squats (hostname and user name)",
+        _p(r"discord(?:app)?\.com/api/webhooks/1566232728179843243\b"),
+        ("sol-wallet-adapter@1.0.7", "wallet-adapter-base@1.0.0", "contracts-upgradeable@1.0.0"),
+    ),
+    Signature(
+        "KX-0011",
+        "Baileys fork fetching a hidden channel list to follow (mmhdzaidie-dev/idch)",
+        _p(r"mmhdzaidie-dev/idch"),
+        ("@zaiilx/baileys@1.0.3",),
     ),
 )
 
