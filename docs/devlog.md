@@ -2,6 +2,44 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-03: Queue review (ranks 1-115) and `exfil-endpoint` v5
+
+**Stage(s):** review, Stage 2 (`static.exfil-endpoint`)
+**Context:** The queue had grown to 398 packages (529 versions). I reviewed the top 115 by
+reading install scripts and code from the captured tarballs (never run).
+
+### Decisions
+- **Verdicts (129 versions):** 3 malicious (1 a bug-bounty probe), 3 inconclusive, 123 benign.
+  - Malicious: `service-roles-registry@99.0.2` (dependency-confusion PoC posting hostname,
+    username and cwd to pipedream; `probe`), `@finzzcloud/baileys@1.0.0` (hidden auto-follow:
+    a base64 channel-list URL in `Utils/messages-media.js`, on by default, not in the README),
+    `ai-persona-sdk@1.0.0` (tavern stealer, KX-0001/KX-0002).
+  - Inconclusive: `@routinecrew/routinecode@2.31.77` (930 KB obfuscated postinstall, no sandbox
+    result), and two whose tarball wasn't captured (`@algorithco/algocli`, `@yalehwang/cloudpit`).
+- **`exfil-endpoint` v5** (docs/stages/static.md): deny lists of 3+ services and `interact.sh`
+  inside an identifier no longer count. `vm-day1`: 0 of 1,176 malicious matches lost.
+
+### Challenges
+- **A boundary after every host lost a sample.** `google.fhir.stu3.google@8.8.8` posts to the
+  typo `burpcollaborator.nett`.
+  - **Resolution:** the boundary is only on `interact.sh`, whose `.sh` starts identifiers.
+- **Per-line deny lists missed wrapped lists.** `dsh-security-pack`'s list spans lines.
+  - **Resolution:** a 400-character window instead of the line.
+
+### Evaluation snapshot
+- `exfil-endpoint` v5: `vm-day1` malicious matches 1,176 → 1,176; live reported versions with
+  the finding 116 → 114 (both cleared versions reviewed benign).
+
+### Open questions / next steps
+- The biggest benign classes in the queue are not this rule: postinstalls that download the
+  package's own binary from its GitHub releases with a checksum (about 15 of 115), and
+  opencode-style platform-package launchers. A rule that recognises "downloads only from the
+  package's own `repository` releases" could lower those, but it needs a recall measurement
+  first (malware can point `repository` anywhere).
+- Agent-skill installers (`~/.claude/skills`, `~/.codex/skills`) are a growing benign class
+  (6 in 115); their skill text is unreviewed input to an agent and might deserve its own,
+  low-weight finding rather than none.
+
 ## 2026-11-03: The Discord daily summary as embeds
 
 **Stage(s):** notifications (decision 0011)

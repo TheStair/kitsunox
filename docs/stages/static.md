@@ -80,7 +80,7 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v3) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts | HIGH |
+| `static.exfil-endpoint` (v5) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor` | MEDIUM (weight 3) |
@@ -270,6 +270,28 @@ counting-up ids. Measured before adopting it:
 browser") was HIGH in every release. A URL built from a variable (`bot${token}`) still matches,
 for the reasons below. `vm-day1`: no malicious sample lost; with the Vite-hash change, two
 benign `glimmervoid` releases are no longer reported.
+
+### `exfil-endpoint` v5: deny lists and `interact.sh` (2026-11-03)
+
+Reviewing the queue, about 20 of the first 115 packages were HIGH through this rule alone and
+benign. Most were the forms kept on purpose below (tunnel suffixes, `bot${token}`), but two
+shapes were plainly not endpoints:
+
+- **Deny lists.** Security tools list these services to block them: `dsh-security-pack`'s vet
+  checks (`'webhook.site', 'requestbin.net', … 'interact.sh'`), agent policy engines. v5 drops
+  a host written as a whole string literal (`'webhook.site'`, `"x.m.pipedream.net"`, a bare
+  `'api.telegram.org/bot'`) when literals of 3 or more different services sit within 400
+  characters of it. A URL is never a whole host literal, so `"https://api.telegram.org/bot" +
+  token` and `'https://webhook.site/…'` still count beside a list; two services are not a
+  list.
+- **`interact.sh` inside an identifier.** `this.interact.shareLink(body)` matched. v5 needs a
+  boundary after `interact.sh` only: the same boundary on every host lost a `vm-day1` sample
+  that posts to the attacker's typo `burpcollaborator.nett`.
+
+`vm-day1`, the 1,181 samples v4 matches: 1,176 malicious and 5 benign still match, 0 lost.
+Live, of the 116 reported versions with this finding on disk, 2 lose it (`dsh-security-pack`,
+`cortico-world-qqbot-feibi`, both reviewed benign). A small gain; the bulk of this rule's
+benign hits are the tunnel and Telegram forms, which stay for recall (next section).
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 

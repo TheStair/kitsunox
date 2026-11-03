@@ -90,9 +90,15 @@ class ExfilEndpoint(RegexRule):
     # to clear 6 benign packages. See docs/stages/static.md.
     # v4 (2026-10-31): `bot` followed by a written placeholder (`bot<token>`, `botYOUR_TOKEN`,
     # `bot...`) is documentation: `glimmervoid`'s settings help text was HIGH in 25 releases.
+    # v5 (2026-11-03): `interact.sh` needs a boundary after it (`this.interact.shareLink()` was
+    # HIGH), and a deny list is not an endpoint: a host written as a whole string literal
+    # (`'webhook.site'`, `'x.pipedream.net'`, `'api.telegram.org/bot'`) with literals of 3 or
+    # more different such services within 400 characters (`dsh-security-pack`'s vet checks,
+    # agent policy engines). `vm-day1`: no malicious sample lost. A URL (`"https://...`) is
+    # never a whole host literal, so `"https://api.telegram.org/bot" + token` still counts.
 
     id = "static.exfil-endpoint"
-    version = 4
+    version = 5
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -102,19 +108,55 @@ class ExfilEndpoint(RegexRule):
         r"|api\.telegram\.org/bot"
         r"|pastebin\.com/|paste\.ee/|hastebin\.|webhook\.site|requestbin\.|pipedream\.net"
         r"|\.oast\.(?:fun|me|pro|site|live|online)|oastify\.com|burpcollaborator\.net"
-        r"|interact\.sh|\.ngrok(?:-free)?\.(?:io|app)|\.trycloudflare\.com|\.serveo\.net",
+        r"|interact\.sh(?![\w-])|\.ngrok(?:-free)?\.(?:io|app)|\.trycloudflare\.com|\.serveo\.net",
         re.IGNORECASE,
     )
 
     def accept(self, match: re.Match[str]) -> bool:
-        if match.group(0).lower().endswith("/bot"):
-            return _TELEGRAM_PLACEHOLDER.match(match.string, match.end()) is None
+        if match.group(0).lower().endswith("/bot") and _TELEGRAM_PLACEHOLDER.match(
+            match.string, match.end()
+        ):
+            return False
         webhook_id = match.group("discord") or match.group("slack")
-        return webhook_id is None or not _placeholder_id(webhook_id)
+        if webhook_id is not None:
+            return not _placeholder_id(webhook_id)
+        return not _in_deny_list(match)
 
 
 # What documentation writes after `api.telegram.org/bot` instead of a token.
 _TELEGRAM_PLACEHOLDER: Final = re.compile(r"<|\[|YOUR_|\.\.\.")
+# A whole string literal naming one exfiltration or OAST service, optionally with a subdomain.
+_SERVICE_LITERAL: Final = re.compile(
+    r"""(?P<q>["'`])[\w.-]*?(?P<service>webhook\.site|pipedream\.net|requestbin\.\w+"""
+    r"""|hastebin\.\w+|pastebin\.com|paste\.ee|oast\.(?:fun|me|pro|site|live|online)"""
+    r"""|oastify\.com|burpcollaborator\.net|interact\.sh|ngrok(?:-free)?\.(?:io|app)"""
+    r"""|trycloudflare\.com|serveo\.net|beeceptor\.com|requestcatcher\.com|hookbin\.com"""
+    r"""|localhost\.run|api\.telegram\.org/bot)(?P=q)""",
+    re.IGNORECASE,
+)
+DENY_LIST_SERVICES: Final = 3
+DENY_LIST_WINDOW: Final = 400
+
+
+def _in_deny_list(match: re.Match[str]) -> bool:
+    """Whether `match` is a host written as a whole string literal among literals of at least
+    `DENY_LIST_SERVICES` different services: a block or deny list, not an endpoint."""
+    text, start, end = match.string, match.start(), match.end()
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "._-"):
+        start -= 1
+    tail = end
+    if not match.group(0).lower().endswith("/bot"):
+        while tail < len(text) and (text[tail].isalnum() or text[tail] in "._-"):
+            tail += 1
+    quote = text[start - 1 : start]
+    if not quote or quote not in "\"'`" or text[tail : tail + 1] != quote:
+        return False
+    lo = max(0, start - DENY_LIST_WINDOW)
+    hi = min(len(text), tail + DENY_LIST_WINDOW)
+    services = {
+        m.group("service").lower().split(".")[0] for m in _SERVICE_LITERAL.finditer(text, lo, hi)
+    }
+    return len(services) >= DENY_LIST_SERVICES
 
 
 def _placeholder_id(webhook_id: str) -> bool:
