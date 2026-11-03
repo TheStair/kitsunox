@@ -15,7 +15,7 @@ from kitsunox.cli import app
 from kitsunox.collect import SANDBOX_RESULTS_ENV
 from kitsunox.core.run import DataDir, IngestRequest, PopularityMode, record_ingest
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL, NpmEcosystem
-from kitsunox.notify import Tick, TickRecord, append_tick, read_ticks
+from kitsunox.notify import Message, Tick, TickRecord, append_tick, read_ticks
 
 runner = CliRunner()
 
@@ -196,8 +196,8 @@ def test_collect_posts_a_daily_summary_and_a_crash_once_a_day(
 ) -> None:
     posted: list[tuple[str | None, str]] = []
 
-    def post(url: str | None, content: str, log: object) -> bool:
-        posted.append((url, content))
+    def post(url: str | None, message: Message, log: object) -> bool:
+        posted.append((url, str(message)))
         return url is not None
 
     monkeypatch.setattr(cli, "post_update", post)
@@ -220,7 +220,7 @@ def test_collect_posts_a_daily_summary_and_a_crash_once_a_day(
     append_tick(state, record)  # run r's report is gone (pruned): the summary goes without it
     runner.invoke(app, args)
     ((_, content),) = posted
-    assert content.startswith(f"**Kitsunox** daily summary for {yesterday:%Y-%m-%d}")
+    assert f"daily summary · {yesterday:%a %d %b %Y}" in content
     posted.clear()
     runner.invoke(app, args)
     assert posted == []  # posted once

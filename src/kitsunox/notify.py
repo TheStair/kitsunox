@@ -18,9 +18,15 @@ Two things are protected:
   status or the exception type only, because httpx messages include the URL.
 - **Package names are untrusted.** They could carry `@everyone`, a `<@id>` mention, a masked
   link, markdown, or bidirectional overrides. Mentions are disabled for the whole message
-  (`allowed_mentions`), link previews are suppressed, control and bidi characters are dropped,
-  and Discord markdown is escaped, so a crafted name can't ping the channel, forge a link or
-  reformat the message.
+  (`allowed_mentions`), control and bidi characters are dropped, and Discord markdown is
+  escaped, so a crafted name can't ping the channel, forge a link or reformat the message.
+  Names only ever go in embed descriptions and field values, which render markdown (escaped
+  here) but never unfurl a link preview; the message has no `content`, the only text Discord
+  unfurls.
+
+A message is a list of Discord embeds (`Message`): a coloured bar for health (green, amber,
+red), severity-coloured counts and one package per line, each piece cut to Discord's limits
+(4,096 per description, 1,024 per field, 6,000 per message).
 """
 
 from __future__ import annotations
@@ -41,15 +47,22 @@ from pydantic import ValidationError
 from kitsunox.core.models import Persisted, Record, Severity
 from kitsunox.core.run import RunManifest
 from kitsunox.reporting.markdown import strip_controls
+from kitsunox.reporting.queue import Queue
 from kitsunox.reporting.report import Report, ReportEntry
-from kitsunox.reporting.verdicts import VerdictRecord, current, probes, tally
+from kitsunox.reporting.verdicts import Verdict, VerdictRecord, current, probes, tally
 from kitsunox.util.files import atomic_write
 
 WEBHOOK_ENV: Final = "KITSUNOX_DISCORD_WEBHOOK"
-MAX_CONTENT: Final = 1900  # Discord's limit is 2,000 characters
 MAX_NAME: Final = 80
 TOP_PACKAGES: Final = 5
-SUPPRESS_EMBEDS: Final = 1 << 2
+# Discord's embed limits, with a little room: 4,096 per description, 1,024 per field value,
+# 25 fields per embed, 6,000 characters per message.
+MAX_DESCRIPTION: Final = 4000
+MAX_FIELD: Final = 1000
+MAX_FIELDS: Final = 25
+MAX_MESSAGE: Final = 6000
+MORE_ROOM: Final = 20  # for "… and N more"
+LOG_HINT: Final = "Details: data/logs/collect.log"
 TIMEOUT: Final = 10.0
 ATTEMPTS: Final = 2
 MAX_RETRY_AFTER: Final = 10.0
@@ -58,6 +71,36 @@ _WEBHOOK: Final = re.compile(
     r"^https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+$"
 )
 _MARKDOWN: Final = re.compile(r"([\\*_~`|>#\-\[\]()<:@!.+=])")
+
+
+type Field = dict[str, object]
+type Embed = dict[str, object]
+type Message = list[Embed]
+
+GREEN: Final = 0x2ECC71
+AMBER: Final = 0xF1A33C
+RED: Final = 0xE74C3C
+BLURPLE: Final = 0x5865F2
+_SEVERITY_ORDER: Final = tuple(Severity)  # lowest first
+SEVERITY_MARK: Final = {
+    Severity.CRITICAL.value: "🟣",
+    Severity.HIGH.value: "🔴",
+    Severity.MEDIUM.value: "🟠",
+    Severity.LOW.value: "🟡",
+    Severity.INFO.value: "⚪",
+}
+SEVERITY_COLOUR: Final = {
+    Severity.CRITICAL: 0x9B59B6,
+    Severity.HIGH: RED,
+    Severity.MEDIUM: AMBER,
+    Severity.LOW: 0xF1C40F,
+    Severity.INFO: 0x95A5A6,
+}
+VERDICT_LABELS: Final[tuple[tuple[Verdict, str], ...]] = (
+    ("malicious", "☠️ Malicious"),
+    ("inconclusive", "❔ Inconclusive"),
+    ("benign", "✅ Benign"),
+)
 
 
 class NotifyError(Exception):
@@ -179,26 +222,38 @@ def render_daily(
     ticks: Sequence[TickRecord],
     reports: Sequence[Report],
     verdicts: Sequence[VerdictRecord] = (),
-) -> str:
-    """The day's ticks and reports, and reviewers' verdicts (the running tally, and how many
-    were recorded that day). A version two overlapping runs both reported counts once, at its
-    highest score."""
+    queue: Queue | None = None,
+) -> Message:
+    """The day's ticks and reports, reviewers' verdicts (the running tally, and how many were
+    recorded that day) and the review queue as it is now, as up to four embeds: health, what
+    was flagged, review, and what needs attention. A version two overlapping runs both reported
+    counts once, at its highest score."""
     today = [t for t in ticks if t.started.date() == day]
     runs = [t for t in today if t.run_id is not None]
     crashed = [t for t in today if t.crashed]
     failed = Counter(step for t in today for step in t.failed)
-    lines = [f"**Kitsunox** daily summary for {day:%Y-%m-%d} (UTC)"]
-    status = []
-    if crashed:
-        status.append(f"**{len(crashed)} crashed**")
-    if failed:
-        status.append(f"{sum(1 for t in today if t.failed)} with failed steps")
     offline = sum(1 for t in today if t.run_id is None and not t.crashed)
-    if offline:
-        status.append(f"{offline} offline or an outage")
-    versions = sum(t.versions for t in runs)
-    head = f"{len(today)} ticks" + (f" ({', '.join(status)})" if status else "")
-    lines.append(f"{head}, {len(runs)} runs, {versions:,} versions.")
+    gaps = sum(1 for t in runs if t.chained is False)
+    skipped = sum(t.transient_skipped for t in runs)
+    serious = bool(crashed or gaps)
+    if serious:
+        status = "🛑 **Collection had a problem**: see *Needs attention* below."
+    elif failed or offline or skipped:
+        status = "⚠️ Collection ran, with minor problems: see *Needs attention* below."
+    else:
+        status = "✅ Every tick ran, and every run chained on to the one before."
+    embeds: list[Embed] = [
+        _embed(
+            f"🦊 Kitsunox daily summary · {day:%a %d %b %Y}",
+            f"UTC day **{day:%Y-%m-%d}**\n{status}",
+            RED if serious else AMBER if failed or offline or skipped else GREEN,
+            [
+                _field("Ticks", f"{len(today):,}"),
+                _field("Runs", f"{len(runs):,}"),
+                _field("Versions checked", f"{sum(t.versions for t in runs):,}"),
+            ],
+        )
+    ]
     best: dict[tuple[str, str], ReportEntry] = {}
     for report in reports:
         for entry in report.entries:
@@ -206,43 +261,60 @@ def render_daily(
             if key not in best or entry.score > best[key].score:
                 best[key] = entry
     if reports:
-        severities = Counter(e.severity.value for e in best.values())
-        packages = len({name for name, _ in best})
-        lines.append(
-            f"**{len(best):,} to review** ({packages:,} packages){_severities(severities)}."
-        )
-        top = _top_packages(list(best.values()))
-        if top:
-            lines.append(f"Top: {top}")
-    if verdicts:
-        now = current(verdicts)
-        counts = tally(now)
-        that_day = Counter(r.verdict for r in now.values() if r.at.date() == day)
-        probed = probes(now, "malicious")
-        of_which = f", research probes {probed}" if probed else ""
-        lines.append(
-            f"**Verified malicious: {counts['malicious']:,}** "
-            f"(+{that_day['malicious']} that day{of_which}); "
-            f"inconclusive {counts['inconclusive']:,}, "
-            f"benign {counts['benign']:,}."
-        )
-    gaps = [t for t in runs if t.chained is False]
-    if gaps:
-        lines.append(f"**{len(gaps)} runs NOT chained** (coverage gap).")
-    skipped = sum(t.transient_skipped for t in runs)
-    if skipped:
-        lines.append(f"{skipped:,} packages skipped on the network (retried the next tick).")
-    if failed:
-        steps = ", ".join(f"{escape(step, 60)} x{n}" for step, n in sorted(failed.items()))
-        lines.append(f"Failed steps: {steps}.")
+        embeds.append(_flagged("Flagged that day", list(best.values())))
+    review = _review(day, verdicts, queue)
+    if review is not None:
+        embeds.append(review)
+    problems: list[Field] = []
     if crashed:
         kinds = Counter(t.crashed for t in crashed)
-        lines.append(
-            "Crashes: " + ", ".join(f"{escape(c, 200)} x{n}" for c, n in sorted(kinds.items()))
+        problems.append(
+            _field(
+                f"🛑 {len(crashed)} crashed",
+                _lines([f"{escape(c, 200)} x{n}" for c, n in sorted(kinds.items())]),
+                inline=False,
+            )
         )
-    if crashed or failed:
-        lines.append("See `data/logs/collect.log`.")
-    return _fit(lines)
+    if gaps:
+        problems.append(
+            _field(
+                "🛑 Coverage gap",
+                f"**{gaps:,} {_plural(gaps, 'run')} not chained** on to the run before: "
+                "releases between them were not checked.",
+                inline=False,
+            )
+        )
+    if failed:
+        problems.append(
+            _field(
+                f"⚠️ {sum(1 for t in today if t.failed)} with failed steps",
+                _lines([f"{escape(step, 60)} x{n}" for step, n in sorted(failed.items())]),
+                inline=False,
+            )
+        )
+    if offline:
+        problems.append(
+            _field(
+                "⚠️ Offline",
+                f"{offline:,} {_plural(offline, 'tick')}: registry offline or an outage, "
+                "nothing written (the next tick catches up).",
+                inline=False,
+            )
+        )
+    if skipped:
+        problems.append(
+            _field(
+                "⚠️ Network skips",
+                f"{skipped:,} {_plural(skipped, 'package')} skipped on the network "
+                "(retried the next tick).",
+                inline=False,
+            )
+        )
+    if problems:
+        embeds.append(
+            _embed("Needs attention", None, RED if serious else AMBER, problems, footer=LOG_HINT)
+        )
+    return embeds
 
 
 def is_webhook(url: str) -> bool:
@@ -257,75 +329,99 @@ def escape(value: object, limit: int = MAX_NAME) -> str:
     return _MARKDOWN.sub(r"\\\1", flat)
 
 
-def render_tick(tick: Tick, *, started: datetime, elapsed: timedelta) -> str:
-    lines = [f"**Kitsunox** tick {started:%Y-%m-%d %H:%M} UTC, {_duration(elapsed)}"]
+def render_tick(tick: Tick, *, started: datetime, elapsed: timedelta) -> Message:
+    title = f"🦊 Kitsunox tick · {started:%Y-%m-%d %H:%M} UTC · {_duration(elapsed)}"
     manifest = tick.manifest
+    fields: list[Field] = []
     if manifest is None:
-        lines.append("Registry offline or an outage: nothing written, the next tick catches up.")
+        description = "⚠️ Registry offline or an outage: nothing written, the next tick catches up."
+        colour = AMBER
     else:
         current = next((r for r in tick.reports if r.run_id == manifest.run_id), None)
-        chain = "" if manifest.chained_from else " (**NOT chained**: coverage gap)"
+        chain = "" if manifest.chained_from else "\n🛑 **NOT chained**: a coverage gap."
         network = (
-            f", {manifest.transient_skipped:,} skipped on the network (retried next tick)"
+            f"\n⚠️ {manifest.transient_skipped:,} skipped on the network (retried next tick)."
             if manifest.transient_skipped
             else ""
         )
-        head = f"Run `{manifest.run_id}`{chain}: {manifest.change_count:,} versions{network}"
+        description = f"Run `{manifest.run_id}`: {manifest.change_count:,} versions{chain}{network}"
+        colour = RED if chain else AMBER if network or tick.failed else GREEN
         if current is None:
-            lines.append(f"{head}; no report this tick (a stage failed, see the log).")
+            description += "\n⚠️ No report this tick (a stage failed, see the log)."
+            colour = RED
         else:
+            description += f"\n**{current.reported:,} to review**."
             uncompared, outage = current.network_uncompared()
-            repo = (
-                f" {uncompared:,} not compared with their repo (network"
-                f"{', outage' if outage else ''})."
-                if uncompared
-                else ""
-            )
+            if uncompared:
+                description += (
+                    f"\n{uncompared:,} not compared with their repo (network"
+                    f"{', outage' if outage else ''})."
+                )
             failed, outage = current.dependency_network_failures()
             if failed:
                 why = "network, outage" if outage else "network"
-                repo += f" {failed:,} dependency lookups failed ({why})."
-            lines.append(
-                f"{head}; **{current.reported:,} to review**"
-                f"{_severities(current.by_severity)}.{repo}"
-            )
+                description += f"\n{failed:,} dependency lookups failed ({why})."
+            fields += _severity_fields(current.by_severity)
             top = _top_packages(current.entries)
             if top:
-                lines.append(f"Top: {top}")
+                fields.append(_field("Top packages", top, inline=False))
     caught_up = [r for r in tick.reports if manifest is None or r.run_id != manifest.run_id]
     if caught_up:
-        runs = ", ".join(f"`{r.run_id}` ({r.reported:,} to review)" for r in caught_up)
-        lines.append(f"Caught up: {runs}")
+        fields.append(
+            _field(
+                "Caught up",
+                _lines([f"`{r.run_id}`: {r.reported:,} to review" for r in caught_up]),
+                inline=False,
+            )
+        )
     if tick.failed:
-        steps = ", ".join(escape(step, 120) for step in tick.failed)
-        lines.append(f"Failed: {steps}. See `data/logs/collect.log`.")
-    return _fit(lines)
+        fields.append(
+            _field("⚠️ Failed", _lines([escape(s, 120) for s in tick.failed]), inline=False)
+        )
+    footer = LOG_HINT if tick.failed or colour != GREEN else None
+    return [_embed(title, description, colour, fields, footer=footer)]
 
 
-def render_crash(exc: BaseException, where: str, *, started: datetime) -> str:
+def render_crash(exc: BaseException, where: str, *, started: datetime) -> Message:
     """For a tick that raised: the exception type and location only (no message, which may
     hold a URL or path from the failing request)."""
-    return _fit(
-        [
-            f"**Kitsunox** tick {started:%Y-%m-%d %H:%M} UTC **crashed**: "
-            f"{escape(type(exc).__name__)} at {escape(where, 300)}.",
-            "See `data/logs/collect.log`.",
-        ]
-    )
+    return [
+        _embed(
+            f"🛑 Kitsunox tick crashed · {started:%Y-%m-%d %H:%M} UTC",
+            f"**{escape(type(exc).__name__)}** at {escape(where, 300)}",
+            RED,
+            [],
+            footer=LOG_HINT,
+        )
+    ]
+
+
+def embed_chars(message: Message) -> int:
+    """The characters Discord counts against its 6,000 per message."""
+    total = 0
+    for embed in message:
+        total += len(str(embed.get("title", ""))) + len(str(embed.get("description", "")))
+        footer = embed.get("footer")
+        if isinstance(footer, dict):
+            total += len(str(footer.get("text", "")))
+        fields = embed.get("fields", [])
+        if isinstance(fields, list):
+            total += sum(len(str(f["name"])) + len(str(f["value"])) for f in fields)
+    return total
 
 
 def send(
     url: str,
-    content: str,
+    message: Message,
     *,
     client: httpx.Client,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Post `content` once, retrying once on a rate limit, a server error or a network error.
+    """Post `message` once, retrying once on a rate limit, a server error or a network error.
     Raises `NotifyError`."""
     if not is_webhook(url):
         raise NotifyError(f"{WEBHOOK_ENV} is not a Discord webhook URL")
-    payload = {"content": content, "allowed_mentions": {"parse": []}, "flags": SUPPRESS_EMBEDS}
+    payload = {"embeds": list(message), "allowed_mentions": {"parse": []}}
     problem = "no attempt"
     for attempt in range(ATTEMPTS):
         try:
@@ -346,7 +442,7 @@ def send(
 
 def post_update(
     url: str | None,
-    content: str,
+    message: Message,
     log: Callable[[str], None],
     *,
     client: httpx.Client | None = None,
@@ -357,7 +453,7 @@ def post_update(
         return False
     try:
         with client or httpx.Client() as http:
-            send(url, content, client=http)
+            send(url, message, client=http)
     except NotifyError as exc:
         log(f"notify: FAILED ({exc})")
     except Exception as exc:  # a notification must never break a tick
@@ -378,32 +474,128 @@ def _retry_after(response: httpx.Response) -> float:
     return min(max(seconds, 0.0), MAX_RETRY_AFTER)
 
 
-def _severities(by_severity: Mapping[str, int]) -> str:
-    if not by_severity:
-        return ""
-    order = [severity.value for severity in reversed(Severity)]  # highest first
-    items = sorted(
-        by_severity.items(),
-        key=lambda kv: order.index(kv[0]) if kv[0] in order else len(order),
+def _embed(
+    title: str,
+    description: str | None,
+    colour: int,
+    fields: Sequence[Field],
+    *,
+    footer: str | None = None,
+) -> Embed:
+    embed: Embed = {"title": title, "color": colour}
+    if description:
+        embed["description"] = _cut(description, MAX_DESCRIPTION)
+    if fields:
+        embed["fields"] = list(fields[:MAX_FIELDS])
+    if footer:
+        embed["footer"] = {"text": footer}
+    return embed
+
+
+def _field(name: str, value: str, *, inline: bool = True) -> Field:
+    return {"name": name, "value": _cut(value, MAX_FIELD) or "-", "inline": inline}
+
+
+def _flagged(title: str, entries: Sequence[ReportEntry]) -> Embed:
+    """Versions to review, by severity, and the top packages."""
+    by_severity = Counter(e.severity.value for e in entries)
+    packages = len({e.name for e in entries})
+    fields = _severity_fields(by_severity)
+    top = _top_packages(entries)
+    if top:
+        fields.append(_field("Top packages", top, inline=False))
+    worst = max((e.severity for e in entries), key=_SEVERITY_ORDER.index, default=None)
+    return _embed(
+        title,
+        f"**{len(entries):,} {_plural(len(entries), 'version')} to review**, "
+        f"in {packages:,} {_plural(packages, 'package')}.",
+        SEVERITY_COLOUR[worst] if worst is not None else GREEN,
+        fields,
     )
-    return " (" + ", ".join(f"{n:,} {escape(s.upper())}" for s, n in items) + ")"
+
+
+def _review(day: date, verdicts: Sequence[VerdictRecord], queue: Queue | None) -> Embed | None:
+    """The review queue now and the verdict tally."""
+    if not verdicts and queue is None:
+        return None
+    lines = []
+    if queue is not None:
+        lines.append(
+            f"📥 **{queue.packages:,} {_plural(queue.packages, 'package')} awaiting review** "
+            f"({queue.versions:,} {_plural(queue.versions, 'version')})"
+        )
+        marks = _severity_marks(queue.by_severity)
+        if marks:
+            lines.append(f"by their highest severity: {marks}")
+    fields: list[Field] = []
+    if verdicts:
+        now = current(verdicts)
+        counts = tally(now)
+        that_day = Counter(r.verdict for r in now.values() if r.at.date() == day)
+        probed = probes(now, "malicious")
+        for kind, label in VERDICT_LABELS:
+            value = f"**{counts[kind]:,}**\n+{that_day[kind]} that day"
+            if kind == "malicious" and probed:
+                value += f", research probes {probed}"
+            fields.append(_field(label, value))
+    footer = "Verdicts are all-time totals." if fields else None
+    return _embed("Review", "\n".join(lines) or None, BLURPLE, fields, footer=footer)
+
+
+def _severity_fields(by_severity: Mapping[str, int]) -> list[Field]:
+    return [
+        _field(f"{SEVERITY_MARK.get(s, '⚪')} {escape(s.upper())}", f"{n:,}")
+        for s, n in _by_rank(by_severity)
+    ]
+
+
+def _severity_marks(by_severity: Mapping[str, int]) -> str:
+    return " · ".join(
+        f"{SEVERITY_MARK.get(s, '⚪')} {n:,} {escape(s.upper())}" for s, n in _by_rank(by_severity)
+    )
+
+
+def _by_rank(by_severity: Mapping[str, int]) -> list[tuple[str, int]]:
+    """Highest severity first; unknown names last."""
+    order = [s.value for s in reversed(_SEVERITY_ORDER)]
+    return sorted(
+        by_severity.items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else len(order)
+    )
 
 
 def _top_packages(entries: Sequence[ReportEntry]) -> str:
-    """The highest-scoring packages, each once: a package releasing many flagged versions in
-    the window is one item, with the version count."""
+    """The highest-scoring packages, each once, one per line: a package releasing many flagged
+    versions in the window is one item, with the version count."""
     best: dict[str, tuple[float, str, int]] = {}
     for entry in entries:
         score, severity, count = best.get(entry.name, (float("-inf"), "", 0))
         if entry.score > score:
-            score, severity = entry.score, entry.severity.value.upper()
+            score, severity = entry.score, entry.severity.value
         best[entry.name] = (score, severity, count + 1)
     ranked = sorted(best.items(), key=lambda kv: (-kv[1][0], kv[0]))[:TOP_PACKAGES]
-    return ", ".join(
-        f"{escape(name)} (score {score:g}, {escape(severity)}"
-        f"{f', {count} versions' if count > 1 else ''})"
-        for name, (score, severity, count) in ranked
+    return _lines(
+        [
+            f"{SEVERITY_MARK.get(severity, '⚪')} **{escape(name)}** · score {score:g}, "
+            f"{escape(severity.upper())}{f', {count} versions' if count > 1 else ''}"
+            for name, (score, severity, count) in ranked
+        ]
     )
+
+
+def _lines(lines: Sequence[str], limit: int = MAX_FIELD) -> str:
+    """`lines`, one per line, dropping whole lines that don't fit and saying how many."""
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        last = i == len(lines) - 1
+        if len("\n".join([*kept, line])) > limit - (0 if last else MORE_ROOM):
+            kept.append(f"… and {len(lines) - i:,} more")
+            break
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _plural(n: int, word: str) -> str:
+    return word if n == 1 else word + "s"
 
 
 def _duration(elapsed: timedelta) -> str:
@@ -411,10 +603,9 @@ def _duration(elapsed: timedelta) -> str:
     return f"{minutes} min" if minutes < 120 else f"{minutes / 60:.1f} h"
 
 
-def _fit(lines: list[str]) -> str:
-    content = "\n".join(lines)
-    if len(content) <= MAX_CONTENT:
-        return content
+def _cut(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
     # Cut on a whitespace boundary so an escape (`\x`) is never split from its character.
-    cut = content.rfind(" ", 0, MAX_CONTENT - 1)
-    return content[: cut if cut > 0 else MAX_CONTENT - 1] + "…"
+    cut = text.rfind(" ", 0, limit - 1)
+    return text[: cut if cut > 0 else limit - 1] + "…"

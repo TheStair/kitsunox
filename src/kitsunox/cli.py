@@ -55,6 +55,7 @@ from kitsunox.evaluation.metrics import render_markdown
 from kitsunox.githost.github import is_archive_url
 from kitsunox.notify import (
     WEBHOOK_ENV,
+    Message,
     TickRecord,
     append_tick,
     crash_due,
@@ -70,7 +71,7 @@ from kitsunox.notify import (
     tick_record,
 )
 from kitsunox.reporting.publish import publish_report
-from kitsunox.reporting.queue import build_queue, write_queue
+from kitsunox.reporting.queue import QUEUE_DIR, Queue, build_queue, write_queue
 from kitsunox.reporting.report import REPORT_DIR, Report
 from kitsunox.reporting.verdicts import (
     OWNER,
@@ -815,7 +816,7 @@ def _record_tick(data: DataDir, record: TickRecord, log: Callable[[str], None]) 
 
 
 def _post_crash(
-    data: DataDir, webhook: str | None, content: str, log: Callable[[str], None]
+    data: DataDir, webhook: str | None, content: Message, log: Callable[[str], None]
 ) -> None:
     """A crash, at most once a day (`notify.CRASH_EVERY`): a crash loop posts once."""
     state_dir = data.root / "state"
@@ -847,7 +848,11 @@ def _post_daily(data: DataDir, webhook: str | None, log: Callable[[str], None]) 
         except OSError, ValueError:  # pruned, damaged or another schema: left out
             continue
     verdicts = read_verdicts(data.root, NPM)
-    if post_update(webhook, render_daily(day, ticks, reports, verdicts), log):
+    try:  # the queue as this tick left it
+        queue = Queue.load_json((data.root / QUEUE_DIR / "queue.json").read_bytes())
+    except OSError, ValueError:
+        queue = None
+    if post_update(webhook, render_daily(day, ticks, reports, verdicts, queue), log):
         try:
             save_state(state_dir, state.model_copy(update={"daily_posted": day}))
         except OSError as exc:

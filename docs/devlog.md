@@ -2,6 +2,29 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-03: The Discord daily summary as embeds
+
+**Stage(s):** notifications (decision 0011)
+**Context:** The owner asked for the daily Discord post to be more visually appealing and easier
+to read, using embeds.
+
+### Decisions
+- Posts are now up to four embeds (decision 0011, addendum 2026-11-03): health (green, amber or
+  red), flagged that day (fields per severity, top packages one per line), review (the queue
+  now and the verdict tally) and needs attention (only when something went wrong).
+- The daily post now carries the review queue as the tick left it: packages and versions
+  awaiting review, by highest severity. The old summary only had the verdict tally, so the
+  reviewer couldn't see the backlog from Discord.
+- The safety rules are unchanged; the link-preview flag is gone because an embed-only message
+  has no `content` to unfurl, and the flag would hide the embeds.
+
+### Evaluation snapshot
+- No detection change. Yesterday's summary rendered from real data: four embeds, 678 of
+  Discord's 6,000 characters. A test checks adversarial input stays under the limits.
+
+### Next
+- The next daily post (first tick after 00:00 UTC) is the first in the new style.
+
 ## 2026-11-02: What the sandbox's first day showed, three false-positive shapes tuned, a sinkhole proposed
 
 **Stage(s):** Stage 5 (rules, evaluation), Stage 2 signatures, review
