@@ -29,6 +29,11 @@ owner confirmed a full disk crashes the VM and asked to focus on pruning and dis
 - **Disk guard** (decision 0006 addendum 2026-11-04): checks between steps (prune below 60 GB,
   start nothing below 25 GB), a 10 GB floor in the blob store, `DiskSpaceError` passed through
   every per-package handler, free space in the tick log, daily summary and an immediate alert.
+- **Blobs deleted by hand (owner, to free more space):** 96 of the 256 `data/blobs/` prefix
+  directories, 89,812 of the 239,609 blobs the unpruned runs reference (37%). Disk 188 → 165
+  GB used. Those runs can no longer be replayed, and the tarballs among them are gone (npm may
+  have deleted malicious ones). `HttpFetcher` now treats an immutable-index entry whose blob is
+  missing as a miss (`acfdd59`), so catch-ups fetch again instead of failing.
 - **Not done: fsync in `atomic_write`.** It would cost an fsync per cache file (millions); the
   guard keeps the disk from filling, which is what left files empty.
 
