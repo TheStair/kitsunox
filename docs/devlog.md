@@ -2,6 +2,30 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-04: GitHub work, measured before designing
+
+**Stage(s):** git path (decision 0004), Stage 4 repository comparison
+**Context:** The owner asked to start the GitHub work, and earlier whether GitHub could narrow
+the queue. Proposal: [proposals/git-path.md](proposals/git-path.md), for review; nothing built.
+
+### Challenges
+- **GH Archive stopped carrying commits.** `PushEvent` and `CreateEvent` vanish from its hourly
+  files between 2026-10-24 (23.5k pushes in an hour) and 2026-10-27 (0); total events fell from
+  58k to 3-5k an hour. Decision 0004 counted on it to watch ~63k repositories without quota.
+  - **Resolution:** the proposal polls smart-HTTP refs (no quota) and uses the REST API (the
+    token works, 5,000/hour) only for repositories that moved.
+
+### Evaluation snapshot
+- Repository metadata for 723 repositories behind 1,231 reported versions: a clean
+  tarball-vs-repo match to a repository that is not a fork, ≥ 30 days old and has ≥ 5 stars
+  covers 53 versions; the 34 reviewed are all benign. The one malicious clean match
+  (`@finzzcloud/baileys`) is the attacker's own repository, 1 star. Roughly 3% of reported
+  versions: a small lever, and only through the report decision (all 53 have a MEDIUM finding).
+
+### Open questions / next steps
+- The owner's four questions at the end of the proposal (order, report-decision change, token
+  use, Phase B size).
+
 ## 2026-11-04: The disk filled and crashed the VM twice; 2-day retention and a disk guard
 
 **Stage(s):** collection (`collect`, retention, notifications)
