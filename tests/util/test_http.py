@@ -137,6 +137,21 @@ def test_immutable_responses_are_reused_across_runs(tmp_path: Path, router: Rout
     assert request_key(URL, None) in second.snapshot.entries  # still recorded for replay
 
 
+def test_an_index_entry_whose_blob_is_gone_is_fetched_again(tmp_path: Path, router: Router) -> None:
+    """Blobs deleted by hand to free disk (2026-11-04) must mean a refetch, not a failure."""
+    router.add_bytes(URL, b"tarball")
+    first = make_fetcher(tmp_path, router.client())
+    first.get(URL, immutable=True)
+    for blob in (tmp_path / "blobs").rglob("*.zst"):
+        blob.unlink()
+    second = make_fetcher(tmp_path, router.client())
+    assert second.needs_network(URL, immutable=True)
+    assert second.get(URL, immutable=True).body == b"tarball"
+    assert len(router.requests) == 2
+    assert make_fetcher(tmp_path, router.client()).get(URL, immutable=True).body == b"tarball"
+    assert len(router.requests) == 2  # stored again, so the third run reuses it
+
+
 def test_needs_network_says_whether_get_would_send(tmp_path: Path, router: Router) -> None:
     router.add_bytes(URL, b"tarball")
     other = "https://registry.example/other"

@@ -302,9 +302,12 @@ class HttpFetcher:
         data = path.read_bytes()
         try:
             require_schema_version(data, SNAPSHOT_SCHEMA_VERSION, "SnapshotEntry")
-            return SnapshotEntry.model_validate_json(data)
+            entry = SnapshotEntry.model_validate_json(data)
         except ValueError:
             return None  # a damaged index entry is a miss: fetched again and rewritten
+        # So is one whose blob is gone (deleted by hand to free disk, 2026-11-04): the index is
+        # only a cross-run cache, and serving it would fail the read instead of refetching.
+        return entry if self.store.exists(entry.sha256) else None
 
     def _immutable_store(self, key: str, entry: SnapshotEntry) -> None:
         path = self._immutable_path(key)
