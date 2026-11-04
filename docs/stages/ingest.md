@@ -35,7 +35,7 @@ uv run kitsunox data prune --keep-days 7    # --keep-repo-days N: GitHub archive
 **Scheduling.** Collection runs on a Linux VM since 2026-10-29, as a systemd user timer:
 
 ```sh
-uv run kitsunox schedule systemd --keep-repo-days 4   # writes ~/.config/systemd/user/kitsunox-collect.{service,timer}
+uv run kitsunox schedule systemd --keep-days 2 --keep-repo-days 2   # writes ~/.config/systemd/user/kitsunox-collect.{service,timer}
 systemctl --user daemon-reload
 systemctl --user enable --now kitsunox-collect.timer
 sudo loginctl enable-linger "$USER"                     # keep ticking while logged out

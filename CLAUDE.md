@@ -115,7 +115,7 @@ uv run kitsunox labels sync                        # OSV malware labels (~220 MB
 uv run kitsunox collect                            # hourly tick: refresh lists, chained ingest, prune
 uv run kitsunox data prune --keep-days 7           # retention (takes the data-dir lock)
                                                    # --keep-repo-days N: Stage 4 archives (default = keep-days)
-uv run kitsunox schedule systemd --keep-repo-days 4 # write the hourly systemd user timer (see stages/ingest.md)
+uv run kitsunox schedule systemd --keep-days 2 --keep-repo-days 2 # write the hourly systemd user timer (see stages/ingest.md)
                                                    # collect posts a daily Discord summary if KITSUNOX_DISCORD_WEBHOOK is in .env
 uv run kitsunox samples datadog --intent 2000      # DataDog malware samples (encrypted, metadata only)
 uv run kitsunox eval build <name> && uv run kitsunox eval run <name> --predictor stage1-rules
@@ -325,9 +325,14 @@ Key invariants:
   Network failures are retried, never silently skipped (decision 0009): don't catch
   `TransientFetchError` as if it were a missing package.
   Anything that writes runs or deletes blobs takes `DataDir.lock()`. Don't hand-edit
-  `data/state/` or delete blobs while the agent might be running. Runs older than 7 days are
-  pruned and can't be replayed. Stage 4's GitHub archives (~30 GB/day) have their own
-  `--keep-repo-days` (default 7; the VM's timer uses 4). See `docs/decisions/0006-scheduled-collection-and-retention.md`.
+  `data/state/` or delete blobs while the agent might be running. Runs older than `--keep-days`
+  are pruned and can't be replayed (default 7; the VM's timer uses 2). Stage 4's GitHub
+  archives (~30 GB/day) have their own `--keep-repo-days` (the VM's timer: 2). See
+  `docs/decisions/0006-scheduled-collection-and-retention.md`.
+- **A full disk crashes the VM** (twice on 2026-11-03). `collect` checks free space between
+  steps and the blob store refuses writes below `util/disk.BLOB_FLOOR`; a `DiskSpaceError`
+  must never be caught as one package's failure. Side jobs that write gigabytes check
+  `df -h /` first.
 - Validation results live in `docs/validation.md`. Add a new dated section after significant
   changes.
 

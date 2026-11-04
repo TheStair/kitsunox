@@ -16,6 +16,7 @@ from kitsunox.collect import SANDBOX_RESULTS_ENV
 from kitsunox.core.run import DataDir, IngestRequest, PopularityMode, record_ingest
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL, NpmEcosystem
 from kitsunox.notify import Message, Tick, TickRecord, append_tick, read_ticks
+from kitsunox.util.disk import GIB
 
 runner = CliRunner()
 
@@ -88,8 +89,10 @@ def test_schedule_systemd_runs_collect(tmp_path: Path, monkeypatch: pytest.Monke
             str(data),
             "--unit-dir",
             str(units),
+            "--keep-days",
+            "2",
             "--keep-repo-days",
-            "4",
+            "2",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -97,7 +100,7 @@ def test_schedule_systemd_runs_collect(tmp_path: Path, monkeypatch: pytest.Monke
     exec_start = next(line for line in service.splitlines() if line.startswith("ExecStart="))
     # Quoted for systemd: the space would split the argument, `%` would be a specifier.
     escaped = str(data.resolve()).replace("%", "%%")
-    assert exec_start.endswith(f'collect --data-dir "{escaped}" --keep-repo-days 4')
+    assert exec_start.endswith(f'collect --data-dir "{escaped}" --keep-days 2 --keep-repo-days 2')
     assert "Type=oneshot" in service
     assert f"WorkingDirectory={project.resolve()}\n" in service  # literal, no quotes
     assert f"StandardOutput=append:{escaped}/logs/collect.log\n" in service
@@ -357,3 +360,26 @@ def test_takedowns_scans_new_runs_and_lists_what_it_keeps(tmp_path: Path) -> Non
     assert first.stdout.splitlines()[-1] == "1 new in 1 runs scanned; 1 takedowns kept"
     again = runner.invoke(app, args)
     assert again.stdout.splitlines()[-1] == "0 new in 0 runs scanned; 1 takedowns kept"
+
+
+def test_collect_posts_a_low_disk_alert_at_once_and_then_every_six_hours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    posted: list[str] = []
+
+    def post(url: str | None, message: Message, log: object) -> bool:
+        posted.append(str(message))
+        return True
+
+    monkeypatch.setattr(cli, "post_update", post)
+    monkeypatch.setenv("KITSUNOX_DISCORD_WEBHOOK", "https://discord.com/api/webhooks/1/x")
+    low = Tick(manifest=None, disk_free=21 * GIB, disk_lowest=9 * GIB, disk_low=True)
+    monkeypatch.setattr(cli, "collect", lambda data, **_: low)
+    args = ["collect", "--data-dir", str(tmp_path)]
+    assert runner.invoke(app, args).exit_code == 0
+    (alert,) = posted
+    assert "disk low" in alert and "9.0 GB free" in alert
+    assert runner.invoke(app, args).exit_code == 0
+    assert len(posted) == 1  # within six hours: not again
+    (record, _) = read_ticks(tmp_path / "state")
+    assert record.disk_low and record.disk_lowest_gb == 9.0

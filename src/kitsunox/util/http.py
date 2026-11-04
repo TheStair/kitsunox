@@ -26,6 +26,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from kitsunox import __version__
+from kitsunox.util.disk import require_free
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.schema import require_schema_version
@@ -105,9 +106,10 @@ class BlobStore:
     *uncompressed* bytes. zstd keeps packuments (JSON, often megabytes) about 6x smaller. Reads
     re-verify the digest."""
 
-    def __init__(self, root: Path, *, level: int = 3) -> None:
+    def __init__(self, root: Path, *, level: int = 3, min_free: int = 0) -> None:
         self.root = root
         self.level = level
+        self.min_free = min_free  # no write with less free (`util/disk.py`); 0: no check
 
     def _path(self, sha: str) -> Path:
         return self.root / sha[:2] / f"{sha}.zst"
@@ -116,6 +118,8 @@ class BlobStore:
         sha = sha256_hex(data)
         path = self._path(sha)
         if not path.exists():
+            if self.min_free:
+                require_free(self.root, self.min_free, "blob store")
             atomic_write(path, zstd.compress(data, level=self.level))
         return sha
 

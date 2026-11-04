@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from kitsunox.core.interfaces import DIFF_BASE, ChangeStub, Ecosystem, PackageChanges
 from kitsunox.core.models import Change, Persisted, Popularity, Record, Window
 from kitsunox.core.watchlist import WEEKLY_CUTOFF, Watchlist
+from kitsunox.util.disk import DiskSpaceError
 from kitsunox.util.http import FetchError, TransientFetchError
 
 STAGE_ID = "ingest"
@@ -123,6 +124,8 @@ def run_ingest(
         except (FetchError, ValueError, ValidationError) as exc:
             # Expected: network failures, malformed packuments (PackumentError is a ValueError).
             return _skip(stub, exc)
+        except DiskSpaceError:
+            raise  # the machine, not this package: the whole run stops and is retried
         except Exception as exc:
             # Anything else is a parser bug triggered by hostile data. One package must never
             # take down the run (that would let an attacker blind the scanner by publishing a

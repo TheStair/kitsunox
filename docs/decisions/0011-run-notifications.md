@@ -78,6 +78,13 @@ link previews is gone (it would also hide the embeds). Every piece is cut to Dis
 (4,096 per description, 1,024 per field, 6,000 per message), dropping whole lines with "… and
 N more".
 
+## Addendum (2026-11-04): low-disk alerts
+
+A tick that skipped work for lack of disk space posts a red alert at once, not with the next
+day's summary, at most every 6 hours (`notify.render_disk`, `NotifyState.disk_posted`): the
+disk filled twice on 2026-11-03 and crashed the VM (decision 0006, addendum 2026-11-04). The
+daily summary shows free space at the last tick and the lowest seen that day.
+
 ## Consequences
 
 - Run updates reach a third-party service (Discord). They hold package names and counts that

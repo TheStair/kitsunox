@@ -40,6 +40,7 @@ from kitsunox.core.watchlist import Watchlist
 from kitsunox.ecosystems.npm.packument import Packument, is_registry_placeholder
 from kitsunox.evaluation.dataset import ExternalSample, ExternalSampleSet, Shape
 from kitsunox.util.archive import ExtractLimits, extract_zip
+from kitsunox.util.disk import DiskSpaceError
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import FetchError, HttpFetcher
 
@@ -94,6 +95,8 @@ def fetch_datadog(
     def convert(path: str) -> ExternalSample | str:
         try:
             return _convert(fetcher, commit, path, watchlist, manifest)
+        except DiskSpaceError:
+            raise
         except Exception as exc:  # hostile input: one bad sample must not stop the import
             return f"{type(exc).__name__}: {exc}"
 

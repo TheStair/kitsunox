@@ -2,6 +2,44 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-04: The disk filled and crashed the VM twice; 2-day retention and a disk guard
+
+**Stage(s):** collection (`collect`, retention, notifications)
+**Context:** The owner asked whether GitHub monitoring was set up. Checking the logs instead
+showed run `20261103T045724Z-npm` with an empty report, a 10-hour gap, and the disk at 99%. The
+owner confirmed a full disk crashes the VM and asked to focus on pruning and disk monitoring.
+
+### What happened
+- 05:03 UTC: the disk filled during an hourly tick; the VM froze (the journal stops, memory was
+  fine: 24 GB available at the last sample). Files renamed into place just before were left
+  **empty** (no fsync): that run's Stage 4 outputs, its snapshot and its report.
+- 15:14: after a restart, the catch-up tick (55k changes, 10 hours) filled the disk again; the
+  VM rebooted. The next tick ran 9 hours at 0 bytes free, every step failing with `ENOSPC`.
+- Every prune since 05:03 failed: garbage collection stops when a run's snapshot can't be read
+  (so it never deletes a blob a run still needs), and the crashed run's snapshot was empty.
+- Root cause: the 0006 estimate (~225 GB at 7/4 days) was low. Data reached 373 GB of 393 GB
+  before any run was 7 days old.
+
+### Decisions
+- **Repair:** deleted the crashed run's empty Stage 4 files and report (all 0 bytes), so a
+  catch-up redoes Stage 4 and the prune can read every snapshot; deleted 1.9 GB of my own
+  scratch (an Oct 29 bundle-measurement cache) to give the prune room to write.
+- **Retention 2 days** for runs and archives (owner's choice): freed 188 GB, 373 → 194 GB used.
+  `schedule systemd`/`plist` gain `--keep-days`; the queue keeps a 7-day window of reports.
+- **Disk guard** (decision 0006 addendum 2026-11-04): checks between steps (prune below 60 GB,
+  start nothing below 25 GB), a 10 GB floor in the blob store, `DiskSpaceError` passed through
+  every per-package handler, free space in the tick log, daily summary and an immediate alert.
+- **Not done: fsync in `atomic_write`.** It would cost an fsync per cache file (millions); the
+  guard keeps the disk from filling, which is what left files empty.
+
+### Evaluation snapshot
+- Tests: 2,072 pass. No detection change.
+
+### Open questions / next steps
+- The two crashed runs (`045724`, `151412`) and `160330` are caught up by the next ticks.
+- Tarballs older than 2 days are gone unless their package has an OSV record, so reviews of
+  older queue entries rely on the report evidence.
+
 ## 2026-11-03: Queue review (ranks 1-115) and `exfil-endpoint` v5
 
 **Stage(s):** review, Stage 2 (`static.exfil-endpoint`)

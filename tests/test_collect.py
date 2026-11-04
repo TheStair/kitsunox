@@ -9,7 +9,7 @@ from typing import NoReturn
 import pytest
 
 import kitsunox.collect
-from conftest import AS_OF, Router, save_watchlist
+from conftest import AS_OF, Disk, Router, save_watchlist
 from kitsunox.collect import (
     REPORT_ONLY,
     RESCORE_INFO,
@@ -22,6 +22,8 @@ from kitsunox.collect import (
 from kitsunox.core.run import DataDir
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL
 from kitsunox.evaluation.labels import LabelSet, label_store
+from kitsunox.util import disk
+from kitsunox.util.disk import GIB
 
 
 def save_labels(data: DataDir) -> None:
@@ -249,3 +251,65 @@ def test_a_rescore_redoes_the_stages_and_keeps_the_ticks_outputs(
     rescore_run(data, first.run_id, registry.client, AS_OF + timedelta(days=2))
     assert (originals / "correlate.jsonl").read_bytes() == tick_output
     assert not (run_dir / f"{RESCORE_ORIGINALS}.partial").exists()
+
+
+def test_low_disk_prunes_first_and_writes_nothing(
+    tmp_path: Path, registry: Router, free_disk: Disk
+) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    free_disk.free = 20 * GIB  # below STOP_BELOW even after the prune
+    log: list[str] = []
+    tick = collect(data, now=AS_OF, log=log.append, clients=registry.client)
+    assert tick.manifest is None and tick.disk_low and tick.failed == ("disk",)
+    assert tick.disk_free == tick.disk_lowest == 20 * GIB
+    assert log[0] == "disk: 20.0 GB free"
+    assert any(line.startswith("prune (disk low, 20.0 GB free): ") for line in log), log
+    assert "disk: 20.0 GB free, below 25.0 GB: this tick skipped (resumed later)" in log
+    assert data.read_checkpoint("npm") is None and not (tmp_path / "runs").exists()
+
+
+def test_disk_running_low_mid_tick_leaves_the_stages_for_later(
+    tmp_path: Path, registry: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    feed_from(registry, 200)
+    checks = Disk()  # collect's own checks only (the blob store has plenty)
+    monkeypatch.setattr(kitsunox.collect, "free_bytes", checks)
+    # start, room for the tick, then too little for the new run's stages
+    checks.readings = [500 * GIB, 500 * GIB, 24 * GIB, 24 * GIB]
+    log: list[str] = []
+    tick = collect(data, now=AS_OF, log=log.append, clients=registry.client)
+    assert tick.manifest is not None and tick.disk_low and "disk" in tick.failed
+    assert tick.disk_lowest == 24 * GIB and tick.reports == ()
+    assert not (data.run_dir(tick.manifest.run_id) / "static.jsonl").exists()
+    assert any(line.startswith("prune (disk low, 24.0 GB free): ") for line in log), log
+
+    log.clear()  # room again: the run's stages are caught up
+    later = collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)
+    assert not later.disk_low
+    assert any(
+        line.startswith(f"stages (catch-up {tick.manifest.run_id} from Stage 1): ") for line in log
+    ), log
+    assert log[-1] == "disk: 500.0 GB free (lowest this tick 500.0 GB)"
+
+
+def test_the_blob_floor_stops_an_ingest_without_skipping_packages(
+    tmp_path: Path, registry: Router, free_disk: Disk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    free_disk.free = 30 * GIB  # room to start, but under the blob floor
+    monkeypatch.setattr(disk, "BLOB_FLOOR", 40 * GIB)
+    log: list[str] = []
+    tick = collect(data, now=AS_OF, log=log.append, clients=registry.client)
+    assert tick.manifest is None and tick.disk_low
+    assert any(line.startswith("ingest: blob store: 30.0 GB free") for line in log), log
+    assert data.read_checkpoint("npm") is None  # the next tick covers the window

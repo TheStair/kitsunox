@@ -195,6 +195,7 @@ from kitsunox.sandbox.spool import (
     tarball_name,
 )
 from kitsunox.stages.correlate import CandidateFile, score
+from kitsunox.util.disk import DiskSpaceError
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import (
@@ -874,6 +875,8 @@ def _build(
             reason = BUNDLE_UNREPRODUCIBLE if ctx.replay else NOT_CONFIGURED
             return unavailable(reason)
         return unbundled("fetch-error")  # definite: a refused redirect, a size limit, a 403
+    except DiskSpaceError:
+        raise  # the machine, not this package
     except Exception:  # a bug on one package's input must never stop the stage for every run
         # A fixed reason, never the exception's text: the outcome is recorded ("bundles" in
         # sandbox.json) and a replay reproduces it from there.

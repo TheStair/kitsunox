@@ -54,6 +54,7 @@ from kitsunox.stages.static import (
 )
 from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import ArtifactTree, extract_zip
+from kitsunox.util.disk import DiskSpaceError
 from kitsunox.util.http import (
     BlobStore,
     FetchedResponse,
@@ -153,6 +154,8 @@ class StaticRules:
     def forward(self, change: Change, sample: EvalSample) -> bool:
         try:
             return self.decide(change, self.collect(change, sample))
+        except DiskSpaceError:
+            raise
         except Exception as exc:  # hostile archives: count, never abort the evaluation
             self._note(f"error: {type(exc).__name__} (not forwarded)")
             return False

@@ -60,11 +60,13 @@ from kitsunox.notify import (
     append_tick,
     crash_due,
     crash_record,
+    disk_alert_due,
     load_state,
     post_update,
     read_ticks,
     render_crash,
     render_daily,
+    render_disk,
     render_tick,
     save_state,
     summary_due,
@@ -802,6 +804,8 @@ def collect_cmd(
             _record_tick(data, tick_record(tick, started=started, elapsed=elapsed), log)
             if notify_each_tick:
                 post_update(webhook, render_tick(tick, started=started, elapsed=elapsed), log)
+            if tick.disk_low:
+                _post_disk(data, webhook, render_disk(tick, started=started), log)
             _post_daily(data, webhook, log)
             log("collect: done")
     except DataDirBusyError as exc:
@@ -826,6 +830,21 @@ def _post_crash(
     if post_update(webhook, content, log):
         try:
             save_state(state_dir, state.model_copy(update={"crash_posted": now}))
+        except OSError as exc:
+            log(f"notify: state not written ({type(exc).__name__})")
+
+
+def _post_disk(
+    data: DataDir, webhook: str | None, content: Message, log: Callable[[str], None]
+) -> None:
+    """Low disk space, at once but at most every `notify.DISK_ALERT_EVERY`."""
+    state_dir = data.root / "state"
+    state, now = load_state(state_dir), datetime.now(UTC)
+    if webhook is None or not disk_alert_due(state, now):
+        return
+    if post_update(webhook, content, log):
+        try:
+            save_state(state_dir, state.model_copy(update={"disk_posted": now}))
         except OSError as exc:
             log(f"notify: state not written ({type(exc).__name__})")
 
@@ -904,6 +923,10 @@ def data_prune(
 def schedule_plist(
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
     interval_minutes: Annotated[int, typer.Option(min=10)] = 60,
+    keep_days: Annotated[
+        int | None,
+        typer.Option(min=1, help="Prune runs older than this (default: collect's, 7 days)."),
+    ] = None,
     keep_repo_days: Annotated[
         int | None,
         typer.Option(
@@ -914,7 +937,7 @@ def schedule_plist(
     """Print a launchd agent that runs `kitsunox collect` every INTERVAL_MINUTES. Install it
     with: kitsunox schedule plist > ~/Library/LaunchAgents/local.kitsunox.collect.plist &&
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.kitsunox.collect.plist"""
-    job = _collect_job(data_dir, keep_repo_days)
+    job = _collect_job(data_dir, keep_repo_days, keep_days)
     agent = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": job.argv,
@@ -934,6 +957,10 @@ def schedule_plist(
 def schedule_systemd(
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
     interval_minutes: Annotated[int, typer.Option(min=10)] = 60,
+    keep_days: Annotated[
+        int | None,
+        typer.Option(min=1, help="Prune runs older than this (default: collect's, 7 days)."),
+    ] = None,
     keep_repo_days: Annotated[
         int | None,
         typer.Option(
@@ -946,7 +973,7 @@ def schedule_systemd(
     INTERVAL_MINUTES, counted from the start of the previous tick (a tick never overlaps
     itself). Enable it with: systemctl --user daemon-reload && systemctl --user enable --now
     kitsunox-collect.timer, and `loginctl enable-linger` so it runs while logged out."""
-    job = _collect_job(data_dir, keep_repo_days)
+    job = _collect_job(data_dir, keep_repo_days, keep_days)
     log = _systemd_path(job.log)
     service = (
         "[Unit]\n"
@@ -988,7 +1015,9 @@ class _CollectJob:
     path: str  # PATH for the job: system binaries and uv
 
 
-def _collect_job(data_dir: Path, keep_repo_days: int | None) -> _CollectJob:
+def _collect_job(
+    data_dir: Path, keep_repo_days: int | None, keep_days: int | None = None
+) -> _CollectJob:
     """The scheduled command line, shared by the launchd and systemd units."""
     uv = shutil.which("uv")
     if uv is None:
@@ -1013,6 +1042,7 @@ def _collect_job(data_dir: Path, keep_repo_days: int | None) -> _CollectJob:
         "collect",
         "--data-dir",
         str(data),
+        *(["--keep-days", str(keep_days)] if keep_days else []),
         *(["--keep-repo-days", str(keep_repo_days)] if keep_repo_days else []),
     ]
     return _CollectJob(argv=argv, project=project, log=log, path=f"/usr/bin:/bin:{Path(uv).parent}")

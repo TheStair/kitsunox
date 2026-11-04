@@ -91,3 +91,28 @@ the host planned for the Stage 5 sandbox. The scheduler is a systemd user timer
 archives **4 days** (`--keep-repo-days 4`). Estimated at ~14 GB/day of tarballs and ~31 GB/day
 of archives, that is about 100 + 125 GB, leaving room for heavy days. The VM started a **new
 chain**; the laptop's `data/` was not copied (see the devlog).
+
+## Addendum (2026-11-04): the disk filled; 2-day retention and a disk guard
+
+The estimate above was wrong by about half. On 2026-11-03 data reached 373 GB of a 393 GB
+disk with nothing yet old enough to prune, and a full disk crashed the VM twice (05:03 UTC
+during an hourly tick, and again after a 10-hour catch-up tick of 55k changes). The first
+crash left renamed files empty (`atomic_write` doesn't fsync), among them a Stage 4 snapshot,
+and garbage collection deliberately stops when a snapshot can't be read, so every later prune
+failed and nothing could be freed.
+
+- **Retention is 2 days** for runs and repository archives (the owner's choice), on the timer
+  through the new `--keep-days` of `schedule systemd`/`schedule plist`. A 2-day prune freed
+  188 GB (373 → 194 GB used). The review queue keeps its own 7-day window (`QUEUE_DAYS`):
+  a pruned run keeps its report, but tarballs of versions older than 2 days are gone unless
+  their package has an OSV record.
+- **Disk guard in `collect`** (`util/disk.py`): free space is measured at the start of each
+  tick, before each stage step and before Stage 5. Below 60 GB the tick prunes first (and at
+  the end); below 25 GB it starts nothing more, and the skipped runs resume on a later tick.
+  The blob store, which takes almost all of a tick's bytes, refuses writes below 10 GB
+  (`DiskSpaceError`, which per-package handlers pass on), so a single large stage can't fill
+  the disk either.
+- **Monitoring:** every tick logs free space; the tick log, the daily summary (a *Disk free*
+  field and a *Needs attention* entry) and an immediate Discord alert (at most every 6 hours,
+  decision 0011) carry it.
+

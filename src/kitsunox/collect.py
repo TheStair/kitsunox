@@ -16,7 +16,8 @@ Each tick, in order:
    brought back, refresh the runs they answer, export this run's tarballs for the airgapped
    analysis VM (`stages/sandbox.py`, decision 0014). Without one, Stage 5 is skipped.
 6. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same),
-   with Stage 5's exports and unused results, if the last prune is older than `PRUNE_EVERY`.
+   with Stage 5's exports and unused results, if the last prune is older than `PRUNE_EVERY`
+   or free disk space is below `PRUNE_BELOW`.
 7. Scan runs not scanned yet for registry takedowns (npm's `0.0.1-security` holder), kept in
    `data/takedowns/` (`evaluation/confirmations.py`): the queue flags reviewed and queued
    versions removed after the fact. A flag only, never a score.
@@ -30,6 +31,13 @@ previous watchlist or label set, because a missed ingest is lost data while a st
 If the registry is unreachable, or a run hits an outage (`IngestDegradedError`), the tick logs
 it and stops without writing anything: the checkpoint stays put, so the next tick covers the gap
 (up to `MAX_CHAIN_GAP`, 7 days). See decision 0009.
+
+**Disk space** (`util/disk.py`; a full disk crashed the VM twice on 2026-11-03). The tick
+measures free space first. Below `PRUNE_BELOW` it prunes before anything else; below
+`STOP_BELOW` it writes nothing (the checkpoint stays put, so the next tick covers the gap). It
+checks again before each stage step and before Stage 5, skipping what is left of the tick
+when space runs low (those runs resume on a later tick), and prunes at the end. Inside a step,
+the blob store refuses writes below `disk.BLOB_FLOOR`, which stops that step the same way.
 
 This module only wires existing pieces together. It may read the clock, since it decides *when*
 to fetch; the runs it records still carry an explicit `as_of`. The caller holds `DataDir.lock()`.
@@ -83,12 +91,19 @@ from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.sandbox import OVERDUE_AFTER, run_sandbox_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
+from kitsunox.util.disk import GIB, DiskSpaceError, free_bytes, gib
 from kitsunox.util.files import atomic_write
 from kitsunox.util.http import FetchError, Snapshot
 
 WATCHLIST_MAX_AGE = timedelta(days=7)
 LABELS_MAX_AGE = timedelta(hours=20)
 PRUNE_EVERY = timedelta(hours=20)
+# Free space at which the tick prunes whatever PRUNE_EVERY says, and below which it starts no
+# ingest or stage step. A 10-hour catch-up (55k changes) wrote ~20 GB; an hourly tick ~2 GB.
+PRUNE_BELOW: Final = 60 * GIB
+STOP_BELOW: Final = 25 * GIB
+# The review queue's window, independent of retention: a pruned run keeps its report.
+QUEUE_DAYS: Final = 7
 # Tarballs of malicious packages are usually deleted within a day or two; later retries are moot.
 STAGES_CATCH_UP = timedelta(hours=48)
 DEFAULT_KEEP_DAYS = 7
@@ -128,6 +143,43 @@ def collect(
             log(f"{step}: FAILED ({type(exc).__name__}: {exc}) at {where(exc)}; continuing")
             failed.append(step)
 
+    lowest = free_bytes(data.root)
+    pruned = False
+
+    def room(step: str) -> bool:
+        """Whether there is room to start `step`; if not, say so once and skip it."""
+        nonlocal lowest
+        free = free_bytes(data.root)
+        lowest = min(lowest, free)
+        if free >= STOP_BELOW:
+            return True
+        log(f"disk: {gib(free)} free, below {gib(STOP_BELOW)}: {step} skipped (resumed later)")
+        if "disk" not in failed:
+            failed.append("disk")
+        return False
+
+    def prune_now(why: str) -> None:
+        nonlocal pruned
+        pruned = True
+        best_effort(f"prune{why}", lambda: _prune(data, now, keep_days, keep_repo_days))
+
+    def finish(manifest: RunManifest | None) -> Tick:
+        free = free_bytes(data.root)
+        return Tick(
+            manifest=manifest,
+            reports=tuple(reports),
+            failed=tuple(failed),
+            disk_free=free,
+            disk_lowest=min(lowest, free),
+            disk_low="disk" in failed,
+        )
+
+    log(f"disk: {gib(lowest)} free")
+    if lowest < PRUNE_BELOW:
+        prune_now(f" (disk low, {gib(lowest)} free)")
+    if not room("this tick"):
+        return finish(None)
+
     if _age(data.watchlists.latest_id(NPM), now) > WATCHLIST_MAX_AGE:
         best_effort("watchlist", lambda: _watchlist(data, now, client()))
     if _age(label_store(data).latest_id(NPM), now) > LABELS_MAX_AGE:
@@ -138,7 +190,12 @@ def collect(
         manifest = record_ingest(data, NpmEcosystem, request, client=client())
     except (FetchError, IngestDegradedError) as exc:
         log(f"ingest: OFFLINE or outage, nothing written; the next tick catches up ({exc})")
-        return Tick(manifest=None, failed=tuple(failed))
+        return finish(None)
+    except DiskSpaceError as exc:
+        log(f"ingest: {exc}; nothing written, the next tick catches up")
+        failed.append("disk")
+        prune_now(" (disk low)")
+        return finish(None)
     chain = f"chained from {manifest.chained_from}" if manifest.chained_from else "NOT chained"
     log(
         f"ingest: run {manifest.run_id}, feed ({manifest.cursor_since}, {manifest.cursor_until}], "
@@ -163,19 +220,28 @@ def collect(
         return lambda: run_sandbox(data, run_id, results, client())
 
     for run_id, start in _stages_pending(data, now, exclude=manifest.run_id):
+        if not room(f"stages of {run_id}"):
+            break
         resume = f"Stage {start}" if start < REPORT_ONLY else "the report"
         best_effort(f"stages (catch-up {run_id} from {resume})", stages(run_id, start))
-    best_effort("stages", stages(manifest.run_id))
-    if sandbox_results is not None:
+    if "disk" not in failed and room(f"stages of {manifest.run_id}"):
+        best_effort("stages", stages(manifest.run_id))
+    if sandbox_results is not None and "disk" not in failed and room("Stage 5"):
         for run_id in staged:
             best_effort(f"sandbox {run_id}", sandbox(run_id, sandbox_results))
 
     last_prune = _last_prune(data)
-    if last_prune is None or now - last_prune > PRUNE_EVERY:
-        best_effort("prune", lambda: _prune(data, now, keep_days, keep_repo_days))
+    free = free_bytes(data.root)
+    lowest = min(lowest, free)
+    if free < PRUNE_BELOW:
+        prune_now(f" (disk low, {gib(free)} free)")
+    elif not pruned and (last_prune is None or now - last_prune > PRUNE_EVERY):
+        prune_now("")
     best_effort("takedowns", lambda: _takedowns(data))
-    best_effort("queue", lambda: _queue(data, keep_days))
-    return Tick(manifest=manifest, reports=tuple(reports), failed=tuple(failed))
+    best_effort("queue", lambda: _queue(data, max(keep_days, QUEUE_DAYS)))
+    tick = finish(manifest)
+    log(f"disk: {gib(tick.disk_free or 0)} free (lowest this tick {gib(tick.disk_lowest or 0)})")
+    return tick
 
 
 def _watchlist(data: DataDir, now: datetime, client: httpx.Client | None) -> str:

@@ -56,6 +56,7 @@ from kitsunox.stages.ingest import (
     run_ingest,
     write_jsonl,
 )
+from kitsunox.util import disk
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
@@ -149,7 +150,7 @@ class DataDir:
 
     @property
     def blobs(self) -> BlobStore:
-        return BlobStore(self.root / "blobs")
+        return BlobStore(self.root / "blobs", min_free=disk.BLOB_FLOOR)
 
     @property
     def immutable_index(self) -> Path:

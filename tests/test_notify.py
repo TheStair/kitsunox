@@ -24,6 +24,7 @@ from kitsunox.notify import (
     TickRecord,
     append_tick,
     crash_due,
+    disk_alert_due,
     embed_chars,
     escape,
     is_webhook,
@@ -31,11 +32,13 @@ from kitsunox.notify import (
     read_ticks,
     render_crash,
     render_daily,
+    render_disk,
     render_tick,
     send,
     summary_due,
 )
 from kitsunox.reporting.queue import Queue
+from kitsunox.util.disk import GIB
 
 T0 = datetime(2026, 10, 29, 21, 5, tzinfo=UTC)
 MARKER = "fakeWebhookPart_-x"
@@ -397,3 +400,43 @@ def test_the_daily_summary_shows_the_queue_as_it_is_now() -> None:
         "📥 **398 packages awaiting review** (529 versions)",
         "by their highest severity: 🔴 131 HIGH · 🟠 267 MEDIUM",
     ]
+
+
+def test_disk_space_is_in_the_daily_summary_and_a_low_disk_is_a_problem() -> None:
+    at = datetime(2026, 10, 29, 1, tzinfo=UTC)
+    ticks = [
+        TickRecord(started=at, minutes=5, run_id="a", disk_free_gb=80.0, disk_lowest_gb=61.5),
+        TickRecord(
+            started=at + timedelta(hours=1),
+            minutes=5,
+            run_id="b",
+            disk_free_gb=30.2,
+            disk_lowest_gb=12.0,
+            disk_low=True,
+        ),
+    ]
+    message = render_daily(DAY, ticks, [])
+    text = lines(message)
+    assert "Disk free: 30.2 GB (lowest 12.0)" in text
+    assert message[0]["color"] == RED
+    assert any(
+        line.startswith("🛑 Disk space: **1 tick skipped work** for lack of space (lowest 12.0 GB")
+        for line in text
+    ), text
+    assert "Disk free: 30.2 GB (lowest 12.0)" not in lines(render_daily(DAY, [], []))
+
+
+def test_a_low_disk_alert_says_how_much_is_left_and_posts_every_six_hours() -> None:
+    tick = Tick(manifest=None, disk_free=21 * GIB, disk_lowest=9 * GIB, disk_low=True)
+    (embed,) = render_disk(tick, started=T0)
+    assert embed["color"] == RED and "**9.0 GB free** at worst, 21.0 GB at the end" in str(
+        embed["description"]
+    )
+    record = notify.tick_record(tick, started=T0, elapsed=timedelta(minutes=1))
+    assert (record.disk_free_gb, record.disk_lowest_gb, record.disk_low) == (21.0, 9.0, True)
+    now = T0 + timedelta(hours=1)
+    assert disk_alert_due(NotifyState(), now)
+    assert not disk_alert_due(NotifyState(disk_posted=now - timedelta(hours=5)), now)
+    assert disk_alert_due(NotifyState(disk_posted=now - timedelta(hours=6)), now)
+    shown = lines(render_tick(tick, started=T0, elapsed=timedelta(minutes=1)))
+    assert "Disk free: 21.0 GB" in shown and any("Disk low" in line for line in shown)

@@ -20,6 +20,7 @@ import httpx
 import pytest
 from hypothesis import settings
 
+import kitsunox.collect
 from kitsunox.core.models import Severity, Window
 from kitsunox.core.run import DataDir, RunManifest
 from kitsunox.core.watchlist import WatchEntry, Watchlist
@@ -30,6 +31,7 @@ from kitsunox.ecosystems.npm.registry import (
     REPLICATE_URL,
 )
 from kitsunox.reporting.report import Links, Report, ReportEntry, ScoreTerm
+from kitsunox.util import disk
 from kitsunox.util.http import HttpFetcher
 
 # Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
@@ -103,6 +105,26 @@ def no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
         original(self, *args, **kwargs)
 
     monkeypatch.setattr(HttpFetcher, "__init__", init)
+
+
+class Disk:
+    """Free space as the code under test sees it: plenty, unless a test lowers it. Tests must
+    not depend on the host's actual free space."""
+
+    def __init__(self) -> None:
+        self.free = 500 * disk.GIB
+        self.readings: list[int] = []  # what each check returns, in order; then `free`
+
+    def __call__(self, path: Path) -> int:
+        return self.readings.pop(0) if self.readings else self.free
+
+
+@pytest.fixture(autouse=True)
+def free_disk(monkeypatch: pytest.MonkeyPatch) -> Disk:
+    fake = Disk()
+    monkeypatch.setattr(disk, "free_bytes", fake)
+    monkeypatch.setattr(kitsunox.collect, "free_bytes", fake)
+    return fake
 
 
 @pytest.fixture

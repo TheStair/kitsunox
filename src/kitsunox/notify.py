@@ -50,6 +50,7 @@ from kitsunox.reporting.markdown import strip_controls
 from kitsunox.reporting.queue import Queue
 from kitsunox.reporting.report import Report, ReportEntry
 from kitsunox.reporting.verdicts import Verdict, VerdictRecord, current, probes, tally
+from kitsunox.util.disk import GIB
 from kitsunox.util.files import atomic_write
 
 WEBHOOK_ENV: Final = "KITSUNOX_DISCORD_WEBHOOK"
@@ -111,15 +112,19 @@ class NotifyError(Exception):
 class Tick:
     """What one `collect` tick did."""
 
-    manifest: RunManifest | None  # None: registry offline or an outage, nothing written
+    manifest: RunManifest | None  # None: registry offline, an outage or no disk space
     reports: tuple[Report, ...] = ()  # reports written this tick (catch-ups first)
     failed: tuple[str, ...] = ()  # best-effort steps that failed
+    disk_free: int | None = None  # bytes free at the end of the tick
+    disk_lowest: int | None = None  # the least free during the tick
+    disk_low: bool = False  # the tick skipped work for lack of space
 
 
 TICKS_FILE: Final = "ticks.jsonl"  # in data/state/
 NOTIFY_STATE: Final = "notify.json"
 MAX_TICK_LINES: Final = 24 * 14  # two weeks of hourly ticks
 CRASH_EVERY: Final = timedelta(days=1)  # at most one crash post this often
+DISK_ALERT_EVERY: Final = timedelta(hours=6)  # at most one low-disk post this often
 
 
 class TickRecord(Record):
@@ -135,6 +140,9 @@ class TickRecord(Record):
     reports: tuple[str, ...] = ()  # run ids whose report this tick wrote (catch-ups first)
     failed: tuple[str, ...] = ()
     crashed: str | None = None  # "<exception type> at <where>"
+    disk_free_gb: float | None = None
+    disk_lowest_gb: float | None = None
+    disk_low: bool = False
 
 
 class NotifyState(Persisted):
@@ -142,6 +150,7 @@ class NotifyState(Persisted):
     schema_version: int = 1
     daily_posted: date | None = None  # the last day whose summary was posted
     crash_posted: datetime | None = None
+    disk_posted: datetime | None = None
 
 
 def tick_record(tick: Tick, *, started: datetime, elapsed: timedelta) -> TickRecord:
@@ -155,6 +164,9 @@ def tick_record(tick: Tick, *, started: datetime, elapsed: timedelta) -> TickRec
         transient_skipped=manifest.transient_skipped if manifest else 0,
         reports=tuple(r.run_id for r in tick.reports),
         failed=tick.failed,
+        disk_free_gb=_gb(tick.disk_free),
+        disk_lowest_gb=_gb(tick.disk_lowest),
+        disk_low=tick.disk_low,
     )
 
 
@@ -217,6 +229,10 @@ def crash_due(state: NotifyState, now: datetime) -> bool:
     return state.crash_posted is None or now - state.crash_posted >= CRASH_EVERY
 
 
+def disk_alert_due(state: NotifyState, now: datetime) -> bool:
+    return state.disk_posted is None or now - state.disk_posted >= DISK_ALERT_EVERY
+
+
 def render_daily(
     day: date,
     ticks: Sequence[TickRecord],
@@ -235,7 +251,9 @@ def render_daily(
     offline = sum(1 for t in today if t.run_id is None and not t.crashed)
     gaps = sum(1 for t in runs if t.chained is False)
     skipped = sum(t.transient_skipped for t in runs)
-    serious = bool(crashed or gaps)
+    disk_low = [t for t in today if t.disk_low]
+    measured = [t for t in today if t.disk_free_gb is not None]
+    serious = bool(crashed or gaps or disk_low)
     if serious:
         status = "🛑 **Collection had a problem**: see *Needs attention* below."
     elif failed or offline or skipped:
@@ -251,6 +269,7 @@ def render_daily(
                 _field("Ticks", f"{len(today):,}"),
                 _field("Runs", f"{len(runs):,}"),
                 _field("Versions checked", f"{sum(t.versions for t in runs):,}"),
+                *_disk_fields(measured),
             ],
         )
     ]
@@ -289,6 +308,16 @@ def render_daily(
             _field(
                 f"⚠️ {sum(1 for t in today if t.failed)} with failed steps",
                 _lines([f"{escape(step, 60)} x{n}" for step, n in sorted(failed.items())]),
+                inline=False,
+            )
+        )
+    if disk_low:
+        lowest = min(t.disk_lowest_gb or 0.0 for t in disk_low)
+        problems.append(
+            _field(
+                "🛑 Disk space",
+                f"**{len(disk_low):,} {_plural(len(disk_low), 'tick')} skipped work** for lack "
+                f"of space (lowest {lowest:,.1f} GB free); it resumes once a prune frees room.",
                 inline=False,
             )
         )
@@ -365,6 +394,11 @@ def render_tick(tick: Tick, *, started: datetime, elapsed: timedelta) -> Message
             top = _top_packages(current.entries)
             if top:
                 fields.append(_field("Top packages", top, inline=False))
+    if tick.disk_low:
+        description += f"\n🛑 Disk low: work skipped ({_gb_text(tick.disk_lowest)} free at worst)."
+        colour = RED
+    if tick.disk_free is not None:
+        fields.append(_field("Disk free", _gb_text(tick.disk_free)))
     caught_up = [r for r in tick.reports if manifest is None or r.run_id != manifest.run_id]
     if caught_up:
         fields.append(
@@ -389,6 +423,22 @@ def render_crash(exc: BaseException, where: str, *, started: datetime) -> Messag
         _embed(
             f"🛑 Kitsunox tick crashed · {started:%Y-%m-%d %H:%M} UTC",
             f"**{escape(type(exc).__name__)}** at {escape(where, 300)}",
+            RED,
+            [],
+            footer=LOG_HINT,
+        )
+    ]
+
+
+def render_disk(tick: Tick, *, started: datetime) -> Message:
+    """A tick that skipped work for lack of disk space: posted at once, not with the day's
+    summary, since the next tick may be the one that fills the disk."""
+    return [
+        _embed(
+            f"🛑 Kitsunox disk low · {started:%Y-%m-%d %H:%M} UTC",
+            f"The tick skipped work for lack of space: **{_gb_text(tick.disk_lowest)} free** at "
+            f"worst, {_gb_text(tick.disk_free)} at the end. Runs resume on a later tick once a "
+            "prune frees room; if it stays low, lower retention or add disk.",
             RED,
             [],
             footer=LOG_HINT,
@@ -592,6 +642,23 @@ def _lines(lines: Sequence[str], limit: int = MAX_FIELD) -> str:
             break
         kept.append(line)
     return "\n".join(kept)
+
+
+def _disk_fields(measured: Sequence[TickRecord]) -> list[Field]:
+    """Free space at the day's last tick, and the least seen during the day."""
+    if not measured:
+        return []
+    last = measured[-1].disk_free_gb or 0.0
+    lowest = min(t.disk_lowest_gb or t.disk_free_gb or 0.0 for t in measured)
+    return [_field("Disk free", f"{last:,.1f} GB (lowest {lowest:,.1f})")]
+
+
+def _gb(n: int | None) -> float | None:
+    return None if n is None else round(n / GIB, 1)
+
+
+def _gb_text(n: int | None) -> str:
+    return "unknown" if n is None else f"{n / GIB:,.1f} GB"
 
 
 def _plural(n: int, word: str) -> str:
