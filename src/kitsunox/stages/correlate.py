@@ -55,8 +55,10 @@ STAGE_ID: Final = "correlate"
 # whose content is elsewhere in the repository is explained, and an install hook a repository
 # file writes is noted (`ManifestDifference.built_by`). 7: LOW findings together add at most
 # `LOW_CAP` to the score. 8: `code.capability-gained` and `static.webhook-placeholder` join
-# `WEAK_ALONE`. Output without the field is 1.
-STAGE_VERSION: Final = 8
+# `WEAK_ALONE`. 9: clean comparisons can carry the repository's facts (`repo.established-match`);
+# clearing install-code findings with it exists but is off (`CLEAR_ESTABLISHED`). Output
+# without the field is 1.
+STAGE_VERSION: Final = 9
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -284,21 +286,58 @@ WEAK_ALONE: Final = frozenset(
 )
 
 
+# MEDIUM findings about install code that a release matching an established repository
+# explains (`repo.established-match`): the code `npm install` runs is the repository's own,
+# byte for byte, at a commit on its default branch. Never cleared: anything HIGH (an install
+# hook *added* to an update is HIGH), any other MEDIUM (Stage 2's, Stage 5's), or a score that
+# reaches `REPORT_SCORE` without them. Measured 2026-11-04 (decision 0017): clears 33 of 1,231
+# live reported versions with a GitHub repository (all 20 reviewed benign), and loses 1 of the
+# 2,507 `vm-day1` malicious samples reported (`gina@0.7.1`, whose code is in its 2013
+# repository). So it is off until the owner decides.
+CLEAR_ESTABLISHED: Final = False
+ESTABLISHED_MATCH: Final = "repo.established-match"
+CLEARED_BY_REPO: Final = frozenset(
+    {"npm.install-hook", "npm.install-script-changed", "npm.install-script-code"}
+)
+
+
 def _severe(finding: Finding) -> bool:
     if not at_least(finding.severity, REPORT_SEVERITY):
         return False
     return finding.rule_id not in WEAK_ALONE or at_least(finding.severity, Severity.HIGH)
 
 
-def decide(findings: Sequence[Finding], *, report_score: float = REPORT_SCORE) -> StageDecision:
+def decide(
+    findings: Sequence[Finding],
+    *,
+    report_score: float = REPORT_SCORE,
+    clear_established: bool = CLEAR_ESTABLISHED,
+) -> StageDecision:
     total = score(findings)
     severe = sorted({f.rule_id for f in findings if _severe(f)})
+    if clear_established and severe and _cleared_by_repo(findings, severe, report_score):
+        return StageDecision(
+            stage=STAGE_ID,
+            forwarded=False,
+            reason=f"score {total:g}; {', '.join(severe)} cleared by {ESTABLISHED_MATCH}",
+        )
     if severe:
         reason = f"score {total:g}; {REPORT_SEVERITY.value}: {', '.join(severe)}"
     else:
         reason = f"score {total:g}" + (f" >= {report_score:g}" if total >= report_score else "")
     return StageDecision(
         stage=STAGE_ID, forwarded=bool(severe) or total >= report_score, reason=reason
+    )
+
+
+def _cleared_by_repo(
+    findings: Sequence[Finding], severe: Sequence[str], report_score: float
+) -> bool:
+    return (
+        any(f.rule_id == ESTABLISHED_MATCH for f in findings)
+        and set(severe) <= CLEARED_BY_REPO
+        and not any(at_least(f.severity, Severity.HIGH) for f in findings)
+        and score(f for f in findings if f.rule_id not in CLEARED_BY_REPO) < report_score
     )
 
 

@@ -18,6 +18,7 @@ were mostly generated files at the package root (`@girs/*` bindings, `index.cjs`
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Final
 
 from kitsunox.core.models import Candidate, Evidence, EvidenceKind, Finding, Severity
@@ -125,4 +126,62 @@ class CodeNotInRepo(BaseRule):
         )
 
 
-RULES: Final = (RepoCompared(), CodeDiffersFromRepo(), CodeNotInRepo())
+# An established repository (measured 2026-11-04 on the live queue, 1,231 reported versions with
+# a GitHub repository): clean matches to repositories that aren't forks and are at least 30 days
+# old were 1 malicious and 90 benign verdicts; the malicious one (`@finzzcloud/baileys`) came
+# from the attacker's own 1-star repository, and at 5 stars 34 of 34 reviewed were benign.
+ESTABLISHED_AGE: Final = timedelta(days=30)
+ESTABLISHED_STARS: Final = 5
+
+
+class EstablishedMatch(BaseRule):
+    """The release is exactly what an established repository holds at a commit on its default
+    branch: every code file identical (`RepoComparison.clean`), and a repository that is not a
+    fork or archived, was created at least `ESTABLISHED_AGE` before the release and has at
+    least `ESTABLISHED_STARS` stars (when fetched). INFO and unscored: Stage 4's decision reads
+    it (`stages/correlate.py`, `CLEARED_BY_REPO`) to not report install-code findings the
+    repository explains.
+
+    What this can't see: a malicious commit pushed into a real repository (a stolen maintainer
+    account, a merged pull request) matches cleanly. That is the git path's job
+    (`docs/proposals/git-path.md`, Phase B). Stars can be bought; 30 days of age and a commit
+    on the default branch make that cost more than a throwaway account."""
+
+    id = "repo.established-match"
+    severity = Severity.INFO
+    weight = 0.0
+    title = "Matches an established repository"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        comparison = ctx.repo
+        trust = comparison.trust if comparison is not None else None
+        facts = trust.facts if trust is not None else None
+        if comparison is None or trust is None or facts is None or not comparison.clean:
+            return ()
+        released = candidate.change.new.publish.published_at or ctx.as_of
+        if (
+            facts.fork
+            or facts.archived
+            or not trust.on_default_branch
+            or facts.stars < ESTABLISHED_STARS
+            or released - facts.created_at < ESTABLISHED_AGE
+        ):
+            return ()
+        age = (released - facts.created_at).days
+        return (
+            self.finding(
+                f"Every code file matches {_where(comparison)}, on its default branch "
+                f"`{facts.default_branch}`; the repository is {age} days old at the release, "
+                f"has {facts.stars} stars and is not a fork.",
+                Evidence(
+                    kind=EvidenceKind.METADATA,
+                    path="repository",
+                    after=facts.model_dump_json(),
+                ),
+            ),
+        )
+
+
+RULES: Final = (RepoCompared(), CodeDiffersFromRepo(), CodeNotInRepo(), EstablishedMatch())

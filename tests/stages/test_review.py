@@ -4,6 +4,7 @@ failed on the network (decision 0009; decision 0010 addendum)."""
 import hashlib
 import json
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,8 +17,10 @@ from kitsunox.core.models import (
     ArtifactRef,
     Candidate,
     Change,
+    Finding,
     PackageVersionRef,
     PublishInfo,
+    Severity,
     StageDecision,
     VersionSnapshot,
     Window,
@@ -31,7 +34,9 @@ from kitsunox.stages.correlate import (
     NOT_EVALUATED,
     OUTAGE_MIN,
     CorrelationContext,
+    correlate,
     correlate_run,
+    decide,
     repo_network_failures,
 )
 from kitsunox.stages.ingest import write_jsonl
@@ -753,3 +758,56 @@ def test_a_deeply_nested_packument_is_malformed_not_a_crash(tmp_path: Path, rout
     ((severity, text),) = dependency_findings(result)
     assert severity == "info" and text.startswith(NOT_EVALUATED)  # one fixed text, details below
     assert info["failed"] == 1 and "nested too deeply" in json.dumps(info["errors"])
+
+
+API_FACTS = "https://api.github.com/repos/o/r"
+API_COMPARE = f"https://api.github.com/repos/o/r/compare/{A}...{A}?per_page=1&page=2"
+
+
+def install_code_finding() -> Finding:
+    return Finding(
+        rule_id="npm.install-script-changed",
+        rule_version=1,
+        severity=Severity.MEDIUM,
+        weight=3.0,
+        title="t",
+        explanation="e",
+    )
+
+
+def test_an_established_match_end_to_end(tmp_path: Path, router: Router) -> None:
+    router.add_json(
+        API_FACTS,
+        {
+            "full_name": "o/r",
+            "fork": False,
+            "archived": False,
+            "created_at": "2020-01-01T00:00:00Z",
+            "stargazers_count": 100,
+            "default_branch": "main",
+        },
+    )
+    router.add_json(API_COMPARE, {"status": "identical"})
+    fetcher = HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=Snapshot(),
+        mode=FetchMode.RECORD,
+        client=router.client(),
+    )
+    lookup = repo_lookup(fetcher, token="t")  # noqa: S106
+    plain = serve(router)  # flagged, but nothing MEDIUM: no API request
+    assert lookup(plain) is not None and API_FACTS not in router.requests
+    flagged = plain.model_copy(update={"findings": (install_code_finding(),)})
+    comparison = lookup(flagged)
+    assert comparison is not None and comparison.trust is not None
+    assert comparison.trust.on_default_branch
+    result = correlate(flagged, replace(CTX, repo=comparison), CORRELATION_RULES)
+    assert "repo.established-match" in {f.rule_id for f in result.findings}
+    assert result.history[-1].forwarded  # clearing is off (CLEAR_ESTABLISHED)
+    cleared = decide(result.findings, clear_established=True)
+    assert not cleared.forwarded and cleared.reason.endswith("cleared by repo.established-match")
+    # Without a token the same version is reported, as before.
+    untrusted = repo_lookup(fetcher)(flagged)
+    assert untrusted is not None and untrusted.trust is None
+    assert correlate(flagged, replace(CTX, repo=untrusted), CORRELATION_RULES).history[-1].forwarded
+    fetcher.close()

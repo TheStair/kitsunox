@@ -148,7 +148,7 @@ src/kitsunox/
   stages/           # ingest, triage, static, ast, correlate, sandbox
   rules/            # ecosystem-agnostic rules (entropy, URLs/IPs, eval/dynamic code)
   lang/             # source-language parsers (tree-sitter JS/TS capabilities for Stage 3)
-  githost/          # git hosts (GitHub refs + archives, no API token) for Stage 4 and the git path
+  githost/          # git hosts (GitHub refs + archives; REST API facts with GITHUB_TOKEN) for Stage 4 and the git path
   evaluation/       # OSV labels, datasets built from ingest runs, predictors + metrics
   reporting/        # report rendering (Markdown/HTML), summary index
   web/              # read-only local viewer for reports and the queue (stdlib http.server, no JS)

@@ -2,6 +2,61 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-04: Repository trust built; the clearing it enables loses `gina`, so it's off
+
+**Stage(s):** Stage 4 (repository comparison, decision)
+**Context:** The owner asked to start the GitHub work: Phase A of
+[proposals/git-path.md](proposals/git-path.md). Decision:
+[0017](decisions/0017-repository-trust.md).
+
+### Decisions
+- **REST API facts with `GITHUB_TOKEN`, only where they can matter.** The facts are fork,
+  archived, created, stars and default branch, plus whether the commit is on the default
+  branch (the compare API, page 2: status without the file list).
+  - They are fetched only for clean comparisons of versions that already have a MEDIUM
+    finding. At most two requests per repository and commit per run, recorded for replay.
+  - The token is a header that the request key and snapshot never hold. It goes only to
+    `api.github.com`, and httpx drops it on a redirect elsewhere (tested).
+  - When the API fails, nothing changes for the version, and the request isn't retried.
+- **`repo.established-match` (INFO).** It fires on a clean match to a repository that is not
+  a fork or archived, is at least 30 days old at the release, has at least 5 stars, and has
+  the commit on its default branch.
+  - Age is required as well as stars: the attacker's `tavern-labs-ai/persona-ai-sdk` had 197
+    stars three days after it was created.
+- **Clearing install code with it: built, measured, and left off** (`CLEAR_ESTABLISHED`).
+  - The live queue gain: 33 of 1,231 reported versions with a GitHub repository (2.7%), all 20
+    reviewed benign, every commit on the default branch.
+  - The `vm-day1` cost: 1 of 2,507 reported malicious samples (details under Challenges).
+  - Missing an attack is worse than a false positive, and the gain is small, so the owner
+    decides.
+
+### Challenges
+- **The recall check found exactly the blind spot the proposal predicted.** `gina@0.7.1`
+  (DataDog: malicious) is byte for byte its 2013 repository (`gina-io/gina`, 11 stars), at a
+  commit on the default branch. The code is in the real repository, so a clean match says
+  nothing about it.
+  - **Resolution:** the clearing ships off.
+  - **Why it worked:** the alternative was a 12-star threshold, which keeps `gina` and still
+    clears 26 live reports. It was rejected as fitted to one sample.
+  - Watching commits (Phase B) is what would catch this shape.
+
+### Removed / abandoned
+- **A.4, commit matching for "no commit or tag".**
+  - **Measured:** of 312 reported versions with a repository at least 30 days old, 37 (12%)
+    have a commit before publish whose `package.json` has the released version. In
+    monorepos, 173 of 217 never commit the released version, because release tools set it
+    at publish time.
+  - **Not built:** that reach is too low.
+
+### Evaluation snapshot
+- `vm-day1` `pipeline+4`: unchanged with the clearing off. With it on: 2,507 → 2,506
+  malicious, benign unchanged.
+
+### Open questions / next steps
+- The owner: turn `CLEAR_ESTABLISHED` on (-2.7% live reports, -1 `vm-day1` sample) or leave
+  it off?
+- Phase B (commit watching) size: the proposal suggests the top 5,000 repositories.
+
 ## 2026-11-04: GitHub work, measured before designing
 
 **Stage(s):** git path (decision 0004), Stage 4 repository comparison

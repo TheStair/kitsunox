@@ -77,7 +77,7 @@ from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, 
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR, scan_takedowns
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
-from kitsunox.githost.github import is_archive_url
+from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import Tick
 from kitsunox.reporting.publish import publish_report
 from kitsunox.reporting.queue import build_queue, write_queue
@@ -92,6 +92,7 @@ from kitsunox.stages.sandbox import OVERDUE_AFTER, run_sandbox_stage
 from kitsunox.stages.static import needs_retry, record_static
 from kitsunox.stages.triage import triage_run
 from kitsunox.util.disk import GIB, DiskSpaceError, free_bytes, gib
+from kitsunox.util.env import env_value
 from kitsunox.util.files import atomic_write
 from kitsunox.util.http import FetchError, Snapshot
 
@@ -300,7 +301,13 @@ def run_stages(
             f"{sum(c.history[-1].forwarded for b in coded for c in b.versions)} flagged by Stage 3"
         )
     if start <= 4:
-        versions = run_correlate_stage(data, run_id, client=client(), seed=seed(CORRELATE_SNAPSHOT))
+        versions = run_correlate_stage(
+            data,
+            run_id,
+            client=client(),
+            seed=seed(CORRELATE_SNAPSHOT),
+            github_token=env_value(TOKEN_ENV),
+        )
         compared = sum(
             any(
                 f.rule_id == "repo.compared" and "No comparison" not in f.explanation

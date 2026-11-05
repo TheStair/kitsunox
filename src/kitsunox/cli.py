@@ -52,7 +52,7 @@ from kitsunox.evaluation.harness import (
 )
 from kitsunox.evaluation.labels import label_store
 from kitsunox.evaluation.metrics import render_markdown
-from kitsunox.githost.github import is_archive_url
+from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import (
     WEBHOOK_ENV,
     Message,
@@ -391,7 +391,9 @@ def correlate_cmd(
         typer.echo(f"no ast.jsonl in {run_dir}: run `kitsunox ast {run_id}` first", err=True)
         raise typer.Exit(code=2)
     with data.lock():
-        versions = run_correlate_stage(data, run_id, workers=workers)
+        versions = run_correlate_stage(
+            data, run_id, workers=workers, github_token=env_value(TOKEN_ENV)
+        )
     reported = [c for c in versions if c.history[-1].forwarded]
     typer.echo(f"{len(versions)} versions: {len(reported)} to report")
     for c in sorted(reported, key=lambda c: -c.score)[:20]:

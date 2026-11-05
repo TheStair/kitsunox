@@ -15,7 +15,7 @@ from typing import Final
 
 import httpx
 
-from kitsunox.core.models import Candidate, Window
+from kitsunox.core.models import Candidate, Severity, Window
 from kitsunox.core.run import CORRELATE_SNAPSHOT, DataDir, RunManifest
 from kitsunox.core.watchlist import Watchlist
 from kitsunox.ecosystems.npm.packument import Packument, publish_info
@@ -42,8 +42,10 @@ from kitsunox.stages.repo import (
     RepoMemory,
     compare,
     compare_pool,
+    with_trust,
 )
 from kitsunox.stages.static import ArtifactFiles, Unavailable
+from kitsunox.stages.triage import at_least
 from kitsunox.util.http import FetchError, FetchMode, HttpFetcher, Snapshot, TransientFetchError
 
 NPM: Final = "npm"
@@ -80,11 +82,18 @@ class NpmRepoLookup:
 
     Release files that failed on the network (`files_transient`) are not retried here: Stage 2
     failed on the same tarball (Stage 4 reads only versions Stage 2 read, and its fetches sit in
-    the immutable index), marked it, and `collect` redoes the run from Stage 1 next tick."""
+    the immutable index), marked it, and `collect` redoes the run from Stage 1 next tick.
 
-    def __init__(self, fetcher: HttpFetcher, *, pool: Executor | None = None) -> None:
+    With a GitHub token, a clean comparison of a version an earlier stage found something
+    MEDIUM or above in also gets the repository's facts (`with_trust`): only those versions
+    can be cleared by an established match (`repo.established-match`), and asking for every
+    watched update would spend ~10 times the API quota."""
+
+    def __init__(
+        self, fetcher: HttpFetcher, *, pool: Executor | None = None, token: str | None = None
+    ) -> None:
         self.files = ArtifactFiles(NpmEcosystem(fetcher))
-        self.github = GitHub(fetcher)
+        self.github = GitHub(fetcher, token=token)
         self.locator = NpmLocator()
         self.memory = RepoMemory(pool=pool)
 
@@ -101,15 +110,22 @@ class NpmRepoLookup:
                 return RepoComparison(unavailable=PACKAGE_FILES_NETWORK, files_transient=True)
             return RepoComparison(unavailable=f"package files {tree.reason}"[:300])
         try:
-            return compare(candidate.change, tree, self.locator, self.github, memory=self.memory)
+            comparison = compare(
+                candidate.change, tree, self.locator, self.github, memory=self.memory
+            )
         except TransientFetchError as exc:  # a `RepoNetworkError`: names the request only
             return RepoComparison(unavailable=f"{REPO_NETWORK}{exc}"[:300], transient=True)
         except FetchError as exc:  # not the network: e.g. a malformed ref advertisement
             return RepoComparison(unavailable=str(exc)[:300])
+        if any(at_least(f.severity, Severity.MEDIUM) for f in candidate.findings):
+            comparison = with_trust(comparison, self.github, self.memory)
+        return comparison
 
 
-def repo_lookup(fetcher: HttpFetcher, *, pool: Executor | None = None) -> RepoLookup:
-    return NpmRepoLookup(fetcher, pool=pool)
+def repo_lookup(
+    fetcher: HttpFetcher, *, pool: Executor | None = None, token: str | None = None
+) -> RepoLookup:
+    return NpmRepoLookup(fetcher, pool=pool, token=token)
 
 
 @dataclass
@@ -313,10 +329,12 @@ def run_correlate_stage(
     workers: int = 8,
     client: httpx.Client | None = None,
     seed: Snapshot | None = None,
+    github_token: str | None = None,
 ) -> CandidateFile:
     """Stage 4 on a run Stage 3 has processed, with the run's watchlist. Repository and
     dependency requests are recorded in `correlate-snapshot.json` next to the run; a `seed`
-    (the run's own earlier snapshot, when re-scoring) serves what it holds as recorded. The
+    (the run's own earlier snapshot, when re-scoring) serves what it holds as recorded. With a
+    `github_token`, clean comparisons get repository facts from the API (`NpmRepoLookup`). The
     caller holds the lock."""
     run_dir = data.run_dir(run_id)
     manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
@@ -342,7 +360,7 @@ def run_correlate_stage(
                 run_dir,
                 ctx,
                 CORRELATION_RULES,
-                repo=repo_lookup(fetcher, pool=pool),
+                repo=repo_lookup(fetcher, pool=pool, token=github_token),
                 workers=workers,
             )
     finally:

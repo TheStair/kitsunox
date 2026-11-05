@@ -21,17 +21,21 @@ from kitsunox.core.models import (
 )
 from kitsunox.ecosystems.npm.repo import NpmLocator, release_tags
 from kitsunox.ecosystems.npm.rules.correlate import DependencyNotInRepo, InstallScriptNotInRepo
-from kitsunox.githost.github import GitHub, GitHubRepo
-from kitsunox.rules.repo import CodeDiffersFromRepo, CodeNotInRepo, RepoCompared
+from kitsunox.githost.github import GitHub, GitHubRepo, RepoFacts
+from kitsunox.rules.repo import CodeDiffersFromRepo, CodeNotInRepo, EstablishedMatch, RepoCompared
 from kitsunox.stages.correlate import CorrelationContext
 from kitsunox.stages.repo import (
     ARCHIVES_IN_MEMORY,
+    TRUST_FAILED,
     ManifestDifference,
+    ReleaseSource,
     RepoComparison,
     RepoMemory,
+    RepoTrust,
     compare,
     compare_pool,
     compare_trees,
+    with_trust,
 )
 from kitsunox.util.archive import ArtifactTree
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, Snapshot
@@ -353,3 +357,136 @@ def test_a_pool_compares_exactly_as_threads_do(tmp_path: Path, router: Router) -
     assert threads[0].differing == ("index.js",)
     assert (threads[1].unavailable or "").startswith("archive: ")
     assert again == threads[1]
+
+
+# Repository trust: facts for clean comparisons, and `repo.established-match`.
+
+FACTS_URL = "https://api.github.com/repos/o/r"
+HEAD = "d" * 40
+TRUST_REFS = {"refs/heads/main": HEAD}
+
+
+def facts(**overrides: Any) -> dict[str, Any]:
+    return {
+        "full_name": "o/r",
+        "fork": False,
+        "archived": False,
+        "created_at": "2024-01-01T00:00:00Z",
+        "stargazers_count": 40,
+        "default_branch": "main",
+    } | overrides
+
+
+def compare_url(commit: str = A, head: str = HEAD) -> str:
+    return f"https://api.github.com/repos/o/r/compare/{commit}...{head}?per_page=1&page=2"
+
+
+def clean(**overrides: Any) -> RepoComparison:
+    return RepoComparison(
+        source=ReleaseSource(repo="o/r", commit=A, how="gitHead"), code_files=3, identical=3
+    ).model_copy(update=overrides)
+
+
+def api_github(tmp_path: Path, router: Router, token: str | None = "t") -> GitHub:  # noqa: S107
+    fetcher = HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=Snapshot(),
+        mode=FetchMode.RECORD,
+        client=router.client(),
+    )
+    return GitHub(fetcher, token=token)
+
+
+def test_clean_means_every_code_file_identical_and_nothing_undeclared() -> None:
+    assert clean().clean
+    assert not clean(identical=2, differing_count=1).clean
+    assert not clean(identical=2, not_in_repo_count=1).clean
+    assert not clean(code_files=0, identical=0).clean
+    assert not clean(unavailable="no commit or tag for this version").clean
+    hook = ManifestDifference(field="scripts.postinstall", package="node x.js", repo=None)
+    assert not clean(manifest=(hook,)).clean
+    assert clean(manifest=(hook.model_copy(update={"built_by": "scripts/build.js"}),)).clean
+
+
+def test_trust_for_a_clean_comparison(tmp_path: Path, router: Router) -> None:
+    router.add_json(FACTS_URL, facts())
+    router.add_json(compare_url(), {"status": "ahead"})
+    memory = RepoMemory({GitHubRepo("o", "r"): TRUST_REFS})
+    trusted = with_trust(clean(), api_github(tmp_path, router), memory)
+    assert trusted.trust is not None and trusted.trust.on_default_branch
+    assert trusted.trust.facts is not None and trusted.trust.facts.stars == 40
+    for _ in range(3):  # once per run, whatever the number of versions
+        with_trust(clean(), api_github(tmp_path, router), memory)
+    assert router.requests == [FACTS_URL, compare_url()]
+
+
+def test_no_trust_lookup_without_a_clean_comparison_or_a_token(
+    tmp_path: Path, router: Router
+) -> None:
+    memory = RepoMemory({GitHubRepo("o", "r"): TRUST_REFS})
+    dirty = clean(identical=2, differing_count=1)
+    assert with_trust(dirty, api_github(tmp_path, router), memory) == dirty
+    assert with_trust(clean(), api_github(tmp_path, router, token=None), memory) == clean()
+    assert router.requests == []
+
+
+def test_a_fork_is_not_compared_and_failures_are_one_text(tmp_path: Path, router: Router) -> None:
+    memory = RepoMemory({GitHubRepo("o", "r"): TRUST_REFS})
+    router.add_json(FACTS_URL, facts(fork=True))
+    forked = with_trust(clean(), api_github(tmp_path, router), memory)
+    assert forked.trust is not None and not forked.trust.on_default_branch
+    assert router.requests == [FACTS_URL]
+
+    router.add_json(FACTS_URL, {"message": "API rate limit exceeded"}, status=403)
+    failed = with_trust(clean(), api_github(tmp_path / "2", router), RepoMemory())
+    assert failed.trust == RepoTrust(unavailable=TRUST_FAILED)
+    router.offline.add(FACTS_URL)
+    offline = with_trust(clean(), api_github(tmp_path / "3", router), RepoMemory())
+    assert offline.trust == RepoTrust(unavailable=TRUST_FAILED)
+
+
+def trusted_candidate(published: str = "2026-10-28T00:00:00Z") -> Candidate:
+    released = change().new.model_copy(
+        update={"publish": PublishInfo(published_at=datetime.fromisoformat(published))}
+    )
+    return Candidate(change=change().model_copy(update={"new": released}))
+
+
+def established(**fact_overrides: Any) -> CorrelationContext:
+    trust = RepoTrust(
+        facts=RepoFacts.model_validate(facts_model(**fact_overrides)), on_default_branch=True
+    )
+    return CorrelationContext(as_of=datetime(2026, 10, 28, tzinfo=UTC), repo=clean(trust=trust))
+
+
+def facts_model(**overrides: Any) -> dict[str, Any]:
+    raw = facts(**overrides)
+    raw["stars"] = raw.pop("stargazers_count")
+    return raw
+
+
+def test_established_match() -> None:
+    rule = EstablishedMatch()
+    (found,) = rule.evaluate_candidate(trusted_candidate(), established())
+    assert found.severity is Severity.INFO and found.weight == 0
+    assert "default branch `main`" in found.explanation and "40 stars" in found.explanation
+    for overrides in (
+        {"fork": True},
+        {"archived": True},
+        {"stargazers_count": 4},
+        {"created_at": "2026-10-01T00:00:00Z"},  # 27 days before the release
+    ):
+        assert rule.evaluate_candidate(trusted_candidate(), established(**overrides)) == (), (
+            overrides
+        )
+    ctx = established()
+    assert ctx.repo is not None and ctx.repo.trust is not None
+    off_branch = ctx.repo.trust.model_copy(update={"on_default_branch": False})
+    other = CorrelationContext(
+        as_of=ctx.as_of, repo=ctx.repo.model_copy(update={"trust": off_branch})
+    )
+    assert rule.evaluate_candidate(trusted_candidate(), other) == ()
+    dirty = CorrelationContext(
+        as_of=ctx.as_of, repo=ctx.repo.model_copy(update={"identical": 2, "differing_count": 1})
+    )
+    assert rule.evaluate_candidate(trusted_candidate(), dirty) == ()

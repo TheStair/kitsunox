@@ -231,6 +231,9 @@ dependency's packument.
   lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.
+- **Established repository match** (stage version 9, 2026-11-04): clearing install-code
+  MEDIUM findings for a version whose code is exactly an established repository's is built
+  but off (`CLEAR_ESTABLISHED`; Repository trust, below).
 - **Score:** the sum over the rules that fired, each counted once at its largest weight
   (Stage 2 reports a finding per matching file), INFO excluded. Rules whose findings are all
   LOW together add at most `LOW_CAP` (3; stage version 7, 2026-10-30), so LOW findings alone
@@ -272,6 +275,47 @@ dependency's packument.
      compiled output). Build directories git ignores (`dist/`) are not in the repository, so
      their files never count.
 
+## Repository trust (`with_trust`, `repo.established-match`; stage version 9)
+
+A clean comparison says the release's code is the repository's. Whether that repository is
+worth trusting is a separate question, answered by GitHub's REST API with `GITHUB_TOKEN` (from
+the environment or `.env`; without one nothing changes):
+
+1. **When:** a clean comparison (`RepoComparison.clean`: every code file identical, nothing in
+   the manifest the repository doesn't explain) of a version an earlier stage found something
+   MEDIUM or above in. Only those can be cleared, and asking for every watched update would
+   spend ~10 times the quota.
+2. **What:** `GET /repos/{owner}/{repo}` (fork, archived, created, stars, default branch), and
+   for a repository that isn't a fork, `GET /repos/{owner}/{repo}/compare/{commit}...{head}`
+   with `head` the default branch's commit from the refs already fetched: the commit is on
+   the default branch when `head` is "ahead" of it or "identical". Page 2 at one commit a page
+   carries the status without page 1's file list (18 KB instead of 129 KB for
+   `npm/node-semver`). Each request once per run (`RepoMemory.api`), recorded in
+   `correlate-snapshot.json`; the token is a header, which neither the request key nor the
+   snapshot holds, and goes only to `api.github.com` (httpx drops it on a redirect elsewhere).
+3. **Failures** (a rate limit, the network, a replay miss) leave the version with
+   `trust.unavailable` = "GitHub API request failed" and no established match: it is reported
+   as it would be without the API. Not retried: a retry would only spend quota.
+4. **`repo.established-match`** (INFO, weight 0) fires when the comparison is clean and the
+   repository is not a fork or archived, was created at least 30 days before the release, has
+   at least 5 stars, and holds the commit on its default branch.
+5. **Decision (off: `CLEAR_ESTABLISHED = False`):** a version whose MEDIUM findings are all
+   install-code findings
+   (`CLEARED_BY_REPO`: `npm.install-hook` at MEDIUM, i.e. a new package's hook;
+   `npm.install-script-changed`; `npm.install-script-code`) is not reported when it has an
+   established match, no HIGH finding, and its score without those findings stays below
+   `REPORT_SCORE`. The reason says so ("... cleared by repo.established-match").
+
+Measured 2026-11-04 (decision [0017](../decisions/0017-repository-trust.md)):
+- **Live queue** (two days, 1,231 reported versions with a GitHub repository): the clearing
+  would remove 33 (2.7%); all 20 reviewed are benign.
+- **`vm-day1`:** it would lose one of 2,507 reported malicious samples, `gina@0.7.1`, whose
+  code is in its 2013 repository (11 stars).
+- **So it is off,** and the finding is reviewer evidence only. Each of the four conditions is there for a reason seen in the data: the one
+malicious clean match (`@finzzcloud/baileys`) came from the attacker's own 1-star repository,
+and the attacker's `tavern-labs-ai/persona-ai-sdk` had 197 stars three days after it was
+created (stars can be bought; age can't).
+
 ## Rules
 
 | Rule | Fires when | Severity | Weight |
@@ -282,6 +326,7 @@ dependency's packument.
 | `npm.dependency.fresh-foreign` | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
+| `repo.established-match` | a clean comparison with a repository that is not a fork or archived, ≥ 30 days old at the release, ≥ 5 stars, the commit on its default branch (Repository trust, above). Clears install-code MEDIUM findings in the decision | INFO | 0 |
 | `repo.code-differs` | a shipped code file differs from the repository's file at the same path | LOW | 2 |
 | `repo.code-not-in-repo` | shipped code files are *unexplained* (above). Since `STAGE_VERSION` 6 a file whose content is elsewhere in the repository, byte for byte, is explained (a build copied it) | LOW | 2 |
 | `npm.repo.install-script-not-in-repo` (v2) | the release's install hook isn't in the repository's `package.json` (or has another command). INFO instead when the repository's build writes it (`ManifestDifference.built_by`): every package file the command names is in the repository byte for byte, and another repository file holds the command (the release's version may be a placeholder there). First VM day: `@nutui/nutui-react-taro` (`scripts/build-taro.mjs`) and `@opencode/cli` (`script/pack.ts`); `@pulumi/*` still fire, since Pulumi's code generator, not the repository, writes their hook. With `repository.directory` only that directory is searched. v3: LOW, weight 1, when the previous release shipped the same hook (its version string aside), so a generated hook that is in every release (`@pulumi/*`) stops counting; the release that adds a hook still fires HIGH | HIGH | 5 |
@@ -385,6 +430,12 @@ that cover every version: 11 malicious new packages, 0 benign.
 
 ## Known limits
 
+- **An established match can't see a compromised repository.** A malicious commit pushed to
+  a real repository (a stolen maintainer account, a merged pull request, CI tampering) matches
+  cleanly, and its install code would be cleared. That is what watching commits is for
+  ([proposal](../proposals/git-path.md), Phase B); until then the clearing rests on the
+  measured numbers alone. Facts are as of the fetch (stars now, not at the release), and a
+  version Stage 4 clears is never exported to Stage 5.
 - **Volume.** The first live day (`20261027T210847Z-npm`) downloaded 2,142 archives, 31 GB,
   and Stage 4 took ~7.5 hours for 109k versions. Archives can be kept for less time than the
   run (`--keep-repo-days`, decision 0006 addendum).

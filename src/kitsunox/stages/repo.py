@@ -30,7 +30,7 @@ from functools import partial
 from typing import Final, Protocol
 
 from kitsunox.core.models import Change, Record
-from kitsunox.githost.github import ARCHIVE_PREFIX, GitHub, GitHubRepo, extract_archive
+from kitsunox.githost.github import ARCHIVE_PREFIX, GitHub, GitHubRepo, RepoFacts, extract_archive
 from kitsunox.lang.javascript import language_for
 from kitsunox.util.archive import ExtractLimits
 from kitsunox.util.hashing import sha256_hex
@@ -61,6 +61,17 @@ class ManifestDifference(Record):
     built_by: str | None = None
 
 
+class RepoTrust(Record):
+    """What GitHub's API says about the repository a clean comparison matched (`with_trust`):
+    its facts, and whether the release's commit is on its default branch. `unavailable` says
+    why there is no answer (the API doesn't show the repository, or a request failed); a
+    version without an answer is treated as having no established match."""
+
+    facts: RepoFacts | None = None
+    on_default_branch: bool = False
+    unavailable: str | None = None
+
+
 class RepoComparison(Record):
     """A release's code files against the repository at its commit. `unavailable` says why no
     comparison was made (no repository, no commit for this version, archive too large); the
@@ -82,6 +93,19 @@ class RepoComparison(Record):
     unexplained: tuple[str, ...] = ()  # not in the repo, and not build output (`compare_trees`)
     unexplained_count: int = 0
     manifest: tuple[ManifestDifference, ...] = ()
+    trust: RepoTrust | None = None
+
+    @property
+    def clean(self) -> bool:
+        """Every code file the release ships is in the repository, byte for byte (line endings
+        aside), and every install hook it has that the repository's manifest doesn't is written
+        by a repository file (`built_by`); no runtime dependency the repository doesn't name."""
+        return (
+            self.unavailable is None
+            and self.code_files > 0
+            and self.identical == self.code_files
+            and all(d.built_by is not None for d in self.manifest)
+        )
 
 
 class Locator(Protocol):
@@ -267,6 +291,8 @@ class RepoMemory:
         self._rejected: dict[_Request, FetchError | ValueError] = {}
         self._unreadable: dict[tuple[_Request, str], ValueError] = {}
         self._slots = threading.BoundedSemaphore(ARCHIVES_IN_MEMORY)
+        self._api_locks: dict[str, threading.Lock] = {}
+        self._api: dict[str, object] = {}  # API answers (or the FetchError text) for the run
 
     def new_pass(self) -> None:
         with self._lock:
@@ -340,6 +366,31 @@ class RepoMemory:
                 self._unreadable[(request, directory)] = error
             raise error
         return outcome
+
+    def api[T](self, key: str, fetch: Callable[[], T]) -> T:
+        """One REST API answer per `key` for the run, whatever the number of threads asking:
+        a monorepo burst of 300 packages asks for the same repository's facts once. A
+        `FetchError` (including a network failure) is kept too, with the same text for every
+        version, and not retried: a version without an answer is reported as it would be
+        without the API, so a retry would only spend quota."""
+        with self._lock:
+            lock = self._api_locks.setdefault(key, threading.Lock())
+        with lock:
+            with self._lock:
+                if key in self._api:
+                    known = self._api[key]
+                    if isinstance(known, FetchError):
+                        raise FetchError(str(known))
+                    return known  # type: ignore[return-value]
+            try:
+                answer: object = fetch()
+            except FetchError as exc:
+                answer = FetchError(str(exc)[:300])
+            with self._lock:
+                self._api[key] = answer
+            if isinstance(answer, FetchError):
+                raise FetchError(str(answer))
+            return answer  # type: ignore[return-value]
 
     def _archive_body(self, github: GitHub, url: str, request: _Request) -> bytes:
         def fetch() -> bytes:
@@ -422,6 +473,40 @@ def compare(
         except (FetchError, ValueError) as exc:  # e.g. HTTP 404 (never pushed), size limits
             return RepoComparison(source=source, unavailable=f"archive: {exc}"[:300])
         return _compare_tree(change, package, locator, source, directory, tree)
+
+
+# The text of a trust lookup that failed, for every cause (a network failure, a rate limit, a
+# replay miss): a replay of a run whose lookup failed on the network misses the request, and
+# must read the same.
+TRUST_FAILED: Final = "GitHub API request failed"
+
+
+def with_trust(comparison: RepoComparison, github: GitHub, memory: RepoMemory) -> RepoComparison:
+    """`comparison` with `trust` filled in, if it is clean and the API can be used (a token);
+    otherwise unchanged. Two API requests at most, each once per run: the repository's facts,
+    and (for a repository that is not a fork) whether the commit is on its default branch,
+    against the branch's head from `refs` (already fetched for the comparison)."""
+    source = comparison.source
+    if not comparison.clean or source is None or not github.has_api:
+        return comparison
+    owner, _, name = source.repo.partition("/")
+    repo = GitHubRepo(owner=owner, name=name)
+    try:
+        facts = memory.api(f"facts {repo}", lambda: github.facts(repo))
+        if facts is None:
+            trust = RepoTrust(unavailable="the GitHub API doesn't show the repository")
+        elif facts.fork:
+            trust = RepoTrust(facts=facts)
+        else:
+            head = (memory.refs(github, repo) or {}).get(f"refs/heads/{facts.default_branch}")
+            on = head is not None and memory.api(
+                f"on-branch {repo} {source.commit} {head}",
+                lambda: github.on_branch(repo, source.commit, head),
+            )
+            trust = RepoTrust(facts=facts, on_default_branch=on)
+    except FetchError:  # includes a network failure (`TransientFetchError`): not retried
+        trust = RepoTrust(unavailable=TRUST_FAILED)
+    return comparison.model_copy(update={"trust": trust})
 
 
 # The work `compared_in_pool` sends: the archive's body in, a comparison or the text of why

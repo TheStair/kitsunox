@@ -38,12 +38,12 @@ from kitsunox.ecosystems.npm.rules.artifact import HiddenInstallScript
 from kitsunox.evaluation.datadog import RAW_URL, SAMPLE_LIMITS, ZIP_PASSWORD
 from kitsunox.evaluation.dataset import EvalSample, ExternalSampleSet
 from kitsunox.evaluation.labels import label_store
-from kitsunox.githost.github import GitHub, GitHubRepo
+from kitsunox.githost.github import TOKEN_ENV, GitHub, GitHubRepo
 from kitsunox.rules.static import RULES as STATIC_RULES
 from kitsunox.stages.ast import CapabilityCache, code_change
 from kitsunox.stages.code import CODE_RULES
 from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
-from kitsunox.stages.repo import compare
+from kitsunox.stages.repo import RepoMemory, compare, with_trust
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
     MAX_ARTIFACT_BYTES,
@@ -55,6 +55,7 @@ from kitsunox.stages.static import (
 from kitsunox.stages.triage import at_least, triage
 from kitsunox.util.archive import ArtifactTree, extract_zip
 from kitsunox.util.disk import DiskSpaceError
+from kitsunox.util.env import env_value
 from kitsunox.util.http import (
     BlobStore,
     FetchedResponse,
@@ -311,7 +312,11 @@ class Correlated(PipelineWithCode):
     (`PinnedFetcher`): the first evaluation to fetch a packument fixes it for every later one,
     so a re-run is offline and doesn't drift as packages are taken down. Only versions
     published by the sample's publish time count. Watched means on the newest watchlist, the
-    one DataDog samples were imported with.
+    one DataDog samples were imported with. With a GitHub token (`GITHUB_TOKEN`), clean
+    comparisons get the repository's facts as live (`with_trust`), pinned under
+    `data/eval/github-api/` like the dependency records: as of the first evaluation that asked,
+    not as of the release (a repository deleted since reads as not shown, so the release
+    stays reported).
 
     `notes` also records (under `ABOUT`) what a result depends on besides the dataset: the
     correlation rules' fingerprint, the watchlist and label set ids, and the dependency lookup
@@ -334,6 +339,17 @@ class Correlated(PipelineWithCode):
         )
         self.locator = NpmLocator()
         self.refs: dict[GitHubRepo, Mapping[str, str] | None] = {}
+        root = data.root / "eval" / "github-api"
+        self.api = GitHub(
+            PinnedFetcher(
+                store=BlobStore(root / "blobs"),
+                snapshot=Snapshot(),
+                mode=FetchMode.RECORD,
+                immutable_index=root / "http-immutable",
+            ),
+            token=env_value(TOKEN_ENV),
+        )
+        self.trust_memory = RepoMemory(self.refs)
         watchlist_id = data.watchlists.latest_id(NPM)
         self.watchlist = data.watchlists.load(NPM, watchlist_id) if watchlist_id else None
         root = data.root / "eval" / "dependencies"
@@ -379,6 +395,10 @@ class Correlated(PipelineWithCode):
                 )
             except FetchError as exc:
                 self._note(f"repo: {type(exc).__name__} (no comparison)")
+            if repo is not None and any(
+                at_least(f.severity, Severity.MEDIUM) for f in found.findings
+            ):
+                repo = with_trust(repo, self.api, self.trust_memory)
         ctx = CorrelationContext(
             as_of=_as_of(change),
             known_bad=self.labels,

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import httpx
 import pytest
 
 from conftest import Router, TarEntry, make_tar_gz
@@ -85,3 +86,138 @@ def test_archive_of_a_monorepo_directory(tmp_path: Path, router: Router) -> None
     assert len(router.requests) == 1  # a commit's archive is immutable: fetched once
     with pytest.raises(ValueError, match="commit"):
         client.archive(REPO, "v1.0.0")
+
+
+# The REST API (repository facts, default-branch ancestry), with a token.
+
+TOKEN = "test-token-not-a-secret"  # noqa: S105
+FACTS_URL = "https://api.github.com/repos/o/r"
+FACTS = {
+    "full_name": "o/r",
+    "fork": False,
+    "archived": False,
+    "created_at": "2020-01-02T03:04:05Z",
+    "stargazers_count": 42,
+    "default_branch": "main",
+    "owner": {"login": "o"},
+}
+
+
+def compare_url(base: str, head: str) -> str:
+    return f"https://api.github.com/repos/o/r/compare/{base}...{head}?per_page=1&page=2"
+
+
+def api(tmp_path: Path, router: Router, token: str | None = TOKEN) -> GitHub:
+    return GitHub(
+        HttpFetcher(
+            store=BlobStore(tmp_path / "blobs"),
+            snapshot=Snapshot(),
+            mode=FetchMode.RECORD,
+            client=router.client(),
+        ),
+        token=token,
+    )
+
+
+def test_facts_from_the_api(tmp_path: Path, router: Router) -> None:
+    router.add_json(FACTS_URL, FACTS)
+    facts = api(tmp_path, router).facts(REPO)
+    assert facts is not None
+    assert (facts.full_name, facts.fork, facts.stars, facts.default_branch) == (
+        "o/r",
+        False,
+        42,
+        "main",
+    )
+    assert facts.created_at.year == 2020
+
+
+def test_a_repository_the_api_doesnt_show_has_no_facts(tmp_path: Path, router: Router) -> None:
+    assert api(tmp_path, router).facts(REPO) is None  # 404
+    router.add_json(FACTS_URL, {"message": "blocked"}, status=451)
+    assert api(tmp_path / "2", router).facts(REPO) is None
+
+
+def test_rate_limits_and_malformed_answers_are_errors(tmp_path: Path, router: Router) -> None:
+    router.add_json(FACTS_URL, {"message": "API rate limit exceeded"}, status=403)
+    with pytest.raises(FetchError, match="HTTP 403"):
+        api(tmp_path, router).facts(REPO)
+    router.add_json(FACTS_URL, {"full_name": "o/r", "fork": "maybe"})
+    with pytest.raises(FetchError, match="malformed"):
+        api(tmp_path / "2", router).facts(REPO)
+    router.add_bytes(FACTS_URL, b"<html>")
+    with pytest.raises(FetchError, match="malformed"):
+        api(tmp_path / "3", router).facts(REPO)
+
+
+def test_without_a_token_no_api_request_is_sent(tmp_path: Path, router: Router) -> None:
+    github = api(tmp_path, router, token=None)
+    assert not github.has_api
+    with pytest.raises(FetchError, match="no token"):
+        github.facts(REPO)
+    assert router.requests == []
+
+
+def test_the_token_is_sent_but_never_recorded(tmp_path: Path) -> None:
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return httpx.Response(200, json=FACTS)
+
+    snapshot = Snapshot()
+    fetcher = HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=snapshot,
+        mode=FetchMode.RECORD,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    GitHub(fetcher, token=TOKEN).facts(REPO)
+    assert seen[0]["authorization"] == f"Bearer {TOKEN}"
+    snapshot.save(tmp_path / "snap.json")
+    assert TOKEN not in (tmp_path / "snap.json").read_text()
+    for blob in (tmp_path / "blobs").rglob("*"):
+        if blob.is_file():
+            assert TOKEN.encode() not in blob.read_bytes()
+
+
+def test_the_token_goes_only_to_the_api(tmp_path: Path, router: Router) -> None:
+    with pytest.raises(ValueError, match="not a GitHub API URL"):
+        api(tmp_path, router)._api("https://evil.example/repos/o/r")
+    assert router.requests == []
+
+
+@pytest.mark.parametrize(
+    ("status", "on"),
+    [("ahead", True), ("identical", True), ("behind", False), ("diverged", False)],
+)
+def test_on_branch_reads_the_compare_status(
+    tmp_path: Path, router: Router, status: str, on: bool
+) -> None:
+    router.add_json(compare_url(A, B), {"status": status, "ahead_by": 1, "behind_by": 0})
+    assert api(tmp_path, router).on_branch(REPO, A, B) is on
+
+
+def test_a_commit_github_doesnt_know_is_not_on_the_branch(tmp_path: Path, router: Router) -> None:
+    assert api(tmp_path, router).on_branch(REPO, A, B) is False  # 404
+    with pytest.raises(ValueError, match="full commit"):
+        api(tmp_path, router).on_branch(REPO, "main", B)
+
+
+def test_a_redirect_to_another_host_does_not_carry_the_token(tmp_path: Path) -> None:
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = request.headers.get("authorization")
+        if request.url.host == "api.github.com":
+            return httpx.Response(301, headers={"Location": "https://elsewhere.example/x"})
+        return httpx.Response(200, json=FACTS)
+
+    fetcher = HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=Snapshot(),
+        mode=FetchMode.RECORD,
+        client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+    GitHub(fetcher, token=TOKEN).facts(REPO)
+    assert seen == {"api.github.com": f"Bearer {TOKEN}", "elsewhere.example": None}

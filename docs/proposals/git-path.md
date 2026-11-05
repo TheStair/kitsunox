@@ -1,6 +1,7 @@
 # Proposal: the GitHub work (git path and repository trust)
 
-**Status:** proposal for the owner's review, 2026-11-04. Nothing here is built.
+**Status:** Phase A built 2026-11-04 (A.1-A.2; A.3 built but off after the recall check; decision [0017](../decisions/0017-repository-trust.md));
+A.4 measured and not built (12% reach, see 0017). Phase B: proposal, not started.
 **Builds on:** [decision 0004](../decisions/0004-git-path-parallel-to-npm.md) (a git-commit path
 parallel to npm), Stage 4's repository comparison ([stages/correlate.md](../stages/correlate.md)).
 

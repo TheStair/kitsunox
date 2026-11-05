@@ -107,6 +107,48 @@ def test_capability_gains_and_webhook_placeholders_alone_are_not_reported() -> N
         assert decide([weak, finding("m", Severity.MEDIUM, 1.0)]).forwarded, rule_id
 
 
+def decide_clearing(findings: Sequence[Finding], report_score: float = 6.0) -> StageDecision:
+    return decide(findings, report_score=report_score, clear_established=True)
+
+
+def test_clearing_by_an_established_match_is_off_by_default() -> None:
+    match = finding("repo.established-match", Severity.INFO, 0.0)
+    changed = finding("npm.install-script-changed", Severity.MEDIUM, 3.0)
+    assert decide([changed, match]).forwarded
+
+
+def test_an_established_match_clears_install_code_findings() -> None:
+    match = finding("repo.established-match", Severity.INFO, 0.0)
+    changed = finding("npm.install-script-changed", Severity.MEDIUM, 3.0)
+    code = finding("npm.install-script-code", Severity.MEDIUM, 2.0)
+    assert decide_clearing([changed, code]).forwarded
+    cleared = decide_clearing([changed, code, match])
+    assert not cleared.forwarded
+    assert cleared.reason == (
+        "score 5; npm.install-script-changed, npm.install-script-code cleared by "
+        "repo.established-match"
+    )
+    new_hook = finding("npm.install-hook", Severity.MEDIUM, 3.0)  # a new package's hook
+    assert not decide_clearing([new_hook, match]).forwarded
+
+
+def test_an_established_match_clears_nothing_else() -> None:
+    match = finding("repo.established-match", Severity.INFO, 0.0)
+    changed = finding("npm.install-script-changed", Severity.MEDIUM, 3.0)
+    added_hook = finding("npm.install-hook", Severity.HIGH, 5.0)  # added to an update
+    assert decide_clearing([added_hook, changed, match]).forwarded
+    for other in (
+        finding("static.hardcoded-ip", Severity.MEDIUM, 2.0),
+        finding("sandbox.process-spawn", Severity.MEDIUM, 2.0),
+        finding("static.exfil-endpoint", Severity.HIGH, 5.0),
+    ):
+        assert decide_clearing([changed, other, match]).forwarded, other.rule_id
+    # The rest of the score still reports on its own (3 < 4 without the cleared finding).
+    lows = [finding(f"low{i}", Severity.LOW, 1.0) for i in range(3)]
+    assert not decide_clearing([changed, *lows, match], report_score=4).forwarded
+    assert decide_clearing([changed, *lows, match], report_score=3).forwarded
+
+
 class Echo:
     """Adds a LOW finding naming how many findings it saw."""
 
