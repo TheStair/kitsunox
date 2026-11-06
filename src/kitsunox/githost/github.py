@@ -7,8 +7,10 @@
   tree never changes, so the archive is fetched through the immutable index: once per commit,
   across runs and across the packages of a monorepo.
 
-- **Facts** (`RepoFacts`: fork, age, stars, default branch) and whether a commit is on the
-  default branch come from the REST API (`api.github.com`), only with a token
+- **Facts** (`RepoFacts`: fork, age, stars, default branch), how two commits relate
+  (`CompareStatus`: whether a commit is on the default branch, or a release's commit is ahead of
+  the previous release's) and when a commit was made come from the REST API
+  (`api.github.com`), only with a token
   (`GITHUB_TOKEN`; 5,000 requests an hour). The token goes in a request header, which
   `request_key` and the snapshot never record, and only to `API_PREFIX` URLs.
 
@@ -62,6 +64,16 @@ class RepoFacts(Record):
     created_at: datetime
     stars: int
     default_branch: str
+
+
+class CompareStatus(Record):
+    """How `head` relates to `base` (GitHub's compare API): `identical`, `ahead` (`head` is
+    `base` plus `ahead_by` commits), `behind` (`head` is an ancestor of `base`) or `diverged`.
+    Two fixed commits always relate the same way, unless history is rewritten."""
+
+    status: str
+    ahead_by: int
+    behind_by: int
 
 
 @dataclass(frozen=True)
@@ -155,20 +167,45 @@ class GitHub:
 
     def on_branch(self, repo: GitHubRepo, commit: str, head: str) -> bool:
         """Whether `commit` is `head` or one of its ancestors (`head`: a branch's commit, from
-        `refs`), by the compare API: `head` is then "ahead" of `commit` or "identical". A
-        commit only a fork has, or one GitHub doesn't know, is not. Page 2 with one commit a
-        page: the status and counts without the file list, which page 1 carries (up to 300
-        files with patches)."""
-        if not (_SHA.match(commit) and _SHA.match(head)):
-            raise ValueError(f"not full commit ids: {commit!r}, {head!r}")
-        body = self._api(f"{API_PREFIX}{repo}/compare/{commit}...{head}?per_page=1&page=2")
+        `refs`): `head` is then "ahead" of `commit` or "identical". A commit only a fork has,
+        or one GitHub doesn't know, is not."""
+        status = self.compare_status(repo, commit, head)
+        return status is not None and status.status in ("ahead", "identical")
+
+    def compare_status(self, repo: GitHubRepo, base: str, head: str) -> CompareStatus | None:
+        """How `head` relates to `base`, or None if GitHub doesn't know one of them (404).
+        Page 2 with one commit a page: the status and counts without the file list, which page
+        1 carries (up to 300 files with patches)."""
+        if not (_SHA.match(base) and _SHA.match(head)):
+            raise ValueError(f"not full commit ids: {base!r}, {head!r}")
+        body = self._api(f"{API_PREFIX}{repo}/compare/{base}...{head}?per_page=1&page=2")
         if body is None:
-            return False
+            return None
         try:
-            status = json.loads(body)["status"]
-        except (ValueError, TypeError, KeyError) as exc:
+            raw = json.loads(body)
+            return CompareStatus(
+                status=raw["status"], ahead_by=raw["ahead_by"], behind_by=raw["behind_by"]
+            )
+        except (ValueError, TypeError, KeyError, ValidationError) as exc:
             raise FetchError(f"{repo}: malformed comparison") from exc
-        return status in ("ahead", "identical")
+
+    def commit_date(self, repo: GitHubRepo, commit: str) -> datetime | None:
+        """When `commit` was committed (its committer date: the commit's own claim, which a
+        later rewrite can't move earlier without changing the commit id), or None if GitHub
+        doesn't know it. The git data API: the commit object alone, no files."""
+        if not _SHA.match(commit):
+            raise ValueError(f"not a full commit id: {commit!r}")
+        body = self._api(f"{API_PREFIX}{repo}/git/commits/{commit}")
+        if body is None:
+            return None
+        try:
+            raw = json.loads(body)
+            when = datetime.fromisoformat(raw["committer"]["date"].replace("Z", "+00:00"))
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise FetchError(f"{repo}: malformed commit") from exc
+        if when.tzinfo is None:
+            raise FetchError(f"{repo}: commit date without a time zone")
+        return when
 
     def _api(self, url: str) -> bytes | None:
         """A REST API response body, or None for 404 and 451. Anything else that isn't 200

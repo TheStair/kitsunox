@@ -628,6 +628,71 @@ def _hook_finding(rule: BaseRule, d: ManifestDifference, change: Change) -> Find
     )
 
 
+class NoNewCommits(BaseRule):
+    """The release came from the previous release's commit, or an older one, though its code
+    differs from the repository's there or couldn't be compared (the comparison isn't clean):
+    what changed since the previous release never went through git. A clean match there is
+    the previous release's code republished, which is harmless. Typical of a stolen token
+    republishing an old build with a payload added, which keeps the old `gitHead` (Shai-Hulud
+    2.0's victims).
+    Stable versions only, and only a version number that went up: nightlies, canaries and
+    prerelease promotions are built from one commit on purpose.
+
+    | | Malicious | Benign |
+    |---|---|---|
+    | compared updates, same or older commit (any version shape) | 61 of 102 | 9 of 626 |
+    | `vm-day1`, `pipeline+4` (2026-11-06) | 60 of 3,444 | 0 of 1,500 |
+
+    Every one of the 60 is reported through other rules, and a developer publishing changes
+    they haven't committed looks the same; so LOW, corroboration that orders the queue."""
+
+    id = "npm.repo.no-new-commits"
+    severity = Severity.LOW
+    weight = 2.0
+    title = "No new commits since the previous release"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        comparison = ctx.repo
+        history = comparison.history if comparison is not None else None
+        change = candidate.change
+        if (
+            comparison is None
+            or history is None
+            or change.previous is None
+            or history.previous_commit is None
+            or history.status not in ("identical", "behind")
+            or comparison.clean
+        ):
+            return ()
+        old, new = semver.parse(change.previous.ref.version), semver.parse(change.new.ref.version)
+        if old is None or new is None or old.is_prerelease or new.is_prerelease or not old < new:
+            return ()
+        where = (
+            "the same commit as"
+            if history.status == "identical"
+            else f"a commit {history.behind_by} commits older than"
+        )
+        code = (
+            "yet its code differs from the repository's there: the change never went through git"
+            if comparison.unavailable is None
+            else f"and its code couldn't be compared ({comparison.unavailable})"
+        )
+        return (
+            self.finding(
+                f"{change.new.ref.version} was built from {where} {history.previous_version} "
+                f"({history.previous_commit[:12]}), {code}.",
+                Evidence(
+                    kind=EvidenceKind.METADATA,
+                    path="repository",
+                    before=history.previous_commit,
+                    after=comparison.source.commit if comparison.source else None,
+                ),
+            ),
+        )
+
+
 class DependencyNotInRepo(BaseRule):
     """A runtime dependency the repository's `package.json` doesn't name in any section. Weak:
     2 of 116 comparable benign updates, 7 of 55 malicious (before `repo.compared` v2, which
@@ -673,4 +738,5 @@ RULES: Final = (
     NameEmbedsPopular(),
     InstallScriptNotInRepo(),
     DependencyNotInRepo(),
+    NoNewCommits(),
 )

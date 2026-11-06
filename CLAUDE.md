@@ -148,7 +148,7 @@ src/kitsunox/
   stages/           # ingest, triage, static, ast, correlate, sandbox
   rules/            # ecosystem-agnostic rules (entropy, URLs/IPs, eval/dynamic code)
   lang/             # source-language parsers (tree-sitter JS/TS capabilities for Stage 3)
-  githost/          # git hosts (GitHub refs + archives; REST API facts with GITHUB_TOKEN) for Stage 4 and the git path
+  githost/          # git hosts (GitHub refs + archives; REST API facts, compares, commit dates with GITHUB_TOKEN) for Stage 4
   evaluation/       # OSV labels, datasets built from ingest runs, predictors + metrics
   reporting/        # report rendering (Markdown/HTML), summary index
   web/              # read-only local viewer for reports and the queue (stdlib http.server, no JS)
@@ -300,7 +300,10 @@ in `lang/javascript.py`; see `docs/stages/ast.md`. tree-sitter 0.26.0 crashes; i
 Stage 4 is `stages/correlate.py` (+ npm wiring in `stages/review.py`): it reads every triaged
 version, adds known-malware, combination and tarball-vs-repo findings (`stages/repo.py`,
 `githost/github.py`, `ecosystems/npm/repo.py`), scores, and decides what to report. See
-`docs/stages/correlate.md` and decision 0010. Eval predictor: `pipeline+4`.
+`docs/stages/correlate.md` and decision 0010. With `GITHUB_TOKEN` it also asks the REST API
+about repositories (0017) and the commits between releases (0018); clearing reports with
+either is built but off (`CLEAR_ESTABLISHED`, `CLEAR_HISTORY`: the owner's call). Eval
+predictor: `pipeline+4`.
 Reports (`reporting/`: `report.py` builds the canonical `report.json`, `markdown.py` renders it
 with all package text escaped as untrusted) are written per run by `collect`, which then rebuilds
 the cross-run review queue (`reporting/queue.py`, `data/queue/`); see `docs/stages/report.md`.

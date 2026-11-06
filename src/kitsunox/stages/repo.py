@@ -26,11 +26,18 @@ from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Executor, ProcessPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from typing import Final, Protocol
 
 from kitsunox.core.models import Change, Record
-from kitsunox.githost.github import ARCHIVE_PREFIX, GitHub, GitHubRepo, RepoFacts, extract_archive
+from kitsunox.githost.github import (
+    ARCHIVE_PREFIX,
+    GitHub,
+    GitHubRepo,
+    RepoFacts,
+    extract_archive,
+)
 from kitsunox.lang.javascript import language_for
 from kitsunox.util.archive import ExtractLimits
 from kitsunox.util.hashing import sha256_hex
@@ -46,7 +53,12 @@ class ReleaseSource(Record):
     repo: str  # `owner/name`
     directory: str = ""  # the package's directory in a monorepo
     commit: str
-    how: str  # e.g. `gitHead`, `tag refs/tags/v1.2.3`
+    how: str  # e.g. `gitHead`, `tag v1.2.3`
+
+    @property
+    def by_tag(self) -> bool:
+        """The commit was found by a release tag, not recorded by the release itself."""
+        return self.how.startswith("tag ")
 
 
 class ManifestDifference(Record):
@@ -72,6 +84,25 @@ class RepoTrust(Record):
     unavailable: str | None = None
 
 
+class RepoHistory(Record):
+    """The release's commit against the previous release's (`with_history`): what git saw
+    between the two releases. `previous_commit` is None when the previous release recorded no
+    commit and has no release tag. `status` (`CompareStatus.status`: `identical`, `ahead`,
+    `behind`, `diverged`) is `identical` without asking when both releases name the same
+    commit; otherwise it is asked of the API only for versions worth it (`with_history`).
+    `commit_date` is the release commit's committer date, asked only when the commit was found
+    by a tag. `unavailable` says why an answer that was asked for is missing."""
+
+    previous_version: str
+    previous_commit: str | None = None
+    previous_how: str | None = None
+    status: str | None = None
+    ahead_by: int | None = None
+    behind_by: int | None = None
+    commit_date: datetime | None = None
+    unavailable: str | None = None
+
+
 class RepoComparison(Record):
     """A release's code files against the repository at its commit. `unavailable` says why no
     comparison was made (no repository, no commit for this version, archive too large); the
@@ -94,6 +125,7 @@ class RepoComparison(Record):
     unexplained_count: int = 0
     manifest: tuple[ManifestDifference, ...] = ()
     trust: RepoTrust | None = None
+    history: RepoHistory | None = None
 
     @property
     def clean(self) -> bool:
@@ -114,6 +146,10 @@ class Locator(Protocol):
     def repository(self, change: Change) -> tuple[GitHubRepo, str] | None: ...
 
     def commit(self, change: Change, refs: Mapping[str, str]) -> tuple[str, str] | None: ...
+
+    def previous_commit(self, change: Change, refs: Mapping[str, str]) -> tuple[str, str] | None:
+        """The commit the previous release came from, found as `commit` finds the release's."""
+        ...
 
     def package_directory(self, change: Change, repo: Tree) -> str | None:
         """Where the release's package is in a repository whose release didn't say: the
@@ -475,10 +511,11 @@ def compare(
         return _compare_tree(change, package, locator, source, directory, tree)
 
 
-# The text of a trust lookup that failed, for every cause (a network failure, a rate limit, a
+# The text of an API lookup that failed, for every cause (a network failure, a rate limit, a
 # replay miss): a replay of a run whose lookup failed on the network misses the request, and
 # must read the same.
-TRUST_FAILED: Final = "GitHub API request failed"
+API_FAILED: Final = "GitHub API request failed"
+TRUST_FAILED: Final = API_FAILED
 
 
 def with_trust(comparison: RepoComparison, github: GitHub, memory: RepoMemory) -> RepoComparison:
@@ -507,6 +544,62 @@ def with_trust(comparison: RepoComparison, github: GitHub, memory: RepoMemory) -
     except FetchError:  # includes a network failure (`TransientFetchError`): not retried
         trust = RepoTrust(unavailable=TRUST_FAILED)
     return comparison.model_copy(update={"trust": trust})
+
+
+def with_history(
+    comparison: RepoComparison,
+    change: Change,
+    locator: Locator,
+    github: GitHub,
+    memory: RepoMemory,
+    *,
+    ask_range: bool,
+) -> RepoComparison:
+    """`comparison` with `history` filled in, for an update compared at a commit; otherwise
+    unchanged. The previous release's commit comes from its `gitHead` or a release tag in the
+    refs the comparison already fetched (no request). With a token, at most two API requests,
+    each once per run: how the two commits relate (only if `ask_range` and they differ: Stage 4
+    asks for versions an earlier stage found something MEDIUM or above in, the ones a match
+    can clear), and when a tag-found commit was made (`repo.commit-after-release`)."""
+    source = comparison.source
+    previous = change.previous
+    if source is None or previous is None:
+        return comparison
+    owner, _, name = source.repo.partition("/")
+    repo = GitHubRepo(owner=owner, name=name)
+    history = RepoHistory(previous_version=previous.ref.version)
+    found = locator.previous_commit(change, memory.refs(github, repo) or {})
+    if found is not None:
+        before, how = found
+        history = history.model_copy(update={"previous_commit": before, "previous_how": how})
+        if before == source.commit:
+            history = history.model_copy(
+                update={"status": "identical", "ahead_by": 0, "behind_by": 0}
+            )
+        elif ask_range and github.has_api:
+            try:
+                status = memory.api(
+                    f"compare {repo} {before} {source.commit}",
+                    lambda: github.compare_status(repo, before, source.commit),
+                )
+                if status is None:
+                    history = history.model_copy(
+                        update={"unavailable": "GitHub doesn't know one of the commits"}
+                    )
+                else:
+                    history = history.model_copy(update=status.model_dump())
+            except FetchError:  # includes a network failure: not retried, as `with_trust`
+                history = history.model_copy(update={"unavailable": API_FAILED})
+    if source.by_tag and github.has_api:
+        try:
+            when = memory.api(
+                f"commit-date {repo} {source.commit}",
+                lambda: github.commit_date(repo, source.commit),
+            )
+            history = history.model_copy(update={"commit_date": when})
+        except FetchError:
+            history = history.model_copy(update={"unavailable": API_FAILED})
+    return comparison.model_copy(update={"history": history})
 
 
 # The work `compared_in_pool` sends: the archive's body in, a comparison or the text of why

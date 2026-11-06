@@ -42,6 +42,7 @@ from kitsunox.stages.repo import (
     RepoMemory,
     compare,
     compare_pool,
+    with_history,
     with_trust,
 )
 from kitsunox.stages.static import ArtifactFiles, Unavailable
@@ -87,7 +88,10 @@ class NpmRepoLookup:
     With a GitHub token, a clean comparison of a version an earlier stage found something
     MEDIUM or above in also gets the repository's facts (`with_trust`): only those versions
     can be cleared by an established match (`repo.established-match`), and asking for every
-    watched update would spend ~10 times the API quota."""
+    watched update would spend ~10 times the API quota. Every compared update gets its
+    history (`with_history`): the previous release's commit from the refs already fetched,
+    the release commit's date when a tag found it (~500 requests a day, measured 2026-11-06),
+    and, for the same flagged versions, how the two commits relate."""
 
     def __init__(
         self, fetcher: HttpFetcher, *, pool: Executor | None = None, token: str | None = None
@@ -117,9 +121,12 @@ class NpmRepoLookup:
             return RepoComparison(unavailable=f"{REPO_NETWORK}{exc}"[:300], transient=True)
         except FetchError as exc:  # not the network: e.g. a malformed ref advertisement
             return RepoComparison(unavailable=str(exc)[:300])
-        if any(at_least(f.severity, Severity.MEDIUM) for f in candidate.findings):
+        flagged = any(at_least(f.severity, Severity.MEDIUM) for f in candidate.findings)
+        if flagged:
             comparison = with_trust(comparison, self.github, self.memory)
-        return comparison
+        return with_history(
+            comparison, candidate.change, self.locator, self.github, self.memory, ask_range=flagged
+        )
 
 
 def repo_lookup(

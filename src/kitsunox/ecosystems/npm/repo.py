@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Final
 
-from kitsunox.core.models import Change
+from kitsunox.core.models import Change, VersionSnapshot
 from kitsunox.ecosystems.npm.install import files_named
 from kitsunox.ecosystems.npm.rules.metadata import (
     INSTALL_HOOKS,
@@ -48,14 +48,10 @@ class NpmLocator:
         return repo, _directory(change.new.manifest.get("repository"))
 
     def commit(self, change: Change, refs: Mapping[str, str]) -> tuple[str, str] | None:
-        head = change.new.publish.git_head
-        if head is not None and _SHA.match(head):
-            return head, "gitHead"
-        for tag in release_tags(change.new.ref.name, change.new.ref.version):
-            commit = refs.get(f"refs/tags/{tag}")
-            if commit is not None:
-                return commit, f"tag {tag}"
-        return None
+        return _commit(change.new, refs)
+
+    def previous_commit(self, change: Change, refs: Mapping[str, str]) -> tuple[str, str] | None:
+        return _commit(change.previous, refs) if change.previous is not None else None
 
     def package_directory(self, change: Change, repo: Mapping[str, bytes]) -> str | None:
         """The directory of the repository's `package.json` named like the release: the root's
@@ -187,6 +183,18 @@ def _manifest(tree: Mapping[str, bytes], path: str = "") -> dict[str, object] | 
 
 def _normalised(command: str) -> str:
     return " ".join(command.replace("node_modules/.bin/", "").split())
+
+
+def _commit(version: VersionSnapshot, refs: Mapping[str, str]) -> tuple[str, str] | None:
+    """A release's commit: its `gitHead`, else the commit of a release tag."""
+    head = version.publish.git_head
+    if head is not None and _SHA.match(head):
+        return head, "gitHead"
+    for tag in release_tags(version.ref.name, version.ref.version):
+        commit = refs.get(f"refs/tags/{tag}")
+        if commit is not None:
+            return commit, f"tag {tag}"
+    return None
 
 
 def release_tags(name: str, version: str) -> tuple[str, ...]:

@@ -43,7 +43,7 @@ from kitsunox.rules.static import RULES as STATIC_RULES
 from kitsunox.stages.ast import CapabilityCache, code_change
 from kitsunox.stages.code import CODE_RULES
 from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
-from kitsunox.stages.repo import RepoMemory, compare, with_trust
+from kitsunox.stages.repo import RepoMemory, compare, with_history, with_trust
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
     MAX_ARTIFACT_BYTES,
@@ -316,7 +316,8 @@ class Correlated(PipelineWithCode):
     comparisons get the repository's facts as live (`with_trust`), pinned under
     `data/eval/github-api/` like the dependency records: as of the first evaluation that asked,
     not as of the release (a repository deleted since reads as not shown, so the release
-    stays reported).
+    stays reported). Compared updates get their history (`with_history`) the same way; two
+    commits relate the same way whenever they are asked about.
 
     `notes` also records (under `ABOUT`) what a result depends on besides the dataset: the
     correlation rules' fingerprint, the watchlist and label set ids, and the dependency lookup
@@ -395,10 +396,13 @@ class Correlated(PipelineWithCode):
                 )
             except FetchError as exc:
                 self._note(f"repo: {type(exc).__name__} (no comparison)")
-            if repo is not None and any(
-                at_least(f.severity, Severity.MEDIUM) for f in found.findings
-            ):
+            flagged = any(at_least(f.severity, Severity.MEDIUM) for f in found.findings)
+            if repo is not None and flagged:
                 repo = with_trust(repo, self.api, self.trust_memory)
+            if repo is not None:
+                repo = with_history(
+                    repo, change, self.locator, self.api, self.trust_memory, ask_range=flagged
+                )
         ctx = CorrelationContext(
             as_of=_as_of(change),
             known_bad=self.labels,

@@ -234,6 +234,9 @@ dependency's packument.
 - **Established repository match** (stage version 9, 2026-11-04): clearing install-code
   MEDIUM findings for a version whose code is exactly an established repository's is built
   but off (`CLEAR_ESTABLISHED`; Repository trust, below).
+- **History match** (stage version 10, 2026-11-06): clearing the same findings for a version
+  whose code is exactly the repository's at a commit ahead of the previous release's is built
+  but off too (`CLEAR_HISTORY`; Repository history, below).
 - **Score:** the sum over the rules that fired, each counted once at its largest weight
   (Stage 2 reports a finding per matching file), INFO excluded. Rules whose findings are all
   LOW together add at most `LOW_CAP` (3; stage version 7, 2026-10-30), so LOW findings alone
@@ -316,6 +319,48 @@ malicious clean match (`@finzzcloud/baileys`) came from the attacker's own 1-sta
 and the attacker's `tavern-labs-ai/persona-ai-sdk` had 197 stars three days after it was
 created (stars can be bought; age can't).
 
+## Repository history (`with_history`; stage version 10)
+
+What git saw between the previous release and this one (decision
+[0018](../decisions/0018-commit-history.md)). For every update compared at a commit:
+
+1. **The previous release's commit**, found as the release's is: its `gitHead`, else a release
+   tag in the refs the comparison already fetched. No request.
+2. **How the two relate** (`history.status`, from GitHub's compare API: `identical`, `ahead`,
+   `behind`, `diverged`, with the counts):
+   - `identical` without asking when both releases name the same commit;
+   - otherwise asked, with a token, only for versions an earlier stage found something
+     MEDIUM or above in (the ones a match could clear): `compare/{previous}...{release}`, page
+     2 at one commit a page, so the status comes without the file list.
+   - A version that isn't flagged never reads an answer another version asked for, so its
+     output doesn't depend on lookup order.
+3. **When a tag-found commit was made** (`history.commit_date`, with a token): the committer
+   date from `git/commits/{sha}`, the commit object only. A `gitHead` is written at publish
+   time, so it isn't asked.
+4. Each request once per run, recorded in `correlate-snapshot.json`. Failures leave
+   `history.unavailable` = "GitHub API request failed" and aren't retried (as trust).
+
+Rules over it:
+
+- **`repo.commit-after-release`** (MEDIUM): the tag points to a commit made more than 6 hours
+  after the publish, so the release wasn't built from it. Of 815 live tag-found releases, the
+  latest tag commit came 1.4 hours after the publish. The malicious ones came 7 hours to 255
+  days later: a stolen token published the version first, and the maintainers' own release of
+  it came later. `vm-day1`: 13 malicious, 0 benign, all reported anyway. A tag of the version
+  alone (`v3.2.2`) on a package in a subdirectory doesn't count: in a monorepo it may be
+  another package's (`@mongodb-js/mcp-atlas-telemetry`, the one benign hit before).
+- **`npm.repo.no-new-commits`** (LOW): a stable version, higher than the previous stable one,
+  built from the same commit or an older one, while its code isn't a clean match there.
+  Compared updates: 61 of 102 malicious, 9 of 626 benign. `vm-day1`: 60 malicious, 0 benign. It is LOW because developers
+  publishing uncommitted work look the same (2.9% of all live stable updates reuse `gitHead`).
+- **`repo.history-match`** (INFO): a clean comparison at a commit ahead of the previous
+  release's (and no `commit-after-release`). With `CLEAR_HISTORY` on, it clears install code
+  as `repo.established-match` would.
+  - Live, it would clear 78 of 1,507 reported versions (5.2%): 60 reviewed benign, none
+    reviewed malicious.
+  - On `vm-day1` it loses `gina@0.7.1`, whose 44 commits since its previous release are its
+    maintainer's. So it is off.
+
 ## Rules
 
 | Rule | Fires when | Severity | Weight |
@@ -327,6 +372,9 @@ created (stars can be bought; age can't).
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.established-match` | a clean comparison with a repository that is not a fork or archived, ≥ 30 days old at the release, ≥ 5 stars, the commit on its default branch (Repository trust, above). Clears install-code MEDIUM findings in the decision | INFO | 0 |
+| `repo.history-match` | a clean comparison at a commit ahead of the previous release's commit, no `commit-after-release` (Repository history, above). Clears install-code MEDIUM findings in the decision when `CLEAR_HISTORY` is on (off) | INFO | 0 |
+| `repo.commit-after-release` | the release's tag points to a commit made more than 6 hours after the release was published | MEDIUM | 3 |
+| `npm.repo.no-new-commits` | a stable version, above the previous stable one, built from the previous release's commit or an older one, its code not a clean match there | LOW | 2 |
 | `repo.code-differs` | a shipped code file differs from the repository's file at the same path | LOW | 2 |
 | `repo.code-not-in-repo` | shipped code files are *unexplained* (above). Since `STAGE_VERSION` 6 a file whose content is elsewhere in the repository, byte for byte, is explained (a build copied it) | LOW | 2 |
 | `npm.repo.install-script-not-in-repo` (v2) | the release's install hook isn't in the repository's `package.json` (or has another command). INFO instead when the repository's build writes it (`ManifestDifference.built_by`): every package file the command names is in the repository byte for byte, and another repository file holds the command (the release's version may be a placeholder there). First VM day: `@nutui/nutui-react-taro` (`scripts/build-taro.mjs`) and `@opencode/cli` (`script/pack.ts`); `@pulumi/*` still fire, since Pulumi's code generator, not the repository, writes their hook. With `repository.directory` only that directory is searched. v3: LOW, weight 1, when the previous release shipped the same hook (its version string aside), so a generated hook that is in every release (`@pulumi/*`) stops counting; the release that adds a hook still fires HIGH | HIGH | 5 |
@@ -436,6 +484,10 @@ that cover every version: 11 malicious new packages, 0 benign.
   ([proposal](../proposals/git-path.md), Phase B); until then the clearing rests on the
   measured numbers alone. Facts are as of the fetch (stars now, not at the release), and a
   version Stage 4 clears is never exported to Stage 5.
+- **History can't see a maintainer's own commits.** A history match says the change went
+  through git, not who wrote it: `gina@0.7.1` is 44 commits by its maintainer. Commit dates
+  are the committer's claim, so a forged early date hides `commit-after-release`. The
+  previous release's commit is found by tag when it recorded no `gitHead`, and tags can move.
 - **Volume.** The first live day (`20261027T210847Z-npm`) downloaded 2,142 archives, 31 GB,
   and Stage 4 took ~7.5 hours for 109k versions. Archives can be kept for less time than the
   run (`--keep-repo-days`, decision 0006 addendum).

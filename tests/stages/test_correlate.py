@@ -132,6 +132,21 @@ def test_an_established_match_clears_install_code_findings() -> None:
     assert not decide_clearing([new_hook, match]).forwarded
 
 
+def test_a_history_match_clears_install_code_only_when_switched_on() -> None:
+    match = finding("repo.history-match", Severity.INFO, 0.0)
+    changed = finding("npm.install-script-changed", Severity.MEDIUM, 3.0)
+    assert decide([changed, match]).forwarded  # off by default
+    assert decide([changed, match], clear_established=True).forwarded  # the other match's
+    cleared = decide([changed, match], clear_history=True)
+    assert not cleared.forwarded
+    assert cleared.reason == "score 3; npm.install-script-changed cleared by repo.history-match"
+    late = finding("repo.commit-after-release", Severity.MEDIUM, 3.0)
+    assert decide([changed, late, match], clear_history=True).forwarded
+    both = finding("repo.established-match", Severity.INFO, 0.0)
+    cleared = decide([changed, match, both], clear_established=True, clear_history=True)
+    assert cleared.reason.endswith("cleared by repo.established-match, repo.history-match")
+
+
 def test_an_established_match_clears_nothing_else() -> None:
     match = finding("repo.established-match", Severity.INFO, 0.0)
     changed = finding("npm.install-script-changed", Severity.MEDIUM, 3.0)

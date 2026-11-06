@@ -1,12 +1,13 @@
 """GitHub client: repo URLs, the smart-HTTP ref advertisement, and archives by commit."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
 from conftest import Router, TarEntry, make_tar_gz
-from kitsunox.githost.github import GitHub, GitHubRepo, parse_ref_advertisement
+from kitsunox.githost.github import CompareStatus, GitHub, GitHubRepo, parse_ref_advertisement
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
 
 A, B, C = "a" * 40, "b" * 40, "c" * 40
@@ -221,3 +222,33 @@ def test_a_redirect_to_another_host_does_not_carry_the_token(tmp_path: Path) -> 
     )
     GitHub(fetcher, token=TOKEN).facts(REPO)
     assert seen == {"api.github.com": f"Bearer {TOKEN}", "elsewhere.example": None}
+
+
+def test_compare_status_reads_the_counts(tmp_path: Path, router: Router) -> None:
+    router.add_json(compare_url(A, B), {"status": "behind", "ahead_by": 0, "behind_by": 3})
+    status = api(tmp_path, router).compare_status(REPO, A, B)
+    assert status == CompareStatus(status="behind", ahead_by=0, behind_by=3)
+    assert api(tmp_path / "2", router).compare_status(REPO, B, A) is None  # 404
+    router.add_json(compare_url(B, A), {"status": "ahead"})
+    with pytest.raises(FetchError, match="malformed comparison"):
+        api(tmp_path / "3", router).compare_status(REPO, B, A)
+
+
+def test_commit_date_is_the_committer_date(tmp_path: Path, router: Router) -> None:
+    url = f"https://api.github.com/repos/{REPO}/git/commits/{A}"
+    router.add_json(
+        url,
+        {"author": {"date": "2020-01-01T00:00:00Z"}, "committer": {"date": "2026-11-03T12:00:00Z"}},
+    )
+    assert api(tmp_path, router).commit_date(REPO, A) == datetime(2026, 11, 3, 12, tzinfo=UTC)
+    assert api(tmp_path / "2", router).commit_date(REPO, B) is None  # 404
+    for body in (
+        {"committer": None},
+        {"committer": {"date": "yesterday"}},
+        {"committer": {"date": "2026-11-03T12:00:00"}},
+    ):
+        router.add_json(url, body)
+        with pytest.raises(FetchError, match=r"malformed commit|time zone"):
+            api(tmp_path / str(len(router.requests)), router).commit_date(REPO, A)
+    with pytest.raises(ValueError, match="full commit"):
+        api(tmp_path, router).commit_date(REPO, "main")

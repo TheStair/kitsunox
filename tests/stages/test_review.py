@@ -787,7 +787,7 @@ def test_an_established_match_end_to_end(tmp_path: Path, router: Router) -> None
             "default_branch": "main",
         },
     )
-    router.add_json(API_COMPARE, {"status": "identical"})
+    router.add_json(API_COMPARE, {"status": "identical", "ahead_by": 0, "behind_by": 0})
     fetcher = HttpFetcher(
         store=BlobStore(tmp_path / "blobs"),
         snapshot=Snapshot(),
@@ -810,4 +810,61 @@ def test_an_established_match_end_to_end(tmp_path: Path, router: Router) -> None
     untrusted = repo_lookup(fetcher)(flagged)
     assert untrusted is not None and untrusted.trust is None
     assert correlate(flagged, replace(CTX, repo=untrusted), CORRELATION_RULES).history[-1].forwarded
+    fetcher.close()
+
+
+def test_a_history_match_end_to_end(tmp_path: Path, router: Router) -> None:
+    """An update whose release is the repository's code at a commit ahead of the previous
+    release's: `repo.history-match`, which clears install code only when switched on."""
+    old = "e" * 40
+    router.add_json(
+        API_FACTS,
+        {
+            "full_name": "o/r",
+            "fork": False,
+            "archived": False,
+            "created_at": "2020-01-01T00:00:00Z",
+            "stargazers_count": 1,
+            "default_branch": "main",
+        },
+    )
+    router.add_json(API_COMPARE, {"status": "identical", "ahead_by": 0, "behind_by": 0})
+    history_url = f"https://api.github.com/repos/o/r/compare/{old}...{A}?per_page=1&page=2"
+    router.add_json(history_url, {"status": "ahead", "ahead_by": 5, "behind_by": 0})
+    fetcher = HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=Snapshot(),
+        mode=FetchMode.RECORD,
+        client=router.client(),
+    )
+    lookup = repo_lookup(fetcher, token="t")  # noqa: S106
+    plain = serve(router)
+    previous = plain.change.new.model_copy(
+        update={
+            "ref": plain.change.new.ref.model_copy(update={"version": "1.0.0"}),
+            "publish": PublishInfo(git_head=old),
+        }
+    )
+    update = plain.model_copy(
+        update={
+            "change": plain.change.model_copy(update={"previous": previous}),
+            "findings": (install_code_finding(),),
+        }
+    )
+    comparison = lookup(update)
+    assert comparison is not None and comparison.history is not None
+    assert (comparison.history.status, comparison.history.ahead_by) == ("ahead", 5)
+    result = correlate(update, replace(CTX, repo=comparison), CORRELATION_RULES)
+    ids = {f.rule_id for f in result.findings}
+    assert "repo.history-match" in ids and "repo.established-match" not in ids  # 1 star
+    assert result.history[-1].forwarded  # clearing is off (CLEAR_HISTORY)
+    cleared = decide(result.findings, clear_history=True)
+    assert not cleared.forwarded and cleared.reason.endswith("cleared by repo.history-match")
+    # Unflagged, the range isn't asked: only the commit equality, which costs nothing. Not
+    # even read from this run's answer, so a version's output doesn't depend on which other
+    # versions the run looked up first.
+    unflagged = lookup(update.model_copy(update={"findings": ()}))
+    assert unflagged is not None and unflagged.history is not None
+    assert unflagged.history.previous_commit == old and unflagged.history.status is None
+    assert router.requests.count(history_url) == 1
     fetcher.close()

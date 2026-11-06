@@ -56,9 +56,11 @@ STAGE_ID: Final = "correlate"
 # file writes is noted (`ManifestDifference.built_by`). 7: LOW findings together add at most
 # `LOW_CAP` to the score. 8: `code.capability-gained` and `static.webhook-placeholder` join
 # `WEAK_ALONE`. 9: clean comparisons can carry the repository's facts (`repo.established-match`);
-# clearing install-code findings with it exists but is off (`CLEAR_ESTABLISHED`). Output
-# without the field is 1.
-STAGE_VERSION: Final = 9
+# clearing install-code findings with it exists but is off (`CLEAR_ESTABLISHED`). 10: compared
+# updates carry the previous release's commit (`RepoComparison.history`): `repo.history-match`,
+# `repo.commit-after-release`, `npm.repo.no-new-commits`; clearing with a history match is off
+# too (`CLEAR_HISTORY`). Output without the field is 1.
+STAGE_VERSION: Final = 10
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -296,6 +298,13 @@ WEAK_ALONE: Final = frozenset(
 # repository). So it is off until the owner decides.
 CLEAR_ESTABLISHED: Final = False
 ESTABLISHED_MATCH: Final = "repo.established-match"
+# The same findings, explained instead by the repository's history (`repo.history-match`): the
+# release is the repository's code at a commit ahead of the previous release's. Measured
+# 2026-11-06 (decision 0018) on live compared updates and `vm-day1`; it too loses
+# `gina@0.7.1`, whose 44 commits since its previous release are its maintainer's. Off until
+# the owner decides.
+CLEAR_HISTORY: Final = False
+HISTORY_MATCH: Final = "repo.history-match"
 CLEARED_BY_REPO: Final = frozenset(
     {"npm.install-hook", "npm.install-script-changed", "npm.install-script-code"}
 )
@@ -312,14 +321,20 @@ def decide(
     *,
     report_score: float = REPORT_SCORE,
     clear_established: bool = CLEAR_ESTABLISHED,
+    clear_history: bool = CLEAR_HISTORY,
 ) -> StageDecision:
     total = score(findings)
     severe = sorted({f.rule_id for f in findings if _severe(f)})
-    if clear_established and severe and _cleared_by_repo(findings, severe, report_score):
+    clearing = [
+        rule
+        for rule, on in ((ESTABLISHED_MATCH, clear_established), (HISTORY_MATCH, clear_history))
+        if on and any(f.rule_id == rule for f in findings)
+    ]
+    if clearing and severe and _cleared_by_repo(findings, severe, report_score):
         return StageDecision(
             stage=STAGE_ID,
             forwarded=False,
-            reason=f"score {total:g}; {', '.join(severe)} cleared by {ESTABLISHED_MATCH}",
+            reason=f"score {total:g}; {', '.join(severe)} cleared by {', '.join(clearing)}",
         )
     if severe:
         reason = f"score {total:g}; {REPORT_SEVERITY.value}: {', '.join(severe)}"
@@ -333,9 +348,10 @@ def decide(
 def _cleared_by_repo(
     findings: Sequence[Finding], severe: Sequence[str], report_score: float
 ) -> bool:
+    """Whether a match (the caller checked one is present and switched on) explains every
+    finding that would report the version."""
     return (
-        any(f.rule_id == ESTABLISHED_MATCH for f in findings)
-        and set(severe) <= CLEARED_BY_REPO
+        set(severe) <= CLEARED_BY_REPO
         and not any(at_least(f.severity, Severity.HIGH) for f in findings)
         and score(f for f in findings if f.rule_id not in CLEARED_BY_REPO) < report_score
     )

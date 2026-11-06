@@ -410,7 +410,7 @@ def test_clean_means_every_code_file_identical_and_nothing_undeclared() -> None:
 
 def test_trust_for_a_clean_comparison(tmp_path: Path, router: Router) -> None:
     router.add_json(FACTS_URL, facts())
-    router.add_json(compare_url(), {"status": "ahead"})
+    router.add_json(compare_url(), {"status": "ahead", "ahead_by": 3, "behind_by": 0})
     memory = RepoMemory({GitHubRepo("o", "r"): TRUST_REFS})
     trusted = with_trust(clean(), api_github(tmp_path, router), memory)
     assert trusted.trust is not None and trusted.trust.on_default_branch

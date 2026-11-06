@@ -2,6 +2,92 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-06: The commits behind each release: two detection rules on, the clearing off
+
+**Stage(s):** Stage 4 (repository comparison, decision)
+**Context:** The owner kept 0017's clearing off and asked instead to "check the corresponding
+commits and repos for the npm packages being scanned", both to find malicious behaviour and
+to cut false positives. That replaced Phase B of [the proposal](proposals/git-path.md), which
+would have watched 5,000 popular repositories. Decision:
+[0018](decisions/0018-commit-history.md).
+
+### Decisions
+- **Measure the ranges before writing rules.** For 904 updates (all 537 reported live
+  versions compared at a commit, 400 random unreported ones, the 112 compared malicious
+  `vm-day1` updates), we fetched GitHub's compare between the previous release's commit and
+  the release's. No errors.
+- **What discriminated:**
+  - **No new commits** since the previous release: 61 of 102 malicious, 9 of 626 benign.
+  - **Commits made after the publish:** 15 of 102 malicious, 2 of 626 benign. With the release
+    commit's own date, over 815 live tag-found releases the latest came 1.4 hours after the
+    publish, and 14 of 15 malicious came 7 hours to 255 days later.
+- **What didn't:** risky workflow edits (1 of 102 malicious against 21 of 261 reported benign),
+  behind or diverged history, unverified commits, PR-style messages, and commit age. In almost
+  every malicious sample the git range was the maintainers' legitimate work: the attack
+  happened on the registry side, after it. None of these were built.
+- **Built:**
+  - `RepoComparison.history`: the previous release's commit from the refs (free); the compare
+    status for flagged versions; the commit date for tag-found commits. About 100 API
+    requests an hour, each once per run, recorded for replay.
+  - `repo.commit-after-release` (MEDIUM): the tag points to a commit made more than 6 hours
+    after the publish.
+  - `npm.repo.no-new-commits` (LOW): a stable bump from the same commit or an older one, whose
+    code isn't a clean match there.
+  - `repo.history-match` (INFO): a clean match at a commit ahead of the previous release's.
+- **Clearing with a history match: built, off** (`CLEAR_HISTORY`), for the same reason as
+  0017. Live, it would clear 78 of 1,507 reported versions (5.2%), with 60 reviewed benign and
+  none reviewed malicious. That is about twice 0017's gain, without stars or age. It loses
+  `gina` (Challenges).
+
+### Challenges
+- **gina again.** `gina@0.7.1` is 44 commits ahead of 0.7.1-alpha.1, all by the maintainer
+  who has run the repository since 2013, ending with "Release v0.7.1" 30 minutes before the
+  publish.
+  - **Resolution:** no commit-level property separates it from benign releases without
+    fitting a threshold to it, so the clearing stays off and the numbers go to the owner.
+  - **Why it worked:** n/a; it is a limit of the signal. Code a maintainer commits is the
+    maintainer's code.
+- **A benign `commit-after-release` on `vm-day1`.** `@mongodb-js/mcp-atlas-telemetry@3.2.2`
+  matched the tag `v3.2.2`, which in its monorepo is `mongodb-mcp-server`'s own release, six
+  days later.
+  - **Resolution:** a version-only tag on a package in a subdirectory doesn't count for the
+    rule.
+  - **Why it worked:** 0 benign hits left. It costs 2 malicious hits (`@posthog/rrweb-*`),
+    which stay reported through other rules.
+- **The first eval run had no API.** `env_value` reads `.env` from the working directory, and
+  the run started in the scratch folder. Only the rules that need no API changed anything.
+  - **Resolution:** the run was repeated from the project root.
+- **A test expected the wrong thing.** A version that wasn't flagged read the compare answer
+  another version had already asked for.
+  - **Resolution:** the code is right not to: `with_history` reads the range only for flagged
+    versions, so a version's output never depends on which versions ran first. The test now
+    says so (`test_a_history_match_end_to_end`).
+- **Fetching 900 ranges serially took 6 seconds each** (page 1 carries up to 300 files with
+  patches: median 212 KB, up to 2.3 MB).
+  - **Resolution:** the measurement used 6 threads. The built lookups use page 2 at one
+    commit a page (18 KB) and the git data API for dates.
+
+### Removed / abandoned
+- **Commit-level rules** (workflow edits, new committers, verification): measured above, not
+  built.
+- **Phase B as proposed** (5,000 watched repositories): superseded by the owner's ask.
+
+### Evaluation snapshot
+- `vm-day1` (`pipeline+4`): malicious reported 2,507 → 2,507, benign 14 → 14 (15 before
+  the monorepo exception for version-only tags, which took out
+  `@mongodb-js/mcp-atlas-telemetry@3.2.2`).
+- `no-new-commits` fires on 60 malicious samples and 0 benign; `commit-after-release` on 13
+  and 0. None is newly reported: they add evidence only.
+- `CLEAR_HISTORY` on: 2,506 malicious (−`gina`), benign unchanged. Live: −78 of 1,507
+  reports.
+
+### Open questions / next steps
+- The owner decides on `CLEAR_HISTORY` (−5.2% of reports live, −1 `vm-day1` malicious sample:
+  `gina`). `CLEAR_ESTABLISHED` stays off by their choice.
+- Watch `commit-after-release` on live ticks: its benign rate is 0 of 815 on the sample, not
+  yet on a full day.
+- The collection timer is still stopped (since 2026-11-03).
+
 ## 2026-11-04: Repository trust built; the clearing it enables loses `gina`, so it's off
 
 **Stage(s):** Stage 4 (repository comparison, decision)
