@@ -115,7 +115,8 @@ def test_bound_from_reviewed_sample(tmp_path: Path) -> None:
     u2 = [v.name for v in sample.versions if v.stratum == "U2"]
     verdicts = {(n, "1.0.1"): verdict_on(n, "benign") for n in u1}
     verdicts[(u2[0], "1.0.1")] = verdict_on(u2[0], "malicious")
-    verdicts[(u2[1], "1.0.1")] = verdict_on(u2[1], "inconclusive")
+    verdicts[(u2[1], "1.0.1")] = verdict_on(u2[1], "inconclusive")  # legacy: unverified
+    verdicts[(u2[2], "1.0.1")] = verdict_on(u2[2], "unwanted")
     bound = S.sample_bound(
         [sample],
         verdicts,
@@ -124,7 +125,8 @@ def test_bound_from_reviewed_sample(tmp_path: Path) -> None:
     strata = bound["all"]["strata"]  # type: ignore[index]
     assert strata["U1"]["reviewed"] == 20 and strata["U1"]["malicious"] == 0
     assert strata["U1"]["upper"] == pytest.approx(1 - 0.05 ** (1 / 20))
-    assert strata["U2"]["reviewed"] == 1 and strata["U2"]["upper"] == 1.0
+    assert strata["U2"]["reviewed"] == 2 and strata["U2"]["upper"] == 1.0  # 2 of 2 flag-worthy
+    assert (strata["U2"]["malicious"], strata["U2"]["unwanted"]) == (1, 1)
     assert strata["U3"]["upper"] is None
     assert bound["all"]["unreviewed_strata"] == ["U3"]  # type: ignore[index]
     assert bound["A"]["days"] == 1 and bound["B"]["days"] == 0  # type: ignore[index]
@@ -147,6 +149,12 @@ def test_ledger_verdict_has_rank_zero(tmp_path: Path) -> None:
         S.ledger_verdict(header, row, "benign", by="Bad Name", at=REPORT_AS_OF)
     with pytest.raises(ValueError, match="tags"):
         S.ledger_verdict(header, row, "reopened", by="x", at=REPORT_AS_OF, tags=("probe",))
+    gone = S.ledger_verdict(header, row, "unverified", by="x", at=REPORT_AS_OF, reason="gone")
+    assert (gone.verdict, gone.reason, gone.rank) == ("unverified", "gone", 0)
+    with pytest.raises(ValueError, match="needs a reason"):
+        S.ledger_verdict(header, row, "unverified", by="x", at=REPORT_AS_OF)
+    with pytest.raises(ValueError, match="only an unverified"):
+        S.ledger_verdict(header, row, "unwanted", by="x", at=REPORT_AS_OF, reason="remote")
     with pytest.raises(LookupError):
         S.find_row(live, DAY1, "absent", "1")
     with pytest.raises(LookupError):
@@ -173,6 +181,14 @@ def test_cli_sample_and_verdict(tmp_path: Path) -> None:
     assert f"'{name}' '1.0.1' score" in listed.output and ": benign" in listed.output
     bad = runner.invoke(app, ["live", "verdict", DAY1, name, "1.0.1", "evil", *args])
     assert bad.exit_code == 2
+    for wrong in (["unverified"], ["benign", "--reason", "gone"], ["unverified", "--reason", "x"]):
+        refused = runner.invoke(app, ["live", "verdict", DAY1, name, "1.0.1", *wrong, *args])
+        assert refused.exit_code == 2, wrong
+    grey = runner.invoke(
+        app, ["live", "verdict", DAY1, name, "1.0.1", "unverified", "--reason", "obfuscated", *args]
+    )
+    assert grey.exit_code == 0 and "unverified (obfuscated)" in grey.output
+    assert current(read_verdicts(data, "npm"))[(name, "1.0.1")].reason == "obfuscated"
     missing = runner.invoke(app, ["live", "verdict", DAY1, "zzz", "1", "benign", *args])
     assert missing.exit_code == 2
     empty = runner.invoke(
@@ -202,4 +218,4 @@ def test_bound_reaches_the_live_report(tmp_path: Path) -> None:
         LiveSources(data, live), built_at=labels.fetched_at, windows=(window,)
     )
     assert report.sample_bound["A"]["days"] == 1  # type: ignore[index]
-    assert "Review sample: malware nobody labeled" in render_live_markdown(report)
+    assert "Review sample: flag-worthy versions nobody labeled" in render_live_markdown(report)

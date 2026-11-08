@@ -41,12 +41,14 @@ from kitsunox.evaluation.ledger import (
 )
 from kitsunox.reporting.markdown import text
 from kitsunox.reporting.verdicts import (
+    FLAG_WORTHY,
     MAX_NOTE_CHARS,
-    REVIEWER,
-    TAGS,
+    SEEN,
+    Reason,
     Tag,
     Verdict,
     VerdictRecord,
+    check_verdict,
 )
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
@@ -221,7 +223,9 @@ def render_sample(sample: DailySample) -> str:
         "Label-blind: chosen by hash, before any label is read. Review each version by what its "
         "code does (decision 0015) and record the verdict with:",
         "",
-        "    kitsunox live verdict RUN_ID NAME VERSION malicious|inconclusive|benign --by NAME",
+        "    kitsunox live verdict RUN_ID NAME VERSION malicious|unwanted|benign --by NAME",
+        "    kitsunox live verdict RUN_ID NAME VERSION unverified --reason "
+        "gone|remote|obfuscated|binary --by NAME",
         "",
         "| Stratum | Population | Sampled |",
         "|---|---|---|",
@@ -248,9 +252,12 @@ def render_sample(sample: DailySample) -> str:
 class StratumBound(Record):
     population: int
     sampled: int
-    reviewed: int
+    reviewed: int = Field(description="With a malicious, unwanted or benign verdict.")
     malicious: int
-    upper: float | None = Field(description="95% upper bound on the malicious share.")
+    unwanted: int = 0
+    upper: float | None = Field(
+        description="95% upper bound on the flag-worthy (malicious or unwanted) share."
+    )
 
 
 def sample_bound(
@@ -258,9 +265,11 @@ def sample_bound(
     verdicts: Mapping[tuple[str, str], VerdictRecord],
     windows: Mapping[str, tuple[date, date]] | None = None,
 ) -> dict[str, object]:
-    """Per window (by sample day) and overall: per stratum, the reviewed share found malicious
-    and its 95% upper bound (exact `zero_bound` when none was), and the population-weighted
-    bound on unlabeled malware among unreported versions."""
+    """Per window (by sample day) and overall: per stratum, the reviewed share found
+    flag-worthy (malicious or unwanted) and its 95% upper bound (exact `zero_bound` when none
+    was), and the population-weighted bound on unlabeled flag-worthy versions among unreported
+    ones. Reviewed means the behaviour was seen: `unverified` verdicts don't count. The bound
+    holds for malware alone too, since malicious versions are a subset."""
     chosen = list(samples)
     groups: dict[str, list[DailySample]] = {"all": chosen}
     for name, (start, end) in (windows or {}).items():
@@ -274,16 +283,16 @@ def sample_bound(
             judged = [
                 verdicts[(v.name, v.version)].verdict
                 for v in versions
-                if (v.name, v.version) in verdicts
-                and verdicts[(v.name, v.version)].verdict in ("malicious", "benign")
+                if (v.name, v.version) in verdicts and verdicts[(v.name, v.version)].verdict in SEEN
             ]
-            k = sum(j == "malicious" for j in judged)
+            k = sum(j in FLAG_WORTHY for j in judged)
             upper = zero_bound(len(judged)) if k == 0 else wilson(k, len(judged)).high
             strata[name] = StratumBound(
                 population=population,
                 sampled=len(versions),
                 reviewed=len(judged),
-                malicious=k,
+                malicious=judged.count("malicious"),
+                unwanted=judged.count("unwanted"),
                 upper=upper,
             )
         weight = sum(b.population for b in strata.values() if b.upper is not None)
@@ -310,14 +319,11 @@ def ledger_verdict(
     at: datetime,
     note: str = "",
     tags: Iterable[Tag] = (),
+    reason: Reason | None = None,
 ) -> VerdictRecord:
     """A verdict on a version from its ledger row, for a version in no report (a sampled or a
     missed one): rank 0. Validated as `reporting.verdicts.verdict_record` does."""
-    if not REVIEWER.fullmatch(by):
-        raise ValueError("a reviewer name is 1-32 of a-z, 0-9, _ and -")
-    given = set(tags)
-    if given and verdict == "reopened":
-        raise ValueError("a reopened version has no tags")
+    kept = check_verdict(verdict, by=by, tags=tags, reason=reason)
     severities = [r.rsplit(":", 1)[-1] for r in row.rules]
     severity = max(
         (s for s in severities if s in _SEVERITIES), key=_SEVERITIES.index, default="info"
@@ -330,7 +336,8 @@ def ledger_verdict(
         at=at,
         by=by,
         note=note.strip()[:MAX_NOTE_CHARS],
-        tags=tuple(t for t in TAGS.values() if t in given),
+        tags=kept,
+        reason=reason,
         run_id=header.run_id,
         rank=row.rank or 0,
         score=row.score,

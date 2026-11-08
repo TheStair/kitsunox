@@ -1,4 +1,4 @@
-"""Reviewer verdicts on reported versions: malicious, inconclusive or benign.
+"""Reviewer verdicts on reported versions: malicious, unwanted, benign or unverified.
 
 A reviewer (the owner in the viewer, or an analyst with `kitsunox verdict`) reads a version's
 entry and records what it is. The version then leaves the review queue (`reporting.queue`, and
@@ -11,6 +11,16 @@ the viewer at once) and is listed on its verdict's page; `reopened` puts it back
 - **A verdict outlives its run.** Runs are pruned after a week, so each record copies what
   the reviewer saw: score, severity, rules, publisher and publish time, and the run and rank
   it came from (the link works while the run is kept).
+- **Four categories** (decision 0015, addendum 2026-11-08): `malicious` (harmful behaviour
+  shown), `unwanted` (behaviour fully seen: covert or intrusive, not harmful enough to call
+  malicious, like an antivirus "PUA"), `benign` (seen and legitimate) and `unverified` (we
+  couldn't confirm). An `unverified` verdict names why in `reason`: `gone` (the code was
+  unpublished or never captured), `remote` (the payload came from a repository or URL we
+  couldn't see), `obfuscated` (we couldn't decode it) or `binary` (an unexplained native or
+  binary payload); no other verdict takes a reason.
+- **Legacy records.** Before 2026-11-08 the grey category was `inconclusive`. Such a record
+  still loads, as `unverified` with no reason, until a newer record reclassifies the version.
+  Only legacy records are `unverified` without a reason: `verdict_record` refuses to write one.
 - **Tags qualify a verdict.** `probe` marks a security researcher's probe (a
   dependency-confusion or bug-bounty test) so counts can tell them from commodity malware. The
   verdict itself follows what the code does, not what it claims (`docs/viewer.md`, "What
@@ -31,17 +41,29 @@ import re
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Final, Literal, get_args
+from typing import Any, Final, Literal, Self, get_args
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from kitsunox.core.models import Record
 from kitsunox.reporting.report import Report, ReportEntry
 
 VERDICTS_DIR: Final = "verdicts"
-Verdict = Literal["malicious", "inconclusive", "benign", "reopened"]
-KINDS: Final[tuple[Verdict, ...]] = ("malicious", "inconclusive", "benign")
+Verdict = Literal["malicious", "unwanted", "benign", "unverified", "reopened"]
+KINDS: Final[tuple[Verdict, ...]] = ("malicious", "unwanted", "benign", "unverified")
+FLAG_WORTHY: Final[frozenset[str]] = frozenset({"malicious", "unwanted"})
+SEEN: Final[frozenset[str]] = frozenset({"malicious", "unwanted", "benign"})  # behaviour seen
 VERDICTS: Final[Mapping[str, Verdict]] = {v: v for v in get_args(Verdict)}  # parses a form
+LEGACY: Final[Mapping[str, Verdict]] = {"inconclusive": "unverified"}  # old name -> now
+Reason = Literal["gone", "remote", "obfuscated", "binary"]
+REASONS: Final[Mapping[str, Reason]] = {r: r for r in get_args(Reason)}  # parses a form
+REASON_LABELS: Final[Mapping[Reason, str]] = {
+    "gone": "code gone",
+    "remote": "remote payload",
+    "obfuscated": "obfuscated",
+    "binary": "binary payload",
+}
+NO_REASON: Final = "no reason (was inconclusive)"  # a legacy record's
 Tag = Literal["probe"]
 TAGS: Final[Mapping[str, Tag]] = {t: t for t in get_args(Tag)}  # parses a form
 TAG_LABELS: Final[Mapping[Tag, str]] = {"probe": "Research probe"}
@@ -62,6 +84,9 @@ class VerdictRecord(Record):
     by: str = Field(description="Who recorded it: `owner` from the viewer, or a CLI name.")
     note: str = ""
     tags: tuple[Tag, ...] = ()
+    reason: Reason | None = Field(
+        default=None, description="Why an `unverified` verdict couldn't be confirmed."
+    )
     run_id: str
     rank: int
     score: float
@@ -70,9 +95,46 @@ class VerdictRecord(Record):
     publisher: str | None = None
     published_at: datetime | None = None
 
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _legacy(cls, value: Any) -> Any:
+        """A legacy `inconclusive` record reads as `unverified` (with no reason)."""
+        return LEGACY.get(value, value) if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _reason_only_unverified(self) -> Self:
+        if self.reason is not None and self.verdict != "unverified":
+            raise ValueError("only an unverified verdict has a reason")
+        return self
+
     @property
     def key(self) -> tuple[str, str]:
         return (self.name, self.version)
+
+
+def check_verdict(
+    verdict: Verdict, *, by: str, tags: Iterable[Tag] = (), reason: Reason | None = None
+) -> tuple[Tag, ...]:
+    """Refuse what a new record may not say, and return its tags once each, in `TAGS` order.
+    `by` must match `REVIEWER`; `reopened` takes no tags; `unverified` needs a reason and no
+    other verdict takes one."""
+    if not REVIEWER.fullmatch(by):
+        raise ValueError("a reviewer name is 1-32 of a-z, 0-9, _ and -")
+    given = set(tags)
+    if given and verdict == "reopened":
+        raise ValueError("a reopened version has no tags")
+    if verdict == "unverified" and reason is None:
+        raise ValueError("an unverified verdict needs a reason: " + ", ".join(REASONS))
+    if verdict != "unverified" and reason is not None:
+        raise ValueError("only an unverified verdict takes a reason")
+    return tuple(t for t in TAGS.values() if t in given)
+
+
+def verdict_label(record: VerdictRecord) -> str:
+    """`unverified (code gone)`, or the verdict itself; plain text."""
+    if record.verdict != "unverified":
+        return record.verdict
+    return f"unverified ({REASON_LABELS[record.reason] if record.reason else NO_REASON})"
 
 
 def verdict_record(
@@ -83,15 +145,12 @@ def verdict_record(
     by: str,
     note: str = "",
     tags: Iterable[Tag] = (),
+    reason: Reason | None = None,
     at: datetime,
 ) -> VerdictRecord:
-    """The record for `entry` of `report`. `by` must match `REVIEWER`; the note is cut at
-    MAX_NOTE_CHARS. Tags are kept once each, in `TAGS` order; `reopened` takes none."""
-    if not REVIEWER.fullmatch(by):
-        raise ValueError("a reviewer name is 1-32 of a-z, 0-9, _ and -")
-    given = set(tags)
-    if given and verdict == "reopened":
-        raise ValueError("a reopened version has no tags")
+    """The record for `entry` of `report`, checked by `check_verdict`; the note is cut at
+    MAX_NOTE_CHARS."""
+    kept = check_verdict(verdict, by=by, tags=tags, reason=reason)
     return VerdictRecord(
         ecosystem=report.ecosystem,
         name=entry.name,
@@ -100,7 +159,8 @@ def verdict_record(
         at=at,
         by=by,
         note=note.strip()[:MAX_NOTE_CHARS],
-        tags=tuple(t for t in TAGS.values() if t in given),
+        tags=kept,
+        reason=reason,
         run_id=report.run_id,
         rank=entry.rank,
         score=entry.score,
@@ -168,6 +228,12 @@ def current(records: Iterable[VerdictRecord]) -> dict[tuple[str, str], VerdictRe
 def tally(verdicts: Mapping[tuple[str, str], VerdictRecord]) -> dict[str, int]:
     """Versions per verdict, in `KINDS` order."""
     return {kind: sum(1 for r in verdicts.values() if r.verdict == kind) for kind in KINDS}
+
+
+def reasons(verdicts: Mapping[tuple[str, str], VerdictRecord]) -> dict[str, int]:
+    """Unverified versions per reason, in `REASONS` order, then `none` (legacy records)."""
+    found = [r.reason or "none" for r in verdicts.values() if r.verdict == "unverified"]
+    return {k: found.count(k) for k in (*REASONS, "none") if k in found}
 
 
 def probes(verdicts: Mapping[tuple[str, str], VerdictRecord], kind: str) -> int:

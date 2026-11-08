@@ -100,8 +100,9 @@ SEVERITY_COLOUR: Final = {
 }
 VERDICT_LABELS: Final[tuple[tuple[Verdict, str], ...]] = (
     ("malicious", "☠️ Malicious"),
-    ("inconclusive", "❔ Inconclusive"),
+    ("unwanted", "⚠️ Unwanted"),
     ("benign", "✅ Benign"),
+    ("unverified", "❔ Unverified"),
 )
 
 
@@ -350,10 +351,17 @@ def render_daily(
 
 def live_line(live: LogLine) -> str:
     """One line on the newest live evaluation (decision 0019). No package text in it."""
-    share = f" ({live.recall:.0%})" if live.recall is not None else ""
+    share = f"{live.recall:.0%}" if live.recall is not None else ""
+    strict = (
+        f"malicious only {live.strict_reported:,} / {live.strict_malicious:,}"
+        if live.strict_malicious is not None and live.strict_reported is not None
+        else ""
+    )
+    detail = "; ".join(x for x in (share, strict) if x)
     return (
         f"🧪 Live eval (labels {escape(live.label_set, 20)}): {live.reported_malicious:,} / "
-        f"{live.malicious:,} malicious reported{share}; +{live.newly_labeled} newly labeled, "
+        f"{live.malicious:,} flag-worthy reported{f' ({detail})' if detail else ''}; "
+        f"+{live.newly_labeled} newly labeled, "
         f"{live.newly_reported} reported; review sample: {live.sample_unreviewed} to review"
     )
 

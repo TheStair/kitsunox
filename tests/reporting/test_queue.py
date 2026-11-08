@@ -208,7 +208,7 @@ def test_versions_confirmed_since_are_flagged_never_scored(tmp_path: Path) -> No
         ("malicious", "stealer"),
     ]
     page = render_queue(queue)
-    assert "1 malicious, 0 inconclusive, 1 benign" in page
+    assert "1 malicious, 0 unwanted, 1 benign, 0 unverified" in page
     assert (
         "- **benign** cleared@2.0.0: removed by the registry 2026-10-29. Review it again." in page
     )

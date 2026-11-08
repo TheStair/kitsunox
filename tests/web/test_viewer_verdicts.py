@@ -18,7 +18,7 @@ from kitsunox.evaluation.confirmations import Confirmations, Takedown
 from kitsunox.evaluation.labels import LabelSet, MalwareLabel
 from kitsunox.reporting.queue import build_queue, write_queue
 from kitsunox.reporting.report import write_report
-from kitsunox.reporting.verdicts import read_verdicts
+from kitsunox.reporting.verdicts import REASONS, read_verdicts, verdicts_path
 from kitsunox.web import pages
 from kitsunox.web.library import Library
 from kitsunox.web.server import Form, ViewerServer, make_server, route
@@ -120,6 +120,11 @@ def test_package_text_stays_inert_in_forms_and_verdict_pages(library: Library) -
         ({"note": "x" * 2001}, {}, 400),
         ({"tag": "evil"}, {}, 400),
         ({"verdict": "reopened", "tag": "probe"}, {}, 400),
+        ({"verdict": "inconclusive"}, {}, 400),  # the old name is read, never written
+        ({"verdict": "unverified"}, {}, 400),  # needs a reason
+        ({"verdict": "unverified:lost"}, {}, 400),
+        ({"verdict": "benign:gone"}, {}, 400),
+        ({"verdict": "reopened:gone"}, {}, 400),
     ],
 )
 def test_bad_posts_record_nothing(
@@ -256,3 +261,41 @@ def test_versions_confirmed_since_are_flagged_on_every_page(library: Library) ->
     assert listed is not None and "Confirmed since: removed by the registry" in listed.html
     entry = pages.entry_page(library, RUN, 1, TOKEN)
     assert entry is not None and "not part of the score" in entry.html
+
+
+def test_unwanted_and_unverified_verdicts_with_their_reason(library: Library) -> None:
+    entry = pages.entry_page(library, RUN, 1, TOKEN)
+    assert entry is not None
+    for value in ("malicious", "unwanted", "benign", *(f"unverified:{r}" for r in REASONS)):
+        assert f'name="verdict" value="{value}"' in entry.html
+    assert 'value="unverified"' not in entry.html and "<script" not in entry.html
+    assert 'href="/verdicts/unwanted"' in entry.html and 'href="/verdicts/unverified"' in entry.html
+    back = f"/runs/{RUN}/entries/1"
+    status, location = post(
+        library, {"run": RUN, "rank": "1", "verdict": "unverified:remote", "back": back}
+    )
+    assert (status, location) == (303, back)
+    (saved,) = read_verdicts(library.root, "npm")
+    assert (saved.verdict, saved.reason) == ("unverified", "remote")
+    shown = pages.entry_page(library, RUN, 1, TOKEN)
+    assert shown is not None and '<span class="tag">remote payload</span>' in shown.html
+    listed = pages.verdicts_page(library, "unverified", TOKEN)
+    assert listed is not None and "Unverified (1)" in listed.html
+    assert "Unverified</a>: 1 (remote payload 1)" in listed.html
+    status, _ = post(library, {"run": RUN, "rank": "2", "verdict": "unwanted", "note": CRAFTED})
+    assert status == 303
+    unwanted = pages.verdicts_page(library, "unwanted", TOKEN)
+    assert unwanted is not None and "Unwanted (1)" in unwanted.html
+    assert "<script>" not in unwanted.html and "&lt;script&gt;" in unwanted.html
+    assert pages.verdicts_page(library, "inconclusive") is None
+
+
+def test_a_legacy_inconclusive_verdict_shows_as_unverified_without_a_reason(
+    library: Library,
+) -> None:
+    post(library, {"run": RUN, "rank": "1", "verdict": "malicious"})
+    path = verdicts_path(library.root, "npm")
+    path.write_text(path.read_text().replace('"malicious"', '"inconclusive"'))
+    listed = pages.verdicts_page(library, "unverified")
+    assert listed is not None and "Unverified (1)" in listed.html
+    assert '<span class="tag">no reason (was inconclusive)</span>' in listed.html

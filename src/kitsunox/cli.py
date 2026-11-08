@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
 
@@ -91,12 +91,17 @@ from kitsunox.reporting.queue import QUEUE_DIR, Queue, build_queue, write_queue
 from kitsunox.reporting.report import REPORT_DIR, Report
 from kitsunox.reporting.verdicts import (
     OWNER,
+    REASONS,
     VERDICTS,
+    Reason,
+    Verdict,
     append_verdict,
     current,
     probes,
     read_verdicts,
+    reasons,
     tally,
+    verdict_label,
     verdict_record,
 )
 from kitsunox.sandbox.results import prune_sandbox
@@ -148,6 +153,15 @@ LiveDirOption = Annotated[
         "--live-dir",
         help=f"Where live evaluation is written (default: DATA_DIR/{LIVE_DIR}). Outside the "
         "data directory, nothing is written to it and no lock is taken.",
+    ),
+]
+VERDICT_HELP: Final = "malicious, unwanted, benign, unverified or reopened."
+ReasonOption = Annotated[
+    str | None,
+    typer.Option(
+        "--reason",
+        help="Why an unverified verdict couldn't be confirmed (required for it, refused "
+        "otherwise): gone, remote, obfuscated or binary.",
     ),
 ]
 
@@ -601,8 +615,8 @@ def view_cmd(
     ] = False,
 ) -> None:
     """Browse the review queue and run reports in a local web page, and record reviewers'
-    verdicts (malicious, inconclusive, benign). Safe to run beside `collect`: it takes no lock
-    and writes only the verdict log. Ctrl-C stops it."""
+    verdicts (malicious, unwanted, benign, unverified). Safe to run beside `collect`: it takes
+    no lock and writes only the verdict log. Ctrl-C stops it."""
     from kitsunox.web import RemoteBindRefusedError, serve  # http.server only when needed
 
     try:
@@ -623,20 +637,18 @@ def view_cmd(
 def verdict_cmd(
     run_id: str,
     rank: Annotated[int, typer.Argument(min=1)],
-    verdict: Annotated[str, typer.Argument(help="malicious, inconclusive, benign or reopened.")],
+    verdict: Annotated[str, typer.Argument(help=VERDICT_HELP)],
     note: Annotated[str, typer.Option(help="Why (shown with the verdict).")] = "",
     by: Annotated[str, typer.Option(help="Who records it (a-z, 0-9, _ and -).")] = OWNER,
     probe: Annotated[
         bool, typer.Option("--probe", help="Tag it a security researcher's probe.")
     ] = False,
+    reason: ReasonOption = None,
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
 ) -> None:
     """Record a verdict on entry RANK of run RUN_ID's report, as the viewer does: the version
     leaves the review queue and is listed under its verdict."""
-    parsed = VERDICTS.get(verdict)
-    if parsed is None:
-        typer.echo("verdict must be malicious, inconclusive, benign or reopened", err=True)
-        raise typer.Exit(code=2)
+    parsed, why = _parse_verdict(verdict, reason)
     data = DataDir(data_dir)
     try:
         report = Report.load_json((data.run_dir(run_id) / REPORT_DIR / "report.json").read_bytes())
@@ -655,6 +667,7 @@ def verdict_cmd(
             by=by,
             note=note,
             tags=("probe",) if probe else (),
+            reason=why,
             at=datetime.now(UTC),
         )
     except ValueError as exc:
@@ -662,7 +675,29 @@ def verdict_cmd(
         raise typer.Exit(code=2) from exc
     append_verdict(data.root, record)
     tags = "".join(f" [{t}]" for t in record.tags)
-    typer.echo(f"{entry.name}@{entry.version}: {parsed}{tags} (by {by})")
+    typer.echo(f"{entry.name}@{entry.version}: {verdict_label(record)}{tags} (by {by})")
+
+
+def _parse_verdict(verdict: str, reason: str | None) -> tuple[Verdict, Reason | None]:
+    """The verdict and reason tag a command names; exits 2 on a wrong one. `unverified` needs
+    `--reason` and nothing else takes it (decision 0015, addendum 2026-11-08)."""
+    parsed = VERDICTS.get(verdict)
+    if parsed is None:
+        typer.echo(f"verdict must be {VERDICT_HELP.removesuffix('.')}", err=True)
+        raise typer.Exit(code=2)
+    if reason is None:
+        if parsed == "unverified":
+            typer.echo(f"an unverified verdict needs --reason ({', '.join(REASONS)})", err=True)
+            raise typer.Exit(code=2)
+        return parsed, None
+    why = REASONS.get(reason)
+    if why is None:
+        typer.echo(f"--reason must be one of {', '.join(REASONS)}", err=True)
+        raise typer.Exit(code=2)
+    if parsed != "unverified":
+        typer.echo("--reason goes only with an unverified verdict", err=True)
+        raise typer.Exit(code=2)
+    return parsed, why
 
 
 @app.command("verdicts")
@@ -673,9 +708,16 @@ def verdicts_cmd(
     """The versions reviewers have given a verdict, most recent first, and the tally."""
     now = current(read_verdicts(DataDir(data_dir).root, NPM))
     counts = tally(now)
+    why = reasons(now)
     typer.echo(
         ", ".join(
-            f"{n} {k}" + (f" (probes: {p})" if (p := probes(now, k)) else "")
+            f"{n} {k}"
+            + (f" (probes: {p})" if (p := probes(now, k)) else "")
+            + (
+                " (" + ", ".join(f"{r} {c}" for r, c in why.items()) + ")"
+                if k == "unverified" and why
+                else ""
+            )
             for k, n in counts.items()
         )
     )
@@ -683,8 +725,9 @@ def verdicts_cmd(
         if kind is None or record.verdict == kind:
             note = f": {record.note}" if record.note else ""
             tags = "".join(f" [{t}]" for t in record.tags)
+            reason = f" [{record.reason}]" if record.reason else ""
             typer.echo(
-                f"{record.verdict:12} {record.name}@{record.version}{tags} ({record.by}, "
+                f"{record.verdict:12} {record.name}@{record.version}{reason}{tags} ({record.by}, "
                 f"{record.at:%Y-%m-%d %H:%M}){note}"
             )
 
@@ -1061,21 +1104,19 @@ def live_verdict(
     run_id: str,
     name: str,
     version: str,
-    verdict: Annotated[str, typer.Argument(help="malicious, inconclusive, benign or reopened.")],
+    verdict: Annotated[str, typer.Argument(help=VERDICT_HELP)],
     note: Annotated[str, typer.Option(help="Why (shown with the verdict).")] = "",
     by: Annotated[str, typer.Option(help="Who records it (a-z, 0-9, _ and -).")] = OWNER,
     probe: Annotated[
         bool, typer.Option("--probe", help="Tag it a security researcher's probe.")
     ] = False,
+    reason: ReasonOption = None,
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
     live_dir: LiveDirOption = None,
 ) -> None:
     """Record a verdict on a version that is in no report (a sampled or a missed one), from its
     ledger row: the same verdict log as `kitsunox verdict`, with rank 0."""
-    parsed = VERDICTS.get(verdict)
-    if parsed is None:
-        typer.echo("verdict must be malicious, inconclusive, benign or reopened", err=True)
-        raise typer.Exit(code=2)
+    parsed, why = _parse_verdict(verdict, reason)
     data = DataDir(data_dir)
     live, _ = _live(data, live_dir)
     try:
@@ -1087,6 +1128,7 @@ def live_verdict(
             by=by,
             note=note,
             tags=("probe",) if probe else (),
+            reason=why,
             at=datetime.now(UTC),
         )
     except (LookupError, ValueError) as exc:
@@ -1094,7 +1136,10 @@ def live_verdict(
         raise typer.Exit(code=2) from exc
     append_verdict(data.root, record)
     tags = "".join(f" [{t}]" for t in record.tags)
-    typer.echo(f"{record.name}@{record.version}: {parsed}{tags} (by {by}, rank {record.rank})")
+    typer.echo(
+        f"{record.name}@{record.version}: {verdict_label(record)}{tags} (by {by}, "
+        f"rank {record.rank})"
+    )
 
 
 @data_app.command("prune")

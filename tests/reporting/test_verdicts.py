@@ -1,10 +1,12 @@
 """Reviewer verdicts: the append-only log, each version's verdict now, and the queue without
 reviewed versions."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import make_report, report_entry, run_manifest
 from kitsunox.core.models import Severity
@@ -18,7 +20,9 @@ from kitsunox.reporting.verdicts import (
     current,
     probes,
     read_verdicts,
+    reasons,
     tally,
+    verdict_label,
     verdict_record,
     verdicts_path,
 )
@@ -39,14 +43,15 @@ def record(rank: int, verdict: str, at: datetime = T0, **extra: object):  # type
 
 
 def test_the_log_keeps_history_and_the_last_record_is_the_verdict(tmp_path: Path) -> None:
-    append_verdict(tmp_path, record(1, "inconclusive", note="needs the tarball"))
+    append_verdict(tmp_path, record(1, "unverified", note="needs the tarball", reason="gone"))
     append_verdict(tmp_path, record(1, "malicious", T0 + timedelta(minutes=5), note="exfil"))
     append_verdict(tmp_path, record(3, "benign"))
     append_verdict(tmp_path, record(3, "reopened", T0 + timedelta(minutes=1)))
     with verdicts_path(tmp_path, "npm").open("ab") as handle:
         handle.write(b"{damaged\n")
     log = read_verdicts(tmp_path, "npm")
-    assert [r.verdict for r in log] == ["inconclusive", "malicious", "benign", "reopened"]
+    assert [r.verdict for r in log] == ["unverified", "malicious", "benign", "reopened"]
+    assert log[0].reason == "gone" and log[1].reason is None
     now = current(log)
     assert set(now) == {("evil-pkg", "1.0.3")}  # fine-pkg was reopened: back in the queue
     malicious = now[("evil-pkg", "1.0.3")]
@@ -55,7 +60,7 @@ def test_the_log_keeps_history_and_the_last_record_is_the_verdict(tmp_path: Path
         14,
         ("npm.install-hook",),
     )
-    assert tally(now) == {"malicious": 1, "inconclusive": 0, "benign": 0}
+    assert tally(now) == {"malicious": 1, "unwanted": 0, "benign": 0, "unverified": 0}
     assert read_verdicts(tmp_path / "absent", "npm") == []
 
 
@@ -97,5 +102,47 @@ def test_the_queue_leaves_reviewed_versions_out(tmp_path: Path) -> None:
     assert [(e.name, [v.version for v in e.versions]) for e in after.entries] == [
         ("evil-pkg", ["1.0.2"])
     ]
-    assert (after.reviewed, after.verdicts) == (2, {"malicious": 1, "inconclusive": 0, "benign": 1})
+    assert (after.reviewed, after.verdicts) == (
+        2,
+        {"malicious": 1, "unwanted": 0, "benign": 1, "unverified": 0},
+    )
     assert "2 reported versions already have a verdict" in render_queue(after)
+
+
+def test_unverified_needs_a_reason_and_nothing_else_takes_one() -> None:
+    gone = record(1, "unverified", reason="gone")
+    assert (gone.verdict, gone.reason, verdict_label(gone)) == (
+        "unverified",
+        "gone",
+        "unverified (code gone)",
+    )
+    with pytest.raises(ValueError, match="needs a reason"):
+        record(1, "unverified")
+    for kind in ("malicious", "unwanted", "benign", "reopened"):
+        with pytest.raises(ValueError, match="only an unverified"):
+            record(1, kind, reason="remote")
+    probe = record(1, "unwanted", tags=["probe"])
+    assert (probe.verdict, probe.tags, verdict_label(probe)) == ("unwanted", ("probe",), "unwanted")
+    raw = gone.model_dump(mode="json")
+    with pytest.raises(ValidationError):  # a stored record can't pair a reason with another verdict
+        VerdictRecord.model_validate({**raw, "verdict": "benign"})
+    with pytest.raises(ValidationError):
+        VerdictRecord.model_validate({**raw, "reason": "lost"})
+
+
+def test_a_legacy_inconclusive_record_loads_as_unverified_without_a_reason(tmp_path: Path) -> None:
+    legacy = record(1, "malicious").model_dump(mode="json")
+    legacy.update(verdict="inconclusive", note="obfuscated loader")
+    del legacy["reason"]  # written before reasons existed
+    path = verdicts_path(tmp_path, "npm")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(legacy) + "\n")
+    append_verdict(tmp_path, record(3, "unwanted", note="marker-only beacon"))
+    log = read_verdicts(tmp_path, "npm")
+    assert [(r.verdict, r.reason) for r in log] == [("unverified", None), ("unwanted", None)]
+    assert verdict_label(log[0]) == "unverified (no reason (was inconclusive))"
+    now = current(log)
+    assert tally(now) == {"malicious": 0, "unwanted": 1, "benign": 0, "unverified": 1}
+    assert reasons(now) == {"none": 1}
+    append_verdict(tmp_path, record(1, "unverified", T0 + timedelta(hours=1), reason="binary"))
+    assert reasons(current(read_verdicts(tmp_path, "npm"))) == {"binary": 1}  # reclassified

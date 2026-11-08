@@ -21,7 +21,15 @@ from kitsunox.core.models import Evidence, Finding, Severity
 from kitsunox.evaluation.confirmations import Confirmation
 from kitsunox.reporting.queue import Queue, QueueEntry, confirmed_text
 from kitsunox.reporting.report import Report, ReportEntry, score_rule, stage_of
-from kitsunox.reporting.verdicts import KINDS, MAX_NOTE_CHARS, TAG_LABELS, VerdictRecord
+from kitsunox.reporting.verdicts import (
+    KINDS,
+    MAX_NOTE_CHARS,
+    NO_REASON,
+    REASON_LABELS,
+    TAG_LABELS,
+    VerdictRecord,
+    reasons,
+)
 from kitsunox.web.html import (
     block,
     error_box,
@@ -76,10 +84,32 @@ def failure(status: int, title: str, message: str) -> Page:
 MAX_PACKAGE_VERSIONS: Final = 50  # versions one package-wide verdict covers (the server's cap)
 VERDICT_LABELS: Final = {
     "malicious": "Malicious",
-    "inconclusive": "Inconclusive",
+    "unwanted": "Unwanted",
     "benign": "Benign",
+    "unverified": "Unverified",
     "reopened": "Reopened",
 }
+
+
+def _buttons() -> str:
+    """A submit button per verdict. `unverified` needs a reason (decision 0015), so it is a
+    `<details>` of one button per reason tag (value `unverified:<reason>`): no script, and no
+    way to send one without the other."""
+    seen = "".join(
+        f'<button type="submit" name="verdict" value="{kind}" class="v-{kind}">'
+        f"{VERDICT_LABELS[kind]}</button>"
+        for kind in KINDS
+        if kind != "unverified"
+    )
+    reasons = "".join(
+        f'<button type="submit" name="verdict" value="unverified:{reason}" class="v-unverified">'
+        f"{label}</button>"
+        for reason, label in REASON_LABELS.items()
+    )
+    return (
+        f'{seen}<details class="unverified"><summary class="v-unverified">Unverified: why?'
+        f"</summary>{reasons}</details>"
+    )
 
 
 def verdict_form(token: str, run_id: str, rank: int, back: str, *, note: bool) -> str:
@@ -95,12 +125,9 @@ def verdict_form(token: str, run_id: str, rank: int, back: str, *, note: bool) -
         if note
         else ""
     )
-    buttons = "".join(
-        f'<button type="submit" name="verdict" value="{kind}" class="v-{kind}">'
-        f"{VERDICT_LABELS[kind]}</button>"
-        for kind in KINDS
+    return (
+        f'<form method="post" action="/verdict" class="verdict">{hidden}{text}{_buttons()}</form>'
     )
-    return f'<form method="post" action="/verdict" class="verdict">{hidden}{text}{buttons}</form>'
 
 
 def _tag_boxes() -> str:
@@ -112,7 +139,14 @@ def _tag_boxes() -> str:
 
 
 def _tags(record: VerdictRecord) -> str:
-    return "".join(f' <span class="tag">{TAG_LABELS[t]}</span>' for t in record.tags)
+    """An unverified verdict's reason (a legacy one has none), then its tags."""
+    reason = (
+        [REASON_LABELS[record.reason] if record.reason else NO_REASON]
+        if record.verdict == "unverified"
+        else []
+    )
+    labels = [*reason, *(TAG_LABELS[t] for t in record.tags)]
+    return "".join(f' <span class="tag">{label}</span>' for label in labels)
 
 
 def package_form(token: str, entry: QueueEntry) -> str:
@@ -124,15 +158,10 @@ def package_form(token: str, entry: QueueEntry) -> str:
     hidden = "".join(
         f'<input type="hidden" name="{name}" value="{plain(value)}">' for name, value in fields
     )
-    buttons = "".join(
-        f'<button type="submit" name="verdict" value="{kind}" class="v-{kind}">'
-        f"{VERDICT_LABELS[kind]}</button>"
-        for kind in KINDS
-    )
     count = min(len(entry.versions), MAX_PACKAGE_VERSIONS)
     return (
         f'<form method="post" action="/verdict" class="verdict package">{hidden}'
-        f'<span class="note">All {count} versions:</span>{_tag_boxes()}{buttons}</form>'
+        f'<span class="note">All {count} versions:</span>{_tag_boxes()}{_buttons()}</form>'
     )
 
 
@@ -161,9 +190,12 @@ def _tally(verdicts: Verdicts) -> str:
     )
     probes = sum(1 for r in verdicts.now.values() if r.verdict == "malicious" and "probe" in r.tags)
     of_which = f" (research probes: {probes})" if probes else ""
+    labels: dict[str, str] = {"none": NO_REASON, **{str(k): v for k, v in REASON_LABELS.items()}}
+    why = reasons(verdicts.now)
+    unverified = " (" + ", ".join(f"{labels[k]} {n}" for k, n in why.items()) + ")" if why else ""
     return (
         f'<p class="tally"><strong>Verified malicious: {counts["malicious"]}</strong>{of_which}. '
-        f"Reviewed: {items}.</p>"
+        f"Reviewed: {items}{unverified}.</p>"
     )
 
 

@@ -85,7 +85,7 @@ def data(tmp_path: Path) -> Path:
             reported("verd-mal"),  # reviewed malicious only: TP
             reported("noise"),  # unreviewed: FP
             LiveVersion("quiet"),  # TN
-            reported("unsure"),  # inconclusive: excluded
+            reported("unsure"),  # legacy inconclusive = unverified: excluded
             LiveVersion("taken"),  # takedown only: TN, FN with weak positives
             LiveVersion("proj"),  # projected: excluded
             LiveVersion("hold", version="0.0.1-security", publisher="npm"),  # placeholder
@@ -177,13 +177,19 @@ def test_matrices_follow_the_definitions(data: Path) -> None:
     assert (headline.tp, headline.fp, headline.fn, headline.tn) == (2, 2, 1, 4)
     assert headline.fp_unreviewed == 1
     assert headline.excluded == {
-        "inconclusive": 1,
         "placeholder": 1,
         "projected": 1,
         "provisional": 1,
+        "unverified": 1,
     }
+    best, worst = a.matrices["behaviour/best"], a.matrices["behaviour/worst"]
+    assert (best.tp, best.fp) == (3, 2) and (worst.tp, worst.fp) == (2, 3)  # unsure, reported
+    assert "unverified" not in best.excluded and "unverified" not in worst.excluded
+    assert a.matrices["strict"] == headline  # no unwanted verdict here
+    assert a.verdicts == {"malicious": 1, "unwanted": 0, "benign": 1, "unverified": 1}
+    assert a.unverified_reasons == {"none": 1}
     osv = a.matrices["osv"]
-    assert (osv.tp, osv.fp, osv.fn) == (3, 1, 1)
+    assert (osv.tp, osv.fp, osv.fn) == (3, 2, 1)  # unsure: no verdict, no OSV record, benign
     only = a.matrices["osv-only"]
     assert (only.tp, only.fp, only.fn, only.tn) == (2, 3, 1, 4)  # verd-mal, unsure: benign
     weak = a.matrices["behaviour+takedowns"]
@@ -229,6 +235,7 @@ def test_dataset_records_inputs_and_is_reproducible(data: Path) -> None:
     log = E.read_log(data.parent / "live" / "log.jsonl")
     assert len(log) == 1  # the same dataset is logged once
     assert log[0].malicious == 3 and log[0].newly_labeled == 3
+    assert (log[0].strict_malicious, log[0].strict_reported, log[0].unverified) == (3, 2, 1)
 
 
 def test_newly_labeled_counts_against_the_previous_build(data: Path) -> None:
@@ -242,7 +249,9 @@ def test_newly_labeled_counts_against_the_previous_build(data: Path) -> None:
 def test_markdown_escapes_and_covers_the_tables(data: Path) -> None:
     report, _ = build(data)
     md = E.render_live_markdown(report)
-    assert "Behaviour truth (verdict wins; headline)" in md
+    assert "Flag-worthy, behaviour truth (verdict wins; headline)" in md
+    assert "Strict, malicious only (unwanted is a negative)" in md
+    assert "Verdicts: 1 malicious, 0 unwanted, 1 benign, 1 unverified (unverified: none 1)." in md
     assert "| Why missed | New | Update |" in md
     assert "static.network" in md and "Single rule version: no" in md
     assert "capture -> OSV published" in md
@@ -323,3 +332,109 @@ def test_cli_eval_and_misses(data: Path) -> None:
     nolabels = runner.invoke(app, ["live", "eval", *args, "--labels", "nope"])
     assert nolabels.exit_code == 2
     assert json.loads((live / "log.jsonl").read_text().splitlines()[0])["malicious"] == 3
+
+
+def _seen(verdict: str | None, *, osv: bool = False, rank: int | None = 1) -> E.LiveSample:
+    return E.LiveSample(
+        name="a",
+        version="1",
+        run_id=R1,
+        published_at=PUBLISHED,
+        rank=rank,
+        osv=("MAL-9",) if osv else (),
+        verdict=verdict,
+    )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "osv", "cells"),
+    [
+        # verdict, OSV record -> behaviour (flag-worthy), strict, OSV truth, OSV only
+        ("malicious", False, ("M", "M", "M", "B")),
+        ("unwanted", False, ("M", "B", "M", "B")),
+        ("unwanted", True, ("M", "B", "M", "M")),  # OSV doesn't override a reviewer's unwanted
+        ("benign", True, ("B", "B", "M", "M")),
+        ("unverified", False, ("unverified", "unverified", "B", "B")),
+        ("unverified", True, ("unverified", "unverified", "M", "M")),  # OSV truth falls back
+        ("inconclusive", True, ("unverified", "unverified", "M", "M")),  # an older dataset's
+        (None, True, ("M", "M", "M", "M")),
+    ],
+)
+def test_truth_per_verdict_category(verdict: str | None, osv: bool, cells: tuple[str, ...]) -> None:
+    sample = _seen(verdict, osv=osv)
+    modes: tuple[E.Truth, ...] = ("behaviour", "strict", "osv", "osv-only")
+    assert tuple(E.truth(sample, m, settle_by=LABELS_AT) for m in modes) == cells
+
+
+def test_unverified_bounds_put_the_pipeline_right_or_wrong() -> None:
+    def cell(rank: int | None, bound: E.Bound, mode: E.Truth = "behaviour") -> str:
+        sample = _seen("unverified", rank=rank)
+        flagged = sample.reported
+        return E.truth(sample, mode, settle_by=LABELS_AT, bound=bound, flagged=flagged)
+
+    assert (cell(1, "best"), cell(1, "worst")) == ("M", "B")  # reported: TP or FP
+    assert (cell(None, "best"), cell(None, "worst")) == ("B", "M")  # unreported: TN or FN
+    assert cell(1, "best", "strict") == "M"
+    assert E.truth(_seen("unverified"), "osv", settle_by=LABELS_AT, bound="worst") == "B"
+
+
+def test_flag_worthy_strict_and_bounds_add_up() -> None:
+    """One version of each kind through `evaluate_live`: the headline counts unwanted as a
+    positive, strict as a negative, and the bounds bracket every rate."""
+    run = E.RunInfo(
+        as_of=REPORT_AS_OF, window_hours=1, stage4_version=8, stage4_rules="r", pipeline=None
+    )
+    inputs = E.LiveInputs(
+        label_set="x",
+        label_set_sha256="0",
+        label_history={},
+        takedowns_sha256=None,
+        takedowns_scanned_through=None,
+        verdicts_sha256="0",
+        verdict_lines=0,
+        verdict_lines_total=0,
+        ledgers={},
+    )
+    header = E.LiveDatasetHeader(
+        name="t",
+        ecosystem="npm",
+        as_of=LABELS_AT,
+        inputs=inputs,
+        runs={R1: run},
+        unfinished={},
+        pending={},
+        samples=6,
+    )
+    samples = [
+        _seen("malicious").model_copy(update={"name": "m"}),
+        _seen("unwanted").model_copy(update={"name": "u"}),
+        _seen("benign").model_copy(update={"name": "b"}),
+        _seen("unverified").model_copy(update={"name": "v1", "verdict_reason": "gone"}),
+        _seen("unverified", rank=None).model_copy(
+            update={"name": "v2", "verdict_reason": "binary"}
+        ),
+        _seen(None, rank=None).model_copy(update={"name": "q"}),
+    ]
+    report = E.evaluate_live(header, samples, dataset_sha256="0", windows=())
+    window = report.windows[E.ALL]
+    m = window.matrices
+
+    def cells(key: str) -> tuple[int, int, int, int]:
+        return (m[key].tp, m[key].fp, m[key].fn, m[key].tn)
+
+    assert cells("behaviour") == (2, 1, 0, 1) and m["behaviour"].excluded == {"unverified": 2}
+    assert cells("strict") == (1, 2, 0, 1)
+    assert cells("behaviour/best") == (3, 1, 0, 2)  # v1 TP, v2 TN
+    assert cells("behaviour/worst") == (2, 2, 1, 1)  # v1 FP, v2 FN
+    assert cells("strict/best") == (2, 2, 0, 2) and cells("strict/worst") == (1, 3, 1, 1)
+    for key in ("behaviour", "strict"):
+        for rate in ("recall", "precision"):
+            low = getattr(m[f"{key}/worst"], rate).value
+            high = getattr(m[f"{key}/best"], rate).value
+            assert low <= getattr(m[key], rate).value <= high
+    assert m["osv"].excluded == {} and cells("osv") == (2, 2, 0, 2)  # unverified: no OSV, benign
+    assert window.verdicts == {"malicious": 1, "unwanted": 1, "benign": 1, "unverified": 2}
+    assert window.unverified_reasons == {"gone": 1, "binary": 1}
+    assert report.malicious == ("m@1", "u@1")
+    md = E.render_live_markdown(report)
+    assert "(unverified: gone 1, binary 1)" in md and "Flag-worthy, worst case" in md

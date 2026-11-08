@@ -51,7 +51,16 @@ from typing import Any, Final, cast
 from urllib.parse import parse_qs
 
 from kitsunox.reporting.report import Report
-from kitsunox.reporting.verdicts import MAX_NOTE_CHARS, OWNER, TAGS, VERDICTS, verdict_record
+from kitsunox.reporting.verdicts import (
+    MAX_NOTE_CHARS,
+    OWNER,
+    REASONS,
+    TAGS,
+    VERDICTS,
+    Reason,
+    Verdict,
+    verdict_record,
+)
 from kitsunox.web.html import STYLESHEET
 from kitsunox.web.library import RUN_ID, Library
 from kitsunox.web.pages import (
@@ -91,7 +100,7 @@ _ENTRY: Final = re.compile(r"([0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}):([1-9][0-9]{0,8
 FORM_TYPE: Final = "application/x-www-form-urlencoded"
 _BACK: Final = re.compile(
     r"/(?:runs/[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}/entries/[1-9][0-9]{0,8}"
-    r"|verdicts/(?:malicious|inconclusive|benign))?"
+    r"|verdicts/(?:malicious|unwanted|benign|unverified))?"
 )
 
 
@@ -198,6 +207,17 @@ def _targets(
     return [(run, int(rank))]
 
 
+def _choice(value: str) -> tuple[Verdict, Reason | None] | None:
+    """A form's `verdict` value: a verdict, or `unverified:<reason>` (an unverified verdict
+    always names its reason, and nothing else does: decision 0015)."""
+    name, _, why = value.partition(":")
+    verdict = VERDICTS.get(name)
+    if verdict == "unverified":
+        reason = REASONS.get(why)
+        return None if reason is None else (verdict, reason)
+    return None if verdict is None or why else (verdict, None)
+
+
 def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
     """Record one verdict from a viewer form, then send the reviewer back (303)."""
     if form is None or not form.same_origin:
@@ -221,10 +241,12 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
     given = one("token") or ""
     if not hmac.compare_digest(given.encode(), token.encode()):
         return _html(failure(403, "Forbidden", "This form is from an older viewer; reload it."))
-    verdict, note = one("verdict") or "", one("note") or ""
+    note = one("note") or ""
+    choice = _choice(one("verdict") or "")
     targets = _targets(fields, one)
-    if not targets or verdict not in VERDICTS:
+    if not targets or choice is None:
         return _html(failure(400, "Bad request", "The form names no verdict on an entry."))
+    verdict, reason = choice
     if len(note) > MAX_NOTE_CHARS:
         return _html(failure(400, "Bad request", f"A note is at most {MAX_NOTE_CHARS} characters."))
     named = fields.get("tag", [])
@@ -243,7 +265,9 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
         if not isinstance(report, Report) or entry is None:
             return _html(not_found("That run or entry is not on disk any more."))
         records.append(
-            verdict_record(report, entry, VERDICTS[verdict], by=OWNER, note=note, tags=tags, at=now)
+            verdict_record(
+                report, entry, verdict, by=OWNER, note=note, tags=tags, reason=reason, at=now
+            )
         )
     if len({r.name for r in records}) > 1:
         return _html(failure(400, "Bad request", "One form gives a verdict on one package."))

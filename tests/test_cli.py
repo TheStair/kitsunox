@@ -321,21 +321,37 @@ def test_verdict_records_from_the_shell_and_verdicts_lists_them(tmp_path: Path) 
     assert result.exit_code == 0, result.output
     assert result.stdout.strip() == "evil-pkg@1.0.3: malicious (by claude)"
     listed = runner.invoke(app, ["verdicts", *args])
-    assert listed.stdout.splitlines()[0] == "1 malicious, 0 inconclusive, 0 benign"
+    assert listed.stdout.splitlines()[0] == "1 malicious, 0 unwanted, 0 benign, 0 unverified"
     assert "evil-pkg@1.0.3 (claude," in listed.stdout and listed.stdout.rstrip().endswith(": exfil")
     probe = runner.invoke(app, ["verdict", run_id, "1", "malicious", "--probe", *args])
     assert probe.stdout.strip() == "evil-pkg@1.0.3: malicious [probe] (by owner)"
     listed = runner.invoke(app, ["verdicts", *args])
-    assert listed.stdout.splitlines()[0] == "1 malicious (probes: 1), 0 inconclusive, 0 benign"
+    assert listed.stdout.splitlines()[0] == (
+        "1 malicious (probes: 1), 0 unwanted, 0 benign, 0 unverified"
+    )
     assert "evil-pkg@1.0.3 [probe] (owner," in listed.stdout
+    grey = runner.invoke(app, ["verdict", run_id, "1", "unverified", "--reason", "remote", *args])
+    assert grey.stdout.strip() == "evil-pkg@1.0.3: unverified (remote payload) (by owner)"
+    listed = runner.invoke(app, ["verdicts", "unverified", *args])
+    assert listed.stdout.splitlines()[0] == (
+        "0 malicious, 0 unwanted, 0 benign, 1 unverified (remote 1)"
+    )
+    assert "evil-pkg@1.0.3 [remote] (owner," in listed.stdout
+    pua = runner.invoke(app, ["verdict", run_id, "1", "unwanted", "--probe", *args])
+    assert pua.stdout.strip() == "evil-pkg@1.0.3: unwanted [probe] (by owner)"
     for bad in (
         ["verdict", run_id, "1", "reopened", "--probe", *args],
         ["verdict", run_id, "1", "evil", *args],
         ["verdict", run_id, "9", "benign", *args],
         ["verdict", "20261029T000000Z-npm", "1", "benign", *args],
         ["verdict", run_id, "1", "benign", "--by", "Bad Name", *args],
+        ["verdict", run_id, "1", "inconclusive", *args],  # no longer recorded
+        ["verdict", run_id, "1", "unverified", *args],  # needs --reason
+        ["verdict", run_id, "1", "unverified", "--reason", "lost", *args],
+        ["verdict", run_id, "1", "malicious", "--reason", "gone", *args],
+        ["verdict", run_id, "1", "reopened", "--reason", "gone", *args],
     ):
-        assert runner.invoke(app, bad).exit_code == 2
+        assert runner.invoke(app, bad).exit_code == 2, bad
 
 
 def test_takedowns_scans_new_runs_and_lists_what_it_keeps(tmp_path: Path) -> None:

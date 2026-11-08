@@ -7,16 +7,21 @@ in decision 0019. In short:
 
 - **Population:** each version that entered Stage 4 in a finished run, counted once, in the
   first run that recorded it. Excluded and counted: registry placeholders, OSV matches that
-  are only "projected" (decision 0005), `inconclusive` verdicts, and benign versions younger
-  than D days at the label set's `fetched_at` (provisional). Versions captured more than
-  `CATCH_UP_SPAN` after their release (catch-up runs read them after npm may have removed the
-  malware, so their recall is survivor-biased) are reported apart, not in a window.
+  are only "projected" (decision 0005), `unverified` verdicts (behaviour truth), and benign
+  versions younger than D days at the label set's `fetched_at` (provisional). Versions
+  captured more than `CATCH_UP_SPAN` after their release (catch-up runs read them after npm
+  may have removed the malware, so their recall is survivor-biased) are reported apart, not in
+  a window.
 - **Flagged:** in the run's report as the tick wrote it (a re-score is a secondary, recall-only
   figure).
-- **Truth:** *behaviour* (primary): a reviewer verdict wins, then an OSV record; *OSV*
-  (alongside): an OSV record wins, then a verdict; *OSV only*: verdicts ignored. npm takedowns
-  without an OSV record count only in a sensitivity row. Everything else is benign once
-  settled.
+- **Truth:** *behaviour* (primary, "flag-worthy"): a reviewer verdict wins (`malicious` and
+  `unwanted` are positives, `benign` negative, `unverified` left out), then an OSV record;
+  *strict*: the same with `unwanted` a negative (malware only); each has a best and a worst
+  case that puts the `unverified` versions back (the pipeline right about every one of them,
+  or wrong about every one). *OSV* (alongside): an OSV record wins, then a seen verdict (an
+  `unverified` one counts as none); *OSV only*: verdicts ignored. npm takedowns without an
+  OSV record count only in a sensitivity row. Everything else is benign once settled.
+  Legacy `inconclusive` verdicts are `unverified` (decision 0015, addendum 2026-11-08).
 
 Inputs are files with recorded digests: the ledgers, the label set and the label sets before it
 (for when a version was first labeled), the takedown log, and the verdict log cut at the label
@@ -48,7 +53,14 @@ from kitsunox.evaluation.labels import MalwareLabel
 from kitsunox.evaluation.ledger import UNFINISHED_AFTER, Ledger, LedgerRow, ledgers
 from kitsunox.evaluation.sample import read_samples, sample_bound
 from kitsunox.reporting.markdown import text
-from kitsunox.reporting.verdicts import VerdictRecord, current, read_verdicts
+from kitsunox.reporting.verdicts import (
+    KINDS,
+    LEGACY,
+    REASONS,
+    VerdictRecord,
+    current,
+    read_verdicts,
+)
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 
@@ -56,8 +68,9 @@ DEFAULT_D: Final = 7
 D_SENSITIVITY: Final = (3, 7, 14)
 CATCH_UP_SPAN: Final = timedelta(hours=6)  # capture (the run's as_of) minus publish
 
-Truth = Literal["behaviour", "osv", "osv-only"]
+Truth = Literal["behaviour", "strict", "osv", "osv-only"]
 Cell = Literal["M", "B"]
+Bound = Literal["best", "worst"]  # where `unverified` versions go (`truth`)
 
 
 class LiveWindow(Record):
@@ -172,10 +185,16 @@ class LiveSample(Record):
     verdict_by: str | None = None
     verdict_at: datetime | None = None
     verdict_tags: tuple[str, ...] = ()
+    verdict_reason: str | None = Field(default=None, description="An unverified verdict's.")
 
     @property
     def key(self) -> tuple[str, str]:
         return (self.name, self.version)
+
+    @property
+    def kind(self) -> str | None:
+        """The verdict, with a legacy `inconclusive` (an older dataset's) read as `unverified`."""
+        return None if self.verdict is None else LEGACY.get(self.verdict, self.verdict)
 
     @property
     def reported(self) -> bool:
@@ -390,6 +409,7 @@ def _sample(
         verdict_by=verdict.by if verdict else None,
         verdict_at=verdict.at if verdict else None,
         verdict_tags=tuple(verdict.tags) if verdict else (),
+        verdict_reason=verdict.reason if verdict else None,
     )
 
 
@@ -536,18 +556,35 @@ class _Matrix:
 
 
 def truth(
-    sample: LiveSample, mode: Truth, *, settle_by: datetime, weak_takedowns: bool = False
+    sample: LiveSample,
+    mode: Truth,
+    *,
+    settle_by: datetime,
+    weak_takedowns: bool = False,
+    bound: Bound | None = None,
+    flagged: bool = False,
 ) -> Cell | str:
-    """`M`, `B`, or the reason the version is left out (see the module docstring)."""
+    """`M`, `B`, or the reason the version is left out (see the module docstring).
+
+    Behaviour and strict truth: a verdict wins over an OSV record (a reviewer's `unwanted` or
+    `benign` stands), and an `unverified` one leaves the version out, unless `bound` puts it
+    back: `best` as what the pipeline decided (`flagged` -> M, else B), `worst` as the
+    opposite. OSV truth reads an `unverified` verdict as none."""
     if sample.placeholder:
         return "placeholder"
-    verdict = None if mode == "osv-only" else sample.verdict
-    if mode == "behaviour" and verdict in ("malicious", "benign"):
-        return _verdict_cell(verdict)  # an inconclusive verdict leaves it to OSV
+    verdict = None if mode == "osv-only" else sample.kind
+    if verdict == "unverified":
+        if mode in ("behaviour", "strict"):
+            if bound is None:
+                return "unverified"
+            return "M" if flagged == (bound == "best") else "B"
+        verdict = None  # OSV truth: as if there were no verdict
+    if mode in ("behaviour", "strict") and verdict is not None:
+        return _verdict_cell(verdict, strict=mode == "strict")
     if sample.osv:
         return "M"
     if verdict is not None:
-        return _verdict_cell(verdict)
+        return _verdict_cell(verdict, strict=False)
     if sample.projected:
         return "projected"
     if weak_takedowns and sample.takedown is not None:
@@ -556,8 +593,11 @@ def truth(
     return "B" if published is not None and published <= settle_by else "provisional"
 
 
-def _verdict_cell(verdict: str) -> Cell | str:
-    return "M" if verdict == "malicious" else "B" if verdict == "benign" else "inconclusive"
+def _verdict_cell(verdict: str, *, strict: bool) -> Cell | str:
+    """A seen verdict's cell: `unwanted` is a positive unless `strict` (malware only)."""
+    if verdict == "malicious" or (verdict == "unwanted" and not strict):
+        return "M"
+    return "B" if verdict in ("benign", "unwanted") else verdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,12 +607,23 @@ class _Config:
     d: int
     weak: bool = False
     current: bool = False  # flagged = reported after a re-score
+    bound: Bound | None = None
+
+    def flagged(self, sample: LiveSample) -> bool:
+        if self.current and sample.reported_current is not None:
+            return sample.reported_current
+        return sample.reported
 
 
 def configs_for(d: int) -> tuple[_Config, ...]:
     """The matrices of a report whose headline benign delay is `d` days."""
     return (
         _Config("behaviour", "behaviour", d),
+        _Config("behaviour/best", "behaviour", d, bound="best"),
+        _Config("behaviour/worst", "behaviour", d, bound="worst"),
+        _Config("strict", "strict", d),
+        _Config("strict/best", "strict", d, bound="best"),
+        _Config("strict/worst", "strict", d, bound="worst"),
         _Config("osv", "osv", d),
         _Config("osv-only", "osv-only", d),
         _Config("behaviour+takedowns", "behaviour", d, weak=True),
@@ -677,6 +728,12 @@ class WindowReport(Record):
     misses_watched: int
     rules_tp_fp: dict[str, list[int]] = Field(description="Rule id -> [TP, FP] it fired on.")
     verdicts_after_confirmation: int
+    verdicts: dict[str, int] = Field(
+        default_factory=dict, description="Versions per verdict (malicious ... unverified)."
+    )
+    unverified_reasons: dict[str, int] = Field(
+        default_factory=dict, description="Unverified versions per reason (`none`: legacy)."
+    )
     rule_sets: RuleSets
 
 
@@ -692,7 +749,8 @@ class LiveReport(Persisted):
     pending_runs: int
     misses: tuple[Missed, ...]
     malicious: tuple[str, ...] = Field(
-        description="`name@version` of every version labeled malicious (headline truth)."
+        description="`name@version` of every version labeled flag-worthy (headline truth: "
+        "malicious or unwanted)."
     )
     sample_bound: dict[str, object] = Field(default_factory=dict)
 
@@ -714,6 +772,8 @@ class _Window:
     misses_watched: int = 0
     rules: dict[str, list[int]] = field(default_factory=dict)
     confirmed: int = 0
+    verdicts: Counter[str] = field(default_factory=Counter)
+    reasons: Counter[str] = field(default_factory=Counter)
     run_ids: set[str] = field(default_factory=set)
     rule_versions: dict[str, set[int]] = field(default_factory=dict)
 
@@ -747,7 +807,14 @@ def evaluate_live(
             else [by_name[ALL], *(by_name[w.name] for w in windows if w.contains(run.as_of))]
         )
         cells = {
-            c.name: truth(sample, c.mode, settle_by=settle[c.d], weak_takedowns=c.weak)
+            c.name: truth(
+                sample,
+                c.mode,
+                settle_by=settle[c.d],
+                weak_takedowns=c.weak,
+                bound=c.bound,
+                flagged=c.flagged(sample),
+            )
             for c in configs
         }
         headline = cells["behaviour"]
@@ -764,7 +831,7 @@ def evaluate_live(
                     shape=sample.shape,
                     cause=miss_cause(sample),
                     osv=sample.osv,
-                    verdict=sample.verdict,
+                    verdict=sample.kind,
                     tarball=sample.tarball,
                     score=sample.score,
                 )
@@ -798,13 +865,13 @@ def _add(
     acc.versions += 1
     acc.run_ids.add(sample.run_id)
     reviewed = sample.verdict is not None
+    kind = sample.kind
+    if kind is not None:
+        acc.verdicts[kind] += 1
+        if kind == "unverified":
+            acc.reasons[sample.verdict_reason or "none"] += 1
     for c in configs:
-        flagged = (
-            sample.reported_current
-            if c.current and sample.reported_current is not None
-            else sample.reported
-        )
-        acc.matrices.setdefault(c.name, _Matrix()).add(cells[c.name], flagged, reviewed)
+        acc.matrices.setdefault(c.name, _Matrix()).add(cells[c.name], c.flagged(sample), reviewed)
     headline = cells["behaviour"]
     acc.shapes.setdefault(sample.shape, _Matrix()).add(headline, sample.reported, reviewed)
     for rule in sample.rules:
@@ -817,7 +884,7 @@ def _add(
     funnel = acc.funnel_m if headline == "M" else acc.funnel_b
     for shape in (sample.shape, ALL):
         funnel.setdefault(shape, Counter()).update(funnel_steps(sample))
-    if sample.verdict in ("malicious", "benign") and sample.confirmation_seen:
+    if kind in ("malicious", "unwanted", "benign") and sample.confirmation_seen:
         acc.confirmed += 1
     if sample.reported:
         column = 0 if headline == "M" else 1
@@ -863,6 +930,8 @@ def _freeze(acc: _Window, header: LiveDatasetHeader) -> WindowReport:
         misses_watched=acc.misses_watched,
         rules_tp_fp=dict(sorted(acc.rules.items())),
         verdicts_after_confirmation=acc.confirmed,
+        verdicts={k: acc.verdicts[k] for k in KINDS},
+        unverified_reasons={k: acc.reasons[k] for k in (*REASONS, "none") if acc.reasons[k]},
         rule_sets=RuleSets(
             runs=len(runs),
             stage4=dict(sorted(stage4.items())),
@@ -950,7 +1019,12 @@ def _pct(rate: Rate) -> str:
 
 
 MATRIX_TITLES: Final = {
-    "behaviour": "Behaviour truth (verdict wins; headline)",
+    "behaviour": "Flag-worthy, behaviour truth (verdict wins; headline)",
+    "behaviour/best": "Flag-worthy, best case (unverified as the pipeline decided)",
+    "behaviour/worst": "Flag-worthy, worst case (unverified the opposite)",
+    "strict": "Strict, malicious only (unwanted is a negative)",
+    "strict/best": "Strict, best case",
+    "strict/worst": "Strict, worst case",
     "osv": "OSV truth (OSV wins; verdict-only malicious kept)",
     "osv-only": "OSV only (verdicts ignored)",
     "behaviour+takedowns": "Behaviour truth + takedowns as weak positives (sensitivity)",
@@ -1009,6 +1083,16 @@ def render_live_markdown(report: LiveReport) -> str:
             + ", ".join(f"{k} {v}" for k, v in window.late_labels.items())
             + f". Verdicts recorded after a confirmation was public: "
             f"{window.verdicts_after_confirmation}.",
+            "Verdicts: "
+            + ", ".join(f"{v:,} {k}" for k, v in window.verdicts.items())
+            + (
+                " (unverified: "
+                + ", ".join(f"{k} {v:,}" for k, v in window.unverified_reasons.items())
+                + ")"
+                if window.unverified_reasons
+                else ""
+            )
+            + ".",
             "",
             "| Funnel | " + " | ".join(FUNNEL) + " |",
             "|---|" + "---|" * len(FUNNEL),
@@ -1063,10 +1147,11 @@ def _sample_lines(bound: Mapping[str, object]) -> list[str]:
     """The review sample's upper bounds on unlabeled malware (`sample.sample_bound`)."""
     out = [
         "",
-        "## Review sample: malware nobody labeled (95% upper bounds)",
+        "## Review sample: flag-worthy versions nobody labeled (95% upper bounds)",
         "",
-        "| Group | Stratum | Population | Sampled | Reviewed | Malicious | Upper bound |",
-        "|---|---|---|---|---|---|---|",
+        "| Group | Stratum | Population | Sampled | Reviewed | Malicious | Unwanted "
+        "| Upper bound |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for group, raw in bound.items():
         if not isinstance(raw, dict) or not raw.get("days"):
@@ -1076,13 +1161,13 @@ def _sample_lines(bound: Mapping[str, object]) -> list[str]:
             upper = b.get("upper")
             out.append(
                 f"| {group} | {name} | {b.get('population', 0):,} | {b.get('sampled', 0)} "
-                f"| {b.get('reviewed', 0)} | {b.get('malicious', 0)} "
+                f"| {b.get('reviewed', 0)} | {b.get('malicious', 0)} | {b.get('unwanted', 0)} "
                 f"| {'n/a' if upper is None else f'{upper:.2%}'} |"
             )
         share = raw.get("upper_share")
         if isinstance(share, float):
             out.append(
-                f"| {group} | weighted | | | | | {share:.2%} (≤ {raw.get('upper_versions')} "
+                f"| {group} | weighted | | | | | | {share:.2%} (≤ {raw.get('upper_versions')} "
                 "versions) |"
             )
     return out
@@ -1096,11 +1181,18 @@ class LogLine(Record):
     dataset_sha256: str
     label_set: str
     versions: int
-    malicious: int
-    reported_malicious: int
+    malicious: int = Field(description="Flag-worthy versions (headline: malicious or unwanted).")
+    reported_malicious: int = Field(description="Of those, reported.")
     recall: float | None
     precision: float | None
-    newly_labeled: int = Field(description="Malicious versions not in the previous build.")
+    strict_malicious: int | None = Field(
+        default=None, description="Malicious versions alone (the strict matrix)."
+    )
+    strict_reported: int | None = Field(default=None, description="Of those, reported.")
+    unverified: int | None = Field(
+        default=None, description="Versions left out of both matrices: an unverified verdict."
+    )
+    newly_labeled: int = Field(description="Flag-worthy versions not in the previous build.")
     newly_reported: int = Field(default=0, description="Of those, how many were reported.")
     sample_unreviewed: int = Field(
         default=0, description="Sampled versions with no verdict yet (any time)."
@@ -1124,6 +1216,7 @@ def write_live_report(
     json_path, md_path = live_paths(live, report.dataset)
     atomic_write(md_path, markdown.encode())
     headline = report.windows[ALL].matrices["behaviour"]
+    strict = report.windows[ALL].matrices["strict"]
     malicious = headline.tp + headline.fn
     log_path = live / "log.jsonl"
     previous = read_log(log_path)
@@ -1141,6 +1234,9 @@ def write_live_report(
         reported_malicious=headline.tp,
         recall=headline.recall.value,
         precision=headline.precision.value,
+        strict_malicious=strict.tp + strict.fn,
+        strict_reported=strict.tp,
+        unverified=headline.excluded.get("unverified", 0),
         newly_labeled=len(new),
         newly_reported=len(new - missed),
         sample_unreviewed=sample_unreviewed,
@@ -1153,7 +1249,7 @@ def write_live_report(
 
 
 def _malicious_keys(live: Path, dataset: str) -> set[str]:
-    """Versions labeled malicious (headline truth) in a dataset's report."""
+    """Versions labeled flag-worthy (headline truth) in a dataset's report."""
     path = live_paths(live, dataset)[0]
     try:
         return set(LiveReport.load_json(path.read_bytes()).malicious)

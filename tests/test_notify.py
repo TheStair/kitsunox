@@ -372,8 +372,8 @@ def test_the_daily_summary_carries_the_verdict_tally() -> None:
     assert lines([review])[1:5] == [
         "☠️ Malicious: **2**",
         "☠️ Malicious: +1 that day",
-        "❔ Inconclusive: **0**",
-        "❔ Inconclusive: +0 that day",
+        "⚠️ Unwanted: **0**",
+        "⚠️ Unwanted: +0 that day",
     ]
     flipped = lines(render_daily(DAY, ticks_of_a_day(), [a], [earlier, benign]))
     assert "☠️ Malicious: **0**" in flipped and "✅ Benign: +1 that day" in flipped
@@ -461,8 +461,13 @@ def test_the_daily_summary_has_one_live_eval_line() -> None:
     )
     review = render_daily(DAY, ticks_of_a_day()[:1], [], [], None, live)[1]
     assert lines([review])[1] == (
-        "🧪 Live eval (labels 20261124T000000Z): 52 / 190 malicious reported (27%); "
+        "🧪 Live eval (labels 20261124T000000Z): 52 / 190 flag-worthy reported (27%); "
         "+4 newly labeled, 1 reported; review sample: 3 to review"
     )
     unknown = live.model_copy(update={"recall": None})
-    assert "malicious reported;" in lines(render_daily(DAY, [], [], [], None, unknown))[-1]
+    assert "flag-worthy reported;" in lines(render_daily(DAY, [], [], [], None, unknown))[-1]
+    strict = live.model_copy(update={"strict_malicious": 150, "strict_reported": 40})
+    assert (
+        "52 / 190 flag-worthy reported (27%; malicious only 40 / 150);"
+        in (lines(render_daily(DAY, [], [], [], None, strict))[-1])
+    )

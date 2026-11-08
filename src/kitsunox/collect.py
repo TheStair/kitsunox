@@ -653,7 +653,7 @@ def _live_eval(data: DataDir, now: datetime) -> str:
     atomic_write(state, json.dumps({"last": now.isoformat()}).encode() + b"\n")
     headline = report.windows["all"].matrices["behaviour"]
     return (
-        f"labels {line.label_set}: {headline.tp} of {headline.tp + headline.fn} malicious "
+        f"labels {line.label_set}: {headline.tp} of {headline.tp + headline.fn} flag-worthy "
         f"reported, {headline.fp} reported benign ({line.newly_labeled} newly labeled, "
         f"{line.newly_reported} of them reported); {len(written)} ledgers, {len(samples)} "
         f"samples drawn, {line.sample_unreviewed} sampled versions to review "

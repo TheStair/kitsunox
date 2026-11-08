@@ -10,8 +10,8 @@ A run's `report.json` lists reported *versions*. Across runs that has two proble
   earliest run on a tie): a later run may have known more, and a missed attack costs more than
   a false positive. (Evaluation datasets keep the earliest sighting; that is about labels.)
 
-Versions a reviewer has given a verdict (`reporting.verdicts`: malicious, inconclusive, benign)
-are left out; the counts say how many, and the verdict tally rides along.
+Versions a reviewer has given a verdict (`reporting.verdicts`: malicious, unwanted, benign or
+unverified) are left out; the counts say how many, and the verdict tally rides along.
 
 **Like a cleared version:** a queued version whose package has a version reviewed benign with
 the same publisher and the same rules carries that version in `like`. It is a hint to speed the
@@ -238,7 +238,9 @@ def _confirmed_verdicts(
                     confirmed=confirmed,
                 )
             )
-    order = {kind: i for i, kind in enumerate(("benign", "inconclusive", "malicious"))}
+    # A confirmed benign verdict is a missed attack; then unwanted (the reviewer saw it and
+    # called it less than malware); then unverified (settled by someone with more evidence).
+    order = {kind: i for i, kind in enumerate(("benign", "unwanted", "unverified", "malicious"))}
     return tuple(sorted(found, key=lambda c: (order.get(c.verdict, 3), c.name, c.version)))
 
 

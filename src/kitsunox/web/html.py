@@ -124,7 +124,8 @@ def page(title: str, body: str, crumbs: Sequence[tuple[str | None, str]] = ()) -
         "<body>\n"
         '<header><nav aria-label="Main"><a class="brand" href="/">Kitsunox</a> '
         '<a href="/">Review queue</a> <a href="/verdicts/malicious">Malicious</a> '
-        '<a href="/verdicts/inconclusive">Inconclusive</a> <a href="/verdicts/benign">Benign</a> '
+        '<a href="/verdicts/unwanted">Unwanted</a> <a href="/verdicts/benign">Benign</a> '
+        '<a href="/verdicts/unverified">Unverified</a> '
         '<a href="/runs">Runs</a></nav></header>\n'
         f"<main>\n{trail}\n{body}\n</main>\n"
         "<footer><p>Local viewer: it writes nothing but reviewers' verdicts. Text from "
