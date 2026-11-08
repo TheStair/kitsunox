@@ -2,7 +2,7 @@
 
 > **Status (2026-10-27):** OSV labels; datasets built from our own ingest runs; DataDog malware
 > samples imported as encrypted data ([0007](decisions/0007-datadog-samples-and-follow-on-releases.md));
-> baseline and Stage 1 predictors.
+> baseline and Stage 1 predictors. **2026-11-08:** live evaluation (Phase 9, below).
 
 ## How to run
 
@@ -186,6 +186,47 @@ malicious and a 95% upper bound on that share (Wilson; the exact `1 − 0.05^(1/
 was), and the population-weighted bound on unlabeled malware among unreported versions. With a
 base rate near 0.02% the sample will usually find nothing: the honest output is a bound, not a
 point estimate.
+
+### The label hold (`core/retention.py`)
+
+Labels come a median ~22 h after our capture, but runs are pruned after 2 days. Before every
+prune, `data/eval/live/hold.json` is updated: every captured tarball ≤ 64 KB (80 of the 86
+malicious tarballs captured in window A were), every reported version's tarball and diff base,
+and the review sample's tarballs, each held 30 days past its run; versions live evaluation has
+labeled malicious are held for good. The cap is 15 GB (the owner approved ~10 GB). See
+[0006](decisions/0006-scheduled-collection-and-retention.md#addendum-2026-11-08-a-30-day-label-hold).
+
+### Window A, provisional (2026-11-08)
+
+Label set `20261108T151126Z`; 87 finished runs of 10-29 to 11-03 plus the 4-day catch-up
+`20261107T163310Z`; built with `kitsunox live eval` into a scratch directory. **Provisional**:
+with D = 7 only versions released by 11-01 15:11Z are settled benign (144,239 versions of
+window A are still provisional), the misses are not adjudicated yet, and the runs were scored
+by six Stage 4 rule sets (`stage_version` 5 to 8), so this is not a single-version window.
+
+| Window A | TP | FP | FN | TN | Recall | Precision | FP rate |
+|---|---|---|---|---|---|---|---|
+| Behaviour truth (headline) | 37 | 1,899 | 94 | 224,444 | 28.2% [21.2–36.5] | 1.9% [1.4–2.6] | 0.8% |
+| OSV truth | 44 | 1,892 | 94 | 224,444 | 31.9% [24.7–40.1] | 2.3% [1.7–3.0] | 0.8% |
+| OSV only | 30 | 1,491 | 94 | 224,448 | 24.2% [17.5–32.4] | 2.0% [1.4–2.8] | 0.7% |
+| Flagged = current report (re-scores) | 37 | 1,140 | 94 | 225,203 | 28.2% | 3.1% [2.3–4.3] | 0.5% |
+
+- 758 of the 1,899 FPs have no verdict: versions the tick reported that a re-score later
+  removed, so nobody reviewed them; they are presumed benign. All 1,141 reviewed FPs are
+  benign verdicts.
+- By shape: A (updates) 10 / 64 = 15.6% [8.7–26.4]; B (new packages) 27 / 67 = 40.3%
+  [29.4–52.3]. By OSV record 25.4% [16.5–36.9]; by publisher account 55.8% [41.1–69.6].
+- Misses (94): 35 updates Stage 2 never read, 10 updates without files (size cap), 39 read with
+  no finding (36 new packages, mostly the `@goparrot-dashboard/*` 0.0.1 family), 10 with
+  findings below the bar. None is a watched package.
+- Takedowns as weak positives change nothing (every takedown we captured has an OSV record).
+- 14 malicious versions were captured more than 6 h after release (catch-up group: 6 TP,
+  8 FN), and 3 runs of 11-03 never finished (63,452 changes): the operational loss.
+- Label timing per OSV record (75): capture → OSV `published` median 21.6 h (p75 41.9, max
+  195.8); capture → npm takedown median 42.8 h (31 records).
+- The proposal's hand count (34 / 134 reported) differs because the first VM run's versions
+  published over 6 h before capture are now in the catch-up group and verdicts decide
+  disputes.
 
 ## Data sources
 

@@ -1,9 +1,14 @@
 # Proposal: prospective labeling and a live confusion matrix (Phase 9)
 
-> **Status:** proposed 2026-11-08, not implemented. The owner approved building this phase after
-> the proposal; the open questions in [section 8](#8-open-questions-for-the-owner) need answers
-> first. Measurements are read-only, on the VM's `data/` as of 2026-11-08 ~16:00Z (label set
-> `20261108T151126Z`, 222,874 npm `MAL-` records). Scripts: [Reproducing](#reproducing).
+> **Status:** implemented 2026-11-08 (option B): `evaluation/ledger.py`, `evaluation/live.py`,
+> `evaluation/sample.py`, the hold in `core/retention.py`, and the daily `live-eval` step in
+> `collect`; see [evaluation.md](../evaluation.md#live-evaluation-phase-9). Owner decisions
+> ([0019](../decisions/0019-live-evaluation.md)): behaviour truth primary with OSV truth
+> alongside; D = 7 with 3 / 14 sensitivity; rule freeze 2026-11-12 to 2026-11-19 (window B);
+> the 30-day hold approved. Takedowns without OSV count only in a sensitivity row; window-A
+> misses are adjudicated by review. Measurements below are read-only, on the VM's `data/` as of
+> 2026-11-08 ~16:00Z (label set `20261108T151126Z`, 222,874 npm `MAL-` records). Scripts:
+> [Reproducing](#reproducing).
 
 ## Summary
 

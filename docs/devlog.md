@@ -2,6 +2,56 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Live evaluation built (Phase 9, option B)
+
+**Stage(s):** evaluation (ledger, live dataset, review sample), retention (label hold), collect
+**Context:** The capstone needs a confusion matrix measured on what the pipeline decided live,
+not only on DataDog samples. The proposal ([prospective-labeling.md](proposals/prospective-labeling.md))
+measured window A by hand with throwaway scripts; the owner approved option B and decided the
+four open questions ([0019](decisions/0019-live-evaluation.md)).
+
+### Decisions
+- **A per-run decision ledger, kept for good** (`evaluation/ledger.py`): one ~150-byte row per
+  version (Stage 1 route, Stages 2-3 read/flag, Stage 4 score and decision, report rank,
+  `rule_id@version` of every finding, captured tarball digests) plus a header with Stage 4's
+  fingerprint and the SHA-256 of every input. Streams `correlate.jsonl`; ~90 KB per hourly run.
+  Alternative: re-reading run outputs at each evaluation; rejected because `correlate.jsonl`
+  reaches 3 GB a run and blobs are pruned. When `collect` writes it in the tick that ran the
+  stages, it also records every stage's rule fingerprint, which is how window B (rule freeze
+  11-12 to 11-19) can be shown single-version; a backfill can't know them.
+- **Behaviour truth primary, OSV truth alongside** (the owner): a version-level verdict wins; an
+  inconclusive verdict falls back to OSV. D = 7 for benign, with D = 3 / 14 rows.
+- **Catch-up by capture lag, not by run window**: a version captured more than 6 h after its
+  release goes to a separate group. Tried first by run window (> 6 h): that also dropped all of
+  the first VM run (24 h window, 110k versions), including versions captured within the hour.
+- **Sample verdicts use rank 0** in the ordinary verdict log (`kitsunox live verdict`) rather
+  than a new field: no schema change, and the viewer already links only ranks above 0.
+- **The hold keeps labeled tarballs in place, for good** (`until` None), instead of copying
+  them to `data/eval/live/tarballs/` as the proposal said: one mechanism, no copy.
+- **The hold never blocks a prune**: if `hold.json` can't be updated the last one is used; if
+  it can't be read the prune goes ahead without it. A full disk crashed the VM twice.
+
+### Challenges
+- **Empty matrices crashed the first `collect` test**: a tick whose versions were all
+  provisional had no "behaviour" matrix, and the results log looked it up (`KeyError`, found by
+  `test_ticks_chain_and_prune_once_a_day`). Every matrix is now created up front.
+- **The live-eval disk check consumed a reading in the disk-guard test**, shifting the sequence;
+  the step now checks `"disk" not in failed` before measuring.
+
+### Evaluation snapshot (window A, provisional: D not met for 144k versions, misses not adjudicated)
+- Behaviour truth: TP 37, FP 1,899 (758 never reviewed), FN 94, TN 224,444: recall 28.2%
+  [21.2–36.5], precision 1.9% [1.4–2.6]. OSV truth: 44 / 1,892 / 94: recall 31.9%. By shape:
+  A 15.6%, B 40.3%. Misses: 35 never read by Stage 2, 10 without files, 39 read with no
+  finding, 10 below the bar; none watched.
+- Real run: `live eval` over 109 ledgers (88 runs, 21 re-scored) and label set
+  `20261108T151126Z` took 46 s under a 4 GB cap. The backfill took a few minutes.
+
+### Open questions / next steps
+- Adjudicate the 94 window-A misses (`kitsunox live misses`, then `kitsunox live verdict`).
+- Review the daily sample (~55 versions a day as built: 20 / 20 / 15).
+- The owner's blind check of the analyst's verdicts (κ) is not built.
+- After the freeze, check window B's rule-set line reads "single rule version: yes".
+
 ## 2026-11-08: Streaming, steps 1-2 (`collect`, retention, Stage 0's digest)
 
 **Stage(s):** `collect`, retention (step 1, `cd7c7b1`); Stage 0 ingest, the digest only

@@ -64,7 +64,7 @@ import httpx
 
 from kitsunox import __version__
 from kitsunox.core.models import PackageBatch
-from kitsunox.core.retention import prune
+from kitsunox.core.retention import held_digests, prune, small_tarballs, update_hold
 from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import (
     CORRELATE_SNAPSHOT,
@@ -79,7 +79,12 @@ from kitsunox.core.run import (
 from kitsunox.core.watchlist import MONTHLY_CUTOFF
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM as NPM
 from kitsunox.ecosystems.npm.packument import is_security_holder
-from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, packument_url
+from kitsunox.ecosystems.npm.registry import (
+    ECOSYSTEMS_REGISTRY,
+    REGISTRY_URL,
+    NpmEcosystem,
+    packument_url,
+)
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR, scan_takedowns
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
@@ -90,7 +95,7 @@ from kitsunox.evaluation.ledger import (
     pipeline_fingerprints,
     write_ledger,
 )
-from kitsunox.evaluation.live import LiveSources, run_live_eval
+from kitsunox.evaluation.live import LiveSources, hold_requests, run_live_eval
 from kitsunox.evaluation.sample import write_samples
 from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import Tick
@@ -558,6 +563,7 @@ def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | N
     if labels_id is None:
         return "skipped: no label set to decide which packuments to keep"
     labels = store.load(NPM, labels_id)
+    held, hold = hold_now(data, now)
     report = prune(
         data,
         now=now,
@@ -566,6 +572,7 @@ def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | N
         metadata_url=packument_url,
         keep_archive_days=keep_repo_days,
         is_archive=is_archive_url,
+        held=held,
     )
     exports, results = prune_sandbox(data, labels.labels.keys())
     path = data.root / "state" / "prune.json"
@@ -574,7 +581,41 @@ def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | N
     sandbox = f"; Stage 5: {exports} exports, {results} results" if exports or results else ""
     return (
         f"{len(report.runs_pruned)} runs pruned, {report.blobs_pinned} blobs pinned, "
-        f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB){sandbox}"
+        f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB){sandbox}; "
+        f"{hold}"
+    )
+
+
+def is_npm_tarball(url: str) -> bool:
+    return url.startswith(f"{REGISTRY_URL}/") and url.endswith(".tgz")
+
+
+def hold_now(data: DataDir, now: datetime) -> tuple[set[str], str]:
+    """Update the label hold (decision 0019) and return what it keeps, before a prune. If the
+    update fails, the hold as last written is kept; if that can't be read either, the prune
+    goes ahead without it: a full disk crashes the VM, a lost tarball doesn't."""
+    try:
+        live = data.root / LIVE_DIR
+        requests = [
+            *small_tarballs(data, is_artifact=is_npm_tarball),
+            *hold_requests(data.root, live),
+        ]
+        hold, report = update_hold(data, requests, now=now)
+    except Exception as exc:  # the prune must still run
+        try:
+            kept = held_digests(data, now)
+        except Exception:
+            return set(), f"hold: UNREADABLE ({type(exc).__name__}), nothing held"
+        return kept, f"hold: update FAILED ({type(exc).__name__}: {exc}), {len(kept)} kept"
+    capped = (
+        f", {report.dropped} dropped over the {hold.cap_bytes / 1e9:.0f} GB cap "
+        f"({report.dropped_bytes / 1e9:.2f} GB)"
+        if report.dropped
+        else ""
+    )
+    return hold.digests(now), (
+        f"hold: {report.held} blobs ({report.held_bytes / 1e9:.2f} GB), +{report.added}, "
+        f"{report.expired} expired, {report.missing} gone{capped}"
     )
 
 

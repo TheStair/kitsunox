@@ -156,3 +156,18 @@ The `.zst` bytes can differ from a one-shot compress (nothing hashes them); the 
 bytes are the same. On a hard-linked copy of that run: 41 s, 1.19 GB peak RSS for the whole
 `prune` call, 0.74 GB of it the label set loaded before pruning
 ([validation](../validation.md)). See `docs/proposals/streaming-stages.md`, step 1.
+
+## Addendum (2026-11-08): a 30-day label hold
+
+Pins are decided once, from the label set of prune time, so a version labeled after its run was
+pruned lost its tarball (51 of 139 malicious versions in window A, 26 with a captured tarball).
+The owner approved a hold ([0019](0019-live-evaluation.md)): before every prune, `collect` (and
+`kitsunox data prune`) update `data/eval/live/hold.json` with every captured tarball of at most
+64 KB, the tarballs of reported versions and of the daily review sample, each for 30 days past
+its run, and, for good, those of versions live evaluation has labeled malicious.
+`_collect_garbage` treats held digests as referenced. The hold is capped at 15 GB (lowest
+priority and oldest dropped first, logged); if it can't be updated, the last one written is
+used, and if that can't be read the prune goes ahead without it (a full disk crashes the VM).
+On 2026-11-08 the unpruned runs held 1.5 GB of small tarballs (83,140, most from the 4-day
+catch-up) and 1.5 GB of reported versions' tarballs.
+

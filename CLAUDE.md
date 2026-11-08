@@ -131,6 +131,11 @@ uv run kitsunox takedowns                          # npm takedowns seen in the f
 uv run kitsunox view                               # local web viewer on 127.0.0.1:8000: queue, runs, verdicts (docs/viewer.md)
 uv run kitsunox verdict <run_id> <rank> malicious --note "..." --by claude   # record a verdict; `kitsunox verdicts` lists them
 uv run kitsunox run --data-dir data-demo --window-hours 1   # whole pipeline once (own data dir: it moves the checkpoint)
+uv run kitsunox live ledger                        # Phase 9: backfill per-version decision ledgers (data/eval/live/ledger/)
+uv run kitsunox live eval                          # live dataset + confusion matrices (--live-dir elsewhere: no writes to data/)
+uv run kitsunox live misses                        # labeled-malicious versions not reported, to adjudicate
+uv run kitsunox live sample                        # draw the daily label-blind review sample, list the newest
+uv run kitsunox live verdict <run_id> <name> <version> benign --by claude   # verdict on a sampled/missed version (rank 0)
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.
@@ -312,6 +317,11 @@ versions with install hooks, as offline dependency bundles, for OpenSSF package-
 owner's airgapped VM, and imports its results as hostile data; `collect` runs it only when
 `KITSUNOX_SANDBOX_RESULTS` is set. It downloads (never runs) a reported version's tarball when
 no earlier stage captured it. See `docs/stages/sandbox.md`.
+Live evaluation (Phase 9, decision 0019; `evaluation/ledger.py`, `live.py`, `sample.py`):
+`collect` writes each finished run's decision ledger, runs `live-eval` daily before the prune
+(confusion matrices, behaviour truth primary, D = 7), and holds small / reported / sampled
+tarballs 30 days (`core/retention.py`). Rule freeze 2026-11-12 to 2026-11-19 (window B): no
+rule changes in that week. See `docs/evaluation.md`.
 Stages 4 and 5 and the report stream a run's versions from disk (`CandidateFile`, `RunVersions`):
 never load a whole run's candidates into memory (a 110k-version run was OOM-killed at 21.6 GB).
 

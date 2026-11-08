@@ -40,6 +40,7 @@ from typing import Final, Literal
 from pydantic import Field
 
 from kitsunox.core.models import Persisted, Record
+from kitsunox.core.retention import HOLD_DAYS, HeldBlob, HoldReason
 from kitsunox.core.run import RunManifest
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR
 from kitsunox.evaluation.intervals import Rate, wilson
@@ -1048,7 +1049,7 @@ def render_live_markdown(report: LiveReport) -> str:
     ]
     for label, t in report.timing.items():
         out.append(f"| {label} | {t.n} | {t.median_h} | {t.p75_h} | {t.max_h} |")
-    if report.sample_bound:
+    if any(isinstance(g, dict) and g.get("days") for g in report.sample_bound.values()):
         out += _sample_lines(report.sample_bound)
     out += [
         "",
@@ -1203,3 +1204,63 @@ def run_live_eval(
         sample_unreviewed=unreviewed,
     )
     return report, line, path
+
+
+def hold_requests(data_root: Path, live: Path) -> list[tuple[str, HeldBlob]]:
+    """What live evaluation asks the label hold (`core.retention`) to keep: the tarballs (and
+    diff bases) of reported versions in runs not pruned yet, of the review samples, and, for
+    good, of every version the newest live report labels malicious."""
+    runs = data_root / "runs"
+    labeled: set[str] = set()
+    entries = read_log(live / "log.jsonl")
+    if entries:
+        try:
+            report = LiveReport.load_json(live_paths(live, entries[-1].dataset)[0].read_bytes())
+            labeled = set(report.malicious)
+        except OSError, ValueError:
+            labeled = set()
+    found: list[tuple[str, HeldBlob]] = []
+
+    def add(
+        sha: str | None,
+        size: int | None,
+        why: HoldReason,
+        ref: str,
+        run_id: str,
+        until: datetime | None,
+    ) -> None:
+        if sha is not None:
+            found.append(
+                (sha, HeldBlob(until=until, size=size or 0, reason=why, ref=ref, run_id=run_id))
+            )
+
+    for lg in ledgers(live):
+        header = lg.header
+        recent = not (runs / header.run_id / "retention.json").exists()
+        if not (recent or labeled):
+            continue
+        until = header.as_of + timedelta(days=HOLD_DAYS)
+        for row in lg.rows():
+            ref = f"{row.name}@{row.version}"
+            why: HoldReason | None = (
+                "labeled" if ref in labeled else "reported" if recent and row.reported else None
+            )
+            if why is None:
+                continue
+            keep = None if why == "labeled" else until
+            add(row.tarball, row.tarball_size, why, ref, header.run_id, keep)
+            add(row.base_tarball, row.base_tarball_size, why, ref, header.run_id, keep)
+    for sample in read_samples(live):
+        until = datetime(sample.day.year, sample.day.month, sample.day.day, tzinfo=UTC)
+        for v in sample.versions:
+            ref = f"{v.name}@{v.version}"
+            add(
+                v.tarball,
+                v.tarball_size,
+                "sample",
+                ref,
+                v.run_id,
+                until + timedelta(days=HOLD_DAYS),
+            )
+            add(v.base_tarball, None, "sample", ref, v.run_id, until + timedelta(days=HOLD_DAYS))
+    return found

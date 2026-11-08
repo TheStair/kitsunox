@@ -19,6 +19,7 @@ from kitsunox.collect import (
     RESCORE_INFO,
     SANDBOX_RESULTS_ENV,
     collect,
+    hold_now,
     rescore_run,
     run_sandbox,
     run_stages,
@@ -1117,14 +1118,17 @@ def data_prune(
     labels = label_store(data).load(NPM, labels_id)
     try:
         with data.lock():
+            now = datetime.now(UTC)
+            held, hold = hold_now(data, now)
             report = prune(
                 data,
-                now=datetime.now(UTC),
+                now=now,
                 keep_days=keep_days,
                 pinned_names=labels.labels.keys(),
                 metadata_url=packument_url,
                 keep_archive_days=keep_repo_days,
                 is_archive=is_archive_url,
+                held=held,
             )
             exports, results = prune_sandbox(data, labels.labels.keys())
     except DataDirBusyError as exc:
@@ -1133,7 +1137,7 @@ def data_prune(
     typer.echo(
         f"{len(report.runs_pruned)} runs pruned, {report.blobs_pinned} blobs pinned, "
         f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB freed); "
-        f"Stage 5: {exports} exports, {results} results removed"
+        f"Stage 5: {exports} exports, {results} results removed; {hold}"
     )
 
 
