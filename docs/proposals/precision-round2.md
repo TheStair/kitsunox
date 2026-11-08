@@ -14,6 +14,13 @@
 > `correlate.EXPLAINED`). Per fix: [stages/triage.md](../stages/triage.md),
 > [ast.md](../stages/ast.md), [correlate.md](../stages/correlate.md),
 > [static.md](../stages/static.md); [evaluation.md](../evaluation.md) results log.
+> **F8 built 2026-11-08** (owner's approval the same day, before the freeze): diff base 5
+> ([stages/ingest.md](../stages/ingest.md), [devlog](../devlog.md)). Measured with the real
+> code, it removes **18** benign reports, not ~135: the 119 `@astryxdesign/cli` canaries are
+> already gone with Stage 2's 32 MB fetch limit for hooked versions (`d46ef27`), because
+> their reports came from an unreadable base (over 16 MB), not from the hash order. 0
+> positives are on a commit line, so none can lose a finding; 0 `vm-day1`/DataDog malicious
+> samples are. See [F8](#f8-diff-base-for-commit-hash-prereleases-stage-0-packumentprevious_version--after-the-freeze).
 > Owner decisions are in [section 8](#8-owner-questions). Fixes marked **pre-freeze** are small
 > and local enough to build before the rule freeze (2026-11-12 00:00Z); the rest should wait and
 > be validated afterwards on window B's held tarballs.
@@ -62,7 +69,7 @@ record per version; rank > 0 = it was reported).
 | 6 | Raw IP in HTML/XML/CSV, tests, NOTICES, package.json `repository` | 85 (R5) | F4b `hardcoded-ip` v3 (Stage 2) | **20** | 0 | 0 of 2 at risk | pre-freeze |
 | 7 | Build-tool-only hooks (`node-gyp-build`, `husky`, `only-allow`) | ~60 | F2 + S4: LOW when every hook is a build tool and `binding.gyp` runs no command (Stage 3/4) | **12** | 0 | 0 of 433 at risk | pre-freeze |
 | 8 | Telegram `bot${token}` from the user's config | 45 | F3a (Stage 2) | 45 | with F1: `@leonoremods/baileys@1.10.1` (mal.) | `@eooce/sbx@2.0.5`, `node-navsbx@1.0.0` | no |
-| 9 | Hash-named prereleases diffed against an unrelated one (`@astryxdesign/cli` canaries) | 135 (R2-R4) | F8 diff base 5 (Stage 0 packument) | ≤ 135 (est.) | 0 | n/a | after |
+| 9 | Hash-named prereleases diffed against an unrelated one (`@astryxdesign/cli` canaries) | 135 (R2-R4) | F8 diff base 5 (Stage 0 packument) | ≤ 135 (est.); **18 measured** (built) | 0 | 0 (none on a commit line) | built 2026-11-08 |
 | 10 | Platform-binary launchers, own-release downloaders with a checksum, agent-skill copiers | 1,254 (R1-R4) | S1-S3 "explained install" (Stage 3 signal, Stage 4 decision) | 99 of 591 with tarballs (strict) | 0 | 0 of 149 checked (of 433) | after |
 | 11 | Non-registry dependency from the package's own GitHub owner | 79 | F6a | 79 | 0 | **`@opensearch-project/opensearch` 3.7.0, 3.8.0** | rejected (again) |
 | - | `CLEAR_ESTABLISHED` / `CLEAR_HISTORY` / both | - | turn on (Stage 4) | 20 / 65 / 66 | 0 | `gina@0.7.1` (each) | owner |
@@ -309,6 +316,20 @@ with today's code and the fix applied.
   is the most recent earlier publish of the same release line (time order, as the fallback
   already does). It changes the diff of every stage, so it needs `stage_version`s and must be
   validated on window B. Up to 135 removed (estimate: not every one would be unreported).
+- **Built and measured (2026-11-08, owner's approval).** Diff base 5 as above, with the line
+  defined as the core version plus the prerelease text before the commit id (so
+  `0.0.0-experimental.<sha>` and `0.0.0-next.<sha>` stay apart); it is recorded per run, so
+  old runs replay with base 4. Of the 3,032 reported verdicts, 242 are on a commit line, all
+  benign; 199 get a new base. `pipeline+4` with today's code on both bases: 21 are reported
+  with the recorded base and 18 of them are not with base 5 (`@agoric/xsnap` ×4,
+  `dns-worker` ×3, `@codeyam/codeyam-cli` ×3, `react-native-executorch` ×3, `banyancode`
+  ×2, `@evercam/api` ×2, `@pkmn/engine`); 3 stay (their install code really changed). The
+  estimate's 119 `@astryxdesign/cli` reports are not reported by today's code with either
+  base: their install finding said "uses env-all, process" without "(new to the install
+  code)", i.e. the base was unreadable (118 of 119 bases over 16 MiB), which the 32 MB limit
+  for hooked versions (`d46ef27`) fixed the same day. On the six
+  unpruned runs (2026-11-07 22:27Z to 11-08 19:30Z), base 5 changes the base of 2,846 of the
+  4,859 commit-line changes; none of them is reported with it (0 new reports).
 
 ### S1-S3. "Explained install": a recognised benign shape of install code (Stage 3 signal, Stage 4 decision) — after the freeze
 

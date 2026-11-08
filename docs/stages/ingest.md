@@ -150,6 +150,28 @@ sequenceDiagram
    **Diff base 4** (2026-10-31) counts OpenHarmony builds as platform builds
    (`0.2.19-daily.20261030.ohos-arm64`): `@bitfun-test/bitfun`'s daily release was diffed
    against one and its postinstall read as changed (HIGH).
+   **A prerelease named by a commit id follows its own line** (diff base 5, 2026-11-08;
+   [round 2](../proposals/precision-round2.md) F8): when a dot- or hyphen-separated part of
+   the prerelease is 7 to 40 lowercase hex digits with a letter and a digit
+   (`0.7.6-canary.2936b07`, `1.0.0-741727bc1`, `0.14.3-dev-12a46af.0`;
+   `packument.commit_line`), the base is the latest earlier publish on the same line: the
+   same core version and the same prerelease text before the commit id (`canary.`, `dev-`,
+   or nothing). Semver compares such ids as strings, so "the highest version below" was an
+   arbitrary canary, often days older: `@astryxdesign/cli@0.7.6-canary.2936b07` was diffed
+   against `0.7.6-canary.2782f99` (the hash that happens to sort just below), and each of its
+   canaries read as changing its install code. Channels stay apart
+   (`0.0.0-experimental.<sha>` vs `0.0.0-next.<sha>`), and a number before the id stays in
+   the line (`beta.60.90c6f7c6`), since numbers already sort. The first publish on a line, a
+   stable release and every other version keep the usual base; stubs, platform builds and
+   partial publishes are still passed over. All-digit ids (`nightly-8627589-20261104`) are
+   left out: they can't be told from build numbers or dates. A better base can hide a change
+   only if an earlier publish on the line already had it, and that publish was diffed (and
+   reported) itself. Measured on the live verdicts
+   (3,032 reported): 242 are on a commit line, all benign, and 199 get a new base;
+   `pipeline+4` with today's code reports 21 of them with the old base and 3 with the new
+   (-18). On the six unpruned runs of 2026-11-07/08, base 5 changes the base of 2,846 of
+   4,859 commit-line changes and reports none of them (0 new reports). The rule is recorded
+   per run (`DIFF_BASE` 5); runs recorded with 4 replay with 4.
 6. **Popularity** (existing packages only; brand-new packages have no history). Three modes:
    - `watchlist` (default): membership in the newest watchlist built no later than `as_of`. The
      run records its id and SHA-256, and replay fails if the file has changed. No network.

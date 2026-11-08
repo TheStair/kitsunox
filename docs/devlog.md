@@ -2,6 +2,62 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Diff base 5, commit-id prereleases follow their own line (round 2 F8)
+
+**Stage(s):** Stage 0 ingest (`Packument.previous_version`, `DIFF_BASE` 5)
+**Context:** [Precision round 2](proposals/precision-round2.md) F8: a prerelease named by a
+commit hash (`0.7.6-canary.2936b07`) was diffed against the highest semver below it, but
+semver compares hashes as strings, so that was an arbitrary canary. The proposal estimated
+up to 135 benign reports from it (118 `@astryxdesign/cli`). The owner approved building it
+before the freeze if a real measurement held.
+
+### Decisions
+- **The line is the core version plus the prerelease text before the commit id**
+  (`packument.commit_line`): `0.7.6-canary.` for `0.7.6-canary.2936b07`. The base is the
+  latest earlier publish on that line; with none, the usual base. Considered: a channel
+  across core versions (would diff `0.7.7-canary.x` against an old `0.7.6` canary rather than
+  the `0.7.6` release), and stopping the line at a number (`beta.60.<sha>` would then follow
+  `beta.61.<sha>` builds of another branch); keeping the number is narrower and numbers
+  already sort. Channels stay apart (`experimental.<sha>` / `next.<sha>`).
+- **A commit id is 7-40 lowercase hex digits with a letter and a digit**, a whole dot- or
+  hyphen-separated part. All-digit ids are left out: `nightly-8627589-20261104` costs one
+  benign report, but a 7+-digit number is as often a build number or date, which already
+  sort.
+- **Versioned, not retroactive.** `DIFF_BASE` 5 is recorded in each new run's manifest, so
+  runs recorded with 4 replay as they were (two unpruned runs replayed "identical" with the
+  new code; their manifests say 4, and base 5 differs on 59% of their commit-line changes).
+
+### Challenges
+- **The estimate's main case was not caused by the diff base.** Re-running `pipeline+4` with
+  today's code on the 199 reported verdicts whose base changes, the recorded base reported
+  only 21. The 119 `@astryxdesign/cli` canaries had been reported because their base was
+  *unreadable*: the live finding said "uses env-all, process" without "(new to the install
+  code)", and Stage 2 had noted "base unavailable: declared unpacked size 18222018 bytes"
+  (118 of the 119 bases are over 16 MiB). Stage 2's 32 MB limit for hooked versions
+  (`d46ef27`, the same morning) makes those bases readable, so they are gone with either
+  base. Found by the control run disagreeing with the proposal's `now_reported`, which kept
+  Stage 2/3 findings as recorded.
+  - **Resolution:** count F8's effect on top of today's code only (control = recorded base,
+    same code), and say so in the proposal.
+- **Measuring without packuments.** Most verdict runs are pruned. Their bases were computed
+  from the registry's current packument, checked by recomputing base 4: it matched the
+  recorded base for 197 of 199 (2 `create-strapi-app` experimental builds differ, unreported
+  either way); in unpruned runs it matched 4,859 of 4,859.
+
+### Evaluation snapshot
+- Live verdicts (3,032 reported): 242 on a commit line, all benign; base 5 changes 199;
+  reported with today's code 21 → 3 (**-18 benign**, 7 packages). Positives on a commit line:
+  0 of 137 (malicious, unwanted, unverified), so none can lose a finding.
+- `vm-day1`: 94 samples on a commit line, all benign; DataDog 0 of 3,444. OSV: 12 of 53,389
+  malicious npm versions are commit-line prereleases (historical, packuments gone, not
+  re-runnable); base 5 diffs such a version against the publish just before it on its line,
+  the base that shows most of what it added.
+- Unverdicted: the six unpruned runs (11-07 22:27Z to 11-08 19:30Z) have 4,859 commit-line
+  changes; base 5 changes 2,846 and `pipeline+4` reports none of them with it (0 added).
+
+### Open questions / next steps
+- Validate on window B with held tarballs after the freeze, as the proposal planned.
+
 ## 2026-11-08: Precision round 2, the pre-freeze fixes (F5, F6b, F7, F2, F3b+F3c, F4b)
 
 **Stage(s):** Stage 1 triage, Stage 2 static, Stage 3 AST, Stage 4 correlation (`STAGE_VERSION` 13)
