@@ -338,6 +338,23 @@ install MEDIUMs (`install-hook`, `install-script-changed`, `install-script-code`
   encrypted DataDog zips decrypt slowly in pure Python): **none has a strict or loose shape**.
   Only 19 of the 433 have two or more optional dependencies, so S1 can match at most those.
   The rest must be checked before the signal is built; that is part of why it waits.
+- **The owner's view on S3 (2026-11-08):** an AI-development package that installs its own
+  skills, hooks or agent settings is benign as a *verdict* (decision 0015), but the *rule* may
+  only stay quiet when the code proves the plain shape; a package's name or description never
+  counts. Three guards added to S3 for the post-freeze build:
+  1. **What gets installed is scanned too.** A `settings.json` hook runs a shell command on every
+     prompt or tool call (persistent code execution): a hook command beyond a constant `echo`
+     or a script shipped in the package (network tools, downloaded scripts, env reads) is not
+     explained, and installed hook scripts go through Stages 2-3 like install code.
+  2. **Permission widening is never explained.** Settings that auto-approve tools (`Bash(*)`
+     allow-lists, bypass/"dangerously skip permissions" modes) or add a remote MCP server stay
+     reported (the 2025 nx compromise ran users' AI CLIs with permission-bypass flags to search
+     for secrets).
+  3. **Instructions aimed at the agent are flagged.** Installed skills or `AGENTS.md` text telling
+     the agent to hide activity, read credentials (`~/.ssh`, `.env`) and send them, or ignore
+     prior instructions makes the release reported.
+  Updates keep the normal diff rules: a new version whose hook does something new still fires
+  `code.capability-gained` / `install-script-changed`.
 - **Why after the freeze:** it is a new signal with three detectors, it needs the owner's view on
   S3 (an agent-skill copier is also how a prompt-injection payload would be installed), and it
   can be validated on window B's held tarballs without touching the frozen rules.
