@@ -108,8 +108,9 @@ of the newest one and writes:
   each version carries the registry takedowns published after it (npm's `0.0.1-security`
   holder, found in the runs' feeds by `collect` and kept in `data/takedowns/npm.json`; also
   `kitsunox takedowns`) and the OSV `MAL-` records covering it, as of the queue's `as_of`.
-  `confirmed` lists the versions with a verdict that were confirmed since, benign first; the
-  index counts them per verdict and lists the benign and inconclusive ones to review again,
+  `confirmed` lists the versions with a verdict that were confirmed since (benign, then
+  unwanted, then unverified, then malicious); the index counts them per verdict and lists every
+  one but the malicious ones to review again,
   and its table gets a "Confirmed since" column. A flag only: no score changes
   (`test_versions_confirmed_since_are_flagged_never_scored`).
 - A run whose Stages 1-4 finished but whose report is incomplete is caught up "from the

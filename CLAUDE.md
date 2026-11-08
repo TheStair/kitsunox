@@ -130,12 +130,14 @@ uv run kitsunox queue                              # review queue across runs, b
 uv run kitsunox takedowns                          # npm takedowns seen in the feed (flags only, decision 0016)
 uv run kitsunox view                               # local web viewer on 127.0.0.1:8000: queue, runs, verdicts (docs/viewer.md)
 uv run kitsunox verdict <run_id> <rank> malicious --note "..." --by claude   # record a verdict; `kitsunox verdicts` lists them
+                                                   # verdicts: malicious|unwanted|benign|unverified (decision 0015)
+uv run kitsunox verdict <run_id> <rank> unverified --reason gone|remote|obfuscated|binary --by claude   # reason required, only here
 uv run kitsunox run --data-dir data-demo --window-hours 1   # whole pipeline once (own data dir: it moves the checkpoint)
 uv run kitsunox live ledger                        # Phase 9: backfill per-version decision ledgers (data/eval/live/ledger/)
 uv run kitsunox live eval                          # live dataset + confusion matrices (--live-dir elsewhere: no writes to data/)
 uv run kitsunox live misses                        # labeled-malicious versions not reported, to adjudicate
 uv run kitsunox live sample                        # draw the daily label-blind review sample, list the newest
-uv run kitsunox live verdict <run_id> <name> <version> benign --by claude   # verdict on a sampled/missed version (rank 0)
+uv run kitsunox live verdict <run_id> <name> <version> benign --by claude   # verdict on a sampled/missed version (rank 0; same choices, --reason for unverified)
 ```
 
 Work is not done until `ruff check`, `ruff format --check`, `mypy` and `pytest` all pass.

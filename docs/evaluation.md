@@ -132,23 +132,36 @@ its recall is survivor-biased.
 **Flagged** = in the run's report as the tick wrote it (`before-rescore/` for a re-scored run).
 The row "flagged = current report" uses the report after re-scores, for recall.
 
-**Truth** for a version, in this order (`live.truth`):
+**Truth** for a version, in this order (`live.truth`). Verdicts come in four categories
+([0015](decisions/0015-reviewer-verdicts.md), addendum "four categories"); how each counts is
+the owner's ([0019](decisions/0019-live-evaluation.md), addendum):
 
-| | Behaviour truth (headline) | OSV truth | OSV only |
-|---|---|---|---|
-| npm placeholder (`0.0.1-security`, `0.0.0-stage`) | excluded | excluded | excluded |
-| verdict `malicious` / `benign` | malicious / benign | used only without an OSV record | ignored |
-| verdict `inconclusive` | excluded unless OSV | excluded unless OSV | ignored |
-| OSV record *observes* it ([0005](decisions/0005-label-hygiene.md)) | malicious | malicious | malicious |
-| OSV record only *projects* onto it | excluded | excluded | excluded |
-| npm takedown after it, no OSV | benign (malicious in the "+ takedowns" row) | same | same |
-| none of these, released ≥ D days before `as_of` | benign | benign | benign |
-| none of these, younger | excluded (provisional) | same | same |
+| | Flag-worthy (headline, `behaviour`) | Strict (`strict`) | OSV truth | OSV only |
+|---|---|---|---|---|
+| npm placeholder (`0.0.1-security`, `0.0.0-stage`) | excluded | excluded | excluded | excluded |
+| verdict `malicious` | malicious | malicious | malicious | ignored |
+| verdict `unwanted` | malicious (an OSV record doesn't change it) | benign (an OSV record doesn't change it) | malicious | ignored |
+| verdict `benign` | benign (an OSV record doesn't change it) | benign | used only without an OSV record | ignored |
+| verdict `unverified` (and legacy `inconclusive`) | excluded (bounded below) | excluded (bounded below) | as no verdict: the rows below | ignored |
+| OSV record *observes* it ([0005](decisions/0005-label-hygiene.md)) | malicious | malicious | malicious | malicious |
+| OSV record only *projects* onto it | excluded | excluded | excluded | excluded |
+| npm takedown after it, no OSV | benign (malicious in the "+ takedowns" row) | same | same | same |
+| none of these, released ≥ D days before `as_of` | benign | benign | benign | benign |
+| none of these, younger | excluded (provisional) | same | same | same |
 
 **Cells.** TP = flagged and malicious; FP = flagged and benign (`fp_unreviewed`: of those, how
 many have no verdict, so they are *presumed* benign); FN = not flagged and malicious; TN = not
 flagged and benign. Recall = TP / (TP + FN), precision = TP / (TP + FP), FP rate = FP / (FP +
 TN), each with a Wilson 95% interval. Excluded versions are counted by reason.
+
+**Unverified bounds.** The flag-worthy and strict matrices each have a best case
+(`behaviour/best`, `strict/best`) and a worst case (`/worst`) that put the unverified versions
+back: best = the pipeline was right about each one (reported → TP, unreported → TN), worst =
+it was wrong about each one (reported → FP, unreported → FN). For reported versions, where
+nearly all verdicts are, that is "all unverified malicious" vs "all benign". Each true recall,
+precision and FP rate lies between the two. The sensitivity rows (`+ takedowns`, `rescored`, D
+= 3 and 14) use the flag-worthy headline. Each window also counts its versions per verdict
+category, and its unverified ones per reason (`none` for legacy records).
 
 **Also per window:** the matrix by shape (A = update, B = new package); recall by **OSV record**
 (a record counts as caught if any of its malicious versions was reported) and by **publisher
@@ -181,9 +194,11 @@ it can still finish.
 A reviewer records verdicts with `kitsunox live verdict RUN_ID NAME VERSION VERDICT`: the same
 `VerdictRecord` as `kitsunox verdict`, built from the ledger row, with **rank 0** (the version is
 in no report). The same command adjudicates the misses `kitsunox live misses` lists. The live
-report then gives, per window (by sample day) and per stratum, the reviewed versions found
-malicious and a 95% upper bound on that share (Wilson; the exact `1 − 0.05^(1/n)` when none
-was), and the population-weighted bound on unlabeled malware among unreported versions. With a
+report then gives, per window (by sample day) and per stratum, the reviewed versions (those with
+a malicious, unwanted or benign verdict; unverified ones don't count) found flag-worthy
+(malicious or unwanted, both shown), a 95% upper bound on that share (Wilson; the exact
+`1 − 0.05^(1/n)` when none was), and the population-weighted bound on unlabeled flag-worthy
+versions among unreported ones (it bounds malware alone too). With a
 base rate near 0.02% the sample will usually find nothing: the honest output is a bound, not a
 point estimate.
 

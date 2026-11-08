@@ -2,6 +2,54 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Four verdict categories replace "inconclusive"
+
+**Stage(s):** Reviewer verdicts (reporting, viewer, CLI, Discord summary); live evaluation
+**Context:** The owner: "inconclusive" made packages we caught but couldn't call malicious look
+like packages we couldn't judge. Of 119 current inconclusive verdicts, about a third were fully
+seen but grey (disclosed channel follows, marker-only beacons), the rest unseen (code gone,
+remote payload, obfuscation). The live confusion matrix (decision 0019) uses verdicts as its
+primary truth, so the grey category had to say which it was.
+
+### Decisions
+- **Four categories** ([0015](decisions/0015-reviewer-verdicts.md), addendum "four
+  categories"): malicious, **unwanted** (seen; covert or intrusive, not harmful enough to call
+  malware, like antivirus "PUA"), benign, **unverified** with a required reason tag (`gone`,
+  `remote`, `obfuscated`, `binary`). Alternatives: keep "inconclusive" with tags (the label was
+  the problem), or a free-text reason (can't be tallied).
+- **Baileys forks that auto-follow channels are unwanted, hidden or disclosed** (owner, later
+  the same day), superseding the 2026-10-31 policy and the "false disclosure = hidden" ruling;
+  malicious only with evidence the follow spreads malware. Old addenda kept, supersession noted.
+- **Legacy records load as `unverified` with no reason** (a pydantic before-validator); the log
+  stays append-only. New records can't be reasonless unverified, so "no reason" marks legacy.
+- **Viewer without script:** unverified is a `<details>` of one submit button per reason
+  (`value="unverified:gone"`), so a reason can't be forgotten or attached to another verdict.
+- **Live matrices** ([0019](decisions/0019-live-evaluation.md), addendum): headline
+  flag-worthy (malicious + unwanted), strict malicious-only, unverified excluded from both with
+  best/worst bounds. The bounds are "the pipeline right / wrong about every unverified
+  version", not literally "all benign / all malicious": for unreported versions those swap
+  (counting one malicious makes it an FN). Only the right/wrong form bounds recall, precision
+  and FP rate at once, and the two forms agree for reported versions (nearly all verdicts).
+  OSV truth reads unverified as no verdict.
+
+### Challenges
+- **Reclassification commands with stale ranks.** A dry run of the generated commands against
+  a copy of the data (reports and verdict log) failed on `motionchart-cli@1.0.3`: its run was
+  re-scored and rank 17 no longer exists.
+  - **Resolution:** the generator looks the version up in the report as it is now and falls
+    back to `kitsunox live verdict` (by name, from the ledger) when the report no longer lists it.
+  - **Why it worked:** the second dry run applied all 124 commands, each to the intended
+    name@version (diffed against the proposal).
+
+### Evaluation snapshot
+- No new numbers. The verdict digest in live datasets changes once (records now serialise
+  `reason`, and legacy ones as `unverified`), so the next build's input hash differs.
+
+### Open questions / next steps
+- Owner review of the reclassification proposal (148 verdicts: 37 unwanted, 87 unverified,
+  24 for a human look), then apply it with the generated commands.
+- Staged-but-unarmed code (collects data, sends it only to 127.0.0.1) has no clean category.
+
 ## 2026-11-08: Stage 2 routing vs. live recall; a 32 MB cap for hooked versions
 
 **Stage(s):** Stage 2 (fetch cap); Stage 1 routing measured, not changed

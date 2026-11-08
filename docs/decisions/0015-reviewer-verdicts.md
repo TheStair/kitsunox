@@ -83,3 +83,61 @@ primary truth, so the rules reviewers apply must be written down.
   vendor's own service is **benign** unless it collects secrets or credentials; the verdict
   note says what is sent (`@ohos-ports/itwcw-package-analytics`, `@wonderwhy-er/desktop-commander`,
   `signetai`).
+
+## Addendum 2026-11-08 (later): four categories replace "inconclusive"
+
+The owner: "inconclusive" made packages we caught but couldn't call malicious look like
+packages we couldn't judge at all. Two different things were behind the one word: behaviour
+we saw in full but that is not harmful enough to call malware, and behaviour we never saw.
+They now have their own names. A verdict is one of:
+
+| Verdict | Meaning | Examples |
+|---|---|---|
+| **malicious** | Harmful behaviour shown. | Credential or environment exfiltration, code fetched and run, a worm publishing with stolen tokens. |
+| **unwanted** (new) | Behaviour seen in full; covert or intrusive, but not harmful enough to call malicious. Like an antivirus "PUA". | An install-time beacon that carries only a marker (no hostname, user, path, environment or credentials). A WhatsApp Baileys fork that auto-follows, joins or mutes channels (see below). |
+| **benign** | Behaviour seen, and legitimate. | Vendor telemetry without secrets; a probe that only acts locally; an opt-in channel follow. |
+| **unverified** (new) | We couldn't confirm what it does. Needs a reason tag. | See the tags. |
+
+`reopened` keeps its meaning: the version goes back to the review queue.
+
+**Reason tags** (`VerdictRecord.reason`; required for `unverified`, refused for every other
+verdict, in the CLI with `--reason` and in the viewer as one button per tag):
+
+| Tag | When |
+|---|---|
+| `gone` | The code was unpublished, or never captured (no tarball, run pruned). |
+| `remote` | The payload is fetched from a git repository or URL we couldn't see. |
+| `obfuscated` | We couldn't decode it. |
+| `binary` | An unexplained native or binary payload. |
+
+The `probe` tag still qualifies any verdict but `reopened` (a beacon-only probe is
+`unwanted` with `probe`).
+
+**Changes to the rulings above.** The earlier 2026-11-08 addendum is kept as written, with these
+changes:
+
+- "Beacon-only probes are **inconclusive** with the `probe` tag" now reads **unwanted** with
+  the `probe` tag.
+- "Disclosed or on by default with a documented way to turn it off is **inconclusive**" now
+  reads **unwanted**, and is itself superseded by the next point.
+- **Baileys forks (the owner, 2026-11-08, superseding the 2026-10-31 policy and the same day's
+  "a disclosure that doesn't exist is no disclosure" ruling).** A Baileys/WhatsApp fork that
+  auto-joins, follows or mutes WhatsApp channels is **unwanted**, hidden or disclosed alike,
+  unless there is evidence that the channel follow is a way to spread malware. An opt-in
+  follow stays **benign**. Anything else the package does is judged separately: if it
+  downloads or runs code, exfiltrates, sends data besides the follow, or tampers with other
+  packages, that decides the verdict. The older text above stays in place for the record, and
+  verdicts recorded under it are reclassified by new records (the log is append-only).
+
+**Legacy records.** The log is never rewritten. A record written as `inconclusive` still loads,
+as `unverified` with no reason tag (the viewer shows "no reason (was inconclusive)", tallies
+count it under `none`), until a newer record for the version reclassifies it. The commands
+refuse to write `inconclusive`, and refuse `unverified` without a reason, so a reasonless
+`unverified` is always a legacy one. The proposed reclassification of the current
+`inconclusive` verdicts, and of `malicious` verdicts whose only harm is a channel follow, is
+reviewed by the owner before it is applied; each new record's note starts "Reclassified
+(owner, 2026-11-08):" followed by the old note.
+
+**Evaluation.** The live matrices count `malicious` and `unwanted` as positives in the headline
+("flag-worthy") matrix, show a strict malicious-only matrix beside it, and leave `unverified`
+out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), addendum).

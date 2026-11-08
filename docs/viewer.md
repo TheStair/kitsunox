@@ -15,32 +15,40 @@ only thing it writes is the verdict log.
 
 ## Reviewing
 
-Each version in the queue has three buttons, **Malicious**, **Inconclusive** and **Benign**;
-its entry page has the same with a note, the version's verdict and its history, and **Back to
+Each version in the queue has buttons for the four verdicts
+([decision 0015](decisions/0015-reviewer-verdicts.md), addendum "four categories"):
+**Malicious**, **Unwanted**, **Benign**, and **Unverified: why?**, which opens (a `<details>`,
+no script) one button per reason: *code gone*, *remote payload*, *obfuscated*, *binary
+payload*. An unverified verdict can't be sent without its reason. The entry page has the same
+buttons with a note, the version's verdict and its history, and **Back to
 the queue** once it has one. A verdict takes the version out of the queue at once (and out of
 `queue.json` and `index.md` on the next tick); a package with no version left disappears from
-it. The header links each verdict's page (`/verdicts/malicious`, `/verdicts/inconclusive`,
-`/verdicts/benign`): every version with that verdict now, most recent first, with its score,
+it. The header links each verdict's page (`/verdicts/malicious`, `/verdicts/unwanted`,
+`/verdicts/benign`, `/verdicts/unverified`): every version with that verdict now, most recent first, with its score,
 severity, rules, publisher, the reviewer, the time and the note, and a link to the entry while
-its run is kept. The queue page opens with the tally ("Verified malicious: N"), and so does the
-daily Discord summary. A new release of a reviewed package comes back to the queue: verdicts are
+its run is kept; an unverified version shows its reason as a tag. The queue page opens with the
+tally ("Verified malicious: N", then every category, unverified split by reason), and so does
+the daily Discord summary. A new release of a reviewed package comes back to the queue: verdicts are
 per version.
 
 A queued version that looks like one you cleared (same package, publisher and rules as a
 version with a benign verdict) says "like 1.2.3, which you cleared"; it stays in the queue.
 
 A version that npm has since removed, or that an OSV `MAL-` record covers, is marked
-**Confirmed since** on the queue, verdict and entry pages, and the queue page lists benign or
-inconclusive verdicts confirmed since under "Review these again" (a check, never part of a
+**Confirmed since** on the queue, verdict and entry pages, and the queue page lists benign,
+unwanted or unverified verdicts confirmed since under "Review these again" (a check, never part of a
 score; [decision 0016](decisions/0016-after-the-fact-confirmations.md)). The flags come from
 `queue.json`, so they appear after the next tick or `kitsunox queue`.
 
 The log is `data/verdicts/npm.jsonl` (`reporting.verdicts`), append-only: the last record for a
 version is its verdict, and the whole history is kept. Each record copies the entry as reviewed,
 so the verdict pages outlive the run's 7 days. From a shell, `kitsunox verdict <run_id> <rank>
-malicious|inconclusive|benign|reopened [--note TEXT] [--by NAME] [--probe]` records the same thing
-(an analyst records under its own name, so the owner can tell its verdicts from theirs and
-override them), and `kitsunox verdicts [KIND]` lists them with the tally.
+malicious|unwanted|benign|reopened [--note TEXT] [--by NAME] [--probe]`, or `... unverified
+--reason gone|remote|obfuscated|binary`, records the same thing (an analyst records under its
+own name, so the owner can tell its verdicts from theirs and override them), and `kitsunox
+verdicts [KIND]` lists them with the tally. `--reason` is required for `unverified` and refused
+for anything else. Records written before 2026-11-08 as `inconclusive` still load, shown as
+unverified with "no reason (was inconclusive)" until a newer record reclassifies them.
 
 ### What counts as malicious
 
@@ -55,9 +63,17 @@ publish dependency-confusion and bug-bounty probes, often in bulk, and many carr
   npm and OSV agree: every probe npm removed after we reported it sent machine data out.
 - **Benign** if it only does something local with no network: opens calc.exe, writes a marker
   file in the package or project.
-- **Inconclusive** when what it would do can't be read (obfuscated install code waits for the
-  sandbox), or when it is staged but not yet armed (it collects data but only sends it to
-  127.0.0.1).
+- **Unwanted** when the behaviour is seen in full and is covert or intrusive but not harmful
+  enough to call malware, like an antivirus "PUA": an install-time beacon that carries only a
+  marker (no hostname, user, path, environment or credentials), or a WhatsApp Baileys fork that
+  auto-follows, joins or mutes channels, hidden or disclosed (owner, 2026-11-08; malicious only
+  with evidence that the follow spreads malware, benign when the follow is opt-in).
+- **Unverified** when we couldn't confirm what it does, with the reason: `gone` (unpublished or
+  never captured), `remote` (the payload comes from a repository or URL we couldn't see),
+  `obfuscated` (we couldn't decode it; it waits for the sandbox) or `binary` (an unexplained
+  native or binary payload). Code that is staged but not yet armed (it collects data but only
+  sends it to 127.0.0.1) was "inconclusive" before; it fits none of the four definitions
+  cleanly and is left to the owner case by case (flagged in the 2026-11-08 reclassification).
 
 Tick **Research probe** on the entry page (or the package form, or `kitsunox verdict ...
 --probe`) for any version that is a researcher's probe or PoC, whatever its verdict. The tag
@@ -109,7 +125,7 @@ can read every report, so prefer the SSH tunnel.
 | Path | What |
 |---|---|
 | `/` | The review queue (`data/queue/queue.json`, without versions that have a verdict now): the verdict tally, then packages ranked by score, then severity, then name. Each row has the score, severity, every reported version (newest first, each linking to its entry in the run that reported it most strongly, with verdict buttons), the rules with the number of versions they fired on, watched, and last publish time. Unreadable reports the queue left out are listed with links to their runs. |
-| `/verdicts/<kind>` | Every version whose verdict is `malicious`, `inconclusive` or `benign` now (see [Reviewing](#reviewing)). |
+| `/verdicts/<kind>` | Every version whose verdict is `malicious`, `unwanted`, `benign` or `unverified` now (see [Reviewing](#reviewing)). |
 | `POST /verdict` | Records a verdict from a form, then redirects back (303). See the security table. |
 | `/runs` | Runs with a `report/report.json`, newest first, 50 per page (`/runs/page/N`): release window, versions analysed, how many to review, counts by severity, and a note when Stage 4 couldn't compare versions with their repository because of the network. |
 | `/runs/<run_id>` | One run's report: summary, the network warning, the versions to review (rank, package, score, severity, top three rules, watched), and Stage 4's settings (`correlate.json`) in a collapsed block. |

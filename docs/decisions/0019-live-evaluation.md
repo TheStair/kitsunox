@@ -63,3 +63,38 @@ Definitions of every cell: [evaluation.md](../evaluation.md#live-evaluation-phas
   mostly benign.
 - The FN of malware nobody labeled is only bounded (an upper bound from the sample), never a
   point estimate.
+
+## Addendum 2026-11-08: flag-worthy and strict matrices, unverified bounds
+
+Reviewer verdicts now come in four categories ([0015](0015-reviewer-verdicts.md), addendum
+"four categories"): malicious, unwanted, benign, unverified (with a reason tag). The owner
+decided how each one counts:
+
+- **Headline: flag-worthy** (matrix `behaviour`). Behaviour truth with `malicious` and
+  `unwanted` as positives and `benign` as a negative. An OSV record doesn't override a
+  reviewer's `unwanted` or `benign`.
+- **Strict, malicious only** (matrix `strict`), shown beside it: the same, with `unwanted` a
+  negative. A reported unwanted version is an FP here.
+- **`unverified` is excluded from both**, counted under "unverified", with bounds:
+  - *best case* (`behaviour/best`, `strict/best`): every unverified version is what the
+    pipeline decided: reported ones malicious (TP), unreported ones benign (TN);
+  - *worst case* (`behaviour/worst`, `strict/worst`): the opposite (FP, FN).
+
+  The owner put this as "all unverified benign vs all malicious". For reported versions,
+  which is where nearly every verdict is recorded, the two match. For an unreported one
+  (rank 0) they swap, because counting it malicious makes it an FN and lowers recall. Defined
+  this way, the two cases bound recall, precision and FP rate together, and each true rate lies
+  between them.
+- **OSV truth** (`osv`): an OSV record wins; otherwise a seen verdict (malicious or unwanted is
+  M, benign B); an `unverified` verdict counts as no verdict, so the version falls back to OSV
+  (and is benign once settled without a record). **OSV only** is unchanged (verdicts ignored).
+- The sensitivity rows (`behaviour+takedowns`, `behaviour/rescored`, `behaviour/D3`, `/D14`)
+  use the flag-worthy headline.
+- Each window reports its versions per verdict category and its unverified versions per reason.
+  A legacy `inconclusive` verdict (or one in an older dataset) counts as `unverified` with
+  reason `none`.
+- The review-sample bound counts flag-worthy versions among those whose behaviour was seen
+  (malicious, unwanted, benign); it bounds malware alone too.
+- The results log's `malicious` / `reported_malicious` / `recall` are the flag-worthy headline;
+  new fields `strict_malicious`, `strict_reported` and `unverified` are added. The ledger is
+  unchanged.
