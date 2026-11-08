@@ -32,6 +32,13 @@ uv run kitsunox collect
 uv run kitsunox data prune --keep-days 7    # --keep-repo-days N: GitHub archives (Stage 4) sooner
 ```
 
+**Live evaluation in the tick** ([0019](../decisions/0019-live-evaluation.md)): after the
+stages, each run they finished gets its decision ledger (with this process's rule versions);
+once a day, before the prune, `collect` backfills missing ledgers, draws the due review
+samples and writes the live dataset, matrices and a results-log line under `data/eval/live/`
+(see [evaluation.md](../evaluation.md#live-evaluation-phase-9)). Best-effort, and skipped when
+the disk is low.
+
 **Scheduling.** Collection runs on a Linux VM since 2026-10-29, as a systemd user timer:
 
 ```sh

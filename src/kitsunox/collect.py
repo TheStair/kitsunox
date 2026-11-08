@@ -18,6 +18,11 @@ Each tick, in order:
 6. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same),
    with Stage 5's exports and unused results, if the last prune is older than `PRUNE_EVERY`
    or free disk space is below `PRUNE_BELOW`.
+6b. Live evaluation (decision 0019), before the prune: each run whose stages ran this tick
+   gets its decision ledger (`evaluation/ledger.py`) with this process's rule versions; once
+   every `LIVE_EVAL_EVERY`, missing ledgers are backfilled, the due review samples drawn, and
+   the live dataset, confusion matrices and a results-log line written under
+   `data/eval/live/` (`evaluation/live.py`). Read-only on run outputs; never feeds a score.
 7. Scan runs not scanned yet for registry takedowns (npm's `0.0.1-security` holder), kept in
    `data/takedowns/` (`evaluation/confirmations.py`): the queue flags reviewed and queued
    versions removed after the fact. A flag only, never a score.
@@ -52,6 +57,7 @@ import shutil
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Final
 
 import httpx
@@ -77,6 +83,15 @@ from kitsunox.ecosystems.npm.registry import ECOSYSTEMS_REGISTRY, NpmEcosystem, 
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR, scan_takedowns
 from kitsunox.evaluation.harness import sync_labels
 from kitsunox.evaluation.labels import label_store
+from kitsunox.evaluation.ledger import (
+    LIVE_DIR,
+    backfill,
+    ledgers,
+    pipeline_fingerprints,
+    write_ledger,
+)
+from kitsunox.evaluation.live import LiveSources, run_live_eval
+from kitsunox.evaluation.sample import write_samples
 from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import Tick
 from kitsunox.reporting.publish import publish_report
@@ -99,6 +114,10 @@ from kitsunox.util.http import FetchError, Snapshot
 WATCHLIST_MAX_AGE = timedelta(days=7)
 LABELS_MAX_AGE = timedelta(hours=20)
 PRUNE_EVERY = timedelta(hours=20)
+# Live evaluation (decision 0019): once a day, before the prune.
+LIVE_EVAL_EVERY: Final = timedelta(hours=20)
+# Review samples are drawn only for the last days: older days' tarballs are gone.
+LIVE_SAMPLE_DAYS: Final = 2
 # Free space at which the tick prunes whatever PRUNE_EVERY says, and below which it starts no
 # ingest or stage step. A 10-hour catch-up (55k changes) wrote ~20 GB; an hourly tick ~2 GB.
 PRUNE_BELOW: Final = 60 * GIB
@@ -112,6 +131,9 @@ REPORT_ONLY = 5  # a `start` for `_stages`: Stages 1-4 are done, only the report
 # Where the owner puts package-analysis's results (each export's `results/` contents). Not a
 # secret; set in the environment or `.env`. Unset: `collect` skips Stage 5.
 SANDBOX_RESULTS_ENV = "KITSUNOX_SANDBOX_RESULTS"
+
+LIVE_STATE: Final = "live-eval.json"  # in data/state/: when live-eval last ran
+PIPELINE: Final = pipeline_fingerprints()  # the rule versions this process's stages run
 
 Log = Callable[[str], None]
 
@@ -233,6 +255,13 @@ def collect(
     if sandbox_results is not None and "disk" not in failed and room("Stage 5"):
         for run_id in staged:
             best_effort(f"sandbox {run_id}", sandbox(run_id, sandbox_results))
+    for run_id in staged:  # what the stages just decided, with this code's rule versions
+        best_effort(f"ledger {run_id}", partial(_ledger, data, run_id))
+
+    last_live = _last_live_eval(data)
+    due = last_live is None or now - last_live > LIVE_EVAL_EVERY
+    if "disk" not in failed and due and room("live-eval"):
+        best_effort("live-eval", lambda: _live_eval(data, now))
 
     last_prune = _last_prune(data)
     free = free_bytes(data.root)
@@ -561,6 +590,43 @@ def _age(record_id: str | None, now: datetime) -> timedelta:
     if record_id is None:
         return timedelta.max
     return now - datetime.strptime(record_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+
+
+def _ledger(data: DataDir, run_id: str) -> str:
+    path = write_ledger(data.root / "runs", data.root / LIVE_DIR, run_id, pipeline=PIPELINE)
+    return f"written ({path.name})" if path else "not written (unfinished, or already there)"
+
+
+def _live_eval(data: DataDir, now: datetime) -> str:
+    """Ledgers missing (re-scored runs too), the due review samples, then the live dataset,
+    matrices and a results-log line (decision 0019)."""
+    if label_store(data).latest_id(NPM) is None:
+        return "skipped: no label set yet"
+    live = data.root / LIVE_DIR
+    written = backfill(data.root / "runs", live)
+    newest = max((lg.header.as_of for lg in ledgers(live)), default=None)
+    since = (newest - timedelta(days=LIVE_SAMPLE_DAYS)).date() if newest else None
+    samples = write_samples(data.root / "runs", live, since=since)
+    report, line, _ = run_live_eval(LiveSources(data.root, live), built_at=now)
+    state = data.root / "state" / LIVE_STATE
+    atomic_write(state, json.dumps({"last": now.isoformat()}).encode() + b"\n")
+    headline = report.windows["all"].matrices["behaviour"]
+    return (
+        f"labels {line.label_set}: {headline.tp} of {headline.tp + headline.fn} malicious "
+        f"reported, {headline.fp} reported benign ({line.newly_labeled} newly labeled, "
+        f"{line.newly_reported} of them reported); {len(written)} ledgers, {len(samples)} "
+        f"samples drawn, {line.sample_unreviewed} sampled versions to review "
+        f"({LIVE_DIR}/reports/{report.dataset}.md)"
+    )
+
+
+def _last_live_eval(data: DataDir) -> datetime | None:
+    path = data.root / "state" / LIVE_STATE
+    try:
+        last = json.loads(path.read_bytes()).get("last")
+    except OSError, ValueError:
+        return None
+    return datetime.fromisoformat(last) if isinstance(last, str) else None
 
 
 def _last_prune(data: DataDir) -> datetime | None:

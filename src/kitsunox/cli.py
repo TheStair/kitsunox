@@ -898,7 +898,9 @@ def _post_daily(data: DataDir, webhook: str | None, log: Callable[[str], None]) 
         queue = Queue.load_json((data.root / QUEUE_DIR / "queue.json").read_bytes())
     except OSError, ValueError:
         queue = None
-    if post_update(webhook, render_daily(day, ticks, reports, verdicts, queue), log):
+    newest_live = read_log(data.root / LIVE_DIR / "log.jsonl")[-1:]
+    live = newest_live[0] if newest_live else None
+    if post_update(webhook, render_daily(day, ticks, reports, verdicts, queue, live), log):
         try:
             save_state(state_dir, state.model_copy(update={"daily_posted": day}))
         except OSError as exc:

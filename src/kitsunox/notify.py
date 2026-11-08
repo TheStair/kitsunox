@@ -46,6 +46,7 @@ from pydantic import ValidationError
 
 from kitsunox.core.models import Persisted, Record, Severity
 from kitsunox.core.run import RunManifest
+from kitsunox.evaluation.live import LogLine
 from kitsunox.reporting.markdown import strip_controls
 from kitsunox.reporting.queue import Queue
 from kitsunox.reporting.report import Report, ReportEntry
@@ -239,6 +240,7 @@ def render_daily(
     reports: Sequence[Report],
     verdicts: Sequence[VerdictRecord] = (),
     queue: Queue | None = None,
+    live: LogLine | None = None,
 ) -> Message:
     """The day's ticks and reports, reviewers' verdicts (the running tally, and how many were
     recorded that day) and the review queue as it is now, as up to four embeds: health, what
@@ -281,7 +283,7 @@ def render_daily(
                 best[key] = entry
     if reports:
         embeds.append(_flagged("Flagged that day", list(best.values())))
-    review = _review(day, verdicts, queue)
+    review = _review(day, verdicts, queue, live)
     if review is not None:
         embeds.append(review)
     problems: list[Field] = []
@@ -344,6 +346,16 @@ def render_daily(
             _embed("Needs attention", None, RED if serious else AMBER, problems, footer=LOG_HINT)
         )
     return embeds
+
+
+def live_line(live: LogLine) -> str:
+    """One line on the newest live evaluation (decision 0019). No package text in it."""
+    share = f" ({live.recall:.0%})" if live.recall is not None else ""
+    return (
+        f"🧪 Live eval (labels {escape(live.label_set, 20)}): {live.reported_malicious:,} / "
+        f"{live.malicious:,} malicious reported{share}; +{live.newly_labeled} newly labeled, "
+        f"{live.newly_reported} reported; review sample: {live.sample_unreviewed} to review"
+    )
 
 
 def is_webhook(url: str) -> bool:
@@ -564,9 +576,14 @@ def _flagged(title: str, entries: Sequence[ReportEntry]) -> Embed:
     )
 
 
-def _review(day: date, verdicts: Sequence[VerdictRecord], queue: Queue | None) -> Embed | None:
-    """The review queue now and the verdict tally."""
-    if not verdicts and queue is None:
+def _review(
+    day: date,
+    verdicts: Sequence[VerdictRecord],
+    queue: Queue | None,
+    live: LogLine | None = None,
+) -> Embed | None:
+    """The review queue now, the verdict tally and the newest live evaluation."""
+    if not verdicts and queue is None and live is None:
         return None
     lines = []
     if queue is not None:
@@ -577,6 +594,8 @@ def _review(day: date, verdicts: Sequence[VerdictRecord], queue: Queue | None) -
         marks = _severity_marks(queue.by_severity)
         if marks:
             lines.append(f"by their highest severity: {marks}")
+    if live is not None:
+        lines.append(live_line(live))
     fields: list[Field] = []
     if verdicts:
         now = current(verdicts)

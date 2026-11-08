@@ -730,6 +730,9 @@ def evaluate_live(
     accumulators = [_Window(w.name, w.start, w.end) for w in windows]
     accumulators += [_Window(ALL, None, None), _Window(CATCH_UP, None, None)]
     by_name = {a.name: a for a in accumulators}
+    for acc in accumulators:  # every matrix is in the report, empty or not
+        acc.matrices = {c.name: _Matrix() for c in configs}
+        acc.shapes = {"A": _Matrix(), "B": _Matrix()}
     settle = {c.d: header.as_of - timedelta(days=c.d) for c in configs}
     misses: list[Missed] = []
     malicious: list[str] = []
@@ -1097,6 +1100,10 @@ class LogLine(Record):
     recall: float | None
     precision: float | None
     newly_labeled: int = Field(description="Malicious versions not in the previous build.")
+    newly_reported: int = Field(default=0, description="Of those, how many were reported.")
+    sample_unreviewed: int = Field(
+        default=0, description="Sampled versions with no verdict yet (any time)."
+    )
 
 
 def live_paths(live: Path, dataset: str) -> tuple[Path, Path]:
@@ -1109,6 +1116,7 @@ def write_live_report(
     markdown: str,
     *,
     built_at: datetime,
+    sample_unreviewed: int = 0,
 ) -> LogLine:
     """Write the report and its Markdown, and append a line to the results log (skipped when
     the same dataset was logged last)."""
@@ -1119,6 +1127,8 @@ def write_live_report(
     log_path = live / "log.jsonl"
     previous = read_log(log_path)
     known = _malicious_keys(live, previous[-1].dataset) if previous else set()
+    new = set(report.malicious) - known
+    missed = {f"{m.name}@{m.version}" for m in report.misses}
     atomic_write(json_path, report.model_dump_json(indent=2).encode() + b"\n")
     line = LogLine(
         built_at=built_at,
@@ -1130,7 +1140,9 @@ def write_live_report(
         reported_malicious=headline.tp,
         recall=headline.recall.value,
         precision=headline.precision.value,
-        newly_labeled=len(set(report.malicious) - known),
+        newly_labeled=len(new),
+        newly_reported=len(new - missed),
+        sample_unreviewed=sample_unreviewed,
     )
     if not previous or previous[-1].dataset_sha256 != line.dataset_sha256:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1179,5 +1191,15 @@ def run_live_eval(
         {w.name: (w.start.date(), w.end.date()) for w in windows},
     )
     report = report.model_copy(update={"sample_bound": bound})
-    line = write_live_report(sources.live, report, render_live_markdown(report), built_at=built_at)
+    reviewed = current(read_verdicts(sources.data_root, sources.ecosystem))
+    unreviewed = sum(
+        (v.name, v.version) not in reviewed for s in read_samples(sources.live) for v in s.versions
+    )
+    line = write_live_report(
+        sources.live,
+        report,
+        render_live_markdown(report),
+        built_at=built_at,
+        sample_unreviewed=unreviewed,
+    )
     return report, line, path

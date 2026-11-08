@@ -375,3 +375,43 @@ def test_the_blob_floor_stops_an_ingest_without_skipping_packages(
     assert tick.manifest is None and tick.disk_low
     assert any(line.startswith("ingest: blob store: 30.0 GB free") for line in log), log
     assert data.read_checkpoint("npm") is None  # the next tick covers the window
+
+
+def test_a_tick_writes_ledgers_and_runs_live_eval_once_a_day(
+    tmp_path: Path, registry: Router
+) -> None:
+    from kitsunox.evaluation.ledger import LIVE_DIR, ledgers
+
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    feed_from(registry, 200)
+    log: list[str] = []
+    tick = collect(data, now=AS_OF, log=log.append, clients=registry.client)
+    assert tick.failed == ()
+    assert tick.manifest is not None
+    run_id = tick.manifest.run_id
+    assert f"ledger {run_id}: written ({run_id}.jsonl.zst)" in log
+    written = ledgers(tmp_path / LIVE_DIR)
+    assert [lg.header.run_id for lg in written] == [run_id]
+    assert written[0].header.pipeline is not None  # this process ran the stages
+    assert any(line.startswith("live-eval: labels ") for line in log), log
+    assert (tmp_path / LIVE_DIR / "log.jsonl").exists()
+    log.clear()
+    collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)
+    assert not any(line.startswith("live-eval") for line in log)  # not due yet
+    log.clear()
+    collect(data, now=AS_OF + timedelta(hours=22), log=log.append, clients=registry.client)
+    assert any(line.startswith("live-eval: labels ") for line in log), log
+
+
+def test_live_eval_waits_for_a_label_set(tmp_path: Path, registry: Router) -> None:
+    from kitsunox.collect import _last_live_eval, _live_eval
+
+    data = DataDir(tmp_path)
+    assert _live_eval(data, AS_OF) == "skipped: no label set yet"
+    assert _last_live_eval(data) is None
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "live-eval.json").write_text("{}")
+    assert _last_live_eval(data) is None

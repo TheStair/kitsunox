@@ -68,6 +68,9 @@ The owner asked for the daily post to be easier to read. Posts are now Discord e
   mark, and the top 5 packages one per line; the bar takes the highest severity's colour.
 - **Review:** the review queue as the tick left it (`data/queue/queue.json`: packages and
   versions awaiting review, by highest severity) and the verdict tally, one field per verdict.
+  Since 2026-11-08 also one line on the newest live evaluation (`data/eval/live/log.jsonl`,
+  [0019](0019-live-evaluation.md)): malicious versions reported of those labeled, newly labeled
+  since the build before and how many of them were reported, and sampled versions to review.
 - **Needs attention**, only when something went wrong: crashes, coverage gaps, failed steps,
   offline ticks, network skips, one field each.
 

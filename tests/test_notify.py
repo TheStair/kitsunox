@@ -440,3 +440,29 @@ def test_a_low_disk_alert_says_how_much_is_left_and_posts_every_six_hours() -> N
     assert disk_alert_due(NotifyState(disk_posted=now - timedelta(hours=6)), now)
     shown = lines(render_tick(tick, started=T0, elapsed=timedelta(minutes=1)))
     assert "Disk free: 21.0 GB" in shown and any("Disk low" in line for line in shown)
+
+
+def test_the_daily_summary_has_one_live_eval_line() -> None:
+    from kitsunox.evaluation.live import LogLine
+
+    live = LogLine(
+        built_at=T0,
+        dataset="live-20261124T000000Z",
+        dataset_sha256="0",
+        label_set="20261124T000000Z",
+        versions=500_000,
+        malicious=190,
+        reported_malicious=52,
+        recall=52 / 190,
+        precision=0.03,
+        newly_labeled=4,
+        newly_reported=1,
+        sample_unreviewed=3,
+    )
+    review = render_daily(DAY, ticks_of_a_day()[:1], [], [], None, live)[1]
+    assert lines([review])[1] == (
+        "🧪 Live eval (labels 20261124T000000Z): 52 / 190 malicious reported (27%); "
+        "+4 newly labeled, 1 reported; review sample: 3 to review"
+    )
+    unknown = live.model_copy(update={"recall": None})
+    assert "malicious reported;" in lines(render_daily(DAY, [], [], [], None, unknown))[-1]
