@@ -77,6 +77,12 @@ Output lives in `data/runs/<run_id>/`:
 | `skipped.jsonl` | Packages that couldn't be processed, with the reason |
 | `retention.json` | Only on pruned runs (older than 7 days): the pinned snapshot entries. `changes.jsonl` is then `changes.jsonl.zst` and the run can't be replayed |
 
+The manifest's `changes_sha256` is the SHA-256 of the `changes.jsonl` lines followed by the
+`skipped.jsonl` lines, joined by newlines; `ingest replay` recomputes it from the replayed
+records. Since 2026-11-08 it is hashed a line at a time (`changes_digest`), so neither recording
+nor replay holds the run as one string: the joined string had taken ~6x the file's size once a
+line held an emoji. The formula is unchanged, so older runs still replay.
+
 Response bodies live once in `data/blobs/`, zstd-compressed and addressed by SHA-256.
 
 ## How it works

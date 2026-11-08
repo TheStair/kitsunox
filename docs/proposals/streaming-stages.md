@@ -1,7 +1,8 @@
 # Proposal: stream Stages 0-3 from disk (bounded memory)
 
-> **Status:** proposed 2026-11-08. **Step 1** (`collect` + retention) implemented 2026-11-08;
-> steps 2-7 not implemented (see section 7 and the devlog). The measurements below were taken
+> **Status:** proposed 2026-11-08. **Steps 1-2 implemented 2026-11-08**: step 1 (`collect` +
+> retention) in `cd7c7b1`, step 2 (Stage 0's streaming digest) in the commit after it. Steps
+> 3-7 are not implemented (see section 7 and the devlog). The measurements below were taken
 > read-only on `20261107T163310Z-npm` (405,710 changes, the 4-day catch-up) before any code
 > changed. Each step is a separate task (one stage per task), and each needs the owner's
 > go-ahead.

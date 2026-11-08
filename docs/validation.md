@@ -215,11 +215,11 @@ Run `20261029T221803Z-npm`, a 24-hour catch-up window, timed from its files and
 | Stage 5 bundles for the run's reported versions with install hooks (154; 78 more not captured) | Bundle format 2, 4 workers: 123 offline-installable (102 complete, 25 without dependencies, 4 of the complete predict network); 12 incomplete only because one dependency file was over 64 MiB (native CLIs: bun, opencode, `@square/cli`). After letting a file take the unpacked cap: **135 of 154 (87.7%)**; still out: 10 over a cap (8 unpacked, `@opencode/cli` x6), 4 with an unresolved dependency (2 not on the registry, 1 a remote URL, 1 for another platform), 1 with a dependency shrinkwrap. p50 / p90 / max: 127 / 230 / 642 packages, 14 / 63 / 126 MB `.tgz`, 10 / 24 / 45 s; 2.8 GB fetched once for all 154; 4.3 GB peak RSS |
 | Ticks after the catch-up (bounded Stage 4: archive and packument slots) | 11:30-12:13 UTC, 23,807 changes: 43 min, 196 to review, available memory never under 20.7 GB of 30.7 (old code: 5.5 GB); systemd cgroup peak 16 GB, page cache included. Hourly ticks of ~5,000 changes since: 8-10 min, cgroup peak 6-7 GB. The queue held 1,119 packages (1,568 versions) from 7 runs at 14:43 |
 
-## 2026-11-08: Streaming step 1 (`collect`, retention)
+## 2026-11-08: Streaming steps 1-2 (`collect`, retention, Stage 0 digest)
 
-`docs/proposals/streaming-stages.md` step 1, measured from a worktree against the live
+`docs/proposals/streaming-stages.md` steps 1 and 2, measured from a worktree against the live
 `data/` read-only (copies for anything that writes), each job under
-`systemd-run --user --scope -p MemoryMax=4G`. Peak RSS is
+`systemd-run --user --scope -p MemoryMax=4G` (6G for the digest). Peak RSS is
 `getrusage(RUSAGE_SELF).ru_maxrss`.
 
 | Check | Result |
@@ -228,3 +228,6 @@ Run `20261029T221803Z-npm`, a 24-hour catch-up window, timed from its files and
 | `prune` on a copy of the hourly `20261108T153157Z-npm` (1,598 changes), new code vs. the old | `retention.json` byte-identical; `.zst` 1,146,488 vs. 1,146,134 B (streamed frames); both decompress to the original |
 | `collect._resume_from`'s Stage 2 retry check on the 4-day run's `static.jsonl` (1.67 GB, 42,719 batches) | Streamed: no line holds the `WILL_RETRY` text, so nothing is parsed; ~1 s, **86 MB peak RSS** (the old check read the file and split it into lines first: ~3.3 GB before parsing, from the proposal's sizes) |
 | `collect.run_stages` dropping each stage's result after counting | Not measured live (it needs a whole tick); the existing `tests/test_collect.py` log-line checks pass unchanged. The proposal's model puts the saving at the earlier stages' results: ~13-21 GB held when Stage 3 started on the 4-day run |
+| `changes_digest` over the 4-day run's `changes.jsonl`, each line parsed into a `Change` and fed to the function one at a time | 405,710 changes; equals the manifest's `changes_sha256` (`00652635...`); 36 s; **128 MB peak RSS** (the joined string: ~18 GB, estimated in the proposal) |
+| `kitsunox ingest replay` (worktree code; read-only, no lock) | `20261108T153157Z-npm` (1,598 changes): identical, 12 s, 0.55 GB peak RSS. `20261107T222723Z-npm` (16,589 changes): identical, 94 s, 1.04 GB peak RSS |
+| `ingest replay` of the 4-day run | Not run: the replay still holds every `Change` (~13 GB) until step 4 |

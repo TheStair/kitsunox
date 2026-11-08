@@ -2,9 +2,10 @@
 
 Reverse-chronological. Newest entry first.
 
-## 2026-11-08: Streaming, step 1 (`collect`, retention)
+## 2026-11-08: Streaming, steps 1-2 (`collect`, retention, Stage 0's digest)
 
-**Stage(s):** `collect`, retention (step 1)
+**Stage(s):** `collect`, retention (step 1, `cd7c7b1`); Stage 0 ingest, the digest only
+(step 2, the commit after it)
 **Context:** The owner approved steps 1 and 2 of
 [the streaming proposal](proposals/streaming-stages.md). Step 1 was urgent: the 4-day run
 `20261107T163310Z-npm` (405,710 changes, 2.9 GB `changes.jsonl`) becomes due for pruning
@@ -29,10 +30,24 @@ whole file: ~16 GB (the proposal's estimate) on the 30 GB VM, next to the tick's
   `atomic_write` also uses): before, a crash could keep the rename and the deletion of
   `changes.jsonl` without the compressed data, the failure that left 211 empty blobs on
   2026-11-07. Decision [0006](decisions/0006-scheduled-collection-and-retention.md) addendum.
+- **Stage 0's `changes_digest` hashes a line at a time** (step 2): each
+  `model_dump_json().encode()`, with `b"\n"` between lines, changes then skipped. These are
+  exactly the bytes of the old `"\n".join(lines).encode()` (UTF-8 encodes each character on
+  its own, so encoding per line and joining bytes equals encoding the join). Nothing else in
+  Stage 0 changed: `IngestResult` still holds every `Change` (~32 KB each as objects), so
+  recording or replaying the 4-day run would still need ~13 GB; that is step 4.
 - **Alternative not taken:** two passes over the changes (one for metadata URLs, one for
   tarball URLs) as the proposal allowed; one pass gives the same set.
 
 ### Challenges
+- **Showing the streamed digest is the same bytes.** Tests compare it with the old joined
+  formula for changes only, skipped only, both and neither, with a 2-byte, a 3-byte, a line
+  separator and an astral (4-byte) character
+  (`tests/core/test_run.py::test_the_streamed_digest_equals_the_joined_one`), and check the
+  recorded digest against the written files' lines
+  (`test_the_recorded_digest_is_the_written_files_lines`). Live, `changes_digest` fed one
+  parsed `Change` at a time over the 4-day run's 405,710 lines gives the manifest's
+  `00652635...`, and `ingest replay` of two recorded hourly runs prints "identical".
 - **Proving the prune is the same without running the old one on the big run** (it would need
   ~16 GB). Resolution: the old and new code on copies of an hourly run give a byte-identical
   `retention.json`; the URL logic is the same expressions in one loop; on the 4-day copy the
@@ -40,10 +55,13 @@ whole file: ~16 GB (the proposal's estimate) on the 30 GB VM, next to the tick's
 
 ### Evaluation snapshot
 - Not a detection change: no recall or false-positive numbers move. Memory, measured on
-  hard-linked copies (details in [validation](validation.md#2026-11-08-streaming-step-1-collect-retention)):
+  hard-linked copies (details in [validation](validation.md#2026-11-08-streaming-steps-1-2-collect-retention-stage-0-digest)):
   - prune of the 4-day run: 1.19 GB peak RSS in 41 s, 0.74 GB of it the label set loaded
     before pruning (~16 GB before, estimated);
-  - the resume check on its 1.67 GB `static.jsonl`: 86 MB.
+  - the resume check on its 1.67 GB `static.jsonl`: 86 MB;
+  - `changes_digest` over its 405,710 changes, parsed and re-dumped one at a time: 128 MB
+    peak RSS in 36 s (the joined string: ~18 GB, the proposal's estimate);
+  - `ingest replay` of `20261107T222723Z-npm` (16,589 changes): identical, 1.04 GB peak.
 - **Not measured:** `run_stages`' saving needs a whole tick; the ~13-21 GB held into Stage 3
   on the 4-day run is the proposal's model, not a new measurement.
 
@@ -51,6 +69,9 @@ whole file: ~16 GB (the proposal's estimate) on the 30 GB VM, next to the tick's
 - `retention.json` itself is still written with `write_text`, not atomically; a crash mid-write
   would leave a marker that fails to load (and garbage collection would then raise before
   deleting anything). Unchanged here; worth a one-line `atomic_write` later.
+- `ingest replay` of the 4-day run is still not possible: the replay holds every `Change`
+  (~13 GB) plus its packuments. Step 4 removes that; the run's blobs go with the prune after
+  2026-11-09 16:33Z, so that replay can't be checked later.
 - Steps 3-7 of the proposal, each with the owner's go-ahead.
 
 ## 2026-11-08: Stage 4 filled the disk on the 4-day run; a per-run comparison budget

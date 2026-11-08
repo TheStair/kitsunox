@@ -32,7 +32,8 @@ from kitsunox.ecosystems.npm.registry import (
     NpmEcosystem,
 )
 from kitsunox.stages import ingest as ingest_module
-from kitsunox.stages.ingest import RetryItem, read_changes
+from kitsunox.stages.ingest import IngestResult, RetryItem, SkippedPackage, read_changes
+from kitsunox.util.hashing import sha256_hex
 
 NONE = PopularityMode.NONE
 
@@ -301,3 +302,63 @@ def test_a_replay_uses_the_diff_base_rule_its_run_was_recorded_with(
     monkeypatch.setattr(run_module, "run_ingest", spy)
     replay_ingest(data, NpmEcosystem, manifest.run_id)
     assert seen == [1]
+
+
+def joined_digest(result: IngestResult) -> str:
+    """How `changes_digest` was computed before it streamed: one joined string."""
+    lines = [c.model_dump_json() for c in result.changes]
+    lines += [s.model_dump_json() for s in result.skipped]
+    return sha256_hex("\n".join(lines).encode())
+
+
+@pytest.mark.parametrize(
+    ("with_changes", "with_skipped"), [(True, False), (False, True), (True, True), (False, False)]
+)
+def test_the_streamed_digest_equals_the_joined_one(
+    tmp_path: Path, registry: Router, with_changes: bool, with_skipped: bool
+) -> None:
+    data = DataDir(tmp_path)
+    manifest = record(data, registry, NONE)
+    changes = tuple(read_changes(data.run_dir(manifest.run_id) / "changes.jsonl"))
+    assert len(changes) > 1
+    # Non-ASCII, a 2-byte and a 3-byte character, a line separator and an astral emoji (a
+    # 4-byte UTF-8 sequence; the joined string took 4 bytes a character once one appeared).
+    text = "caf\u00e9 \u2713 \u2028 \U0001f98a"
+    first = changes[0]
+    changes = (
+        first.model_copy(
+            update={
+                "new": first.new.model_copy(
+                    update={"manifest": {**first.new.manifest, "description": text}}
+                )
+            }
+        ),
+        *changes[1:],
+    )
+    skipped = (
+        SkippedPackage(name="gone", cursor=160, reason="404"),
+        SkippedPackage(name="\U0001f98a-pkg", cursor=170, reason=text, transient=True),
+    )
+    result = IngestResult(
+        changes=changes if with_changes else (),
+        skipped=skipped if with_skipped else (),
+        packages_seen=3,
+    )
+    assert changes_digest(result) == joined_digest(result)
+    if with_changes:
+        assert "\U0001f98a".encode() in result.changes[0].model_dump_json().encode()
+    if not (with_changes or with_skipped):
+        assert changes_digest(result) == sha256_hex(b"")
+
+
+def test_the_recorded_digest_is_the_written_files_lines(tmp_path: Path, registry: Router) -> None:
+    data = DataDir(tmp_path)
+    manifest = record(data, registry, NONE)
+    run_dir = data.run_dir(manifest.run_id)
+    lines = [
+        line
+        for name in ("changes.jsonl", "skipped.jsonl")
+        for line in (run_dir / name).read_bytes().splitlines()
+        if line.strip()
+    ]
+    assert manifest.changes_sha256 == sha256_hex(b"\n".join(lines))

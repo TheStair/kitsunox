@@ -37,6 +37,7 @@ the next run covers the whole range again.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import tempfile
@@ -441,9 +442,23 @@ def replay_ingest(data: DataDir, factory: EcosystemFactory, run_id: str) -> Inge
 
 
 def changes_digest(result: IngestResult) -> str:
-    lines = [c.model_dump_json() for c in result.changes]
-    lines += [s.model_dump_json() for s in result.skipped]
-    return sha256_hex("\n".join(lines).encode())
+    """The manifest's `changes_sha256`: SHA-256 of every change's JSON line, then every skipped
+    package's, joined by newlines (`sha256("\\n".join(lines).encode())`). Hashed a line at a
+    time, so they are never held as one string: joining them touched ~6x the file's size,
+    since the joined string takes 4 bytes a character once any line holds an emoji (an
+    estimated ~18 GB for the 405k-change run of 2026-11-07; docs/proposals/streaming-stages.md).
+    """
+    digest = hashlib.sha256()
+    for index, line in enumerate(_digest_lines(result)):
+        if index:
+            digest.update(b"\n")
+        digest.update(line)
+    return digest.hexdigest()
+
+
+def _digest_lines(result: IngestResult) -> Iterator[bytes]:
+    yield from (c.model_dump_json().encode() for c in result.changes)
+    yield from (s.model_dump_json().encode() for s in result.skipped)
 
 
 def _popularity_source(
