@@ -247,7 +247,12 @@ dependency's packument.
   same day (each loses real attacks): `revived-with-new-dependency` (-83 benign, loses
   `xrpl@2.14.2`), `install-script-changed` (-105, loses `aicp-tracker`'s last reported
   release, `fooobar` and 2 inconclusive), `fresh-foreign` (-9, loses 2), and requiring two
-  MEDIUM rules (-438, loses 169 `vm-day1` samples and 11 of 27 live malicious). Measured before choosing it: "HIGH or score 6" for every rule would have
+  MEDIUM rules (-438, loses 169 `vm-day1` samples and 11 of 27 live malicious). Instead,
+  `revived-with-new-dependency` v2 (2026-11-08) is LOW when the same account comes back with no
+  maintainer added: 74 of the 140 live versions it alone reported (Oct 28 - Nov 3, all benign)
+  had that shape, and no `vm-day1` takeover does (`xrpl@2.14.2` was published by another
+  account), so none is lost ([proposal](../proposals/stage1-precision.md)). A dormant account
+  hijacked as itself now needs its other signals. Measured before choosing it: "HIGH or score 6" for every rule would have
   lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.
@@ -387,7 +392,7 @@ Rules over it:
 |---|---|---|---|
 | `npm.provenance.githead-dropped` | the previous release recorded `gitHead`, this one doesn't | LOW | 2 |
 | `npm.dependency.known-malware` (v3) | an added (or re-pointed) runtime dependency, or its `npm:` alias target, is malware in every version per an OSV record published by `as_of`. LOW (weight 1) when the specifier only matches npm's empty `0.0.1-security` holding package (`fs: ^0.0.1-security`, what `npm install fs` writes), or when a Unity (UPM) package (`unity` field) depends on a `com.unity.*` built-in module, which Unity resolves from its own registry while the npm names are malware squats (v3) | HIGH | 5 |
-| `npm.combination.revived-with-new-dependency` | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease) | MEDIUM | 2 |
+| `npm.combination.revived-with-new-dependency` (v2) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one and no maintainer was added: the package's own maintainer coming back (v2) | MEDIUM | 2 |
 | `npm.dependency.fresh-foreign` | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |

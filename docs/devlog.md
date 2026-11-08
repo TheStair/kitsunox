@@ -99,7 +99,9 @@ recall not allowed to drop. Proposal and measurements:
 - **Version: a date-shaped major is not suspicious** (`YYYYMM`/`YYYYMMDD`, real month and day,
   year 1990 to as_of + 1). Asked for after the 4-day run: 314 of its 1,438 reports were
   `@haybarn/*` with versions like `202610.31.30847`.
-- **Revived: LOW when the same account comes back with no maintainer added** (Stage 4). Not
+- **Revived: LOW when the same account comes back with no maintainer added** (Stage 4, its
+  own commit after the Stage 1 one; no `STAGE_VERSION` bump, since rule versions are covered by
+  the rules fingerprint in `correlate.json`). Not
   adopted: weak-alone, a two-year gap, or own-scope/popular dependencies: each loses
   `xrpl@2.14.2`.
 

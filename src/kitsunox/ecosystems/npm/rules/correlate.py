@@ -521,9 +521,18 @@ class RevivedWithNewDependency(BaseRule):
     takes DefinitelyTyped's own publishing token.
     Caveat: the malicious ones are two campaigns (`@antv/*` and `@mastra/*` in the Shai-Hulud
     wave), so the recall figure says more about them than about takeovers in general.
+
+    v2 (2026-11-08): LOW, weight 1, when the account that published the previous release
+    publishes this one and no maintainer was added: the package's own maintainer coming back.
+    It was 74 of the 140 live versions this rule alone reported (Oct 28 - Nov 3), all benign.
+    The takeovers in `vm-day1` come from another account (`xrpl@2.14.2`: `mukulljangid` after
+    `ckniffen`; `@mastra/*`), so none is lost. A dormant account hijacked as itself (an expired
+    e-mail domain) is LOW here and needs its other signals (`leo-logger@1.0.8` has them).
+    See `docs/proposals/stage1-precision.md`.
     """
 
     id = "npm.combination.revived-with-new-dependency"
+    version = 2
     severity = Severity.MEDIUM
     weight = 2.0
     title = "Dormant package revived with a new dependency"
@@ -539,6 +548,18 @@ class RevivedWithNewDependency(BaseRule):
         revived, added = fired.get("npm.dormant-revived"), fired.get("npm.dependency.added")
         if revived is None or added is None:
             return ()
+        if _same_account_returns(change):
+            return (
+                self.finding(
+                    f"{revived.explanation} {added.explanation} Published by "
+                    f"`{change.new.publish.publisher}`, who published the previous release, "
+                    "with no maintainer added.",
+                    *revived.evidence,
+                    *added.evidence,
+                    severity=Severity.LOW,
+                    weight=1.0,
+                ),
+            )
         return (
             self.finding(
                 f"{revived.explanation} {added.explanation}",
@@ -546,6 +567,15 @@ class RevivedWithNewDependency(BaseRule):
                 *added.evidence,
             ),
         )
+
+
+def _same_account_returns(change: Change) -> bool:
+    """The previous release's publisher publishes this one, and no maintainer was added."""
+    previous = change.previous
+    if previous is None or change.new.publish.publisher is None:
+        return False
+    added = set(change.new.publish.maintainers) - set(previous.publish.maintainers)
+    return change.new.publish.publisher == previous.publish.publisher and not added
 
 
 class InstallScriptNotInRepo(BaseRule):

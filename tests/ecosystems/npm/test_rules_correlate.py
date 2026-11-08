@@ -134,6 +134,42 @@ def test_revived_with_new_dependency() -> None:
     assert not rule.evaluate_candidate(typed, ctx)
 
 
+def test_revived_by_the_same_account_is_low() -> None:
+    """v2: the previous release's publisher comes back with no maintainer added (74 of 140
+    live versions this rule alone reported, all benign); another account, the `xrpl@2.14.2`
+    shape, or a maintainer added keeps MEDIUM."""
+
+    def low(rule_id: str) -> Finding:
+        return Finding(
+            rule_id=rule_id,
+            rule_version=1,
+            severity=Severity.LOW,
+            weight=1.0,
+            title="t",
+            explanation=f"{rule_id}.",
+        )
+
+    rule, ctx = RevivedWithNewDependency(), CorrelationContext(as_of=T0)
+    fired = (low("npm.dormant-revived"), low("npm.dependency.added"))
+
+    def found(new: VersionSnapshot, old: VersionSnapshot) -> Finding:
+        (result,) = rule.evaluate_candidate(
+            cand(new, old).model_copy(update={"findings": fired}), ctx
+        )
+        return result
+
+    old = snap("2.14.1", publisher="ckniffen", maintainers=("ckniffen",))
+    same = found(snap("2.14.2", publisher="ckniffen", maintainers=("ckniffen",)), old)
+    assert (same.severity, same.weight, same.rule_version) == (Severity.LOW, 1.0, 2)
+    assert "who published the previous release" in same.explanation
+    other = found(snap("2.14.2", publisher="mukulljangid", maintainers=("ckniffen",)), old)
+    assert (other.severity, other.weight) == (Severity.MEDIUM, 2.0)
+    added = found(snap("2.14.2", publisher="ckniffen", maintainers=("ckniffen", "m")), old)
+    assert (added.severity, added.weight) == (Severity.MEDIUM, 2.0)
+    unknown = found(snap("2.14.2"), snap("2.14.1"))
+    assert unknown.severity == Severity.MEDIUM
+
+
 def test_a_unity_package_s_built_in_module_is_low() -> None:
     rule, ctx = KnownMalwareDependency(), CorrelationContext(as_of=T0, known_bad=LABELS)
     deps = {"dependencies": {"com.unity.ugui": "2.0.0"}}

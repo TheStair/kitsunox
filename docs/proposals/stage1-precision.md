@@ -3,8 +3,8 @@
 > **Status:** implemented 2026-11-08, as proposed with V11 for change 1: Stage 1 changes 1 and 3
 > (`npm.publish-method.downgrade` v4, `npm.dependency.non-registry` v3) plus a later ask,
 > `npm.version.suspicious` v3 (a major that is a date, see
-> [stages/triage.md](../stages/triage.md#rules)), in one commit; Stage 4 change 2
-> (`revived-with-new-dependency` v2) in the next. Re-measured with the implemented rules, not
+> [stages/triage.md](../stages/triage.md#rules)), in commit `0468d8a`; Stage 4 change 2
+> (`revived-with-new-dependency` v2) in the next commit. Re-measured with the implemented rules, not
 > the simulation: live 1,372 → 1,218 reported versions without the `version.suspicious`
 > change, 1,371 → 1,213 with it (157 benign and 1 inconclusive fewer; one stale stored
 > finding accounts for 1,372 vs 1,371); 41 / 41 live malicious and 254 / 254 `vm-day1`
