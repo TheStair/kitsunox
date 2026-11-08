@@ -13,6 +13,7 @@ from kitsunox.core.models import (
     Severity,
     VersionSnapshot,
 )
+from kitsunox.ecosystems.npm.entry import load_sources
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.lang.javascript import EXTRACTOR_VERSION, Capability
 from kitsunox.stages.ast import (
@@ -165,6 +166,30 @@ def test_install_profile_covers_only_entry_files() -> None:
     assert change.before is None
     assert change.install is not None
     assert change.install.capabilities == {Capability.NETWORK, Capability.ENV_ALL}
+
+
+def test_load_profile_covers_what_loading_runs() -> None:
+    """npm passes `load_sources`: the entry point and what it loads, not the other files."""
+    files = NEW | {"package.json": b'{"main": "lib/x.js"}', "lib/y.js": b'require("net")'}
+    seen: list[CodeChange] = []
+
+    class Spy:
+        id = "test.spy"
+        version = 1
+
+        def evaluate_code(self, change: CodeChange) -> list[Finding]:
+            seen.append(change)
+            return []
+
+    batch = PackageBatch(
+        ecosystem="npm", name="kx", base=None, versions=(Candidate(change=Change(new=snap("1"))),)
+    )
+    analyse_batch(batch, lambda s: files, CapabilityCache(None), [Spy()], load_entries=load_sources)
+    analyse_batch(batch, lambda s: files, CapabilityCache(None), [Spy()])
+    loaded, without = seen
+    assert loaded.load is not None and without.load is None
+    assert {u.path for u in loaded.load.uses} == {"lib/x.js"}
+    assert loaded.after.files_parsed == 3
 
 
 def test_build_commands_reach_the_rules() -> None:

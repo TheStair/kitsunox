@@ -266,6 +266,46 @@ eval("not-a-package"); fetch("also-not");
     assert [p.name for p in typed.packages] == ["real"]
 
 
+def test_deferred_loads() -> None:
+    """v7: a load inside a function runs only when the function does; one called where it is
+    defined runs with the module. Each package is kept at its most direct load."""
+    code = b"""const a = require("at-load");
+function f() { return require("in-function"); }
+(function () { require("iife"); })();
+!function () { require("bang-iife"); }();
+(() => { require("arrow-call"); }).call(this);
+(() => { require("arrow-apply"); }).apply(this, []);
+const g = () => require("arrow");
+const h = (() => require("returned")).bind(null);
+class K { m() { return import("method"); } }
+if (x) { require("conditional") }
+try { (() => require("deferred-and-guarded"))() } catch {}
+const lazy = () => require("later-direct"); require("later-direct");
+function z() { try { require("guarded-first") } catch {} } function y() { require("guarded-first") }
+function w() { require("twice-deferred") } function v() { require("twice-deferred") }
+"""
+    result = analyse_source(code, "javascript")
+    assert [(p.name, p.line, p.guarded, p.deferred) for p in result.packages] == [
+        ("at-load", 1, False, False),
+        ("in-function", 2, False, True),
+        ("iife", 3, False, False),
+        ("bang-iife", 4, False, False),
+        ("arrow-call", 5, False, False),
+        ("arrow-apply", 6, False, False),
+        ("arrow", 7, False, True),
+        ("returned", 8, False, True),
+        ("method", 9, False, True),
+        ("conditional", 10, False, False),
+        ("deferred-and-guarded", 11, True, False),
+        ("later-direct", 12, False, False),
+        ("guarded-first", 13, False, True),  # deferred beats guarded
+        ("twice-deferred", 14, False, True),  # the first of equally direct loads
+    ]
+    assert [p.at_load for p in result.packages[:2]] == [True, False]
+    module = analyse_source(b'import x from "esm"; export * from "re"', "javascript")
+    assert all(p.at_load for p in module.packages)
+
+
 @pytest.mark.parametrize(
     ("specifier", "name"),
     [

@@ -109,29 +109,36 @@ def install_sources(files: Mapping[str, bytes]) -> dict[str, bytes]:
     return sources | followed_files(sources, files)
 
 
-def followed_files(sources: Mapping[str, bytes], files: Mapping[str, bytes]) -> dict[str, bytes]:
+def followed_files(
+    sources: Mapping[str, bytes],
+    files: Mapping[str, bytes],
+    *,
+    depth: int = FOLLOW_DEPTH,
+    max_files: int = MAX_FOLLOWED,
+    max_bytes: int = MAX_FOLLOWED_BYTES,
+) -> dict[str, bytes]:
     """Package files that `sources` load or run by a constant relative path, and those they
-    load in turn, up to `FOLLOW_DEPTH` levels: at most `MAX_FOLLOWED` files, each at most
-    `MAX_FOLLOWED_BYTES` (a larger one is skipped, not cut)."""
+    load in turn, up to `depth` levels (default `FOLLOW_DEPTH`): at most `max_files` files,
+    each at most `max_bytes` (a larger one is skipped, not cut)."""
     seen = set(sources)
     found: dict[str, bytes] = {}
     level: Iterable[tuple[str, bytes]] = sorted(sources.items())
-    for _ in range(FOLLOW_DEPTH):
+    for _ in range(depth):
         following: list[tuple[str, bytes]] = []
         for path, content in level:
             language = "javascript" if _virtual(path) else language_for(path)
             if language is None:
                 continue
             for specifier in local_paths(content, language):
-                target = _resolve(path, specifier, files)
+                target = resolve(path, specifier, files)
                 if target is None or target in seen:
                     continue
                 seen.add(target)
-                if len(files[target]) > MAX_FOLLOWED_BYTES:
+                if len(files[target]) > max_bytes:
                     continue
                 found[target] = files[target]
                 following.append((target, files[target]))
-                if len(found) >= MAX_FOLLOWED:
+                if len(found) >= max_files:
                     return found
         level = following
     return found
@@ -146,13 +153,13 @@ def loaded_files(sources: Mapping[str, bytes]) -> frozenset[str]:
         if language is None:
             continue
         for specifier in local_paths(content, language):
-            target = _resolve(path, specifier, sources)
+            target = resolve(path, specifier, sources)
             if target is not None and target != path:
                 loaded.add(target)
     return frozenset(loaded)
 
 
-def _resolve(importer: str, specifier: str, files: Mapping[str, bytes]) -> str | None:
+def resolve(importer: str, specifier: str, files: Mapping[str, bytes]) -> str | None:
     """The package file `specifier` names from `importer` (Node's extension and `index`
     lookup), if it is JavaScript or TypeScript in the package."""
     directory = "" if _virtual(importer) else posixpath.dirname(importer)

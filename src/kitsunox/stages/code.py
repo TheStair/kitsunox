@@ -9,6 +9,7 @@ import httpx
 
 from kitsunox.core.models import PackageBatch
 from kitsunox.core.run import DataDir
+from kitsunox.ecosystems.npm.entry import load_sources
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.rules.install_code import RULES as NPM_CODE_RULES
@@ -37,6 +38,7 @@ def run_code_stage(
         CODE_RULES,
         install_entries=install_sources,
         build_commands=gyp_commands,
+        load_entries=load_sources,
         workers=workers,
         client=client,
     )

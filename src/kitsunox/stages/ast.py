@@ -152,8 +152,10 @@ def added(base: Profile | None, new: Profile) -> frozenset[Capability]:
 
 class CodeChange(Record):
     """What a Stage 3 rule sees for one version: its capability profile, the profile of the
-    version before it (None for a new package), and the profile of the files its install
-    scripts run (None if it has no install script naming a package file)."""
+    version before it (None for a new package), the profile of the files its install
+    scripts run (None if it has no install script naming a package file), and the profile of
+    the files loading it runs (`LoadEntries`; None if the stage was given none or the version
+    has no entry file)."""
 
     snapshot: VersionSnapshot
     before: Profile | None
@@ -172,6 +174,7 @@ class CodeChange(Record):
     # The agent configuration the install code may copy (`agent_config.agent_files`: skills,
     # agent settings and the scripts their hooks name), when it names an agent directory.
     agent_files: dict[str, bytes] = Field(default_factory=dict)
+    load: Profile | None = None
 
     @property
     def added(self) -> frozenset[Capability]:
@@ -194,6 +197,9 @@ InstallEntries = Callable[[Tree], Mapping[str, bytes]]
 # The commands a tree's build files run at install, besides its hooks (an ecosystem's choice:
 # `ecosystems.npm.install.gyp_commands`).
 BuildCommands = Callable[[Tree], Sequence[str]]
+# The files of a tree that loading the package runs: its entry points and the package files
+# they load (an ecosystem's choice: `ecosystems.npm.entry.load_sources`).
+LoadEntries = Callable[[Tree], Mapping[str, bytes]]
 MAX_INSTALL_FILE_BYTES: Final = 256 * 1024  # of each install file kept for the diff
 
 
@@ -211,6 +217,7 @@ def analyse_batch(
     *,
     install_entries: InstallEntries | None = None,
     build_commands: BuildCommands | None = None,
+    load_entries: LoadEntries | None = None,
     threshold: Severity = DEFAULT_THRESHOLD,
 ) -> PackageBatch:
     """Run Stage 3 on a batch. Each version is compared with its `change.previous` (the base,
@@ -274,6 +281,7 @@ def analyse_batch(
             previous_version=previous.ref.version if previous else None,
             build_commands=tuple(build_commands(tree)) if build_commands else (),
             agent_files=agent_files(tree, files),
+            load=_load_profile(tree, cache, load_entries),
         )
         findings = tuple(f for rule in rules for f in rule.evaluate_code(change))
         flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
@@ -295,6 +303,7 @@ def code_change(
     install_entries: InstallEntries | None = None,
     previous_version: str | None = None,
     build_commands: BuildCommands | None = None,
+    load_entries: LoadEntries | None = None,
 ) -> CodeChange:
     """The `CodeChange` for one version against one base (evaluation uses this directly)."""
     files = install_files(tree, install_entries)
@@ -313,7 +322,16 @@ def code_change(
         previous_version=previous_version,
         build_commands=tuple(build_commands(tree)) if build_commands else (),
         agent_files=agent_files(tree, files),
+        load=_load_profile(tree, cache, load_entries),
     )
+
+
+def _load_profile(
+    tree: Tree, cache: CapabilityCache, load_entries: LoadEntries | None
+) -> Profile | None:
+    """The profile of the files loading the package runs (real package files, so `paths`)."""
+    paths = frozenset(load_entries(tree)) if load_entries else frozenset()
+    return profile(tree, cache, paths=paths) if paths else None
 
 
 def _install_profile(
@@ -342,6 +360,7 @@ def ast_run(
     *,
     install_entries: InstallEntries | None = None,
     build_commands: BuildCommands | None = None,
+    load_entries: LoadEntries | None = None,
     workers: int = 8,
 ) -> tuple[PackageBatch, ...]:
     """Stage 3 over a run that Stage 2 has processed: reads `static.jsonl`, writes `ast.jsonl`
@@ -358,6 +377,7 @@ def ast_run(
                     rules,
                     install_entries=install_entries,
                     build_commands=build_commands,
+                    load_entries=load_entries,
                 ),
                 lines,
             )
@@ -374,6 +394,7 @@ def record_ast(
     *,
     install_entries: InstallEntries | None = None,
     build_commands: BuildCommands | None = None,
+    load_entries: LoadEntries | None = None,
     workers: int = 8,
     client: httpx.Client | None = None,
 ) -> tuple[PackageBatch, ...]:
@@ -395,6 +416,7 @@ def record_ast(
             rules,
             install_entries=install_entries,
             build_commands=build_commands,
+            load_entries=load_entries,
             workers=workers,
         )
     finally:

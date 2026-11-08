@@ -30,6 +30,7 @@ from kitsunox.core.models import (
 )
 from kitsunox.core.rules import RuleContext, rules_fingerprint
 from kitsunox.core.run import DataDir
+from kitsunox.ecosystems.npm.entry import load_sources
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.repo import NpmLocator
@@ -195,6 +196,7 @@ class StaticRules:
                 install_sources,
                 change.previous.ref.version if change.previous else None,
                 build_commands=gyp_commands,
+                load_entries=load_sources,
             )
             stage3 = tuple(f for rule in CODE_RULES for f in rule.evaluate_code(code))
         return found.model_copy(update={"stage2": stage2, "stage3": stage3, "package": new})

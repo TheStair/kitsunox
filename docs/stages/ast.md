@@ -103,7 +103,7 @@ is the malicious set.
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
-| `npm.undeclared-package` (v1) | a version's own files (not those under `node_modules/`) load a package by name, outside a `try`, that `dependencies`, `peerDependencies`, `optionalDependencies` and `bundleDependencies` don't list and the tarball doesn't ship (Node's modules, paths and the package's own name don't count; on an update, only names the previous version's code didn't load) | INFO (weight 0) | `vm-day1`: 64 of 1,500; live: 700-1,150 a day | `vm-day1`: 758 of 3,443 (`bun_environment.js` importing `undici`); live: `tailwind-animate-engine@1.0.6` (INFO: still not reported) |
+| `npm.undeclared-package` (v2) | loading the version (its `exports`/`main`/`module`/`browser` entry, `index.js` by default, and the package files those load by a constant relative path, `ecosystems/npm/entry.py`) loads a package at module load (not in a `try`, not inside a function that isn't called in place; extractor v7) that `dependencies`, `peerDependencies`, `optionalDependencies` and `bundleDependencies` don't list and the tarball doesn't ship (Node's modules, paths and the package's own name don't count; on an update, only names the previous version's code didn't load). One evidence item per package (at most 10), which Stage 4's `npm.undeclared.missing` looks up | INFO (weight 0) | `vm-day1`: 3 of 1,500 (v1: 61), none for a name npm lacks; live: 204 of 29,470 versions in 29.2 h (v1: 993) | `vm-day1`: 131 of 3,443 (v1: 669); live: `tailwind-animate-engine@1.0.6` (with Stage 4's lookup: reported) |
 
 New packages get no `capability-gained` finding: with no previous version everything is
 "gained", and 34% of benign new packages would fire. They are covered by what their install
@@ -271,6 +271,58 @@ the release was published: a registry lookup, which Stage 4 makes for declared d
 Stage 4's input). Even then, path aliases (`@shared/x`, `@generated/gql`) and AMD module
 names remain. In `vm-day1` the rule fires on 64 of 1,500 benign samples and on 758 of 3,443 malicious ones, mostly the Shai-Hulud `bun_environment.js` importing `undici`
 (which Bun provides), already reported through other rules.
+**Extractor v7 and `npm.undeclared-package` v2** (2026-11-08, still INFO). The owner asked for a
+narrower version that a registry lookup could make reportable ("measure a narrower version";
+build only if benign stays under ~5 reports a day). Version 2 counts only what *loading the
+package* runs:
+
+- **at module load**: the extractor records whether a load is *deferred*, inside a function
+  that isn't called where it is defined (`PackageLoad.deferred`; `(function () {...})()`,
+  `!function () {...}()` and `(() => {...}).call(this)` defer nothing, static `import` never
+  is). A `try` still excludes it, as in v1;
+- **from the entry points**: `ecosystems/npm/entry.py` takes the files `exports` (every
+  condition but `types`, no `*` patterns), `main`, `module` and a string `browser` name
+  (`index.js` when there is neither `main` nor `exports`), and follows the package files they
+  load by a constant relative path (`followed_files`, 8 levels, at most 300 files of at most
+  4 MiB). Stage 3 profiles those files as `CodeChange.load`. `bin` scripts are not entries:
+  they run when typed, and adding them changed 3 versions, none with a missing name. This is
+  what drops shipped TypeScript sources, templates, tests and examples (a path filter on top
+  removed nothing more).
+
+devDependencies are *not* treated as declared: npm doesn't install them for users either, and
+leaving them out removed no name the registry lacked. Measured on every version Stage 3 read
+in the eight unpruned live runs (2026-11-07 16:18Z to 11-08 21:30Z, 29.2 h, 29,470 versions;
+registry status checked on 2026-11-08 for every name involved; of the 18 v2 names that exist
+and need a lookup, none was created after the release that loaded it, so "missing now" stands
+for "missing when Stage 4 would have asked"):
+
+| Variant | Versions | Distinct names | Versions with a name npm lacks | ... after Stage 4's exemptions |
+|---|---|---|---|---|
+| v1 (every own file, outside `try`) | 993 | 655 | 59 | |
+| devDependencies as declared | 709 | 497 | 42 | |
+| also at module load | 504 | 447 | 40 | |
+| **v2: also only what the entry points load** | **204** | 123 | 15 | **1** |
+| v2 with devDependencies as declared | 165 | 102 | 13 | 1 |
+
+Stage 4's exemptions are `npm.dependency.missing`'s (the release's own scope, watched names,
+siblings by `sibling_reason`); they cleared the `@ranu/*` monorepo of `@ranujs/*` (9 releases),
+`@gtkx/*` (own scope, 3) and `@chatluna/*` (2). The one left, `@ohos-ports/cms-components`,
+re-publishes `@smallstack/*` code that loads 21 `@smallstack/*` packages that don't exist on
+npm: a dependency-confusion exposure, like the private names `npm.dependency.missing` reports.
+That is ~0.8 extra benign reports a day. The wrapper `tailwind-animate-engine@1.0.6` gets the
+finding (`plugin.js` -> `src/styles.js` -> `src/motion.js:5`), and the 404 for
+`@unipswap/postcss-animate-units` is in run `20261102T083824Z`'s Stage 4 snapshot. Of the 56
+reviewed positives (malicious, unwanted) with a captured tarball, 7 Baileys forks and
+`cantarel` get the finding, all for names npm has (`long`, `fflate`, `form-data`): none
+changes. On `vm-day1` (every sample, Stage 1 routing as the pipeline does it, a per-sample
+dump because `pipeline+4` doesn't fit the 4 GB cap; `llm-oracle@1.0.2` alone exceeded it and
+is not counted) v2 fires on 3 of the 1,046 routed benign samples (`react`, `expo-font`,
+`@angular/forms`, `rxjs`: all on npm) and on 131 of the 3,117 routed malicious ones (v1: 61 and
+669); 7 malicious samples load a name npm lacks now, 5 of them only siblings (`@ember/*` from
+`ember-*`, `rc-logger-abstract-transport` from `rc-logger`), and the other 2
+(`react-tmedia@2.1.4`, `tailwind-state@1.0.3` -> `bingo-logger-abstract-transport`, the
+wrapper-and-payload shape again) are reported already.
+
 ### Explained install (S1-S3) and agent configuration
 
 `npm.install-explained` (INFO, weight 0; 2026-11-08,
@@ -442,7 +494,11 @@ tool descriptions); 6 of them add no risky line. `vm-day1`: 3 malicious lost, al
   not recognised.
 - `npm.undeclared-package` reads constant specifiers only: `require(name)` is
   `dynamic-require`, and a package loaded through `createRequire`, `module.require` or a
-  bundler's runtime is not seen. It does not know whether a name exists on npm.
+  bundler's runtime is not seen. It does not know whether a name exists on npm (Stage 4's
+  `npm.undeclared.missing` asks). Since v2 it reads only what the entry points load: a
+  payload required from a `bin` script, a postinstall-only file or a file reached through a
+  computed path is missed, and a load inside a bundler's module function (webpack's
+  `__webpack_modules__`) counts as deferred.
 - Install-entry detection reads command lines. `node -e "<code>"` and shell scripts are not
   parsed.
 - **tree-sitter 0.26.0 is excluded** (`pyproject.toml`). Using nodes from query matches

@@ -45,7 +45,10 @@ from kitsunox.core.models import Record
 #    `x.constructor` whose own `constructor` is taken (`txnforge`, `mock-datas-lib`, 2026-11-02).
 # 6: the packages a file loads by name (`FileCapabilities.packages`), for
 #    `npm.undeclared-package`; `.d.cts` and `.d.mts` are type declarations, like `.d.ts`.
-EXTRACTOR_VERSION: Final = 6
+# 7: whether a package load is deferred, inside a function that isn't called where it is
+#    defined (`PackageLoad.deferred`): only a load at module load fails, or runs a payload, the
+#    moment the package is required (`tailwind-animate-engine@1.0.6`, 2026-11-02).
+EXTRACTOR_VERSION: Final = 7
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
@@ -74,20 +77,30 @@ class Use(Record):
 
 class PackageLoad(Record):
     """A package loaded by name (`require("x")`, `import ... from "x"`, `import("x")`): the
-    package (`@scope/x` for `@scope/x/sub`), 1-based line, a short snippet, and whether it is
-    loaded inside a `try` (the usual way to load an optional package)."""
+    package (`@scope/x` for `@scope/x/sub`), 1-based line, a short snippet, whether it is
+    loaded inside a `try` (the usual way to load an optional package), and whether it is
+    deferred: inside a function, so it loads only when that function runs. A function called
+    where it is defined (`(function () { ... })()`, `(() => { ... }).call(this)`) defers
+    nothing. Static `import` and `export ... from` always load with the module."""
 
     name: str
     line: int
     snippet: str
     guarded: bool = False
+    deferred: bool = False
+
+    @property
+    def at_load(self) -> bool:
+        """Loaded unconditionally when its file is: neither in a `try` nor deferred."""
+        return not self.guarded and not self.deferred
 
 
 class FileCapabilities(Record):
     language: str
     parse_errors: bool
     uses: tuple[Use, ...]
-    packages: tuple[PackageLoad, ...] = ()  # each package once, unguarded first
+    # Each package once, at its most direct load: at module load, else deferred, else guarded.
+    packages: tuple[PackageLoad, ...] = ()
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -369,17 +382,23 @@ def _packages(content: bytes, loads: list[tuple[str, ts.Node]]) -> tuple[Package
     found: dict[str, PackageLoad] = {}
     for specifier, node in sorted(loads, key=lambda load: load[1].start_byte):
         name = package_name(specifier)
-        if name is None or (name in found and not found[name].guarded):
+        if name is None or (name in found and found[name].at_load):
             continue
-        guarded = _in_try(node)
-        if name not in found or not guarded:
-            found[name] = PackageLoad(
-                name=name,
-                line=node.start_point.row + 1,
-                snippet=_snippet(content, node),
-                guarded=guarded,
-            )
+        load = PackageLoad(
+            name=name,
+            line=node.start_point.row + 1,
+            snippet=_snippet(content, node),
+            guarded=_in_try(node),
+            deferred=_deferred(node),
+        )
+        if name not in found or _directness(load) < _directness(found[name]):
+            found[name] = load
     return tuple(found.values())
+
+
+def _directness(load: PackageLoad) -> tuple[bool, bool]:
+    """Lower is more direct: at module load, then deferred, then inside a `try`."""
+    return load.guarded, load.deferred
 
 
 def _in_try(node: ts.Node) -> bool:
@@ -388,6 +407,52 @@ def _in_try(node: ts.Node) -> bool:
         if parent.type == "try_statement":
             return True
         parent = parent.parent
+    return False
+
+
+_FUNCTIONS: Final = frozenset(
+    {
+        "function_declaration",
+        "generator_function_declaration",
+        "function_expression",
+        "function",
+        "generator_function",
+        "arrow_function",
+        "method_definition",
+    }
+)
+
+
+def _deferred(node: ts.Node) -> bool:
+    """Inside a function that isn't called where it is defined."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type in _FUNCTIONS and not _called_in_place(parent):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _called_in_place(function: ts.Node) -> bool:
+    """`(function () {})()`, `!function () {}()`, `(() => {})()`, `(function () {}).call(x)`."""
+    node = function
+    while node.parent is not None and node.parent.type == "parenthesized_expression":
+        node = node.parent
+    parent = node.parent
+    if parent is not None and parent.type == "call_expression":
+        return parent.child_by_field_name("function") == node
+    if (
+        parent is not None
+        and parent.type == "member_expression"
+        and parent.child_by_field_name("object") == node
+    ):
+        grand = parent.parent
+        return (
+            _text(parent.child_by_field_name("property")) in ("call", "apply")
+            and grand is not None
+            and grand.type == "call_expression"
+            and grand.child_by_field_name("function") == parent
+        )
     return False
 
 
