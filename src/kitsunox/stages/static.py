@@ -22,7 +22,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import httpx
 
@@ -38,6 +38,7 @@ from kitsunox.core.models import (
 from kitsunox.core.rules import ArtifactRule, FileMatch, FileRule, rules_fingerprint
 from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
+from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.rules.signatures import KnownSignature
 from kitsunox.rules.static import RULES
 from kitsunox.stages.ingest import write_jsonl
@@ -51,6 +52,15 @@ STAGE_ID: Final = "static"
 # first-release compromised samples added a file over 2 MB (2026-10-27).
 MAX_FILE_BYTES: Final = 16 * 1024 * 1024
 MAX_ARTIFACT_BYTES: Final = MAX_FILE_BYTES
+# A version that declares an install hook is read up to 32 MB declared: the hook runs on every
+# `npm install`, and the worm's follow-ons carry a ~10 MB payload in an otherwise large package
+# (2026-11-08, `vm-day1`: 97 of 481 malicious shape-A follow-ons were over 16 MB, all hooked and
+# all flagged by Stage 2 when read; 44 of them are at most 32 MB). Live, about 339 more versions
+# and 2.5 to 4.8 GB of tarballs a day (docs/proposals/stage2-routing-recall.md).
+MAX_HOOK_ARTIFACT_BYTES: Final = 2 * MAX_ARTIFACT_BYTES
+INSTALL_HOOK_BY_ECOSYSTEM: Final[dict[str, Callable[[Mapping[str, Any]], bool]]] = {
+    "npm": has_install_hook
+}
 # Decision reasons for missing files, e.g. "files unavailable: ..." or "; base unavailable, will
 # retry: ...". The retry form marks a network failure, which `collect` retries.
 UNAVAILABLE: Final = "unavailable: "
@@ -335,20 +345,45 @@ def _unavailable(missing: Unavailable) -> str:
     return f"{WILL_RETRY if missing.transient else UNAVAILABLE}{missing.reason}"
 
 
+def has_hook(snapshot: VersionSnapshot) -> bool:
+    """Whether the version declares an install hook, in its ecosystem's terms."""
+    hooked = INSTALL_HOOK_BY_ECOSYSTEM.get(snapshot.ref.ecosystem)
+    return hooked is not None and hooked(snapshot.manifest)
+
+
+def fetch_limit(
+    snapshot: VersionSnapshot,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+    hook_max_bytes: int = MAX_HOOK_ARTIFACT_BYTES,
+) -> int:
+    """The largest declared unpacked size Stage 2 fetches for this version."""
+    return max(max_bytes, hook_max_bytes) if has_hook(snapshot) else max_bytes
+
+
 class ArtifactFiles:
     """Fetch a version's files through its ecosystem, skipping versions that declare an
-    unpacked size over `max_bytes`: almost all of that volume is platform binaries that the
-    rules skip anyway (2026-10-27: versions over 16 MB were 9% of releases and 86% of bytes)."""
+    unpacked size over `max_bytes`, or `hook_max_bytes` for a version with an install hook
+    (`fetch_limit`): almost all of that volume is platform binaries that the rules skip anyway
+    (2026-10-27: versions over 16 MB were 9% of releases and 86% of bytes). A base is held to
+    its own limit, so a hook added to a large package can leave its hookless base unread: all
+    the files then count as new (Stage 1 flags an added hook HIGH anyway)."""
 
-    def __init__(self, ecosystem: Ecosystem, max_bytes: int = MAX_ARTIFACT_BYTES) -> None:
+    def __init__(
+        self,
+        ecosystem: Ecosystem,
+        max_bytes: int = MAX_ARTIFACT_BYTES,
+        hook_max_bytes: int = MAX_HOOK_ARTIFACT_BYTES,
+    ) -> None:
         self.ecosystem = ecosystem
         self.max_bytes = max_bytes
+        self.hook_max_bytes = hook_max_bytes
 
     def __call__(self, snapshot: VersionSnapshot) -> Tree | Unavailable:
         artifact = snapshot.artifact
         if artifact is None:
             return Unavailable(reason="no artifact")
-        if artifact.unpacked_size is not None and artifact.unpacked_size > self.max_bytes:
+        limit = fetch_limit(snapshot, self.max_bytes, self.hook_max_bytes)
+        if artifact.unpacked_size is not None and artifact.unpacked_size > limit:
             return Unavailable(reason=f"declared unpacked size {artifact.unpacked_size} bytes")
         try:
             return self.ecosystem.fetch_artifact(artifact)

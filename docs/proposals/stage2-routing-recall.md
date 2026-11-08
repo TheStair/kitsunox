@@ -1,7 +1,9 @@
 # Proposal: Stage 2 routing and the 16 MB cap vs. live recall
 
-> **Status:** proposed 2026-11-08. Recommends option C (a 32 MB cap for versions with an
-> install hook) now, and no new routing rule before the 2026-11-12 freeze.
+> **Status:** proposed 2026-11-08; option C (a 32 MB cap for versions with an install hook)
+> implemented the same day (`MAX_HOOK_ARTIFACT_BYTES`, `fetch_limit`, decision
+> [0008](../decisions/0008-stage2-routing-and-tarball-capture.md) addendum). No new routing
+> rule before the 2026-11-12 freeze unless the owner picks option B (section 4).
 > **Builds on:** [prospective-labeling.md §1.3](prospective-labeling.md#13-what-each-stage-decided-for-the-134)
 > (the 100 live misses), decision [0008](../decisions/0008-stage2-routing-and-tarball-capture.md)
 > (routing and the cap), [stages/static.md](../stages/static.md#routing-what-stage-2-reads).

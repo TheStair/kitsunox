@@ -25,7 +25,9 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   grew by 64 KiB or more (see [Routing](#routing-what-stage-2-reads)).
 - **Fetch:** each version's tarball and the base's tarball, via `Ecosystem.fetch_artifact`
   (integrity-verified, extracted in memory by `extract_tar_gz`, never executed). Versions that
-  declare more than 16 MB unpacked (`MAX_ARTIFACT_BYTES`) are not fetched. Tarballs go into
+  declare more than 16 MB unpacked (`MAX_ARTIFACT_BYTES`) are not fetched, or more than 32 MB
+  if the version declares an install hook (`MAX_HOOK_ARTIFACT_BYTES`, `fetch_limit`; since
+  2026-11-08). Stages 3 and 4 fetch through the same `ArtifactFiles`. Tarballs go into
   `data/blobs` (immutable, so each is downloaded once) and are recorded in the run's
   `static-snapshot.json`.
 - **Unavailable files** (too large, fetch or integrity failure, no artifact): the version gets
@@ -247,6 +249,24 @@ there), measured on `day1`:
 The simulation predicted the `pipeline` numbers exactly. Stage 1's routing passes 25.8% of
 releases to Stage 2 (weighted; `stage1` predictor), about 24k versions a day after the cap.
 
+### Routing vs. live recall, and the hook cap (2026-11-08)
+
+Of the 100 live OSV misses ([prospective-labeling](../proposals/prospective-labeling.md)), 35
+updates were never routed and 13 had no files (12 over the cap). The 24 of them still on the
+registry, replayed through Stages 2–3 with no cap: **none reported**. They are missed by the
+rules (shell start-up file persistence, a WhatsApp fork's channel auto-follow, an IP kill
+switch), not by the routing. No routing rule was added: the cheapest one (updates ≤ 64 KiB,
+18.7k versions a day, 0 of 451 benign samples reported) catches nothing today's rules flag,
+live or in DataDog's first releases. Details and options:
+[stage2-routing-recall](../proposals/stage2-routing-recall.md).
+
+What changed is the cap for versions that **declare an install hook: 32 MB** instead of 16.
+On `vm-day1`, Stage 2 then reads 44 more malicious shape-A follow-ons (of 97 over 16 MB, all
+hooked, all flagged by `stage2-rules`), 1 first release and 2 B follow-ons. Live (2026-11-02):
+339 more versions a day (173 routed for their hook, 160 watched, 6 flagged), ~2.5 GB of new
+tarballs a day (up to 4.8 GB with bases; today's total is 17.7 GB), and on a sample of 111 of
+them, 2 reported (1.8%, both `npm.install-script-changed`), about 6 benign reports a day.
+
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
 v3 requires real-looking webhook ids: a 17-20-digit Discord snowflake (every real webhook in
@@ -402,7 +422,12 @@ the blob. Evaluation tarballs live in their own store and are not pruned.
 - `dist.unpackedSize` is declared by the publisher, so an attacker can understate growth to
   skip routing, or overstate size to skip the download. A rule comparing declared and real size
   after download is a candidate.
-- Updates over 16 MB are seen by Stage 1 only.
+- Updates over 16 MB (32 MB with an install hook) are seen by Stage 1 only. A hook added to a
+  package of 16–32 MB leaves its hookless base unread, so all its files count as new (Stage 1
+  flags the added hook HIGH anyway).
+- Routing is not what misses most live malware: of the 24 live misses Stage 2 never read that
+  could still be fetched, none is reported when read
+  ([stage2-routing-recall](../proposals/stage2-routing-recall.md)).
 - Regular expressions don't understand code: a URL in a comment and one in a `fetch` look the
   same. That is Stage 3's job.
 

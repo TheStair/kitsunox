@@ -2,6 +2,59 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Stage 2 routing vs. live recall; a 32 MB cap for hooked versions
+
+**Stage(s):** Stage 2 (fetch cap); Stage 1 routing measured, not changed
+**Context:** Live recall against OSV `MAL-` records is 25.4% (34/134,
+[prospective-labeling](proposals/prospective-labeling.md)). 48 of the 100 misses were updates
+Stage 2 had no files for: 35 never routed (no Stage 1 signal, unwatched, no hook, grew
+< 64 KiB) and 13 without files (12 over the 16 MB cap, 1 fetch error). Before the 11-12 rule
+freeze: would routing more, or a larger cap, win them back? Full write-up:
+[stage2-routing-recall](proposals/stage2-routing-recall.md).
+
+### Decisions
+- **No new routing rule.** Candidates measured on 2026-11-02 (24 hourly runs, 118k versions)
+  against the 35 live misses and the 420 DataDog updates unrouted today: size ≤ 16 KiB to
+  1 MiB, any growth, file-count change, re-publish within 1 h, publisher change, any LOW
+  Stage 1 finding. None routes a DataDog A first release that Stage 2 flags (0/34), and the
+  live ones it routes aren't reported when read (below). The cheapest, updates ≤ 64 KiB, is
+  nearly free (+0.3 GB/day; 0 of 451 benign samples reported) but adds 18.7k versions a day for
+  64 B follow-ons only; it is left to the owner.
+- **A 32 MB cap for versions that declare an install hook** (`MAX_HOOK_ARTIFACT_BYTES`,
+  `fetch_limit` in `stages/static.py`; Stages 3 and 4 fetch through the same `ArtifactFiles`,
+  and `evaluation/static_eval.py`'s routing now calls `fetch_limit`, a one-line change).
+  Alternatives: a flat 32 MB cap (+~2,000 versions and ~14 GB a day for the same follow-ons),
+  64 MB for hooks (+~600 versions, 6–12 GB), partial reads (save memory, not the download).
+- **No `STAGE_VERSION` bump:** Stage 2 has none, its rules and content-cache fingerprint are
+  unchanged, and Stage 4's version describes Stage 4's rules. Old runs keep their "files
+  unavailable" decisions; only new ticks fetch the larger hooked versions.
+
+### Challenges
+- **Is it routing at all?** Of the 48, 24 are still on the registry. Fetched as data (in
+  memory, scratch blob store) and run through Stages 2–3 with no cap plus Stage 4's `decide`:
+  **0 reported**, 22 with no finding. `@atedone/workspace-context` (14 versions) appends a
+  `source` line to `~/.bashrc`/`~/.zshrc`, which no rule looks for; `@ubedsockets/baileys` adds
+  an IP kill switch; `@sakataa/baileys` auto-follows WhatsApp channels.
+  - **Resolution:** routing left alone; the persistence rule is an owner question.
+  - **Why it worked:** the replay is the evidence; it says nothing about the 24 that are gone.
+- **Self-matching wait loops.** `until ! pgrep -f "replay2.py hook"` matched its own shell, so
+  the waits never ended; killed by PID. Use the PID, not a pattern that the loop contains.
+
+### Evaluation snapshot
+- DataDog `vm-day1` (Stage 1 at `5fe01c6`, `stage2-rules` per-sample results): Stage 2 now
+  reads 44 more malicious A follow-ons (of 97 over 16 MB), 1 A first release, 2 B follow-ons,
+  all flagged by `stage2-rules` (A follow-on +9.1 points; the `pipeline+4` report was not
+  re-run). Live misses recovered: **0** of the 10 the change routes (5 replayable).
+- Cost, 2026-11-02: +339 versions/day (today Stage 2 reads 39.4k), +2.5 GB/day of new
+  tarballs, at most +4.8 GB with bases (today 17.7 GB recorded); benign reports +~6/day
+  (2 of 111 sampled, both `npm.install-script-changed`; 341 reported that day).
+
+### Open questions / next steps
+- Owner: keep the hook cap; route updates ≤ 64 KiB (option B); a Stage 2 rule for writes to
+  shell start-up files before the freeze (it needs B to see `@atedone`'s 0.0.12); are
+  WhatsApp-fork channel hijacks in scope for recall?
+- Watch the first ticks' Stage 2 bytes against the estimate (`df -h /`).
+
 ## 2026-11-08: Live evaluation built (Phase 9, option B)
 
 **Stage(s):** evaluation (ledger, live dataset, review sample), retention (label hold), collect

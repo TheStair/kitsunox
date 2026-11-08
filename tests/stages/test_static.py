@@ -23,10 +23,14 @@ from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.rules.static import RULES
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.static import (
+    MAX_ARTIFACT_BYTES,
+    MAX_HOOK_ARTIFACT_BYTES,
     ArtifactFiles,
     ContentCache,
     Unavailable,
     analyse_batch,
+    fetch_limit,
+    has_hook,
     needs_retry,
     new_contents,
     record_static,
@@ -45,11 +49,13 @@ BAD = {
 CLEAN = {"index.js": b"module.exports = 2", "README.md": b"hi"}
 
 
-def snapshot(version: str, minutes: int = 0, size: int | None = 100) -> VersionSnapshot:
+def snapshot(
+    version: str, minutes: int = 0, size: int | None = 100, *, hook: str | None = None
+) -> VersionSnapshot:
     return VersionSnapshot(
         ref=PackageVersionRef(ecosystem="npm", name="kx", version=version),
         publish=PublishInfo(published_at=T0 + timedelta(minutes=minutes)),
-        manifest={},
+        manifest={"scripts": {hook: "node setup.js"}} if hook else {},
         artifact=ArtifactRef(
             url=f"https://r.test/kx-{version}.tgz", integrity="sha512-x", unpacked_size=size
         ),
@@ -129,6 +135,35 @@ def test_artifact_files_skips_oversize_and_reports_fetch_errors() -> None:
     no_artifact = snapshot("1.0.1").model_copy(update={"artifact": None})
     assert files(no_artifact) == Unavailable(reason="no artifact")
     assert len(ecosystem.fetched) == 3  # the oversize one was never downloaded
+
+
+def test_a_version_with_an_install_hook_is_read_up_to_the_hook_limit() -> None:
+    """32 MB declared instead of 16 for a version with an install hook (2026-11-08): the
+    worm's large hooked follow-ons. `prepare` and `test` aren't install hooks."""
+    assert MAX_HOOK_ARTIFACT_BYTES == 2 * MAX_ARTIFACT_BYTES
+    ecosystem = FakeEcosystem()
+    files = ArtifactFiles(ecosystem, max_bytes=1000, hook_max_bytes=2000)  # type: ignore[arg-type]
+    for hook in ("preinstall", "install", "postinstall"):
+        assert has_hook(snapshot("1.0.1", hook=hook))
+        assert files(snapshot("1.0.1", size=2000, hook=hook)) == BAD
+    assert not has_hook(snapshot("1.0.1", hook="prepare"))
+    assert files(snapshot("1.0.1", size=1001, hook="prepare")) == Unavailable(
+        reason="declared unpacked size 1001 bytes"
+    )
+    assert files(snapshot("1.0.1", size=2001, hook="postinstall")) == Unavailable(
+        reason="declared unpacked size 2001 bytes"
+    )
+    assert len(ecosystem.fetched) == 3
+
+
+def test_fetch_limit_never_lowers_the_cap_and_knows_only_its_ecosystems() -> None:
+    hooked = snapshot("1.0.1", hook="postinstall")
+    assert fetch_limit(snapshot("1.0.1")) == MAX_ARTIFACT_BYTES
+    assert fetch_limit(hooked) == MAX_HOOK_ARTIFACT_BYTES
+    assert fetch_limit(hooked, max_bytes=5000, hook_max_bytes=10) == 5000
+    other = hooked.model_copy(update={"ref": hooked.ref.model_copy(update={"ecosystem": "pypi"})})
+    assert not has_hook(other)
+    assert fetch_limit(other) == MAX_ARTIFACT_BYTES
 
 
 @pytest.mark.parametrize("base", [None, "1.0.0"])

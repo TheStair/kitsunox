@@ -46,10 +46,10 @@ from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
 from kitsunox.stages.repo import RepoMemory, compare, with_history, with_trust
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
-    MAX_ARTIFACT_BYTES,
     BaseFiles,
     ContentCache,
     content_matches,
+    fetch_limit,
     new_contents,
 )
 from kitsunox.stages.triage import at_least, triage
@@ -172,7 +172,8 @@ class StaticRules:
         size = change.new.artifact.unpacked_size if change.new.artifact else None
         found = SampleFindings(
             stage1=candidate.findings,
-            routed=candidate.history[-1].forwarded and (size is None or size <= MAX_ARTIFACT_BYTES),
+            routed=candidate.history[-1].forwarded
+            and (size is None or size <= fetch_limit(change.new)),
         )
         if not self.needs_files(found):
             return found

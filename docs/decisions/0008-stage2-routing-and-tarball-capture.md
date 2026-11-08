@@ -61,3 +61,24 @@ plus the declared `dist.unpackedSize` of each release (volume from `day1`'s thre
 - Large malicious updates (over 16 MB) are only seen by Stage 1.
 - Stage 1's `stage1` pass-through now measures what Stage 2 fetches (25.8% weighted), not what
   is flagged. What is flagged is `stage1-rules`, and end to end, `pipeline`.
+
+## Addendum (2026-11-08): a 32 MB cap for versions with an install hook
+
+Live recall against OSV records was 25.4%, and 48 of the 100 misses were updates Stage 2 had
+no files for (35 not routed, 12 over the cap, 1 fetch error). Replaying the 24 still on the
+registry through Stages 2–3 with no cap reported **none**: routing was not the binding
+constraint, the rules were. So the routing criteria stay as decided above; no routing rule
+measured (small updates, any growth, fast re-publish, file-count change, publisher change)
+catches anything today's rules flag on DataDog first releases or live.
+
+The cap changes for one class: a version that **declares an install hook** is read up to
+**32 MB** declared (`MAX_HOOK_ARTIFACT_BYTES`, `fetch_limit` in `stages/static.py`; the
+evaluation's routing uses the same function). Code that runs on `npm install` is where
+compromises put their payload, and on `vm-day1` 97 of 481 malicious shape-A follow-ons were
+over 16 MB, all hooked: 44 are at most 32 MB and Stage 2 flags them when read (+9.1 points of
+follow-on recall; +1 first release, +2 B follow-ons). Cost on 2026-11-02: 339 versions a day,
+2.5–4.8 GB of tarballs (+14–27% of 17.7 GB), and about 6 benign reports a day (2 of 111
+sampled). A flat 32 MB cap would cost ~14 GB a day more for the same follow-ons.
+
+Measurements, options and the owner's open questions:
+[stage2-routing-recall](../proposals/stage2-routing-recall.md).
