@@ -122,10 +122,10 @@ rule's version, so changing the set changes the rules fingerprint (and Stage 2's
 | KX-0005 | notsemz probes | their webhook.site token, `130.162.231.177` | `@pcb-dp/qa-commons`, `ssite-mock-server` |
 | KX-0006 | probe authors' out-of-band beacon ids | an interactsh and a Burp Collaborator id | `@mobile-platform/magnetic-components`, `dependencykfeg` |
 | KX-0007 | `calculator-preinstall-hook-demo`'s Discord webhook | its webhook id | `calculator-preinstall-hook-demo@1.1.2` |
-| KX-0008 | Baileys forks following hard-coded channels | a `...@newsletter` id, `FOLLOW` and `newsletterWMexQuery` in one file | `@chatbridgeworld/baileys`, `kevinx-baileys`, `@bil-rgb/baileys` |
-| KX-0009 | Baileys forks fetching their channel list | `noxXza/data`, `push-saurus.yorunime.sbs` | `luna-baileys`, `sauruspro-bail` |
+| KX-0008 | ~~Baileys forks following hard-coded channels~~ retired 2026-11-08 (signatures v3): `static.channel-follow` | a `...@newsletter` id, `FOLLOW` and `newsletterWMexQuery` in one file | `@chatbridgeworld/baileys`, `kevinx-baileys`, `@bil-rgb/baileys` |
+| KX-0009 | ~~Baileys forks fetching their channel list~~ retired 2026-11-08 (signatures v3): `static.channel-follow` | `noxXza/data`, `push-saurus.yorunime.sbs` | `luna-baileys`, `sauruspro-bail` |
 | KX-0010 | Discord webhook of the cutekitten/bigdevin55 crypto-name squats | its webhook id | `sol-wallet-adapter`, `wallet-adapter-base`, `contracts-upgradeable` |
-| KX-0011 | Baileys fork fetching a hidden channel list | `mmhdzaidie-dev/idch` (base64 in the source) | `@zaiilx/baileys`, `@zaidevx/baileys` |
+| KX-0011 | ~~Baileys fork fetching a hidden channel list~~ retired 2026-11-08 (signatures v3): `static.channel-follow` | `mmhdzaidie-dev/idch` (base64 in the source) | `@zaiilx/baileys`, `@zaidevx/baileys` |
 
 Measured on 2026-11-01 over every captured tarball with a verdict and every 18th other captured
 tarball (6,004): each family's captured malicious versions match (KX-0001 and KX-0002: 4 of 4,
@@ -136,6 +136,24 @@ webhook, and among the others only `dependencykfeg@25.1.9`, a release of the `we
 the pipeline never reported. No file took over 5 s. The upstream Baileys API
 (`newsletterFollow` calling `newsletterWMexQuery(jid, FOLLOW)`) doesn't match KX-0008: it has no
 channel id of its own.
+
+**Baileys signatures retired** (signatures v3, 2026-11-08). KX-0008, KX-0009 and KX-0011 said
+HIGH "Matches a known malware family" for forks that make the user's WhatsApp account follow
+the author's channels, which the owner has since ruled *unwanted*, not malware (decision 0015
+addenda). `static.channel-follow` (MEDIUM, weight 3, "unwanted", also in `ALWAYS_NEW`, below)
+matches every version they match, in a file Stage 2 doesn't demote:
+
+| Set | Tarballs | A KX-0008/0009/0011 match | ... also `channel-follow` (not demoted) | Only the signatures |
+|---|---|---|---|---|
+| Baileys corpus + every verdict with a captured tarball | 1,522 | 16 | 16 | 0 |
+| live, every tarball of the eight unpruned runs (2026-11-07/08) | 35,544 | 2 | 2 | 0 |
+| `vm-day1` (all 4,944 samples; the 316 Baileys-like ones scanned) | 316 | 1 (`@zaidevx/baileys@1.0.3`, benign-labelled) | 1 | 0 |
+
+Relabelling them MEDIUM "unwanted" would have duplicated `channel-follow`'s finding on the same
+file, so they were retired instead: no version that is reported today stops being reported
+(each still has `channel-follow`'s MEDIUM finding); such a fork's score drops by the signature's
+6 and its severity from HIGH to MEDIUM, so it sorts lower in the queue, and the report no longer
+calls a channel follow malware. The ids stay reserved (`RETIRED`).
 
 KX-0010 and KX-0011 (signatures v2, 2026-11-02) were measured the same way over 887 versions
 with a verdict and every Nth other captured tarball (3,045): each matches its captured family

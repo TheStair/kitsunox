@@ -152,3 +152,13 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
 - Behaviour still decides: a hook or skill that sends data off the machine, fetches and runs
   code, or plants instructions that work against the user (e.g. telling the agent to hide
   activity, exfiltrate, or disable safeguards) is judged on that, as anywhere else.
+
+## Addendum 2026-11-08 (later): the Baileys signatures are retired
+
+The Stage 2 signatures KX-0008, KX-0009 and KX-0011 ("known malware family") were taken from
+Baileys forks that follow WhatsApp channels, which this decision's addenda now rule *unwanted*.
+`static.channel-follow` says exactly that (MEDIUM, "unwanted, not by itself a sign of malware")
+and matched every version they matched (16 of 16 corpus and verdict tarballs, 2 of 2 of 35,544
+live tarballs, 1 of 1 in `vm-day1`), so they were retired rather than relabelled (signatures v3,
+`rules/signatures.py` `RETIRED`; [static.md](../stages/static.md)). No fork reported before
+stops being reported; its severity drops from HIGH to MEDIUM.

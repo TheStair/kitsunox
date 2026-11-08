@@ -5,7 +5,14 @@ import base64
 import re
 
 from kitsunox.core.models import Severity
-from kitsunox.rules.signatures import SIGNATURES, KnownSignature, Signature, decoded_strings
+from kitsunox.rules.signatures import (
+    RETIRED,
+    SIGNATURES,
+    KnownSignature,
+    Signature,
+    decoded_strings,
+)
+from kitsunox.rules.static import ChannelFollow
 from kitsunox.stages.static import ALWAYS_NEW, _demoted, _key
 
 RULE = KnownSignature()
@@ -27,6 +34,7 @@ def ids(text: str) -> list[str]:
 
 def test_signature_ids_are_unique_and_name_their_source() -> None:
     assert len({s.id for s in SIGNATURES}) == len(SIGNATURES)
+    assert not {s.id for s in SIGNATURES} & set(RETIRED)  # retired ids are never reused
     assert all(s.seen_in and all("@" in v for v in s.seen_in) for s in SIGNATURES)
 
 
@@ -46,21 +54,26 @@ def test_indicators_in_plain_and_base64_text() -> None:
     assert ids("fetch('http://38.242.235.206/depconf/x/preinstall?u=')") == ["Signature KX-0004"]
     hook = "https://canary.discord.com/api/webhooks/1566232728179843243/abc"
     assert ids(f"const WEBHOOK_URL = '{hook}';") == ["Signature KX-0010"]
-    channels = "https://raw.githubusercontent.com/mmhdzaidie-dev/idch/refs/heads/main/channel.json"
-    listed = base64.b64encode(channels.encode()).decode()
-    assert ids(f"const xl = Buffer.from('{listed}', 'base64')") == ["Signature KX-0011"]
 
 
-def test_a_baileys_fork_following_hard_coded_channels() -> None:
-    follow = (
-        'setTimeout(async () => { for (const jid of ["120363351424590490@newsletter"]) '
-        "await newsletterWMexQuery(jid, QueryIds.FOLLOW) }, 90000)"
-    )
-    assert ids(follow) == ["Signature KX-0008"]
-    stock = "newsletterFollow: async (jid) => { await newsletterWMexQuery(jid, QueryIds.FOLLOW) }"
-    assert ids(stock) == []  # upstream Baileys: the API, no channel of its own
+def test_channel_follows_are_channel_follow_not_a_malware_family() -> None:
+    """KX-0008/0009/0011 were retired (signatures v3): following channels is unwanted, not
+    malware, and `static.channel-follow` matches the forms they matched."""
     jid = base64.b64encode(b"120363351424590490@newsletter").decode()
-    assert ids(f"const ids=['{jid}'];newsletterWMexQuery(x, Q.FOLLOW)") == ["Signature KX-0008"]
+    channels = "https://raw.githubusercontent.com/mmhdzaidie-dev/idch/refs/heads/main/channel.json"
+    forms = (
+        'setTimeout(async () => { for (const jid of ["120363351424590490@newsletter"]) '
+        "await newsletterWMexQuery(jid, QueryIds.FOLLOW) }, 90000)",
+        f"const ids=['{jid}'];newsletterWMexQuery(x, Q.FOLLOW)",
+        f"const r = await fetch('{channels}'); // newsletter\n"
+        "for (const id of await r.json()) newsletterWMexQuery(id, QueryIds.FOLLOW)",
+    )
+    for form in forms:
+        assert ids(form) == []
+        (match,) = ChannelFollow().evaluate_text(form)
+        assert match.severity is Severity.MEDIUM and "not by itself a sign of malware" in (
+            match.explanation
+        )
 
 
 def test_javascript_obfuscator_strings_are_decoded_in_obfuscated_files() -> None:

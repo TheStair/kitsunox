@@ -21,6 +21,7 @@ version's file matched too: a known payload stays known. A match only in documen
 or tests is demoted as usual (a security tool's README may list these indicators).
 
 `SIGNATURES_VERSION` is the rule's version: change it with the set, so a replay recomputes.
+Retired ids (`RETIRED`) are never reused.
 Measured before each addition on every captured tarball with a verdict and a sample of other
 captured tarballs (`docs/stages/static.md`).
 """
@@ -37,7 +38,8 @@ from typing import ClassVar, Final
 from kitsunox.core.models import Severity
 from kitsunox.core.rules import FileMatch
 
-SIGNATURES_VERSION: Final = 2
+# 3: KX-0008, KX-0009 and KX-0011 (Baileys forks following WhatsApp channels) retired.
+SIGNATURES_VERSION: Final = 3
 MAX_DECODED: Final = 20_000  # decoded strings kept per file
 MAX_LITERALS: Final = 5_000  # base64 literals tried per file
 SNIPPET: Final = 160
@@ -108,30 +110,20 @@ SIGNATURES: Final = (
         ("calculator-preinstall-hook-demo@1.1.2",),
     ),
     Signature(
-        "KX-0008",
-        "Baileys fork that makes the user's WhatsApp account follow hard-coded channels",
-        _p(r"\b\d{15,22}@newsletter\b", r"\bFOLLOW\b", r"newsletterWMexQuery"),
-        ("@chatbridgeworld/baileys@1.0.0", "kevinx-baileys@1.2.2", "@bil-rgb/baileys@1.0.0"),
-    ),
-    Signature(
-        "KX-0009",
-        "Baileys forks fetching the channel list they follow (NOXLEYS, saurus)",
-        _p(r"noxXza/data|push-saurus\.yorunime\.sbs"),
-        ("luna-baileys@1.0.0", "sauruspro-bail@5.0.0"),
-    ),
-    Signature(
         "KX-0010",
         "Discord webhook of the cutekitten/bigdevin55 crypto-name squats (hostname and user name)",
         _p(r"discord(?:app)?\.com/api/webhooks/1566232728179843243\b"),
         ("sol-wallet-adapter@1.0.7", "wallet-adapter-base@1.0.0", "contracts-upgradeable@1.0.0"),
     ),
-    Signature(
-        "KX-0011",
-        "Baileys fork fetching a hidden channel list to follow (mmhdzaidie-dev/idch)",
-        _p(r"mmhdzaidie-dev/idch"),
-        ("@zaiilx/baileys@1.0.3",),
-    ),
 )
+
+# Signatures taken out of the set, with why; their ids are not reused.
+# - KX-0008, KX-0009, KX-0011 (2026-11-08): Baileys forks that make the user's WhatsApp account
+#   follow the author's channels. The owner ruled that unwanted, not malware (decision 0015
+#   addenda), and `static.channel-follow` (MEDIUM, "unwanted") matches every version they
+#   matched: 16 of 16 in the Baileys corpus and the verdicts' tarballs, 2 of 2 in 35,544 live
+#   tarballs, 1 of 1 in `vm-day1` (`docs/stages/static.md`).
+RETIRED: Final = ("KX-0008", "KX-0009", "KX-0011")
 
 # A base64 string array right before a one-byte key: the tavern family's string tables.
 _XOR_TABLE: Final = re.compile(
