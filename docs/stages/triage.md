@@ -77,9 +77,9 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 | Rule | Sev. | Fires on benign | Recall, shape A | Recall, shape B | Caught by this rule only (A / B) |
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
-| `npm.publish-method.downgrade` (v3): previous release had trusted publishing or provenance, this one has neither. HIGH for a watched package; MEDIUM, weight 3, otherwise, which reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
-| `npm.dependency.non-registry`: new dependency from git/URL/GitHub shorthand/`file:` | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
-| `npm.version.suspicious`: major ≥ 90, CalVer exempt (v2) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
+| `npm.publish-method.downgrade` (v4): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version), or a watched package that also dropped `gitHead`: HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
+| `npm.dependency.non-registry` (v3): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
+| `npm.version.suspicious`: major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
 | `npm.dependency.added` | LOW | | | | |
 | `npm.maintainer.added` | LOW | | | | |
@@ -92,6 +92,39 @@ all used `github:` (71) or `http(s):` (17) URLs; on the live queue the two cases
 reports (`@feedmepos/mf-connect` pins registry tarballs; `@atairo/qixi` shipped
 `file:../../frontend/...`). pnpm's `catalog:` left unrewritten is a registry spec, like
 `workspace:`: it fails to install and fetches nothing (`postflareai`).
+
+`npm.publish-method.downgrade` v4 and `npm.dependency.non-registry` v3 (2026-11-08,
+[proposal](../proposals/stage1-precision.md)). Measured on the 87 live runs with Stage 4
+output (2026-10-28T22:18Z to 2026-11-03T04:57Z, 473,108 distinct versions; every reported
+version has a verdict) and on `vm-day1`:
+
+- **Downgrade.** It fired on 787 live versions and was the only reason for reporting 89 (88
+  benign, 1 inconclusive; 27 were one `@knapsack/*` release, a maintainer publishing by hand).
+  All 149 malicious `vm-day1` samples it fires on have a co-signal (42 an install hook added or
+  changed, 107 a new dependency) and none has `gitHead`. Requiring a co-signal leaves 15 of the
+  89; no malicious sample, live or `vm-day1`, is lost. The rule's only unique catch in the eval,
+  `axios@1.14.1`, keeps MEDIUM through its new dependency. The rule now evaluates its co-signal
+  rules itself (`DOWNGRADE_COSIGNALS`) and names them in the explanation. **Known gap:** a
+  stolen token used for a code-only release that keeps `gitHead` is no longer reported by the
+  downgrade alone; Stages 2-3 must see its code.
+- **Non-registry.** A protocol npm can't fetch (anything but `git`, `git+ssh`, `git+http(s)`,
+  `git+file`, `ssh`, `http(s)`, `github`, `gitlab`, `bitbucket`, `gist`, `file`, `link`) fails
+  the install and downloads nothing, like `workspace:`: Backstage's `backstage:^` was 6 benign
+  reports (`@ai-crew-suite/*`). The rule still carries 4 live malicious versions alone
+  (`dependencykfeg`, `claims-acct-unlock`, `claims-ac1`), so it stays MEDIUM. A dependency on the
+  package's own repository still fires: the `@opensearch-project/opensearch` and `@antv/*`
+  attacks pulled their payload from a commit there.
+
+`npm.version.suspicious` v3 (2026-11-08): a major that is itself a date, `YYYYMM` or
+`YYYYMMDD` with a real month and day and a year from 1990 to the year after `as_of`
+(`202610.31.30847`, `20261028.0.0`), is not a dependency-confusion number. In the 4-day run
+`20261107T163310Z-npm`, 314 of 1,438 reported versions were `@haybarn/*` new packages
+(`query-farm`) with such versions, reported by this rule alone; with v3 that run reports 316
+fewer (2 more: `@tmlmobilidade/go-utils-offer`, an `@ohos-ports` prerelease), and the 87 runs
+above 4 fewer (all benign verdicts: `@nstarkman/figpress*`, `@leadfund/lead-mcp`, `coolbot`).
+No DataDog sample and none of the 53,389 versions the OSV set (`20261108T151126Z`) lists
+explicitly as malware has a calendar-shaped major; its 6- and 8-digit majors are `999999`,
+`99999999`, `200000`, `100000` and `999991`, none a date.
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10

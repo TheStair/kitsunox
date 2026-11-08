@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Final
 
 from kitsunox.core.models import Change, Evidence, EvidenceKind, Finding, Severity
-from kitsunox.core.rules import BaseRule, RuleContext
+from kitsunox.core.rules import BaseRule, Rule, RuleContext
 from kitsunox.ecosystems.npm import semver
 
 # Lifecycle scripts npm runs when a package is installed from the registry. `prepare` is left
@@ -139,6 +139,35 @@ _REGISTRY_TARBALL: Final = re.compile(
     r"https://registry\.npmjs\.org/(?P<name>(?:@[^/]+/)?[^/]+)/-/[^/]+\.tgz"
 )
 _LOCAL: Final = ("file:", "link:")
+# Protocols a dependency spec can name that make npm fetch something (npm-package-arg's git,
+# hosted-git and remote types, and local paths). Any other protocol (`backstage:^`,
+# `portal:`, `patch:`) is an "Unsupported URL Type" to npm: the install fails, nothing is
+# fetched.
+_FETCHED_PROTOCOLS: Final = frozenset(
+    {
+        "git",
+        "git+ssh",
+        "git+http",
+        "git+https",
+        "git+file",
+        "http",
+        "https",
+        "github",
+        "gitlab",
+        "bitbucket",
+        "gist",
+        "ssh",
+        "file",
+        "link",
+    }
+)
+
+
+def fetches_nothing(spec: str) -> bool:
+    """The spec names a protocol npm can't fetch from: installing it fails without a download.
+    A spec without a protocol (`user/repo` shorthand) is not one of these."""
+    protocol = _PROTOCOL.match(spec.strip())
+    return protocol is not None and protocol.group(0)[:-1].lower() not in _FETCHED_PROTOCOLS
 
 
 class NonRegistryDependency(BaseRule):
@@ -150,10 +179,17 @@ class NonRegistryDependency(BaseRule):
     (`@feedmepos/mf-connect` pins `https://registry.npmjs.org/@feedmepos/mf-upselling/-/...`).
     A local path (`file:`, `link:`) fetches nothing and is LOW, weight 1: it fails to install
     outside its monorepo (`@atairo/qixi`: `file:../../frontend/...`). On `vm-day1` the rule's
-    malicious samples all used `github:` or `http(s):` URLs."""
+    malicious samples all used `github:` or `http(s):` URLs.
+
+    v3 (2026-11-08): a protocol npm can't fetch (`backstage:^`, Backstage's yarn plugin) is not
+    a finding: like `workspace:` and `catalog:`, the install fails and nothing is downloaded.
+    It was 6 of the 71 live versions this rule alone reported (`@ai-crew-suite/*`, all
+    benign); no malicious sample uses one. A dependency on a commit in the package's *own*
+    repository still fires: that is how the `@opensearch-project/opensearch` and `@antv/*`
+    attacks pulled their payload (`docs/proposals/stage1-precision.md`)."""
 
     id = "npm.dependency.non-registry"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -163,7 +199,7 @@ class NonRegistryDependency(BaseRule):
         old = runtime_dependencies(change.previous.manifest) if change.previous else {}
         findings = []
         for name, spec in sorted(new.items()):
-            if old.get(name) == spec or is_registry_spec(spec):
+            if old.get(name) == spec or is_registry_spec(spec) or fetches_nothing(spec):
                 continue
             tarball = _REGISTRY_TARBALL.fullmatch(spec.strip())
             if tarball is not None and tarball["name"] == name:
@@ -224,10 +260,19 @@ class PublishMethodDowngrade(BaseRule):
     this rule alone (2026-10-31) were prereleases (the 9 reviewed, all benign). On `vm-day1` it
     fires on 149 malicious samples, none a prerelease, so none is lost. The rule can't see
     dist-tags, so a prerelease an attacker also tags `latest` is LOW here; what it runs still
-    meets the install and content rules."""
+    meets the install and content rules.
+
+    v4 (2026-11-08): full weight only with a co-signal, another Stage 1 rule firing on the same
+    change (`DOWNGRADE_COSIGNALS`: what gets installed or who publishes changed too), or, for a
+    watched package, a dropped `gitHead`. Otherwise one step lower: MEDIUM weight 3 (weak
+    alone) when watched, LOW weight 1 when not. All 149 malicious `vm-day1` samples have a
+    co-signal (42 an install hook, 107 a new dependency); of the 89 live versions reported
+    only because of this rule (Oct 28 - Nov 3), 74 had none, all benign or inconclusive
+    (27 were one `@knapsack/*` release). See `docs/proposals/stage1-precision.md`. A stolen
+    token used for a code-only change that keeps `gitHead` now needs Stages 2-3 to see it."""
 
     id = "npm.publish-method.downgrade"
-    version = 3
+    version = 4
     severity = Severity.HIGH
     weight = 5.0
     title = "Published without the CI provenance the previous release had"
@@ -242,17 +287,29 @@ class PublishMethodDowngrade(BaseRule):
             return []
         before = f"trusted_publisher={old.trusted_publisher}, provenance={old.has_provenance}"
         parsed = semver.parse(change.new.ref.version)
+        watched = _watched(change)
+        cosignals = [rule.id for rule in DOWNGRADE_COSIGNALS if rule.evaluate(change, ctx)]
+        git_head_dropped = old.git_head is not None and new.git_head is None
+        severity: Severity | None
+        weight: float | None
         if parsed is not None and parsed.is_prerelease:
             severity, weight = Severity.LOW, 1.0
-        elif _watched(change):
-            severity, weight = None, None
+            note = ""
+        elif cosignals or (watched and git_head_dropped):
+            severity, weight = (None, None) if watched else (Severity.MEDIUM, 3.0)
+            note = (
+                f" With: {', '.join(cosignals)}."
+                if cosignals
+                else f" No git commit recorded, where {change.previous.ref.version} had one."
+            )
         else:
-            severity, weight = Severity.MEDIUM, 3.0
+            severity, weight = (Severity.MEDIUM, 3.0) if watched else (Severity.LOW, 1.0)
+            note = " Nothing else about what gets installed, or who publishes it, changed."
         return [
             self.finding(
                 f"{change.previous.ref.version} was published from CI "
                 f"({old.trusted_publisher or 'provenance'}); this release was published by "
-                f"`{new.publisher}` without it.",
+                f"`{new.publisher}` without it.{note}",
                 Evidence(
                     kind=EvidenceKind.METADATA,
                     path="publish",
@@ -322,15 +379,40 @@ class MaintainerAdded(BaseRule):
         ]
 
 
+def calendar_major(major: int, as_of_year: int) -> bool:
+    """`major` reads as `YYYYMM` or `YYYYMMDD`: a real month (and day), and a year from 1990 to
+    the year after `as_of_year`. `999999` and `99999999` are not dates."""
+    digits = str(major)
+    if len(digits) not in (6, 8):
+        return False
+    year, month = int(digits[:4]), int(digits[4:6])
+    day = int(digits[6:]) if len(digits) == 8 else 1
+    if not 1990 <= year <= as_of_year + 1:
+        return False
+    try:
+        date(year, month, day)
+    except ValueError:
+        return False
+    return True
+
+
 class SuspiciousVersion(BaseRule):
     """Very high major versions (`99.9.9`, `999.0.0`) are the signature of dependency-confusion
     attacks: they outrank any internal package of the same name.
 
     v2: calendar versions (`2026.10.4`: a year-like major and a month-like minor) are exempt.
-    They were most of this rule's benign hits on 2026-10-27."""
+    They were most of this rule's benign hits on 2026-10-27.
+
+    v3 (2026-11-08): a major that is itself a date, `YYYYMM` or `YYYYMMDD` with a real month
+    and day and a year from 1990 to the year after `as_of` (`202610.31.30847`,
+    `20261028.0.0`), is exempt too (`calendar_major`). In the 4-day run of 2026-11-07, 314 of
+    1,438 reported versions were `@haybarn/*` new packages with such versions, reported by
+    this rule alone. No DataDog sample and none of the 53,389 versions OSV lists explicitly as
+    malware has a calendar-shaped major: confusion attacks use `99`, `999`, `9999`,
+    `99999999` (`docs/proposals/stage1-precision.md`)."""
 
     id = "npm.version.suspicious"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency-confusion style version number"
@@ -342,6 +424,8 @@ class SuspiciousVersion(BaseRule):
             return []
         if 1990 <= version.major <= 2100 and 1 <= version.minor <= 12:
             return []  # CalVer
+        if calendar_major(version.major, ctx.as_of.year):
+            return []  # the major is a date: YYYYMM or YYYYMMDD
         if change.previous is not None:
             previous = semver.parse(change.previous.ref.version)
             if previous is not None and previous.major >= self.MIN_MAJOR:
@@ -383,6 +467,17 @@ class DormantRevived(BaseRule):
             )
         ]
 
+
+# Stage 1 rules whose firing keeps `npm.publish-method.downgrade` at full weight: the release
+# also changes what gets installed, or who publishes it.
+DOWNGRADE_COSIGNALS: Final[tuple[Rule, ...]] = (
+    InstallHook(),
+    NonRegistryDependency(),
+    DependencyAdded(),
+    MaintainerAdded(),
+    UnfamiliarPublisher(),
+    SuspiciousVersion(),
+)
 
 RULES: Final = (
     InstallHook(),

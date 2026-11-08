@@ -103,6 +103,24 @@ def test_an_unwatched_downgrade_alone_is_not_reported() -> None:
     assert decide([finding("npm.publish-method.downgrade", Severity.HIGH, 5.0)]).forwarded
 
 
+def test_a_watched_downgrade_without_a_cosignal_alone_is_not_reported() -> None:
+    """Downgrade v4 lowers a watched package's downgrade without a co-signal to MEDIUM 3:
+    `WEAK_ALONE` then keeps it from reporting on its own (the `@knapsack/*` 4.110.0 shape)."""
+    assert not decide([finding("npm.publish-method.downgrade", Severity.MEDIUM, 3.0)]).forwarded
+
+
+def test_the_axios_shape_is_still_reported() -> None:
+    """`axios@1.14.1` as `vm-day1` scores it (unwatched): the downgrade keeps MEDIUM 3 because
+    a dependency was added, and the LOWs reach the cap: 3 + 3 = 6, exactly the bar."""
+    findings = [
+        finding("npm.publish-method.downgrade", Severity.MEDIUM, 3.0),
+        finding("npm.dependency.added", Severity.LOW, 1.0),
+        finding("npm.provenance.githead-dropped", Severity.LOW, 2.0),
+        finding("npm.dependency.name-embeds-popular", Severity.LOW, 1.0),
+    ]
+    assert decide(findings).forwarded
+
+
 def test_capability_gains_and_webhook_placeholders_alone_are_not_reported() -> None:
     for rule_id in ("code.capability-gained", "static.webhook-placeholder"):
         weak = finding(rule_id, Severity.MEDIUM, 3.0)

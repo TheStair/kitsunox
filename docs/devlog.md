@@ -74,6 +74,63 @@ whole file: ~16 GB (the proposal's estimate) on the 30 GB VM, next to the tick's
   2026-11-09 16:33Z, so that replay can't be checked later.
 - Steps 3-7 of the proposal, each with the owner's go-ahead.
 
+## 2026-11-08: Precision of four rules (downgrade, non-registry, version, revived)
+
+**Stage(s):** Stage 1 rules (`npm.publish-method.downgrade` v4, `npm.dependency.non-registry`
+v3, `npm.version.suspicious` v3); Stage 4 `npm.combination.revived-with-new-dependency` v2
+(separate commit)
+**Context:** The queue review (entry below) found rules that reported only benign versions
+when nothing else fired. The owner approved precision changes that the numbers support, with
+recall not allowed to drop. Proposal and measurements:
+[proposals/stage1-precision.md](proposals/stage1-precision.md).
+
+### Decisions
+- **Downgrade needs a co-signal.** Full weight (HIGH watched, MEDIUM 3 otherwise) only when
+  another Stage 1 rule fires on the same change (install hook, non-registry or added
+  dependency, maintainer added, unfamiliar publisher, suspicious version) or a watched package
+  also dropped `gitHead`; otherwise one step lower. Chosen over lowering bursts (93% of
+  malicious downgrades are bursts, 55% of benign), "the account published by hand before"
+  (loses `axios@1.14.1` and five `@nx/*`), and making it LOW when unwatched (loses `axios`).
+  The `gitHead` hedge for watched packages keeps 2 more benign reports than the plain
+  co-signal version; all 149 malicious downgrades lack `gitHead`.
+- **Non-registry: protocols npm can't fetch don't count** (`backstage:^`). Not adopted: "LOW
+  for the package's own GitHub owner", which loses `@opensearch-project/opensearch` 3.7.0 and
+  3.8.0, whose payload came from a commit in their own repository.
+- **Version: a date-shaped major is not suspicious** (`YYYYMM`/`YYYYMMDD`, real month and day,
+  year 1990 to as_of + 1). Asked for after the 4-day run: 314 of its 1,438 reports were
+  `@haybarn/*` with versions like `202610.31.30847`.
+- **Revived: LOW when the same account comes back with no maintainer added** (Stage 4). Not
+  adopted: weak-alone, a two-year gap, or own-scope/popular dependencies: each loses
+  `xrpl@2.14.2`.
+
+### Challenges
+- **The eval can't exercise the watched branch.** The DataDog set was imported without a
+  watchlist, so no malicious sample is watched in `vm-day1`. Every check was run twice, the
+  second time with popularity from the 2026-10-29 watchlist (60 of the 149 downgrades watched).
+  - **Resolution:** both pass; re-importing with a watchlist is an open item for the owner.
+- **Simulation vs code.** The proposal's numbers came from a simulation over stored findings.
+  - **Resolution:** re-measured with the implemented rules: the old rule classes (from
+    `3fa5833`) and the new ones recomputed on every affected live version and re-decided with
+    `correlate.decide`; the unmodified `pipeline+4` predictor on the 254 affected `vm-day1`
+    samples.
+  - **Why it worked:** identical to the simulation for the three proposed changes (1,372 →
+    1,218 live).
+
+### Evaluation snapshot
+- Recall on known-bad: 254 / 254 affected `vm-day1` samples still reported (so all cells
+  unchanged), with and without watchlist popularity; 41 / 41 live malicious verdicts still
+  reported. `axios@1.14.1` still reports at exactly score 6 when unwatched.
+- False positives, live (87 runs, Oct 28 - Nov 3, every report reviewed): 1,371 → 1,213
+  reported versions (1,011 → 868 packages): 157 benign and 1 inconclusive
+  (`@fabricorg/cli@0.7.6`, unpublished by its owner before capture) fewer. 4-day run of Nov 7
+  (mostly unreviewed): 1,438 → 994 reported, 316 of them through the version change.
+
+### Open questions / next steps
+- Known gaps, accepted: a stolen token used for a code-only release that keeps `gitHead`, and a
+  dormant account hijacked as itself, now need their content to be seen (Stages 2-3).
+- Not done here (integrator to raise with the owner): one queue entry per burst; re-importing
+  the DataDog set with a watchlist.
+
 ## 2026-11-08: Stage 4 filled the disk on the 4-day run; a per-run comparison budget
 
 **Stage(s):** Stage 4 correlation (repository comparison), collect

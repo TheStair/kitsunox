@@ -1,9 +1,15 @@
 # Proposal: precision of the publish-method, revived and non-registry rules
 
-> **Status:** proposal, measured 2026-11-08, nothing built. The owner approved Stage 1
-> precision changes when the numbers support them, so changes 1 and 3 are written to be built
-> as they stand. Change 2 is a **Stage 4** rule (`npm.combination.revived-with-new-dependency`)
-> and needs its own go-ahead ("one stage at a time").
+> **Status:** implemented 2026-11-08, as proposed with V11 for change 1: Stage 1 changes 1 and 3
+> (`npm.publish-method.downgrade` v4, `npm.dependency.non-registry` v3) plus a later ask,
+> `npm.version.suspicious` v3 (a major that is a date, see
+> [stages/triage.md](../stages/triage.md#rules)), in one commit; Stage 4 change 2
+> (`revived-with-new-dependency` v2) in the next. Re-measured with the implemented rules, not
+> the simulation: live 1,372 → 1,218 reported versions without the `version.suspicious`
+> change, 1,371 → 1,213 with it (157 benign and 1 inconclusive fewer; one stale stored
+> finding accounts for 1,372 vs 1,371); 41 / 41 live malicious and 254 / 254 `vm-day1`
+> samples still reported, also with popularity from the watchlist. Corrections to the text
+> below: the live set is 87 runs, not 88, and 473,108 distinct versions (495,833 records).
 > **Builds on:** the queue review of 2026-11-08 ([devlog](../devlog.md)), decision
 > [0007](../decisions/0007-datadog-samples-and-follow-on-releases.md) (eval set),
 > [stages/triage.md](../stages/triage.md), [stages/correlate.md](../stages/correlate.md).

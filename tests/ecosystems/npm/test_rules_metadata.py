@@ -25,6 +25,7 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     PublishMethodDowngrade,
     SuspiciousVersion,
     UnfamiliarPublisher,
+    calendar_major,
 )
 from kitsunox.stages.triage import MIN_GROWTH_BYTES, batch_forwarded, code_route, triage
 
@@ -112,6 +113,16 @@ def test_long_snippets_are_truncated() -> None:
         ("https://registry.npmjs.org/dep/-/dep-1.0.0.tgz", False),  # the registry's own
         ("https://registry.npmjs.org/other/-/other-1.0.0.tgz", True),  # another package
         ("https://registry.npmjs.org.evil.example/dep/-/dep-1.0.0.tgz", True),
+        # v3: protocols npm can't fetch fail the install and download nothing
+        ("backstage:^", False),
+        ("portal:../x", False),
+        ("patch:dep@1.0.0#./fix.patch", False),
+        ("gist:abc123", True),
+        ("bitbucket:x/y", True),
+        ("gitlab:x/y", True),
+        ("git+ssh://git@github.com/x/y.git", True),
+        ("GIT+HTTPS://github.com/x/y.git", True),
+        ("@scope/dep@1.0.0", True),  # no protocol: treated as before
     ],
 )
 def test_non_registry_dependency(spec: str, fires: bool) -> None:
@@ -128,6 +139,15 @@ def test_a_scoped_registry_tarball_is_the_registry_and_a_local_path_is_low() -> 
     (finding,) = NonRegistryDependency().evaluate(change(local, snap("1.0.0")), CTX)
     assert (finding.severity, finding.weight) == (Severity.LOW, 1.0)
     assert finding.explanation.endswith("A local path: nothing is fetched.")
+
+
+def test_a_dependency_on_the_packages_own_repository_commit_still_fires() -> None:
+    """`@opensearch-project/opensearch@3.7.0` (DataDog) pulled its payload from a commit in its
+    own repository; "same owner" is the attack, not an excuse (proposal, N2 rejected)."""
+    spec = "github:opensearch-project/opensearch-js#d446803f4c3bc116263faa3499a1d3f95b2825de"
+    new = snap("3.7.0", {"dependencies": {"@opensearch/setup": spec}})
+    (finding,) = NonRegistryDependency().evaluate(change(new, snap("3.6.0")), CTX)
+    assert (finding.severity, finding.weight) == (Severity.MEDIUM, 3.0)
 
 
 def test_unchanged_non_registry_dependency_is_not_new() -> None:
@@ -161,11 +181,83 @@ def test_publish_method_downgrade(old: dict[str, Any], new: dict[str, Any], fire
 
 
 def test_a_downgrade_is_high_only_for_a_watched_package() -> None:
-    new, old = snap("2", publisher="mallory"), snap("1", trusted_publisher="github")
+    new = snap("2", {"dependencies": {"x": "^1"}}, publisher="mallory")
+    old = snap("1", trusted_publisher="github")
     (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
     (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
     assert (watched.severity, watched.weight) == (Severity.HIGH, 5.0)
     assert (small.severity, small.weight) == (Severity.MEDIUM, 3.0)
+
+
+def test_a_downgrade_without_a_cosignal_is_one_step_lower() -> None:
+    """v4: the `@knapsack/*` 4.110.0 shape, a maintainer publishing by hand with nothing else
+    changed: 27 watched versions reported HIGH alone on 2026-11-03, all benign."""
+    new = snap("4.110.0", publisher="jfrenette", maintainers=("jfrenette",))
+    old = snap(
+        "4.109.0",
+        publisher="GitHub Actions",
+        trusted_publisher="github",
+        maintainers=("jfrenette",),
+    )
+    (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
+    (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
+    assert (watched.severity, watched.weight) == (Severity.MEDIUM, 3.0)
+    assert (small.severity, small.weight) == (Severity.LOW, 1.0)
+    assert watched.explanation.endswith("or who publishes it, changed.")
+
+
+@pytest.mark.parametrize(
+    ("manifests", "publish", "version", "cosignal"),
+    [
+        # axios@1.14.1: `plain-crypto-js` added
+        (
+            ({}, {"dependencies": {"plain-crypto-js": "^4.2.1"}}),
+            {},
+            "2.0.0",
+            "npm.dependency.added",
+        ),
+        # @nx/*, @ctrl/*: an install hook added
+        (({}, {"scripts": {"postinstall": "node telemetry.js"}}), {}, "2.0.0", "npm.install-hook"),
+        (
+            ({"dependencies": {"d": "^1"}}, {"dependencies": {"d": "github:x/y"}}),
+            {},
+            "2.0.0",
+            "npm.dependency.non-registry",
+        ),
+        (({}, {}), {"maintainers": ("alice", "mallory")}, "2.0.0", "npm.maintainer.added"),
+        (({}, {}), {"publisher": "mallory"}, "2.0.0", "npm.publisher.unfamiliar"),
+        (({}, {}), {}, "99.0.0", "npm.version.suspicious"),
+    ],
+)
+def test_a_downgrade_with_a_cosignal_keeps_its_weight(
+    manifests: tuple[dict[str, Any], dict[str, Any]],
+    publish: dict[str, Any],
+    version: str,
+    cosignal: str,
+) -> None:
+    old = snap("1.0.0", manifests[0], trusted_publisher="github", maintainers=("alice",))
+    fields = {"publisher": "alice", "maintainers": ("alice",)} | publish
+    new = snap(version, manifests[1], **fields)
+    (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
+    (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
+    assert (watched.severity, watched.weight) == (Severity.HIGH, 5.0)
+    assert (small.severity, small.weight) == (Severity.MEDIUM, 3.0)
+    assert f"With: {cosignal}." in small.explanation
+
+
+def test_a_watched_downgrade_that_drops_git_head_stays_high() -> None:
+    """v4: every malicious downgrade in `vm-day1` (149) lacks `gitHead`; for a watched package a
+    dropped commit keeps the full weight. Unwatched, the drop alone is not enough."""
+    old = snap("1", trusted_publisher="github", git_head="46bee3dea75e")
+    new = snap("2")
+    (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
+    (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
+    assert (watched.severity, watched.weight) == (Severity.HIGH, 5.0)
+    assert "No git commit recorded" in watched.explanation
+    assert (small.severity, small.weight) == (Severity.LOW, 1.0)
+    kept = snap("2", git_head="0b82acbc69f6")
+    (still,) = PublishMethodDowngrade().evaluate(change(kept, old, watched=True), CTX)
+    assert (still.severity, still.weight) == (Severity.MEDIUM, 3.0)
 
 
 def test_a_downgrade_on_a_prerelease_is_low() -> None:
@@ -291,3 +383,33 @@ def test_batches_include_unflagged_siblings_and_drop_quiet_packages() -> None:
     (batch,) = batch_forwarded([sibling, quiet, flagged])
     assert batch.forwarded and len(batch.versions) == 2
     assert not sibling.history[-1].forwarded  # carried along by the flagged version
+
+
+@pytest.mark.parametrize(
+    ("version", "fires"),
+    [
+        ("202610.31.30847", False),  # @haybarn/*: YYYYMM major
+        ("20261028.0.0", False),  # @nstarkman/figpress: YYYYMMDD
+        ("199001.0.0", False),
+        ("202713.0.0", True),  # no month 13
+        ("20260231.0.0", True),  # no 31 February
+        ("202801.0.0", True),  # more than a year after as_of (2026)
+        ("198912.0.0", True),  # before 1990
+        ("999999.0.0", True),
+        ("99999999.0.0", True),  # OSV's malware versions: 24 of them
+        ("200000.0.0", True),  # month 00
+        ("100000.0.0", True),
+        ("9999.0.0", True),
+        ("99.9.9", True),
+    ],
+)
+def test_a_calendar_shaped_major_is_not_suspicious(version: str, fires: bool) -> None:
+    """v3: majors that are dates; the dependency-confusion numbers still fire."""
+    assert bool(SuspiciousVersion().evaluate(change(snap(version)), CTX)) is fires
+
+
+def test_calendar_major_needs_six_or_eight_digits() -> None:
+    assert not calendar_major(2026, 2026)
+    assert not calendar_major(2026100, 2026)
+    assert calendar_major(202612, 2026)
+    assert calendar_major(202701, 2026)
