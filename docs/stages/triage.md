@@ -78,8 +78,8 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
 | `npm.publish-method.downgrade` (v4): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version), or a watched package that also dropped `gitHead`: HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
-| `npm.dependency.non-registry` (v3): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
-| `npm.version.suspicious`: major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
+| `npm.dependency.non-registry` (v4): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
+| `npm.version.suspicious` (v4): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
 | `npm.dependency.added` | LOW | | | | |
 | `npm.maintainer.added` | LOW | | | | |
@@ -125,6 +125,36 @@ above 4 fewer (all benign verdicts: `@nstarkman/figpress*`, `@leadfund/lead-mcp`
 No DataDog sample and none of the 53,389 versions the OSV set (`20261108T151126Z`) lists
 explicitly as malware has a calendar-shaped major; its 6- and 8-digit majors are `999999`,
 `99999999`, `200000`, `100000` and `999991`, none a date.
+
+`npm.version.suspicious` v4 and `npm.dependency.non-registry` v4 (2026-11-08,
+[proposal round 2](../proposals/precision-round2.md), F5 and F6b), measured with the
+implemented rules on the reviewed live reports (every latest verdict with rank > 0, re-decided
+with the other stored findings, as in round 1):
+
+- **Calendar versions** (`calendar_version`): a year-like major (1990 to the year after
+  `as_of`) whose minor is a real month-day `MDD`/`MMDD` (`2026.706.0`, `2026.1107.0`) or is 0
+  in `as_of`'s own year (`2026.0.1` in 2026), and a `YYMM` major (`2611.5.1`: 20 ≤ YY ≤ the
+  next year's, a real month). **Narrower than the proposal**, which exempted a minor of 0 in
+  any year: checked against the OSV set (`20261108T151126Z`, 53,389 malware versions), that
+  shape exempts 15 of them, dependency-confusion probes such as `2000.0.0`, `2000.0.1`,
+  `1999.0.1`, `2001.0.0` and `amazonui@2026.0.1` (published 2025). As implemented, with each
+  record's publication year as `as_of`, it exempts none; the month-day and `YYMM` shapes
+  exempt none either. The narrowing keeps 3 of the 4 live benign `YYYY.0` reports exempt
+  (`spain-holidays@2027.0.0`, published in 2026, stays reported). The remaining reports are
+  researchers' `99.x` placeholders. A `YYMM` major is at most 2712 today, far below the `9999`
+  and up that confusion attacks use. Live: 46 fewer reports among the proposal's 3,032
+  reported versions (47 simulated, less `spain-holidays`), all benign, one package each
+  (`@4fu/arbor-*`, `@burdenoff/*`, `@runstructure/*`, `@beehexa/*`); 68 among all 3,211 with a
+  verdict on 2026-11-08, all benign. `vm-day1`: the 6 malicious samples at risk (reported
+  only if this rule is MEDIUM) are all still reported by `pipeline+4`.
+- **SheetJS's CDN.** SheetJS left the npm registry and publishes `xlsx` only on
+  `https://cdn.sheetjs.com/` (`xlsx-0.20.3/xlsx-0.20.3.tgz`). A spec under that exact origin is
+  LOW, weight 1 (`VENDOR_REGISTRIES`, one literal; `https://cdn.sheetjs.com.evil.example/` is
+  not it). 50 fewer reports on the 3,032 (11 packages), 53 on the 3,211 (13), all benign; the
+  15 `vm-day1` malicious samples at risk through this rule are all still reported. Other hosts
+  (`pkg.pr.new` previews, vendors' own CDNs) are each an owner decision; a dependency on the
+  package's own GitHub repository still fires (F6a, rejected again: it loses
+  `@opensearch-project/opensearch` 3.7.0 and 3.8.0).
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10

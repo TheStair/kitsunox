@@ -139,6 +139,11 @@ _REGISTRY_TARBALL: Final = re.compile(
     r"https://registry\.npmjs\.org/(?P<name>(?:@[^/]+/)?[^/]+)/-/[^/]+\.tgz"
 )
 _LOCAL: Final = ("file:", "link:")
+# Origins a vendor that left the npm registry distributes its own packages from: SheetJS
+# publishes `xlsx` only on its CDN. The trailing `/` keeps the host exact
+# (`https://cdn.sheetjs.com.evil.example/` is not it).
+VENDOR_REGISTRIES: Final = ("https://cdn.sheetjs.com/",)
+VENDOR_NOTE: Final = " The vendor's own registry: it publishes the package only there."
 # Protocols a dependency spec can name that make npm fetch something (npm-package-arg's git,
 # hosted-git and remote types, and local paths). Any other protocol (`backstage:^`,
 # `portal:`, `patch:`) is an "Unsupported URL Type" to npm: the install fails, nothing is
@@ -186,10 +191,17 @@ class NonRegistryDependency(BaseRule):
     It was 6 of the 71 live versions this rule alone reported (`@ai-crew-suite/*`, all
     benign); no malicious sample uses one. A dependency on a commit in the package's *own*
     repository still fires: that is how the `@opensearch-project/opensearch` and `@antv/*`
-    attacks pulled their payload (`docs/proposals/stage1-precision.md`)."""
+    attacks pulled their payload (`docs/proposals/stage1-precision.md`).
+
+    v4 (2026-11-08): a tarball on SheetJS's own CDN (`VENDOR_REGISTRIES`) is LOW, weight 1.
+    SheetJS left the npm registry and distributes `xlsx` only there
+    (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`): 50 benign live reports (11
+    packages), no positive, and none of the rule's 15 at-risk `vm-day1` malicious samples uses
+    it. One literal origin, not a pattern; other vendors' hosts are each an owner decision
+    (`docs/proposals/precision-round2.md`, F6b)."""
 
     id = "npm.dependency.non-registry"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -205,13 +217,15 @@ class NonRegistryDependency(BaseRule):
             if tarball is not None and tarball["name"] == name:
                 continue
             local = spec.strip().startswith(_LOCAL)
+            vendor = spec.strip().startswith(VENDOR_REGISTRIES)
             findings.append(
                 self.finding(
                     f"Dependency `{name}` comes from `{snippet(spec)}`."
-                    + (" A local path: nothing is fetched." if local else ""),
+                    + (" A local path: nothing is fetched." if local else "")
+                    + (VENDOR_NOTE if vendor else ""),
                     _field(f"dependencies.{name}", after=spec, before=old.get(name)),
-                    severity=Severity.LOW if local else None,
-                    weight=1.0 if local else None,
+                    severity=Severity.LOW if local or vendor else None,
+                    weight=1.0 if local or vendor else None,
                 )
             )
         return findings
@@ -396,6 +410,26 @@ def calendar_major(major: int, as_of_year: int) -> bool:
     return True
 
 
+def calendar_version(major: int, minor: int, as_of_year: int) -> bool:
+    """`major.minor` reads as a calendar version the v2 test misses: a year-like major (1990 to
+    the year after `as_of_year`) whose minor is a month-day `MDD`/`MMDD` (`2026.706.0`,
+    `2026.1107.0`), or is 0 in that very year (`2026.0.1` in 2026), or a `YYMM` major
+    (`2611.5.1`: 20 <= YY <= the year after's, a real month). A month-day must exist (in a
+    leap year: `229` is 29 February). A minor of 0 in another year is a confusion number:
+    OSV lists 15 malware versions such as `2000.0.0`, `1999.0.1`, and `2026.0.1` in 2025."""
+    if 1990 <= major <= as_of_year + 1:
+        if minor == 0:
+            return major == as_of_year
+        month, day = divmod(minor, 100)
+        try:
+            date(2000, month, day)
+        except ValueError:
+            return False
+        return True
+    year, month = divmod(major, 100)
+    return 20 <= year <= (as_of_year + 1) % 100 and 1 <= month <= 12
+
+
 class SuspiciousVersion(BaseRule):
     """Very high major versions (`99.9.9`, `999.0.0`) are the signature of dependency-confusion
     attacks: they outrank any internal package of the same name.
@@ -409,10 +443,18 @@ class SuspiciousVersion(BaseRule):
     1,438 reported versions were `@haybarn/*` new packages with such versions, reported by
     this rule alone. No DataDog sample and none of the 53,389 versions OSV lists explicitly as
     malware has a calendar-shaped major: confusion attacks use `99`, `999`, `9999`,
-    `99999999` (`docs/proposals/stage1-precision.md`)."""
+    `99999999` (`docs/proposals/stage1-precision.md`).
+
+    v4 (2026-11-08): more calendar shapes (`calendar_version`): a year major with a month-day
+    minor (`2026.1107.0`, `2026.706.0`) or, in that year, a minor of 0 (`2026.0.1`), and a
+    `YYMM` major (`2611.5.1`). The proposal's "minor 0 in any year" would also exempt 15 OSV
+    malware versions (`2000.0.0`, `1999.0.1`, `amazonui@2026.0.1` in 2025).
+    47 benign live reports (`@4fu/arbor-*`, `@burdenoff/*`, `@runstructure/*`, `@beehexa/*`),
+    no positive, none of the 6 at-risk `vm-day1` samples. The researchers' `99.x` placeholders
+    are what is left (`docs/proposals/precision-round2.md`, F5)."""
 
     id = "npm.version.suspicious"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency-confusion style version number"
@@ -426,6 +468,8 @@ class SuspiciousVersion(BaseRule):
             return []  # CalVer
         if calendar_major(version.major, ctx.as_of.year):
             return []  # the major is a date: YYYYMM or YYYYMMDD
+        if calendar_version(version.major, version.minor, ctx.as_of.year):
+            return []  # YYYY.0, YYYY.MDD, YYYY.MMDD or a YYMM major
         if change.previous is not None:
             previous = semver.parse(change.previous.ref.version)
             if previous is not None and previous.major >= self.MIN_MAJOR:

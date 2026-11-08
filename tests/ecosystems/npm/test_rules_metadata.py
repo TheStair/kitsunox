@@ -26,6 +26,7 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     SuspiciousVersion,
     UnfamiliarPublisher,
     calendar_major,
+    calendar_version,
 )
 from kitsunox.stages.triage import MIN_GROWTH_BYTES, batch_forwarded, code_route, triage
 
@@ -148,6 +149,27 @@ def test_a_dependency_on_the_packages_own_repository_commit_still_fires() -> Non
     new = snap("3.7.0", {"dependencies": {"@opensearch/setup": spec}})
     (finding,) = NonRegistryDependency().evaluate(change(new, snap("3.6.0")), CTX)
     assert (finding.severity, finding.weight) == (Severity.MEDIUM, 3.0)
+
+
+@pytest.mark.parametrize(
+    ("spec", "low"),
+    [
+        ("https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz", True),
+        ("https://cdn.sheetjs.com/xlsx-latest/xlsx-latest.tgz", True),
+        ("https://cdn.sheetjs.com.evil.example/xlsx-0.20.3.tgz", False),
+        ("http://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz", False),  # not the same origin
+        ("https://evil.example/cdn.sheetjs.com/xlsx.tgz", False),
+        ("github:SheetJS/sheetjs", False),
+    ],
+)
+def test_sheetjs_cdn_is_the_vendors_registry(spec: str, low: bool) -> None:
+    """v4 (F6b): SheetJS distributes `xlsx` only on its own CDN; 50 benign live reports."""
+    new = snap("1.0.1", {"dependencies": {"xlsx": spec}})
+    (finding,) = NonRegistryDependency().evaluate(change(new, snap("1.0.0")), CTX)
+    assert (finding.severity, finding.weight) == (
+        (Severity.LOW, 1.0) if low else (Severity.MEDIUM, 3.0)
+    )
+    assert finding.explanation.endswith("only there.") is low
 
 
 def test_unchanged_non_registry_dependency_is_not_new() -> None:
@@ -406,6 +428,49 @@ def test_batches_include_unflagged_siblings_and_drop_quiet_packages() -> None:
 def test_a_calendar_shaped_major_is_not_suspicious(version: str, fires: bool) -> None:
     """v3: majors that are dates; the dependency-confusion numbers still fire."""
     assert bool(SuspiciousVersion().evaluate(change(snap(version)), CTX)) is fires
+
+
+@pytest.mark.parametrize(
+    ("version", "fires"),
+    [
+        ("2026.1107.0", False),  # YYYY.MMDD (@4fu/arbor-*)
+        ("2026.706.0", False),  # YYYY.MDD
+        ("2026.0.1", False),  # YYYY.0 in that year
+        ("2027.0.0", True),  # ... not the year after (amazonui@2026.0.1 in 2025, OSV)
+        ("2000.0.0", True),  # OSV: 15 malware versions are YYYY.0 of another year
+        ("1999.0.1", True),
+        ("2026.229.0", False),  # 29 February exists in a leap year
+        ("2027.1231.5", False),  # the year after as_of
+        ("2611.5.1", False),  # YYMM (Nov 2026)
+        ("2001.13.0", True),  # year-like major, no month 13
+        ("2026.1132.0", True),  # no 32 November
+        ("2026.1300.0", True),  # no month 13
+        ("2026.231.0", True),  # no 31 February
+        ("2026.13.0", True),
+        ("2028.0.0", True),  # more than a year after as_of (2026)
+        ("2613.0.0", True),  # YYMM: no month 13
+        ("2801.0.0", True),  # YYMM: 2028 is more than a year after as_of
+        ("1912.0.0", True),  # YYMM: before 2020
+        ("9912.0.0", True),
+        ("9999.0.0", True),
+        ("999.0.0", True),
+        ("99.0.0", True),
+    ],
+)
+def test_more_calendar_shapes_are_not_suspicious(version: str, fires: bool) -> None:
+    """v4 (F5): year majors with a 0 or month-day minor, and YYMM majors; confusion numbers
+    (`99`, `999`, `9999` and up) still fire."""
+    assert bool(SuspiciousVersion().evaluate(change(snap(version)), CTX)) is fires
+
+
+def test_calendar_version_bounds() -> None:
+    assert calendar_version(1990, 0, 1990)
+    assert not calendar_version(1990, 0, 2026)
+    assert calendar_version(1990, 101, 2026)
+    assert not calendar_version(1989, 101, 2026)
+    assert not calendar_version(2001, 0, 2026)  # also YYMM-shaped; a year first
+    assert calendar_version(2701, 0, 2026)  # YYMM, January of the year after
+    assert not calendar_version(2001, 1300, 2026)
 
 
 def test_calendar_major_needs_six_or_eight_digits() -> None:
