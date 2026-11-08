@@ -71,9 +71,15 @@ primary truth, so the rules reviewers apply must be written down.
 - **A disclosure that doesn't exist is no disclosure (the owner, 2026-11-08).** Code comments
   that claim a README or docs mention which isn't there count as hidden: malicious
   (`@leonoremods/baileys@1.10.1`, `@dancihuy/baileys@0.0.1`, 4-day run of 2026-11-07).
-- **Beacon-only probes (reviewer interpretation, 2026-11-08, for the owner to confirm).** An
-  install-time request to the researcher's or attacker's host that carries only a per-install
-  marker (no hostname, no environment) still tells that host the package was installed and
-  from which IP. Reviewers have recorded these as **malicious** with the `probe` tag, as for any
-  other identifying beacon (`lane-m-snackager-*`, whose git dependency `laneh-prepare-probe` also
-  has variants that steal GCP and AWS credentials). A probe that only acts locally stays benign.
+- **Beacon-only probes (the owner, 2026-11-08).** An install-time request to the researcher's or
+  attacker's host that carries only a marker (no hostname, username, working directory,
+  environment or credentials; DNS lookups of a marker host included) is **inconclusive** with
+  the `probe` tag. Reviewers had first recorded these as malicious; 11 verdicts were changed the
+  same day (`teick`, `lupedsagaces`, `lane-m-snackager-*`, `lane-m2-snackager-probe`,
+  `my-unique-pinger@1.0.0`, `dependencykfeg@2.1.3`, `@mobile-platform/magnetic-components`).
+  Anything identifying, or code fetched and run, stays malicious (`laneh-prepare-probe`'s other
+  commits steal GCP and AWS credentials). A probe that only acts locally stays benign.
+- **Vendor telemetry (the owner, 2026-11-08).** Install-time telemetry sent to the package
+  vendor's own service is **benign** unless it collects secrets or credentials; the verdict
+  note says what is sent (`@ohos-ports/itwcw-package-analytics`, `@wonderwhy-er/desktop-commander`,
+  `signetai`).
