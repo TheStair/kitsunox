@@ -63,8 +63,9 @@ STAGE_ID: Final = "correlate"
 # flagged ones first (`plan_comparisons`). 12: a dependency lookup that returned 404 (`MISSING`)
 # is a finding (`npm.dependency.missing`), no longer only a count. 13: an earlier stage's
 # explanation finding makes the finding it explains LOW (`EXPLAINED`: Stage 3's
-# `npm.install-build-tool` for `npm.install-hook`). Output without the field is 1.
-STAGE_VERSION: Final = 13
+# `npm.install-build-tool` for `npm.install-hook`). 14: Stage 3's `npm.install-explained`
+# (S1-S3 shapes) explains the three install rules. Output without the field is 1.
+STAGE_VERSION: Final = 14
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -286,18 +287,30 @@ def score(findings: Iterable[Finding]) -> float:
     return sum(w for rule, w in weights.items() if rule in above_low) + min(low, LOW_CAP)
 
 
-# Findings an earlier stage's INFO finding explains: rule -> (explaining rule, note). With the
-# explanation present, the rule's MEDIUM and HIGH findings become LOW, weight at most 1, and
-# say why (like Stage 2's "not new" notes), so the score still shows every rule that fired.
-# `npm.install-build-tool` (Stage 3): every install hook only runs a build tool and
-# `binding.gyp` runs no command. 12 benign live reports, no positive; none of the 433
-# `vm-day1` malicious samples reported only through the install rules has such hooks
-# (`docs/proposals/precision-round2.md`, F2).
-EXPLAINED: Final[Mapping[str, tuple[str, str]]] = {
+# Findings an earlier stage's INFO finding explains: rule -> ((explaining rule, note), ...),
+# the first explaining rule present applying. With an explanation present, the rule's MEDIUM
+# and HIGH findings become LOW, weight at most 1, and say why (like Stage 2's "not new" notes),
+# so the score still shows every rule that fired.
+# - `npm.install-build-tool` (Stage 3): every install hook only runs a build tool and
+#   `binding.gyp` runs no command. 12 benign live reports, no positive; none of the 433
+#   `vm-day1` malicious samples reported only through the install rules has such hooks
+#   (`docs/proposals/precision-round2.md`, F2).
+# - `npm.install-explained` (Stage 3, STAGE_VERSION 14): the install code is a platform-binary
+#   launcher, an own-release download with a checksum, or an agent-skill copier whose copied
+#   configuration passes the owner's three guards (S1-S3). It explains the three install
+#   rules, never a content finding (`npm.install-script-obfuscated`, `static.*`,
+#   `known-signature`) or `code.capability-gained`. Measured in `docs/stages/correlate.md`.
+_SHAPE_NOTE: Final = " The install code has an explained shape (npm.install-explained)."
+EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     "npm.install-hook": (
-        "npm.install-build-tool",
-        " Only a build tool runs, and `binding.gyp` runs no command (npm.install-build-tool).",
+        (
+            "npm.install-build-tool",
+            " Only a build tool runs, and `binding.gyp` runs no command (npm.install-build-tool).",
+        ),
+        ("npm.install-explained", _SHAPE_NOTE),
     ),
+    "npm.install-script-changed": (("npm.install-explained", _SHAPE_NOTE),),
+    "npm.install-script-code": (("npm.install-explained", _SHAPE_NOTE),),
 }
 
 
@@ -306,17 +319,16 @@ def explained(findings: Sequence[Finding]) -> tuple[Finding, ...]:
     present = {f.rule_id for f in findings}
     out = []
     for f in findings:
-        explanation = EXPLAINED.get(f.rule_id)
-        if (
-            explanation is not None
-            and explanation[0] in present
-            and f.severity not in (Severity.INFO, Severity.LOW)
-        ):
+        note = next(
+            (n for rule, n in EXPLAINED.get(f.rule_id, ()) if rule in present),
+            None,
+        )
+        if note is not None and f.severity not in (Severity.INFO, Severity.LOW):
             f = f.model_copy(
                 update={
                     "severity": Severity.LOW,
                     "weight": min(f.weight, 1.0),
-                    "explanation": f.explanation + explanation[1],
+                    "explanation": f.explanation + note,
                 }
             )
         out.append(f)

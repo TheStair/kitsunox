@@ -21,6 +21,13 @@
 > their reports came from an unreadable base (over 16 MB), not from the hash order. 0
 > positives are on a commit line, so none can lose a finding; 0 `vm-day1`/DataDog malicious
 > samples are. See [F8](#f8-diff-base-for-commit-hash-prereleases-stage-0-packumentprevious_version--after-the-freeze).
+> **S1-S3 built 2026-11-08** (owner's approval the same day, before the freeze, S3 with the
+> three guards): Stage 3 `npm.install-explained` + `agent.hostile-instructions` in `169499a`,
+> Stage 4 explanation (`STAGE_VERSION` 14) in the commit after. The DataDog check was finished
+> first: **all 433** `vm-day1` samples reported only through install rules, 0 explained. Live,
+> real code on the 3,244 reported verdicts: -85 (S1 36, S2 34, S3 15), all benign, 0 positives
+> lost. Narrowed from the table below: S1 network only to the registry, no `dynamic-require`,
+> nothing new in an update's install code. See [ast.md](../stages/ast.md#explained-install-s1-s3-and-agent-configuration).
 > Owner decisions are in [section 8](#8-owner-questions). Fixes marked **pre-freeze** are small
 > and local enough to build before the rule freeze (2026-11-12 00:00Z); the rest should wait and
 > be validated afterwards on window B's held tarballs.

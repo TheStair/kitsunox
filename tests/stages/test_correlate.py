@@ -230,6 +230,31 @@ def test_a_build_tool_explanation_makes_the_install_hook_low() -> None:
     assert explained([low, tool]) == (low, tool)
 
 
+def test_an_explained_install_makes_the_three_install_rules_low() -> None:
+    """S1-S3: Stage 3's `npm.install-explained` explains `npm.install-hook`,
+    `npm.install-script-changed` and `npm.install-script-code`; never a content finding or
+    `code.capability-gained`."""
+    hook = finding("npm.install-hook", Severity.HIGH, 5.0)
+    changed = finding("npm.install-script-changed", Severity.MEDIUM, 3.0)
+    code = finding("npm.install-script-code", Severity.MEDIUM, 3.0)
+    shape = finding("npm.install-explained", Severity.INFO, 0.0)
+    result = correlate(candidate("1.0.1", hook, changed, code, shape), CTX, [])
+    assert not result.history[-1].forwarded
+    assert [(f.severity, f.weight) for f in result.findings[:3]] == [(Severity.LOW, 1.0)] * 3
+    assert all(f.explanation.endswith("(npm.install-explained).") for f in result.findings[:3])
+    for content in (
+        finding("npm.install-script-obfuscated", Severity.HIGH, 4.0),
+        finding("static.exfil-endpoint", Severity.HIGH, 4.0),
+        finding("agent.hostile-instructions", Severity.MEDIUM, 3.0),
+    ):
+        kept = correlate(candidate("1.0.1", hook, content, shape), CTX, [])
+        assert kept.history[-1].forwarded and kept.findings[1] == content
+    # A build tool's note comes first when both explanations are present.
+    tool = finding("npm.install-build-tool", Severity.INFO, 0.0)
+    both = explained([hook, tool, shape])
+    assert both[0].explanation.endswith("(npm.install-build-tool).")
+
+
 def test_run_reads_every_triaged_version(tmp_path: Path) -> None:
     routed, quiet = candidate("1.0.1"), candidate("2.0.0", name="other")
     analysed = routed.model_copy(update={"findings": (finding("s2", Severity.MEDIUM, 3.0),)})

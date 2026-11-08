@@ -11,6 +11,8 @@
 > [Missing dependencies](#missing-dependencies-npmdependencymissing-stage-version-12));
 > `STAGE_VERSION` 12. An earlier stage's explanation finding makes the finding it explains LOW
 > since the same day (`EXPLAINED`, [Decision and score](#decision-and-score)); `STAGE_VERSION` 13.
+> Stage 3's explained-install shapes (`npm.install-explained`, S1-S3) explain the three install
+> rules since the same day; `STAGE_VERSION` 14.
 
 ## Purpose
 
@@ -333,6 +335,21 @@ doesn't exist yet, and until 2026-11-08 a 404 gave no finding, so every such rel
   versions: 7 fewer reports where the tarball was captured (12 if the 5 without one have no
   `binding.gyp`), all benign; `vm-day1`: nothing lost (none of the 433 samples reported only
   through install rules has build-tool-only hooks).
+- **Explained install** (stage version 14, 2026-11-08): Stage 3's `npm.install-explained`
+  (the install code is a platform-binary launcher, an own-release download with a checksum,
+  or an agent-skill copier whose copied configuration passes the owner's three guards; S1-S3,
+  [ast.md](ast.md#explained-install-s1-s3-and-agent-configuration)) explains
+  `npm.install-hook`, `npm.install-script-changed` and `npm.install-script-code`. `EXPLAINED`
+  maps a rule to its explanations in order (`npm.install-build-tool`'s note comes first for
+  `npm.install-hook`). Never explained: the install code's obfuscation
+  (`npm.install-script-obfuscated`), content findings (`static.*`, `known-signature`),
+  `code.capability-gained`, and Stage 3's `agent.hostile-instructions`, which reports on its
+  own. Live, on the 3,244 reported verdicts
+  (2,107 reported with today's code; the signal computed on the 738 captured tarballs of the
+  1,442 versions with an install finding): 2,107 → 2,022 (-85: S1 36, S2 34, S3 15; 70
+  packages), all benign, 0 malicious, unwanted or unverified lost; precision 4.23% → 4.41%.
+  `vm-day1`: none of the 433 malicious samples reported only through the install rules is
+  explained.
 - **Established repository match** (stage version 9, 2026-11-04): clearing install-code
   MEDIUM findings for a version whose code is exactly an established repository's is built
   but off (`CLEAR_ESTABLISHED`; Repository trust, below).

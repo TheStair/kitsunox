@@ -2,6 +2,75 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Explained install (S1-S3) and agent configuration, built before the freeze
+
+**Stage(s):** Stage 3 AST (`npm.install-explained`, `agent.hostile-instructions`), Stage 4
+correlation (`STAGE_VERSION` 14)
+**Context:** The owner approved building the "explained install" shapes of
+[precision round 2](proposals/precision-round2.md) before the rule freeze, S3 with the three
+guards he added the same day (decision 0015 addendum: AI-agent skills, hooks and settings are
+benign as verdicts, but the rule may only stay quiet when the code proves the plain shape),
+on one hard condition: finish the DataDog check first. The proposal had computed install
+features for only 149 of the 433 `vm-day1` malicious samples reported only through install
+rules ("the encrypted zips decrypt slowly in pure Python"). Commits: Stage 3 `169499a`, then
+Stage 4.
+
+### Decisions
+- **Decrypt with `unzip -p`, member by member, into memory.** The zstd blob is decompressed in
+  memory, the still-encrypted ZipCrypto zip is written to `/dev/shm` for `unzip`, and only the
+  members a rule reads are decrypted, through a pipe into the process (a lazy mapping); nothing
+  is extracted to disk or run. Pure-Python ZipCrypto was the bottleneck; after this, the cost
+  was tree-sitter parsing 4 MB obfuscated install files (the `@redhat-cloud-services/*` wave),
+  cached by content hash in a scratch capability cache.
+- **One INFO signal, three shapes, reusing F2's mechanism.** `npm.install-explained` (Stage 3)
+  and `EXPLAINED` (Stage 4), which now maps a rule to explanations in order, so
+  `npm.install-hook` has two (build tool first). The three install rules become LOW; content
+  findings, `code.capability-gained` and the new hostile-instructions rule never do.
+- **Stricter than the proposal's table, on purpose.** S1's network only to
+  `registry.npmjs.org`; no `dynamic-require` in any shape; for an update nothing new in the
+  install code (the owner: "updates keep the normal diff rules"). Each costs little live and
+  keeps the shapes from being a hiding place.
+- **The guards read the files an agent would read** (`lang/agent_config.py`, ecosystem
+  agnostic; `CodeChange.agent_files` only when the install code names an agent directory):
+  hook and MCP commands must be a constant `echo` or a shipped script with constant arguments,
+  and that script must itself be plain; any allow-list beyond read-only tools, bypass mode or
+  remote MCP server is widening; instructions to hide activity, ignore earlier instructions,
+  switch off safeguards or send credential files away are a MEDIUM finding of their own.
+  Considered and not done: following what the copier actually copies (needs data flow), and
+  allowing scoped `Bash(git ...)` entries (the owner said allow-lists are never explained).
+
+### Challenges
+- **Guard 3 flagged security reviewers.** On the live verdicts the first version fired on
+  `great-cto@3.75.6` (agents that list "Ignore previous instructions" as the attack to catch)
+  and `tesseract-agent@0.12.2-beta.2` ("...ignore earlier instructions, is something to
+  report..., never something to do"), both benign. On all hooked versions of the retained
+  runs it also fired on `@acedatacloud/skills` ("do not tell the user to reconnect") and
+  `@finebi/finebi-cli` (Chinese deployment notes naming `.env.local` and, 200 characters
+  later, a `POST` endpoint).
+  - **Resolution:** quoted phrases, sentences about attacks, negated "ignore"/"disable",
+    "tell the user *to*", CJK sentence ends, and a credential within 80 characters of the
+    sending verb.
+  - **Why it worked:** 0 hostile findings on the 3,244 reported verdicts and 0 on the 3,552 hooked versions with a tarball in the 8 retained runs (`@wowok/skills@3.4.0` and `nameslink` 1.0.5/1.0.6, hits of the first pass, were pruned before they could be read or re-checked);
+    tests pin each case.
+- **`pkill -f` killed my own shell twice** (its pattern was in the command line), losing a
+  half-written patch. Workers are now stopped by PID.
+
+### Evaluation snapshot
+- `vm-day1`, all 433 samples reported only through install rules: 0 explained, 0 hostile
+  (before: 0 of 149 checked). Only `@nx/key@3.2.0` (the nx compromise) has 2+ platform builds;
+  S1 refuses it for `env-all` and network off the registry.
+- Live, 3,244 reported verdicts (2,107 reported with today's code): -85 benign (S1 36, S2 34,
+  S3 15; 70 packages), 0 malicious, unwanted or unverified lost; precision (malicious +
+  unwanted) 4.23% → 4.41%. The guards keep 5 benign S3 candidates reported (allow-lists with
+  `Bash`/`Edit`/`Write`, an `npx` hook, hook commands built in code).
+
+### Open questions / next steps
+- The live numbers cover the 738 versions with a captured tarball of 1,442 with an install
+  finding; with full capture the shapes' share should roughly double. 19 of the 85 are
+  updates whose previous tarball is gone, so the "gained" check could not run for them.
+- Window B's held tarballs: re-measure after the freeze, including the reviewed queue's
+  `agent.hostile-instructions` hits.
+
 ## 2026-11-08: Diff base 5, commit-id prereleases follow their own line (round 2 F8)
 
 **Stage(s):** Stage 0 ingest (`Packument.previous_version`, `DIFF_BASE` 5)
