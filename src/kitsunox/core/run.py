@@ -19,6 +19,14 @@ previous run left. Their window starts `CHAIN_OVERLAP` before the previous run's
 release that reached the feed a little after it was published is not lost between runs. Because
 the feed ranges are contiguous, a chained run's window is covered by construction.
 
+Catching up (decision 0006 addendum 2026-11-08): a chained run reads at most
+`MAX_RUN_FEED_SPAN` of the feed. After a long gap (the machine was off for four days: 1.06M
+sequence numbers, 405,710 changes, 27.6 GB peak in Stage 0 on a 30 GB VM) the gap is split over
+several runs, one per tick, each the size the stages already handle. The feed lists each package
+once, at its latest change, so the slices split the packages between the runs; each slice uses
+the whole gap's window. Until a run reaches the feed head the checkpoint keeps the earlier
+`as_of` (every package is covered up to then), so the next slice's window starts there too.
+
 Network failures (decision 0009): a package skipped because of the network is kept in the
 checkpoint's retry list and fetched again by the next run, over the window it was missed in. A run
 in which more than `MAX_TRANSIENT_FRACTION` of packages failed that way is an outage, not bad
@@ -96,6 +104,10 @@ STAGE_SNAPSHOTS = (STATIC_SNAPSHOT, CORRELATE_SNAPSHOT, SANDBOX_SNAPSHOT)
 CHAIN_OVERLAP = timedelta(minutes=15)
 # A run catches up on a gap this long (the machine was off or offline). Matches retention.
 MAX_CHAIN_GAP = timedelta(days=7)
+# The most of the feed one chained run reads (see "Catching up" above). The four-day gap of
+# 2026-11-07 averaged 0.38 changes per sequence number, so a slice is ~95k changes (Stage 0
+# ~68 KB each in memory: ~6.5 GB); an hourly tick reads ~11k. Measured, not tuned.
+MAX_RUN_FEED_SPAN = 250_000
 MAX_TRANSIENT_FRACTION = 0.2
 MIN_PACKAGES_FOR_DEGRADED = 20
 
@@ -133,6 +145,11 @@ class RunManifest(Persisted):
     feed_start_estimate: datetime | None = None
     window_covered: bool | None = None
     chained_from: str | None = None
+    feed_head: int | None = Field(
+        default=None,
+        description="The feed's head when a default-range run started; a chained run that "
+        "stopped short of it (`cursor_until` < `feed_head`) is one slice of a catch-up.",
+    )
     retried: tuple[RetryItem, ...] = Field(
         default=(), description="Packages carried over from earlier runs' network failures."
     )
@@ -221,6 +238,7 @@ class IngestRequest:
     popularity: PopularityMode = PopularityMode.WATCHLIST
     watchlist_id: str | None = None
     chain: bool = False
+    max_feed_span: int = MAX_RUN_FEED_SPAN
 
 
 def make_run_id(ecosystem: str, as_of: datetime) -> str:
@@ -280,6 +298,7 @@ def record_ingest(
         source, watchlist_id, watchlist_sha = _popularity_source(data, ecosystem, request)
 
         until = request.until if request.until is not None else ecosystem.feed_head()
+        head = until if request.until is None else None
         explicit_since = request.since is not None
         checkpoint = data.read_checkpoint(ecosystem.name)
         if request.since is not None:
@@ -294,6 +313,7 @@ def record_ingest(
         chained_from = _chain_parent(request, checkpoint)
         if chained_from is not None and checkpoint is not None and checkpoint.as_of is not None:
             window = Window(start=checkpoint.as_of - CHAIN_OVERLAP, end=request.as_of)
+            until = min(until, since + request.max_feed_span)
         default_range = not explicit_since and request.until is None
         retry = tuple(
             item
@@ -343,6 +363,7 @@ def record_ingest(
         feed_start_estimate=result.feed_start_estimate,
         window_covered=True if chained_from is not None else result.window_covered,
         chained_from=chained_from,
+        feed_head=head,
         retried=retry,
         transient_skipped=len(transient),
         diff_base=DIFF_BASE,
@@ -358,9 +379,14 @@ def record_ingest(
             )
             for s in transient
         )
+        # A catch-up slice covers the window only for the packages it read: the rest come in
+        # the next slices, so the checkpoint keeps the time everything is covered up to.
+        covered = request.as_of
+        if head is not None and until < head and checkpoint is not None and checkpoint.as_of:
+            covered = checkpoint.as_of
         data.write_checkpoint(
             ecosystem.name,
-            Checkpoint(cursor=until, run_id=run_id, as_of=request.as_of, retry=carry),
+            Checkpoint(cursor=until, run_id=run_id, as_of=covered, retry=carry),
         )
     return manifest
 

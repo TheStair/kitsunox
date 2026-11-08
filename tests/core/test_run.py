@@ -161,6 +161,49 @@ def test_chained_run_continues_where_the_previous_ended(tmp_path: Path, registry
     assert checkpoint == Checkpoint(cursor=200, run_id=second.run_id, as_of=second.as_of)
 
 
+def test_a_long_gap_is_caught_up_in_slices(tmp_path: Path, registry: Router) -> None:
+    """Each chained run reads at most `max_feed_span` of the feed; until one reaches the head,
+    the checkpoint keeps the time every package is covered up to, so each slice's window
+    starts there."""
+    registry.add_json(
+        f"{REPLICATE_URL}/_changes?since=155&limit={FEED_PAGE_LIMIT}",
+        {"results": [{"seq": 160, "id": "gone"}]},
+    )
+    data = DataDir(tmp_path)
+    covered = AS_OF - timedelta(days=3)
+    data.write_checkpoint("npm", Checkpoint(cursor=100, run_id="prev", as_of=covered))
+
+    def slice_at(as_of: datetime) -> RunManifest:
+        request = IngestRequest(as_of=as_of, popularity=NONE, chain=True, max_feed_span=55)
+        return record_ingest(data, NpmEcosystem, request, client=registry.client())
+
+    first = slice_at(AS_OF)
+    assert first.chained_from == "prev"
+    assert (first.cursor_since, first.cursor_until, first.feed_head) == (100, 155, 200)
+    assert first.packages_seen == 1  # kx-fixture (seq 150); "gone" (160) is the next slice's
+    assert first.window.start == covered - CHAIN_OVERLAP
+    assert data.read_checkpoint("npm") == Checkpoint(cursor=155, run_id=first.run_id, as_of=covered)
+
+    second = slice_at(AS_OF + timedelta(hours=1))
+    assert second.chained_from == first.run_id
+    assert (second.cursor_since, second.cursor_until, second.feed_head) == (155, 200, 200)
+    assert second.window.start == covered - CHAIN_OVERLAP
+    checkpoint = data.read_checkpoint("npm")
+    assert checkpoint == Checkpoint(cursor=200, run_id=second.run_id, as_of=second.as_of)
+
+
+def test_only_chained_runs_are_sliced(tmp_path: Path, registry: Router) -> None:
+    data = DataDir(tmp_path)
+    request = IngestRequest(as_of=AS_OF, lookback=100, popularity=NONE, max_feed_span=10)
+    manifest = record_ingest(data, NpmEcosystem, request, client=registry.client())
+    assert (manifest.cursor_since, manifest.cursor_until, manifest.feed_head) == (100, 200, 200)
+    explicit = IngestRequest(
+        as_of=AS_OF + timedelta(hours=1), since=100, until=200, popularity=NONE, chain=True
+    )
+    manifest = record_ingest(data, NpmEcosystem, explicit, client=registry.client())
+    assert manifest.feed_head is None and manifest.cursor_until == 200
+
+
 @pytest.mark.parametrize(
     "checkpoint",
     [

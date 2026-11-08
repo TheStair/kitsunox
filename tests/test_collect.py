@@ -19,7 +19,7 @@ from kitsunox.collect import (
     rescore_run,
     run_stages,
 )
-from kitsunox.core.run import DataDir
+from kitsunox.core.run import MAX_RUN_FEED_SPAN, Checkpoint, DataDir
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL
 from kitsunox.evaluation.labels import LabelSet, label_store
 from kitsunox.util import disk
@@ -77,6 +77,23 @@ def test_ticks_chain_and_prune_once_a_day(tmp_path: Path, registry: Router) -> N
     assert second is not None
     assert second.chained_from == first.run_id
     assert not any(line.startswith("prune") for line in log)  # pruned an hour ago
+
+
+def test_a_catch_up_slice_is_logged(tmp_path: Path, registry: Router) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    head = MAX_RUN_FEED_SPAN + 50_000
+    registry.add_json(f"{REPLICATE_URL}/", {"update_seq": head})
+    data.write_checkpoint(
+        "npm", Checkpoint(cursor=0, run_id="prev", as_of=AS_OF - timedelta(days=3))
+    )
+    log: list[str] = []
+    tick = collect(data, now=AS_OF, log=log.append, clients=registry.client)
+    assert tick.manifest is not None and tick.manifest.cursor_until == MAX_RUN_FEED_SPAN
+    line = next(line for line in log if line.startswith("ingest: run"))
+    assert "catching up (50000 of the feed left for the next ticks)" in line, line
 
 
 def test_failed_refresh_is_logged_and_ingest_still_runs(tmp_path: Path, registry: Router) -> None:

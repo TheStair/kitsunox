@@ -116,3 +116,29 @@ failed and nothing could be freed.
   field and a *Needs attention* entry) and an immediate Discord alert (at most every 6 hours,
   decision 0011) carry it.
 
+## Addendum (2026-11-08): long gaps are caught up in slices
+
+Collection stopped on 2026-11-03 (the disk-full crashes) and the timer was restarted on
+2026-11-07. The first tick chained across the 4-day gap as designed (`MAX_CHAIN_GAP`), and
+read it as one run: 1.06M feed positions, 119,376 packages, 405,710 changes, 2.9 GB of
+`changes.jsonl`. Stage 0 holds a run's changes in memory until it writes them, and peaked at
+**27.6 GB on the 30 GB VM**; triage and Stage 2 hold a run too (17-21 GB on that run). A run
+killed for memory never moves the checkpoint, so every later tick would retry the same run
+and die the same way.
+
+- **A chained run reads at most `MAX_RUN_FEED_SPAN` (250,000) feed positions**
+  (`core/run.py`). The gap's 0.38 changes per position make a slice ~95k changes, the size of
+  the 110k-change runs Stages 1-4 have handled since 2026-10-30; an hourly tick reads ~11k.
+  `collect` does one slice per tick and logs how much of the feed is left.
+- **Why slicing by feed position is safe:** the feed lists each package once, at its latest
+  change (checked on that run's 12 recorded feed pages: 119,379 rows, 119,379 distinct names),
+  so the slices split the packages between runs. Each slice uses the whole gap's window. Until
+  a slice reaches the feed head, the checkpoint keeps the earlier `as_of` (the time every
+  package is covered up to), so the next slice's window starts there too. The manifest records
+  `feed_head`.
+- **Cost:** a package that changes again during the catch-up moves to a later slice and is
+  read again with the whole window, so some versions appear in two runs (the queue counts a
+  version once). A catch-up that takes longer than `MAX_CHAIN_GAP` from the old `as_of` stops
+  chaining, as before.
+- Only chained runs are sliced; `ingest record` with an explicit range or `--lookback` reads
+  what it is asked to.

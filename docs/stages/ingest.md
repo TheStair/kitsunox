@@ -100,7 +100,11 @@ sequenceDiagram
 
 1. **Feed range.** `until` = `--until-seq` or the feed head. `since` = `--since-seq`, else the
    saved checkpoint, else `until − lookback`. Only the default (checkpoint) mode advances the
-   checkpoint.
+   checkpoint. A chained run reads at most `MAX_RUN_FEED_SPAN` (250,000) positions: after a
+   long gap the catch-up is split over several runs, one per `collect` tick, each with the
+   whole gap's window (the checkpoint keeps the earlier `as_of` until a run reaches the feed
+   head, recorded as `feed_head`). See the 2026-11-08 addendum to
+   [0006](../decisions/0006-scheduled-collection-and-retention.md).
 2. **Feed.** `_changes` returns `{seq, id}` only (see
    [decision 0002](../decisions/0002-data-sources.md)). A package appears once, at its latest
    sequence. `_design/` documents are ignored. Paging stops if the feed doesn't advance.
@@ -211,7 +215,8 @@ See also [validation.md](../validation.md) for measured results.
 - **Re-processing across runs.** A package modified for an unrelated reason (dist-tag, deprecate)
   shows up in the feed again, and its in-window versions are emitted again. Chained runs add a
   15-minute overlap on purpose. Datasets dedupe across runs (the earliest run wins); runs
-  themselves don't.
+  themselves don't. A sliced catch-up adds more: a package that changes again during it is read
+  again by a later slice, over the whole gap's window.
 - **Full packuments are large.** Packages with thousands of versions produce multi-MB documents.
   The abbreviated format lacks the per-version `time` map and `_npmUser`, so it can't replace
   them.

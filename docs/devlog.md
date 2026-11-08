@@ -2,6 +2,45 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Collection restarted; a 4-day catch-up nearly ran out of memory; catch-ups are now sliced
+
+**Stage(s):** Stage 0 (ingest), `collect`
+**Context:** The owner restarted the timer on 2026-11-07 after four days off (since the
+2026-11-03 disk-full crashes). The first tick chained across the gap, as designed, into one run.
+
+### What happened
+- 16:33 UTC: the tick rebuilt the watchlist (64,393 packages) and labels (222,873 records),
+  then ingested `20261107T163310Z-npm`: feed (141817767, 142875367], 119,376 packages,
+  **405,710 changes** (2.9 GB `changes.jsonl`), 0 skipped, in 95 minutes.
+- Stage 0 holds a run's changes in memory until it writes them: peak **27.6 GB RSS** on the
+  30 GB VM (`VmHWM`; systemd `MemoryPeak` 28.4 GB), with 2 GB available at the worst sample.
+  Triage of the same run held 17 GB, Stage 2 21 GB.
+- 22:21 UTC: the VM's kernel panicked when the **host's** boot drive filled (the owner's host;
+  the VM disk is preallocated on a separate drive, so not caused by Kitsunox). Nothing was
+  lost: the big run had been written and the checkpoint moved. The next tick (22:27) ingested
+  16,589 changes and resumed the big run's stages.
+
+### Decisions
+- **Slice long catch-ups** ([0006 addendum 2026-11-08](decisions/0006-scheduled-collection-and-retention.md)):
+  a chained run reads at most `MAX_RUN_FEED_SPAN` = 250,000 feed positions (~95k changes at
+  that gap's 0.38 per position), one slice per tick. Alternatives: streaming Stage 0, triage and
+  Stage 2 to disk (three stages at once, and Stage 0 must sort and hash the whole run), or
+  splitting the window by time (the feed has no time index, and a past `as_of` would be pruned
+  at once under 2-day retention). Slicing by position is safe because the feed lists a package
+  once, at its latest change: on that run's 12 recorded feed pages, 119,379 rows were 119,379
+  distinct names. Until a slice reaches the head, the checkpoint keeps the old `as_of`, so every
+  slice's window starts at the gap's start.
+  - **Why it should work:** it bounds each run to the size the stages have handled since
+    2026-10-30. Tests: `test_a_long_gap_is_caught_up_in_slices`,
+    `test_only_chained_runs_are_sliced`, `test_a_catch_up_slice_is_logged`. Not yet seen live:
+    the next long gap will show it.
+
+### Open questions / next steps
+- Triage and Stage 2 still load a whole run; slicing bounds the run instead. If runs grow
+  (e.g. a busier feed), streaming them is the next fix.
+- `20261103T160330Z-npm/triage.jsonl` is still the empty file the 2026-11-03 crash left; the
+  run is past retention and will be pruned.
+
 ## 2026-11-06: The commits behind each release: two detection rules on, the clearing off
 
 **Stage(s):** Stage 4 (repository comparison, decision)

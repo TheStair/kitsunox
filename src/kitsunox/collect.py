@@ -198,6 +198,9 @@ def collect(
         prune_now(" (disk low)")
         return finish(None)
     chain = f"chained from {manifest.chained_from}" if manifest.chained_from else "NOT chained"
+    if manifest.feed_head is not None and manifest.cursor_until < manifest.feed_head:
+        left = manifest.feed_head - manifest.cursor_until
+        chain += f", catching up ({left} of the feed left for the next ticks)"
     log(
         f"ingest: run {manifest.run_id}, feed ({manifest.cursor_since}, {manifest.cursor_until}], "
         f"{manifest.packages_seen} packages, {manifest.change_count} changes, "

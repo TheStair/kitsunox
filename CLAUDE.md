@@ -331,7 +331,9 @@ Key invariants:
   `data/state/` or delete blobs while the agent might be running. Runs older than `--keep-days`
   are pruned and can't be replayed (default 7; the VM's timer uses 2). Stage 4's GitHub
   archives (~30 GB/day) have their own `--keep-repo-days` (the VM's timer: 2). See
-  `docs/decisions/0006-scheduled-collection-and-retention.md`.
+  `docs/decisions/0006-scheduled-collection-and-retention.md`. After a long gap a chained run
+  reads at most `MAX_RUN_FEED_SPAN` of the feed, so the catch-up is split over several ticks
+  (a single 4-day run of 405k changes peaked at 27.6 GB in Stage 0 on the 30 GB VM).
 - **A full disk crashes the VM** (twice on 2026-11-03). `collect` checks free space between
   steps and the blob store refuses writes below `util/disk.BLOB_FLOOR`; a `DiskSpaceError`
   must never be caught as one package's failure. Side jobs that write gigabytes check
