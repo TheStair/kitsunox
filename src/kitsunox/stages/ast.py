@@ -32,6 +32,7 @@ from kitsunox.core.models import (
     VersionSnapshot,
 )
 from kitsunox.core.run import DataDir, EcosystemFactory
+from kitsunox.lang.agent_config import agent_files
 from kitsunox.lang.javascript import (
     EXTRACTOR_VERSION,
     Capability,
@@ -134,6 +135,9 @@ class CodeChange(Record):
     # (`BuildCommands`; npm: `binding.gyp`'s actions and command expansions). Empty when the
     # ecosystem has none or the stage was given no `build_commands`.
     build_commands: tuple[str, ...] = ()
+    # The agent configuration the install code may copy (`agent_config.agent_files`: skills,
+    # agent settings and the scripts their hooks name), when it names an agent directory.
+    agent_files: dict[str, bytes] = Field(default_factory=dict)
 
     @property
     def added(self) -> frozenset[Capability]:
@@ -235,6 +239,7 @@ def analyse_batch(
             install_files_before=files_before,
             previous_version=previous.ref.version if previous else None,
             build_commands=tuple(build_commands(tree)) if build_commands else (),
+            agent_files=agent_files(tree, files),
         )
         findings = tuple(f for rule in rules for f in rule.evaluate_code(change))
         flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
@@ -258,6 +263,7 @@ def code_change(
     build_commands: BuildCommands | None = None,
 ) -> CodeChange:
     """The `CodeChange` for one version against one base (evaluation uses this directly)."""
+    files = install_files(tree, install_entries)
     return CodeChange(
         snapshot=snapshot,
         before=profile(base_tree, cache) if base_tree is not None else None,
@@ -266,12 +272,13 @@ def code_change(
         install_before=(
             _install_profile(base_tree, cache, install_entries) if base_tree is not None else None
         ),
-        install_files=install_files(tree, install_entries),
+        install_files=files,
         install_files_before=(
             install_files(base_tree, install_entries) if base_tree is not None else None
         ),
         previous_version=previous_version,
         build_commands=tuple(build_commands(tree)) if build_commands else (),
+        agent_files=agent_files(tree, files),
     )
 
 

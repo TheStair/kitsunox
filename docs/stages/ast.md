@@ -2,7 +2,10 @@
 
 > **Status:** implemented 2026-10-28 (`lang/javascript.py`, `stages/ast.py`, rules in
 > `rules/capabilities.py` and `ecosystems/npm/rules/install_code.py`). It runs in `collect`
-> after Stage 2. Evaluation numbers are below.
+> after Stage 2. Evaluation numbers are below. Since 2026-11-08 it also recognises "explained
+> install" shapes (`ecosystems/npm/rules/install_shapes.py`) and reads the AI-agent
+> configuration a package's install code may copy (`lang/agent_config.py`,
+> `rules/agents.py`): [Explained install](#explained-install-s1-s3-and-agent-configuration).
 
 ## Purpose
 
@@ -75,6 +78,12 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
   version's own build files run at install besides its hooks, as the ecosystem finds them
   (`build_commands=`, npm: `install.gyp_commands`, `binding.gyp`'s actions and command
   expansions). Empty when the ecosystem passes none.
+- **Agent files** (2026-11-08): `CodeChange.agent_files` holds the AI-agent configuration
+  the install code may copy, when that code names an agent directory
+  (`agent_config.agent_files`): skills, instruction files, agent settings, plugin manifests
+  and the package scripts their hook commands name, each cut at 256 KiB, at most 301 (more
+  is "too many to check"). Empty otherwise. Ecosystem-agnostic: computed from the tree and
+  the install files.
 - **Rules** implement `CodeRule.evaluate_code(CodeChange)`. A version is flagged at MEDIUM
   or above.
 - **Output:** `ast.jsonl`, with the same batches in the same order, plus Stage 3 findings and a
@@ -90,6 +99,8 @@ is the malicious set.
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 | `npm.install-build-tool` | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...), and `binding.gyp` runs no command. An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
+| `npm.install-explained` | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
+| `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 
 New packages get no `capability-gained` finding: with no previous version everything is
@@ -163,6 +174,106 @@ rules has build-tool-only hooks; 4 other malicious samples do (`duckdb@1.3.3`,
 `@mastra/node-speaker@0.1.1`, ...), and `pipeline+4` decides each as before (1 reported, 3
 not reported either way).
 
+### Explained install (S1-S3) and agent configuration
+
+`npm.install-explained` (INFO, weight 0; 2026-11-08,
+[proposal round 2](../proposals/precision-round2.md), S1-S3, approved by the owner before the
+rule freeze) recognises install code of a shape reviewers clear at a glance. Like
+`npm.install-build-tool` (S4) it is an explanation for Stage 4, which makes the three install
+rules (`npm.install-hook`, `npm.install-script-changed`, `npm.install-script-code`) LOW,
+weight 1, with a note ([correlate.md](correlate.md#decision-and-score)); content findings
+(`npm.install-script-obfuscated`, `static.*`, `known-signature`) and `code.capability-gained`
+are never explained. The shapes, all strict (a miss only keeps a version reported), and never
+by a package's name, description or keywords:
+
+| Shape | Condition, on the install files `install_sources` finds |
+|---|---|
+| S1 platform-binary launcher | 2 or more `optionalDependencies` that are the package's own platform builds (same scope, or containing its name, plus an OS or CPU token: `@kx/tool-linux-x64`); no network, or network with every URL literal on `registry.npmjs.org` (GitHub issue/file pages and `example.com` in messages allowed) |
+| S2 own-release download | network; the `repository` is on GitHub; every URL literal (after substituting `const` strings) is that repository's releases (`github.com/<o>/<r>/releases`, `api.github.com/repos/<o>/<r>/releases`), GitHub's release asset hosts, the npm registry or a page link, and one is its own (or cargo-dist's `artifactDownloadUrls` all are); a checksum check (`createHash("sha256"`, `SHA256SUMS`, `checksums.txt`, `.sha256`, `verifyChecksum`); no URL whose host or owner is a variable |
+| S3 agent-skill copier | no network, no process; the code names an agent directory (`.claude`, `.agents`, `.cursor`, `.codex`, `.gemini`, `.windsurf`, `.opencode`, `SKILL.md`, `AGENTS.md`, `.mcp.json`), and the agent files it may copy pass the three guards below |
+| every shape | an install hook that is not shell (`curl`, `wget`, `sh`, `bash`, `python`, `./x`, `\| sh`, `$(...)`, backticks); no `binding.gyp` command; no `env-all`, `dynamic-code` or `dynamic-require` in the install code; for an update, no capability the install code didn't have before |
+
+The **three guards** on S3 (the owner, 2026-11-08: an agent-skill copier is benign as a
+verdict, decision 0015, but the rule may stay quiet only when the code proves the plain shape),
+in `lang/agent_config.py`:
+
+1. **What gets installed is scanned.** Every `command` in the agent configuration (JSON parsed,
+   TOML and code by pattern; an MCP server's `command` with its `args`) and every `command`
+   value in install code that writes hooks or MCP servers must be a constant `echo`, or a
+   script shipped in the package (matched by file name, under `${CLAUDE_PLUGIN_ROOT}`,
+   `$CLAUDE_PROJECT_DIR`, `$HOME` or `~`) run by a plain interpreter with constant arguments
+   (`plain_command`; `command -v`, `|| true`, `/dev/null` redirections allowed). `npx -y x`,
+   `curl ... | sh`, `node ${dir}/x.js`, `echo $TOKEN` are not. A shipped JavaScript hook
+   script must have no `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`
+   (its parsed capabilities); a shell or Python one no network tool, URL, download-and-run,
+   environment dump, `eval`/`exec` or `subprocess` (`script_concerns`).
+2. **Permission widening is never explained** (`widening`): a tool allow-list naming anything
+   beyond the read-only tools (`Read`, `Grep`, `Glob`, `LS`, ...): settings' `permissions.allow`,
+   `allowedTools`, a skill's or command's `allowed-tools`; bypass modes and flags
+   (`bypassPermissions`, `--dangerously-skip-permissions`, `--yolo`, Codex's
+   `approval_policy = "never"`/`danger-full-access`, `autoApprove`, `alwaysAllow`,
+   `"trust": true`, `defaultMode` `acceptEdits`/`dontAsk`); a remote MCP server (`url`,
+   `serverUrl`, `httpUrl`, an `http`/`sse` transport, `mcp-remote`). The 2025 nx compromise ran
+   its users' AI CLIs with permission-bypass flags to search for secrets.
+3. **Instructions aimed at the agent are flagged** (`hostile_instructions`, and the MEDIUM rule
+   `agent.hostile-instructions`, weight 3, which reports the version): text in the agent
+   files (and strings in the install code) telling the agent to hide what it does from the
+   user, to ignore its earlier instructions, to switch off its safeguards, or, in one
+   sentence, to send a credential file (`~/.ssh`, `id_rsa`, `.npmrc`, `.env`, a wallet or
+   private key) away, the credential within 80 characters of the sending verb. A phrase in
+   quotes, a sentence that discusses attacks (`injection`, `example`, `detect`, `refuse`,
+   `report`, ...), a negated "ignore"/"disable" ("never ignore earlier instructions") and
+   "do not tell the user *to* ..." are not instructions: security-review agents quote the
+   attack they look for (`great-cto@3.75.6`, `tesseract-agent@0.12.2-beta.2`, both benign).
+   Sentences end at CJK full stops too.
+
+More than 300 agent files is "too many to check" and not explained.
+
+**Measured** (2026-11-08) with the real code, before building Stage 4 on it:
+
+- **`vm-day1`, all 433 malicious samples reported only through the install rules** (they
+  would go if the three were LOW; the proposal had checked 149). Each encrypted DataDog zip is
+  read in memory: the ZipCrypto members a rule reads are decrypted by `unzip -p` into the
+  process (the still-encrypted zip on `/dev/shm`), never extracted to disk, and the shape and
+  agent rules run on the result with no base (the most permissive case: no "gained" check).
+  **None is explained, none has hostile instructions.** Only `@nx/key@3.2.0` (the 2025 nx
+  compromise's `telemetry.js`) has 2+ platform builds; S1 refuses it for `env-all` and for
+  network to a host other than the registry. Only `aicp-tracker@1.0.7` names an agent
+  directory, and it reaches the network and runs processes. None names its own repository's
+  releases. 185 have `env-all`, `dynamic-code` or `dynamic-require` in their install code, 22
+  a shell hook, 38 a `binding.gyp` command, 49 no install code. The proposal's own (broader)
+  definitions, strict or loose, match none of the 333 they were computed for.
+- **Live**, the 3,244 latest verdicts with rank > 0 (`data/verdicts/npm.jsonl`; 2,107
+  reported with today's code: 1,970 benign, 41 malicious, 46 unwanted, 50 unverified), the
+  signal computed on the captured tarballs (738 of the 1,442 versions with an install
+  finding) and Stage 4's real `explained` and `decide`: **85 fewer reports, all benign**
+  (S1 36, S2 34, S3 15; 70 packages: `@opencode/cli`, `banyancode`, `react-native-executorch`
+  nightlies, `@onreza/nrz`, `@bullpenfi/cli`, `@anyglade/kit`, `@ku-utils/*`, ...); 0
+  malicious, unwanted or unverified lost. Precision (malicious + unwanted) 4.23% → 4.41%.
+  19 of the 85 are updates whose previous tarball is no longer held, so the "gained" check
+  could not run; the rest are new packages or passed it.
+- **What the guards cost:** 5 live S3 candidates stay reported, all benign: `ai-aleks-tool`
+  2.4.0 and 2.5.1 (commands with `allowed-tools: Edit, Write, Bash(node:*)`), `catalyst-os`
+  (`Bash(cat:*)` in `settings.local.json`), `@karajan-family/code` (hook commands built in
+  code), `@mobileaidev/ai-app-bridge` (an `npx` hook). The owner's guards are strict on
+  purpose.
+- **Narrowed from the proposal**, each a condition the proposal's numbers didn't have: S1's
+  network only to `registry.npmjs.org` (the script also allowed GitHub's asset hosts); no
+  `dynamic-require` in any shape; for an update, nothing new in the install code (the owner:
+  "updates keep the normal diff rules"); S3's agent directories without a bare `skills/`.
+  Nothing dropped: no shape explained a malicious sample.
+- **Guard 3 narrowed twice:** the first version flagged two benign packages live, both quoting
+  the attack (`great-cto@3.75.6`'s security-review agents, `tesseract-agent@0.12.2-beta.2`'s
+  "...ignore earlier instructions, is something to report..., never something to do"), and,
+  on every hooked version of the retained runs, `@acedatacloud/skills` ×6 ("do not tell the
+  user to reconnect") and `@finebi/finebi-cli` ×4 (Chinese notes naming `.env.local` and a
+  `POST` endpoint 200 characters apart). The other hits of that first pass (`@wowok/skills@3.4.0`,
+  `nameslink` 1.0.5 and 1.0.6, not reported otherwise) were pruned before they could be read;
+  whether the narrowed rule still fires on them is unknown. As built, on the 3,552 hooked
+  versions with a tarball in the 8 retained runs of Nov 7-8 (397 with install code naming an
+  agent directory) it fires on none. The shapes fire on 845 of them (S1 599, S2 176, S3 70),
+  68 of which Stage 4 reported.
+
 **`npm.install-script-obfuscated`** (HIGH, weight 4; 2026-10-31, at the owner's request) flags
 install code nobody can review by reading it: what it does at install is a question only Stage 5
 can answer, and HIGH puts it in front of Stage 5's per-run cap of 30 and of the queue. Five
@@ -219,6 +330,11 @@ tool descriptions); 6 of them add no risky line. `vm-day1`: 3 malicious lost, al
 
 ## Known limits
 
+- The agent-configuration checks are text matching (`lang/agent_config.py`): what a copier
+  actually copies is not followed, so every agent file in the package counts, and a hook
+  script is matched by file name. A templated hook command (`node ${hookPath}`) is not
+  plain even when the template is a shipped path. Instructions can be phrased in ways the
+  patterns don't know; guard 3 catches the plain forms only.
 - Tree-sitter gives syntax, not data flow. `const m = "child_process"; require(m)` is a
   `dynamic-require`, not `process`, and a capability reached through a dependency is invisible.
 - Install-entry detection reads command lines. `node -e "<code>"` and shell scripts are not

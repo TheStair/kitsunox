@@ -1,5 +1,6 @@
 """Stage 3 core: per-version capability profiles, deltas and the on-disk cache."""
 
+import json
 from pathlib import Path
 
 from kitsunox.core.models import (
@@ -20,6 +21,7 @@ from kitsunox.stages.ast import (
     added,
     analyse_batch,
     ast_run,
+    code_change,
     profile,
 )
 from kitsunox.stages.ingest import write_jsonl
@@ -187,6 +189,46 @@ def test_build_commands_reach_the_rules() -> None:
     )
     analyse_batch(batch, lambda s: files, CapabilityCache(None), [Spy()])
     assert [c.build_commands for c in seen] == [("node x.js",), ()]
+
+
+def test_agent_files_reach_the_rules() -> None:
+    """Install code that names an agent directory gets the agent files it may copy
+    (`agent_config.agent_files`); other install code gets none."""
+    manifest = json.dumps({"scripts": {"postinstall": "node setup.js"}}).encode()
+    copier = {
+        "package.json": manifest,
+        "setup.js": b'copy("skills", path.join(home, ".claude"))',
+        "skills/x/SKILL.md": b"# x",
+    }
+    other = copier | {"setup.js": b'copy("skills", "dist")'}
+    seen: list[CodeChange] = []
+
+    class Spy:
+        id = "test.spy"
+        version = 1
+
+        def evaluate_code(self, change: CodeChange) -> list[Finding]:
+            seen.append(change)
+            return []
+
+    batch = PackageBatch(
+        ecosystem="npm", name="kx", base=None, versions=(Candidate(change=Change(new=snap("1"))),)
+    )
+    for tree in (copier, other):
+
+        def files(_: VersionSnapshot, tree: dict[str, bytes] = tree) -> dict[str, bytes]:
+            return tree
+
+        analyse_batch(
+            batch,
+            files,
+            CapabilityCache(None),
+            [Spy()],
+            install_entries=install_sources,
+        )
+    assert [sorted(c.agent_files) for c in seen] == [["skills/x/SKILL.md"], []]
+    direct = code_change(snap("1"), copier, None, CapabilityCache(None), install_sources)
+    assert sorted(direct.agent_files) == ["skills/x/SKILL.md"]
 
 
 def test_a_previous_outside_the_batch_is_fetched() -> None:
