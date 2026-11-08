@@ -25,6 +25,7 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     runtime_dependencies,
     scripts,
 )
+from kitsunox.ecosystems.npm.rules.undeclared import UndeclaredPackage, undeclared_evidence
 from kitsunox.stages.correlate import (
     NOT_EVALUATED,
     CorrelationContext,
@@ -531,6 +532,100 @@ class MissingDependency(BaseRule):
         return findings
 
 
+@dataclass(frozen=True)
+class UndeclaredLoad:
+    """A package Stage 3's `npm.undeclared-package` named, with where the code loads it."""
+
+    name: str
+    evidence: Evidence
+
+
+def undeclared_lookups(
+    candidate: Candidate, watchlist: Watchlist | None
+) -> tuple[UndeclaredLoad, ...]:
+    """The packages that loading the release loads without declaring them (Stage 3's
+    `npm.undeclared-package`) that need a registry lookup: not in the release's own scope
+    (only its members can publish there), not on the watchlist (they exist), and not names
+    that look like the release's own siblings (`sibling_reason`: a monorepo package published
+    on its own). In the finding's order. The lookup plan and `npm.undeclared.missing` both use
+    this."""
+    change = candidate.change
+    own_scope = scope(change.new.ref.name)
+    found: dict[str, UndeclaredLoad] = {}
+    for finding in candidate.findings:
+        if finding.rule_id != UndeclaredPackage.id:
+            continue
+        for name, evidence in undeclared_evidence(finding):
+            if name in found or (own_scope is not None and scope(name) == own_scope):
+                continue
+            if watchlist is not None and name in watchlist.entries:
+                continue
+            if sibling_reason(AddedDependency(key=name, spec="", target=name), change, watchlist):
+                continue
+            found[name] = UndeclaredLoad(name=name, evidence=evidence)
+    return tuple(found.values())
+
+
+class UndeclaredMissing(BaseRule):
+    """Loading the release loads a package it doesn't declare (Stage 3's
+    `npm.undeclared-package`: at module load, from its entry points or the files they load,
+    not even a devDependency) and the registry doesn't have that name either: its lookup in
+    this run returned 404. The Tailwind-wrapper template `tailwind-animate-engine@1.0.6`
+    (2026-11-02, with `tailwind-animate-final@1.0.6` and `tailwind-animate-test` 1.0.1 and
+    1.0.4) required its payload `@unipswap/postcss-animate-units` without declaring it, so
+    `npm.dependency.missing` (declared names) could not see it; the payload was published
+    later. Installed alone such a release fails; whoever publishes the name decides what its
+    code runs.
+
+    The names are `undeclared_lookups`' (own scope, watched names and siblings are never asked).
+    Only a 404 counts (decision 0009): a lookup that failed, or one over the lookup limits,
+    gives an INFO `NOT_EVALUATED` finding. MEDIUM, weight 3, like `npm.dependency.missing`:
+    the wrapper's own code has nothing else to report. Measured in `docs/stages/correlate.md`."""
+
+    id = "npm.undeclared.missing"
+    version = 1
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Loads a package it doesn't declare and the registry doesn't have"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        if ctx.dependencies is None:
+            return ()
+        missing: list[UndeclaredLoad] = []
+        unknown: list[UndeclaredLoad] = []
+        for load in undeclared_lookups(candidate, ctx.watchlist):
+            status = ctx.dependencies(load.name).status
+            if status is DependencyStatus.MISSING:
+                missing.append(load)
+            elif status in (DependencyStatus.FAILED, DependencyStatus.CAPPED):
+                unknown.append(load)
+        findings = []
+        if missing:
+            findings.append(
+                self.finding(
+                    f"Loading this version loads {_list([f'`{m.name}`' for m in missing])}, "
+                    "which its package.json does not declare and which the registry did not "
+                    "have when this run looked (HTTP 404). Installed alone it fails until "
+                    "someone publishes the name, and whoever does decides what this "
+                    "package's code runs: a wrapper waiting for a payload published after it "
+                    "looks like this.",
+                    *(m.evidence for m in missing[:5]),
+                )
+            )
+        if unknown:
+            finding = self.finding(
+                f"{NOT_EVALUATED}{_list([f'`{u.name}`' for u in unknown])} (loaded, not "
+                "declared) could not be checked against the registry: the lookup failed or "
+                "was over the dependency lookup limits.",
+                *(u.evidence for u in unknown[:5]),
+                severity=Severity.INFO,
+            )
+            findings.append(finding.model_copy(update={"weight": 0.0}))
+        return findings
+
+
 def normalize_name(name: str) -> str:
     """Lowercased, without `-`, `_` and `.`: `easy-day-js` -> `easydayjs`."""
     return _SEPARATORS.sub("", name.lower())
@@ -922,6 +1017,7 @@ RULES: Final = (
     RevivedWithNewDependency(),
     FreshForeignDependency(),
     MissingDependency(),
+    UndeclaredMissing(),
     NameEmbedsPopular(),
     InstallScriptNotInRepo(),
     DependencyNotInRepo(),

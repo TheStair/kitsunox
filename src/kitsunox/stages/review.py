@@ -7,7 +7,7 @@ from __future__ import annotations
 import itertools
 import math
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -22,7 +22,10 @@ from kitsunox.ecosystems.npm.packument import Packument, publish_info
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.repo import NpmLocator
 from kitsunox.ecosystems.npm.rules.correlate import RULES as NPM_CORRELATION_RULES
-from kitsunox.ecosystems.npm.rules.correlate import foreign_added_dependencies
+from kitsunox.ecosystems.npm.rules.correlate import (
+    foreign_added_dependencies,
+    undeclared_lookups,
+)
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import GitHub
 from kitsunox.rules.repo import RULES as REPO_RULES
@@ -189,7 +192,8 @@ class NpmDependencyLookup:
         self._slots: dict[str, _Slot] = {}
         self._allowed: frozenset[str] | None = None
         self._planned = 0
-        self._limited = 0  # releases with names over `per_release`
+        self._limited = 0  # packages with names over `per_release`
+        self._undeclared = 0  # names planned from `undeclared_lookups`
         self._errors: dict[str, str] = {}  # names whose record is FAILED: why
         self._sent: set[str] = set()  # this pass's requests (RECORD mode)
         self._failed: dict[str, str] = {}  # this pass's network failures
@@ -202,25 +206,38 @@ class NpmDependencyLookup:
         )
         wanted: dict[str, None] = {}
         allowed: dict[str, None] = {}
-        limited = 0
+        limited: set[tuple[str, str]] = set()  # releases with names over `per_release`
         claimed_by: dict[str, int] = {}  # package name -> names it claimed, over all its versions
-        for candidate in ordered:
-            package = candidate.change.new.ref.name
-            claimed, over = claimed_by.get(package, 0), False
-            for dep in foreign_added_dependencies(candidate.change, ctx.watchlist):
-                wanted.setdefault(dep.target)
-                if dep.target in allowed:
+        # Packages the code loads without declaring them (`undeclared_lookups`) come after every
+        # declared dependency, in the same order, so they never take a declared one's place.
+        undeclared: list[tuple[tuple[str, str], tuple[str, ...]]] = []
+
+        def claim(release: tuple[str, str], names: Iterable[str]) -> None:
+            package = release[0]
+            claimed = claimed_by.get(package, 0)
+            for name in names:
+                wanted.setdefault(name)
+                if name in allowed:
                     continue
                 if self.per_release is not None and claimed >= self.per_release:
-                    over = True
+                    limited.add(release)
                 elif self.cap is None or len(allowed) < self.cap:
-                    allowed[dep.target] = None
+                    allowed[name] = None
                     claimed += 1
             claimed_by[package] = claimed
-            limited += over
+
+        for candidate in ordered:
+            ref = candidate.change.new.ref
+            added = foreign_added_dependencies(candidate.change, ctx.watchlist)
+            claim((ref.name, ref.version), (d.target for d in added))
+            if loads := undeclared_lookups(candidate, ctx.watchlist):
+                undeclared.append(((ref.name, ref.version), tuple(load.name for load in loads)))
+        for release, names in undeclared:
+            claim(release, names)
         with self._lock:
             self._planned = len(wanted)
-            self._limited = limited
+            self._undeclared = len({n for _, names in undeclared for n in names})
+            self._limited = len(limited)
             self._allowed = frozenset(allowed)
         return tuple(allowed)
 
@@ -290,6 +307,7 @@ class NpmDependencyLookup:
                 "cap": self.cap,
                 "per_release": self.per_release,
                 "names": self._planned,
+                "undeclared": self._undeclared,
                 "capped": max(0, self._planned - allowed),
                 "releases_limited": self._limited,
                 "looked_up": len(records),

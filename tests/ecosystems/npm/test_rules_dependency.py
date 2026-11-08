@@ -10,6 +10,9 @@ import pytest
 from kitsunox.core.models import (
     Candidate,
     Change,
+    Evidence,
+    EvidenceKind,
+    Finding,
     PackageVersionRef,
     PublishInfo,
     Severity,
@@ -22,9 +25,11 @@ from kitsunox.ecosystems.npm.rules.correlate import (
     FreshForeignDependency,
     MissingDependency,
     NameEmbedsPopular,
+    UndeclaredMissing,
     embedded_popular_name,
     foreign_added_dependencies,
     sibling_reason,
+    undeclared_lookups,
 )
 from kitsunox.reporting.report import stage_of
 from kitsunox.stages.correlate import (
@@ -502,3 +507,77 @@ def test_popular_or_short_names_make_no_kin() -> None:
         None,
     )
     assert bare == "its name extends `react`"  # without a watchlist nothing is popular
+
+
+def with_undeclared(candidate: Candidate, *names: str) -> Candidate:
+    """`candidate` with Stage 3's `npm.undeclared-package` naming `names`."""
+    finding = Finding(
+        rule_id="npm.undeclared-package",
+        rule_version=2,
+        severity=Severity.INFO,
+        weight=0.0,
+        title="t",
+        explanation="e",
+        evidence=tuple(
+            Evidence(
+                kind=EvidenceKind.FILE_SPAN,
+                path="src/motion.js",
+                line_start=5,
+                line_end=5,
+                snippet=f"[{n}] const u = require('{n}');",
+            )
+            for n in names
+        ),
+    )
+    return candidate.model_copy(update={"findings": (finding,)})
+
+
+def undeclared_missing(candidate: Candidate, context: CorrelationContext) -> list[Any]:
+    return list(UndeclaredMissing().evaluate_candidate(candidate, context))
+
+
+def test_an_undeclared_missing_package_reports_alone() -> None:
+    """`tailwind-animate-engine@1.0.6` required `@unipswap/postcss-animate-units` without
+    declaring it; the name was published after the wrapper."""
+    candidate = with_undeclared(
+        new_package("tailwind-animate-engine", "1.0.6", {"postcss": "^8"}),
+        "@unipswap/postcss-animate-units",
+        "kept",
+    )
+    (found,) = undeclared_missing(candidate, ctx(kept=packument("kept", OLD)))
+    assert found.rule_id == "npm.undeclared.missing" and found.rule_version == 1
+    assert (found.severity, found.weight) == (Severity.MEDIUM, 3.0)
+    assert "`@unipswap/postcss-animate-units`" in found.explanation
+    assert "HTTP 404" in found.explanation and "`kept`" not in found.explanation
+    assert [(e.path, e.line_start) for e in found.evidence] == [("src/motion.js", 5)]
+    assert decide([found]).forwarded
+    assert stage_of(found.rule_id) == "Stage 4: correlation"
+    # Without Stage 3's finding, or without a lookup, nothing.
+    assert not undeclared_missing(new_package("x", "1.0.0", {}), ctx())
+    assert not undeclared_missing(candidate, CorrelationContext(as_of=AS_OF))
+
+
+def test_undeclared_lookups_leave_out_what_needs_no_lookup() -> None:
+    candidate = with_undeclared(
+        new_package("@acme/ocean-ui", "1.0.0", {}),
+        "@acme/ocean-core",  # own scope: only its members can publish there
+        "react",  # watched: it exists
+        "ocean-ui-icons",  # a sibling: its name extends this package's
+        "@acme/ocean-core",
+        "stranger",
+    )
+    assert [u.name for u in undeclared_lookups(candidate, WATCHLIST)] == ["stranger"]
+    assert [u.name for u in undeclared_lookups(candidate, None)] == ["react", "stranger"]
+
+
+def test_an_undeclared_lookup_that_failed_is_not_evaluated() -> None:
+    candidate = with_undeclared(new_package("wrapper", "1.0.0", {}), "helper", "other")
+    for status in (DependencyStatus.FAILED, DependencyStatus.CAPPED):
+        record = DependencyRecord(name="helper", status=status, transient=True)
+        found = undeclared_missing(candidate, ctx(helper=record, other=packument("other", OLD)))
+        ((severity, weight, text),) = [(f.severity, f.weight, f.explanation) for f in found]
+        assert (severity, weight) == (Severity.INFO, 0.0)  # never "missing" (decision 0009)
+        assert text.startswith(NOT_EVALUATED) and "`helper`" in text
+    assert not undeclared_missing(
+        candidate, ctx(helper=packument("helper", FRESH), other=packument("other", OLD))
+    )

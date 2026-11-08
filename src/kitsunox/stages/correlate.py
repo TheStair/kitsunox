@@ -64,8 +64,10 @@ STAGE_ID: Final = "correlate"
 # is a finding (`npm.dependency.missing`), no longer only a count. 13: an earlier stage's
 # explanation finding makes the finding it explains LOW (`EXPLAINED`: Stage 3's
 # `npm.install-build-tool` for `npm.install-hook`). 14: Stage 3's `npm.install-explained`
-# (S1-S3 shapes) explains the three install rules. Output without the field is 1.
-STAGE_VERSION: Final = 14
+# (S1-S3 shapes) explains the three install rules. 15: packages Stage 3's
+# `npm.undeclared-package` names are looked up after the declared dependencies, and a 404 is
+# `npm.undeclared.missing`. Output without the field is 1.
+STAGE_VERSION: Final = 15
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;

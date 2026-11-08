@@ -17,6 +17,8 @@ from kitsunox.core.models import (
     ArtifactRef,
     Candidate,
     Change,
+    Evidence,
+    EvidenceKind,
     Finding,
     PackageVersionRef,
     PublishInfo,
@@ -483,6 +485,7 @@ def test_dependency_lookup_is_recorded_once_per_name(tmp_path: Path, router: Rou
         "cap": MAX_DEPENDENCY_LOOKUPS,
         "per_release": MAX_LOOKUPS_PER_RELEASE,
         "names": 1,
+        "undeclared": 0,
         "capped": 0,
         "releases_limited": 0,
         "looked_up": 1,
@@ -641,6 +644,47 @@ def test_updates_are_planned_before_new_packages(tmp_path: Path, router: Router)
     assert [s for s, _ in dependency_findings(upd)] == ["medium"]
     assert [s for s, _ in dependency_findings(new)] == ["info"]
     assert (info["names"], info["capped"]) == (2, 1)
+
+
+def undeclared(candidate: Candidate, *names: str) -> Candidate:
+    """`candidate` with Stage 3's `npm.undeclared-package` naming `names`."""
+    finding = Finding(
+        rule_id="npm.undeclared-package",
+        rule_version=2,
+        severity=Severity.INFO,
+        weight=0.0,
+        title="t",
+        explanation="e",
+        evidence=tuple(
+            Evidence(kind=EvidenceKind.FILE_SPAN, path="a.js", snippet=f"[{n}] require('{n}')")
+            for n in names
+        ),
+    )
+    return candidate.model_copy(update={"findings": (finding,)})
+
+
+def undeclared_findings(candidate: Candidate) -> list[str]:
+    return [f.severity.value for f in candidate.findings if f.rule_id == "npm.undeclared.missing"]
+
+
+def test_undeclared_names_are_planned_after_declared_ones(tmp_path: Path, router: Router) -> None:
+    """A name the code loads without declaring it is looked up after every declared
+    dependency, so it never takes one's place under the cap; a 404 reports."""
+    serve_packument(router, "dep-a")
+    candidates = [
+        undeclared(dependent("wrapper", update=True), "payload-x"),
+        dependent("app", "dep-a"),
+    ]
+    (wrapper, app), _, info = run_dependencies(
+        tmp_path / "capped", candidates, router.client(), cap=1
+    )
+    assert packument_url("payload-x") not in router.requests
+    assert [s for s, _ in dependency_findings(app)] == ["medium"]
+    assert undeclared_findings(wrapper) == ["info"]  # over the cap: not evaluated
+    assert (info["names"], info["undeclared"], info["capped"]) == (2, 1, 1)
+    (wrapper, _), _, info = run_dependencies(tmp_path / "all", candidates, router.client())
+    assert undeclared_findings(wrapper) == ["medium"] and wrapper.history[-1].forwarded
+    assert (info["looked_up"], info["missing"]) == (2, 1)
 
 
 def test_one_release_cannot_use_up_the_lookup_cap(tmp_path: Path, router: Router) -> None:

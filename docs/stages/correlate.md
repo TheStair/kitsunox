@@ -288,10 +288,45 @@ doesn't exist yet, and until 2026-11-08 a 404 gave no finding, so every such rel
   captured tarballs: `lib/styles/variables.js:5`, `src/motion.js:5`), but so does the code of
   almost every benign sibling and platform launcher, so "required by the code" doesn't separate
   them and isn't used.
-- **Not caught:** wrappers that require the payload without declaring it
-  (`tailwind-animate-engine@1.0.6` requires `@unipswap/postcss-animate-units` in
-  `src/motion.js`; 4 of the 8 adjudicated wrapper misses): no dependency, no lookup. That is a
-  Stage 3 question (a `require` of a package that is neither declared nor built in).
+- **Not caught (until stage version 15):** wrappers that require the payload without
+  declaring it (`tailwind-animate-engine@1.0.6` requires `@unipswap/postcss-animate-units` in
+  `src/motion.js`; 4 of the 8 adjudicated wrapper misses): no dependency, no lookup. See the
+  next section.
+
+## Undeclared and missing (`npm.undeclared.missing`; stage version 15)
+
+Stage 3's `npm.undeclared-package` (v2, INFO) names the packages that *loading* a release
+loads at module load, from its entry points and the files they load, without declaring them
+([ast.md](ast.md)). Stage 4 asks the registry about those names with the same lookup as
+declared dependencies (`NpmDependencyLookup`, its request, its snapshot and its 404 semantics),
+and a 404 is **`npm.undeclared.missing`**, MEDIUM, weight 3, like `npm.dependency.missing`.
+
+- **Which names** (`undeclared_lookups`): the finding's (at most 10 per release), minus names in
+  the release's own scope (only its members can publish there), watched names (they exist) and
+  names `sibling_reason` relates to the release (a monorepo package published on its own).
+  Those are never asked.
+- **Plan:** they are planned after every declared dependency of the run, in the same order
+  (updates first) and under the same limits (`MAX_LOOKUPS_PER_RELEASE` per package, the run's
+  cap), so they never take a declared name's place. `correlate.json`'s `dependency_lookups`
+  counts them as `undeclared`.
+- **Only a 404 counts** (decision 0009). A lookup that failed or was over the limits gives an
+  INFO `NOT_EVALUATED` finding naming the packages. The 404 is the run's recorded answer, so a
+  replay reads the same.
+- **Measured** on the eight unpruned live runs (29.2 h, 29,470 versions Stage 3 read; registry
+  status checked 2026-11-08): v2 names 123 distinct packages in 204 versions; 15 versions load
+  a name npm lacks, 14 of them only siblings or own-scope names (`@ranujs/*` -> `@ranu/*`,
+  `@gtkx/*`, `chatluna-plugin-*` -> `@chatluna/*`). One would be reported:
+  `@ohos-ports/cms-components`, which loads 21 `@smallstack/*` names npm doesn't have (a
+  dependency-confusion exposure). **~0.8 extra reports a day**, against the owner's ceiling of
+  ~5. About 18 extra lookups in those 29 hours. Recall: `tailwind-animate-engine@1.0.6`
+  (`@unipswap/postcss-animate-units` was 404 at Stage 4 on 2026-11-02 08:46Z); the other three
+  wrappers of the template (`tailwind-animate-final@1.0.6`, `tailwind-animate-test` 1.0.1 and
+  1.0.4) have the same manifest and their tarballs are gone. No reviewed positive loses
+  anything: the rule only adds. On `vm-day1` (a per-sample dump of Stage 3's v2 names with the
+registry's answer on 2026-11-08; `pipeline+4` itself doesn't fit the 4 GB cap): no benign sample
+has a name npm lacks; 2 malicious ones would get the finding after the exemptions
+(`react-tmedia@2.1.4` and `tailwind-state@1.0.3`, whose code loads the undeclared
+`bingo-logger-abstract-transport`), both reported already: recall unchanged.
 
 ## Decision and score
 
@@ -489,6 +524,7 @@ Rules over it:
 | `npm.combination.revived-with-new-dependency` (v3) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one and no maintainer was added: the package's own maintainer coming back (v2); LOW (weight 1) too when the release carries a provenance attestation (v3) | MEDIUM | 2 |
 | `npm.dependency.fresh-foreign` | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them | MEDIUM | 3 |
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count) | MEDIUM | 3 |
+| `npm.undeclared.missing` | a package Stage 3's `npm.undeclared-package` names (loaded at module load, not declared; not own scope, watched or a sibling) was 404 when the run looked it up (Undeclared and missing, above). INFO, weight 0, when the lookup failed or was over the limits | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.established-match` | a clean comparison with a repository that is not a fork or archived, ≥ 30 days old at the release, ≥ 5 stars, the commit on its default branch (Repository trust, above). Clears install-code MEDIUM findings in the decision | INFO | 0 |
