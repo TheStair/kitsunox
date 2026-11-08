@@ -2,6 +2,51 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Queue review finished (ranks 116-398): three malicious, the downgrade rule is noise
+
+**Stage(s):** Review queue (verdicts), Stage 1 rules (findings only)
+**Context:** The owner asked to continue the queue review while the catch-up tick ran. The
+queue file is the one built 2026-11-03 (runs of Nov 1-3); ranks 1-115 were reviewed earlier.
+Every remaining entry now has a verdict (`data/verdicts/npm.jsonl`, `--by claude`).
+
+### Results
+- 283 queue entries, 400 versions: **3 malicious**, 7 inconclusive, 273 benign packages.
+- **Malicious:**
+  - `@nerxa/socketon@1.21.0` and `lyxe-baileys@1.0.0`: `luna-baileys` copies whose
+    `autoJoinChannels()` fetches `raw.githubusercontent.com/noxXza/data/.../noxleys.json` 30 s after
+    every WhatsApp connection and follows every channel on it (owner policy 2026-10-31).
+  - `tailwindcss-pixel-tools@1.6.1`: a small Tailwind plugin whose `src/motion.js` requires
+    `@nexlayerlabs/postcss-keyframe-utils` (MAL-2026-18407, GHSA malware, "fully compromised").
+    Caught by `npm.dependency.known-malware`. Still on npm with a 1.6.2 (checked 2026-11-08); reporting
+    is the owner's call.
+- **Inconclusive:** `sino-bc-cli` (obfuscated postinstall, as before), `@alexiddev/baileys`
+  (disclosed default-on auto-follow), `@fabricorg/cli` and `prctls` (unpublished before Stage 2
+  captured them), `whybug`, `system-tracker`, `@fcjplugins/hooks` (obfuscated, hidden hosts).
+
+### Challenges
+- **Tarballs gone from the blob store:** many Nov 1-3 versions had no captured tarball (the
+  hand-deleted blobs of 2026-11-03). Reviewed ones were fetched again from npm as data,
+  checked against `dist.integrity`, and read in memory only (`~/kitsunox-scratch/fetched/tgz`).
+  Two were unpublished and could only be judged inconclusive.
+- **RC4-mode obfuscator strings:** my decoder handled the plain base64 mode (`aurelium`) but not
+  the RC4 mode with wrapper offsets (`@autotest/plugin`, `whybug`); those verdicts rest on docs
+  and plain strings, and say so.
+
+### Evaluation snapshot (precision, from this batch)
+- `npm.publish-method.downgrade` alone flagged **34 packages, all benign** (27 were one
+  `@knapsack` release by a maintainer who published 7,694 of its versions). The usual story: a
+  sole or listed maintainer publishing by hand, often with CI provenance back on the next release.
+- `npm.combination.revived-with-new-dependency` flagged 50 packages, all benign (the new dependency was
+  the package's own family or a common library).
+- `npm.dependency.non-registry` alone: 8 packages, all benign (own-org GitHub tarballs, SheetJS's
+  CDN, uWebSockets.js, Backstage's `backstage:` protocol).
+
+### Open questions / next steps
+- Tune `npm.publish-method.downgrade` (owner's decision, Stage 1): e.g. not MEDIUM when the
+  publisher has published earlier versions of the package by hand, or when provenance returns on a
+  later release (needs a later packument; Stage 1 sees only one). Measure on the verdicts first.
+- Teach the review helpers the RC4 string-array mode, or leave those to the sandbox.
+
 ## 2026-11-08: Collection restarted; a 4-day catch-up nearly ran out of memory; catch-ups are now sliced
 
 **Stage(s):** Stage 0 (ingest), `collect`
