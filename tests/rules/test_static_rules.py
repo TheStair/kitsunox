@@ -230,3 +230,82 @@ def test_a_deny_list_of_services_is_not_an_endpoint(text: str) -> None:
 )
 def test_endpoints_outside_a_deny_list_still_count(text: str) -> None:
     assert any(m.rule_id == "static.exfil-endpoint" for m in analyse(text.encode()))
+
+
+def _exfil(text: str) -> list[tuple[str, float]]:
+    return [
+        (m.severity.value, m.weight)
+        for m in analyse(text.encode())
+        if m.rule_id == "static.exfil-endpoint"
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Set PUBLIC_URL=https://example.ngrok.app before starting.",
+        "// e.g. https://xxx.trycloudflare.com",
+        "url: 'https://your-tunnel-name.ngrok-free.app/webhook'",
+        "ssh -R 80:localhost:3000 <your-subdomain>.serveo.net",
+        "allow: ['*.ngrok.io']",
+        "const u = `https://${sub}.trycloudflare.com`",
+        "host = '{name}.ngrok.app'",
+        "see https://foo.ngrok.io or https://abc123.ngrok.io",
+        "MY_APP.ngrok.io",
+        "https://....ngrok-free.app",
+    ],
+)
+def test_a_placeholder_tunnel_host_is_low(text: str) -> None:
+    """v6 (F3c): the tunnel host's own label is a placeholder: documentation."""
+    found = _exfil(text)
+    assert found and set(found) == {("low", 1.0)}
+    (match,) = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"][:1]
+    assert match.explanation.endswith("documentation, not an endpoint.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "fetch('https://purple-river-1234.trycloudflare.com/c')",  # a real quick-tunnel name
+        "https://sidebar.ngrok.io/x",  # a word, not a placeholder label
+        "https://myexample.ngrok.io/x",
+        "if (h.endsWith('.trycloudflare.com')) go()",  # bare suffix: kept on purpose
+        "https://example.com/webhook.site",  # not a tunnel host
+    ],
+)
+def test_a_real_tunnel_host_stays_high(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
+
+
+def test_a_host_in_a_list_of_domains_is_low() -> None:
+    """v6 (F3b): a disposable-mail list naming `webhook.site` among mail domains."""
+    text = "const DISPOSABLE = [\n  '10minutemail.com',\n  'webhook.site',\n  'mailinator.com',\n];"
+    (match,) = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert (match.severity.value, match.weight) == ("low", 1.0)
+    assert match.explanation.endswith("A host in a list of domains, not an endpoint.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const hosts = ['webhook.site', 'mailinator.com'];",  # one other domain: not a list
+        "send('https://webhook.site/abc', ['a.com', 'b.com', 'c.com'])",  # a URL
+        "x = ['1.0.0', 'webhook.site', '2.0.0']",  # versions are no domains
+        "x = ['webhook.site', 'index.js', 'webhook.site']",  # its own host twice
+        "x = ['webhook.site', 'a.com', 'A.com', 'a.com']",  # one other domain
+        "h = 'webhook.site'" + " " * 500 + "['a.com', 'b.com']",  # outside the window
+        # a table of ngrok's region hosts: kept on purpose since v5 (gina, cro-pricing)
+        "REGIONS = {us: 'us.ngrok.io', eu: 'eu.ngrok.io', ap: 'ap.ngrok.io', au: 'au.ngrok.io'}",
+        "x = ['webhook.site', 'a.ngrok.io', 'mailinator.com']",  # one other non-endpoint
+    ],
+)
+def test_a_host_outside_a_domain_list_stays_high(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
+
+
+def test_low_matches_never_hide_a_real_one() -> None:
+    """Placeholders don't count toward the rule's cap of matches."""
+    text = "\n".join(["see https://example.ngrok.app"] * 5 + ["post('https://webhook.site/x')"])
+    found = _exfil(text)
+    assert found.count(("low", 1.0)) == 3
+    assert found[-1] == ("high", 5.0)

@@ -2,6 +2,75 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Precision round 2, the pre-freeze fixes (F5, F6b, F7, F2, F3b+F3c, F4b)
+
+**Stage(s):** Stage 1 triage, Stage 2 static, Stage 3 AST, Stage 4 correlation (`STAGE_VERSION` 13)
+**Context:** The owner approved the six pre-freeze fixes of
+[precision round 2](proposals/precision-round2.md) ("keep cutting down the benign category"),
+to be built before the rule freeze of 2026-11-12 and re-measured with the real code rather
+than the proposal's simulation. One commit per stage: `2a1d1cd` (Stage 1), `d4bba1a`
+(Stage 3), `16676fc` (Stage 4), then Stage 2.
+
+### Decisions
+- **F5 (`version.suspicious` v4), narrowed.** Month-day minors (`2026.1107.0`) and `YYMM`
+  majors (`2611.5.1`) as proposed; a minor of 0 only in `as_of`'s own year. The proposal's
+  "minor 0 in any year" had been checked against OSV only for round 1's shapes; checked now,
+  it exempts 15 OSV malware versions (`2000.0.0`, `2000.0.1`, `1999.0.1`, `2001.0.0`,
+  `amazonui@2026.0.1` published in 2025). As built: 0 of 53,389. Cost: one benign live report
+  (`spain-holidays@2027.0.0`) stays.
+- **F6b (`non-registry` v4).** `https://cdn.sheetjs.com/` LOW, one literal origin.
+- **F7 (`revived` v3).** LOW with a provenance attestation; only on this rule (no live
+  positive), never as an explanation for install code.
+- **F2 is a Stage 3 signal plus a Stage 4 explanation, not a Stage 1 rule.** "Every hook is a
+  build tool *and binding.gyp runs no command*" needs the tarball, which Stage 1 doesn't have.
+  Stage 3 got `CodeChange.build_commands` (npm passes `gyp_commands`) and an INFO rule,
+  `npm.install-build-tool`; Stage 4 got `EXPLAINED`/`explained`, which makes the explained
+  finding LOW with a note after the rules run (like Stage 2's "not new" notes, so the report
+  still shows it). Considered: a Stage 1 rule for the non-gyp tools only (can't see
+  `binding.gyp`, whose commands npm runs implicitly), and inferring gyp commands from the
+  install files (misses `<!(pkg-config …)` or a `curl` action, which name no package file).
+- **F3b/F3c as LOW, not dropped.** A lowered match still counts in the score (weight 1), and
+  lowered matches don't use up the rule's cap of three per file, so placeholders first can't
+  hide a real endpoint.
+- **F4b in Stage 2, not the rule.** File rules see content only (cached by hash); the data-file
+  and `package.json` metadata tests need the path, so they sit beside the "doesn't run" note.
+
+### Challenges
+- **The first real-code baseline lost a malicious report.** Re-running Stage 2 on tarballs
+  with the previous version as base dropped 62 reports, among them `internal-renderers@10.0.0`
+  (malicious): its IP was in 1.0.0 too, while the run's Stage 2 had compared it with the
+  batch's base. Found by diffing the baseline against the proposal's 2,208.
+  - **Resolution:** judge each *stored* MEDIUM/HIGH finding again on its own file (same line
+    and match text) with the new code, instead of recomputing Stage 2.
+  - **Why it worked:** the baseline then reproduces the proposal's 2,208 reported versions
+    exactly, so every difference is the fix.
+- **F3b's full window lowered ngrok tables.** With v5's 400-character window instead of the
+  snippet, a list check also fires in the Public Suffix List bundled by `@wirecat/*` CLIs
+  (correct) and would fire in a table of nothing but a tunnel's region hosts, which v5 kept on
+  purpose (`gina`, `cro-pricing`).
+  - **Resolution:** the other domains must not be endpoints themselves. The PSL and
+    disposable-mail lists still count; region tables stay HIGH (test pinned).
+- **A `package.json` cap gap.** The IP rule reports at most 3 matches a file; three metadata
+  URLs could hide a hook's IP. When the file has more IP URLs than were reported, none is
+  taken for metadata.
+
+### Evaluation snapshot
+- Live, the proposal's 3,032 reported verdicts (latest per version; 2,208 reported today,
+  127 positives under the four categories), real code: F5 -46, F6b -50, F7 -65, F3b+F3c -43,
+  F4b -12, F2 -7; together 2,208 → 1,985 (-223, 153 packages), all benign; precision
+  5.8% → 6.4%. Applying the Stage 2/3 rules to stored snippets and manifests where no tarball
+  was captured: -253 (6.5%; proposal: -227, 6.5%). Positives lost: 0 malicious, 0 unwanted,
+  0 unverified. All 3,211 verdicts: 2,371 → 2,109 reported, 136 positives kept.
+- `vm-day1`: the 87 malicious samples at risk through F3/F4/F5/F6/F7 re-run through
+  `pipeline+4` with the new code: 87 still reported. None of the 433 reported only through
+  install rules has build-tool-only hooks; the 4 other malicious samples that do are decided
+  as with the old code (1 reported, 3 not either way).
+
+### Open questions / next steps
+- After the freeze (window B): F8 (diff base for commit-hash prereleases) and the S1-S3
+  explained-install shapes, which can reuse `EXPLAINED`.
+- `pkg.pr.new` previews and other vendors' CDNs (F6b-like) are each an owner decision.
+
 ## 2026-11-08: A dependency the registry doesn't have (`npm.dependency.missing`)
 
 **Stage(s):** Stage 4 correlation (`STAGE_VERSION` 12)

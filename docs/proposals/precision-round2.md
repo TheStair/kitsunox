@@ -1,6 +1,19 @@
 # Proposal: precision, round 2 (what still reports benign versions, and fixes)
 
-> **Status:** proposal, 2026-11-08. Analysis only: nothing in `src/` or `tests/` changed.
+> **Status:** pre-freeze set implemented 2026-11-08 (owner's approval the same day: F5, F7,
+> F6b, F3b+F3c, F4b, F2; not F1, F3a, provenance as an explanation or the `CLEAR_*`
+> switches). Stage 1 F5 + F6b in commit `2a1d1cd`, Stage 3 F2 signal in `d4bba1a`, Stage 4 F7
+> + F2 explanation in `16676fc`, Stage 2 F3b + F3c + F4b in the commit after. Re-measured with
+> the real code, not the simulation: on the 3,032 versions below, 2,208 → 1,985 reported
+> (-223, all benign; precision 5.8% → 6.4%) where content was available, -253 (6.5%) with
+> the rules applied to stored snippets for versions without a tarball; 0 malicious, unwanted
+> or unverified lost; every `vm-day1` sample at risk still reported. Two deliberate
+> differences: F5's minor-0 shape only in `as_of`'s own year (as proposed it exempts 15 OSV
+> malware versions such as `2000.0.0`), and F3b never counts endpoint hosts as the other
+> domains (keeps v5's region tables). F2 lives in Stages 3 and 4 (an INFO finding and
+> `correlate.EXPLAINED`). Per fix: [stages/triage.md](../stages/triage.md),
+> [ast.md](../stages/ast.md), [correlate.md](../stages/correlate.md),
+> [static.md](../stages/static.md); [evaluation.md](../evaluation.md) results log.
 > Owner decisions are in [section 8](#8-owner-questions). Fixes marked **pre-freeze** are small
 > and local enough to build before the rule freeze (2026-11-12 00:00Z); the rest should wait and
 > be validated afterwards on window B's held tarballs.

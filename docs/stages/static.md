@@ -82,13 +82,13 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v5) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5) | HIGH |
+| `static.exfil-endpoint` (v6) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor` | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v2) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious) | MEDIUM |
+| `static.hardcoded-ip` (v3) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
 | `static.obfuscated` | many `_0x`-style identifiers (javascript-obfuscator output) | MEDIUM |
@@ -312,6 +312,52 @@ shapes were plainly not endpoints:
 Live, of the 116 reported versions with this finding on disk, 2 lose it (`dsh-security-pack`,
 `cortico-world-qqbot-feibi`, both reviewed benign). A small gain; the bulk of this rule's
 benign hits are the tunnel and Telegram forms, which stay for recall (next section).
+
+### `exfil-endpoint` v6 and `hardcoded-ip` v3: placeholders, lists and data (2026-11-08)
+
+From [precision round 2](../proposals/precision-round2.md) (F3b, F3c, F4b), approved by the
+owner before the rule freeze. A lowered match is LOW, weight 1, with a note saying why, and
+does not count toward the rule's cap of three matches a file, so placeholders first never
+hide a real endpoint later in the file.
+
+- **Placeholder tunnel hosts (F3c).** A match on `.ngrok(-free).io/app`,
+  `.trycloudflare.com` or `.serveo.net` whose own label is a placeholder
+  (`_PLACEHOLDER_LABEL`): a whole word label `example(s)`, `xxx…`, `your-…`, `foo`, `bar`,
+  `baz`, `abc…`, `random`, `my-app`/`my-tunnel`/..., or `<…>`, `*`, `${…}`, `{…}`, `..`
+  (`example.ngrok.app`, `<your-subdomain>.serveo.net`, `*.ngrok.io`). Real quick-tunnel
+  names (`purple-river-1234.trycloudflare.com`), words that merely end in one (`sidebar.`)
+  and bare suffixes (`endsWith(".trycloudflare.com")`) stay HIGH.
+- **A host in a list of domains (F3b).** A whole host literal with quoted literals of at least
+  two other domains within 400 characters (v5's window) that are not endpoints themselves
+  (`_in_domain_list`): disposable-mail lists naming `webhook.site`, the Public Suffix List
+  bundled by CLIs (`ngrok.app`, `ap.ngrok.io` among `ngo.us`, `ipfs.nftstorage.link`:
+  `@wirecat/*`, HIGH in every release). A table of nothing but a tunnel's region hosts
+  (`'eu.ngrok.io'`, `'us.ngrok.io'`) stays HIGH, as v5 decided (`gina`, `cro-pricing`), and so
+  does a URL beside a list. The proposal measured this on the ±60-character snippet; the code
+  uses the full window.
+- **IPs in data (F4b).** In Stage 2, not the rule (it is a path test, like the "doesn't run"
+  note): `hardcoded-ip` is LOW in `.html`/`.htm`/`.xml`/`.svg`/`.csv`/`.tsv`/`.txt`/`.lock`
+  files, `NOTICE`/`NOTICES`/`THIRD_PARTY_NOTICES`/`AUTHORS` files and tests named
+  `*.test.js`/`*.spec.ts` (`IP_DATA_FILES`), and on a root `package.json` line that is a
+  `"url"`/`"repository"`/`"homepage"`/`"bugs"` entry whose value is the package's
+  repository, homepage or bugs URL and is used by no script (`_metadata_url`). A hook command
+  with the IP stays MEDIUM (`internal-renderers`, `ms-client-portal`, `pandafortunerush`,
+  `teick`), and so does every IP in a `package.json` with more IP URLs than the rule's cap
+  reports (three metadata URLs could otherwise hide a hook's). `.json` and `.yml` are not data
+  here: that variant (F4) loses `dsh-model-pipeline@0.10.4`, an undisclosed LLM-provider IP in
+  a config file the app loads.
+- **Not done:** comment lines (+15 benign) lose `elf-stats-piney-pinecone-203@1.0.0`, whose only
+  `webhook.site` match is the comment above the code that builds the URL; Telegram
+  `bot${token}` (F3a) loses `@eooce/sbx@2.0.5` and `node-navsbx@1.0.0`.
+
+Measured with the real code on the proposal's 3,032 reported live versions (2,208 reported
+today), each stored MEDIUM/HIGH finding judged again on its file in the captured tarball (the
+same match, line and text; about half the versions have one): F3b+F3c -43 reports (17
+packages; simulated on snippets: 33), F4b -12 (7 packages); with the rules applied to the
+stored snippet and manifest for versions without a tarball, -60 and -20. All benign; no
+malicious, unwanted or unverified version lost. On all 3,211 with a verdict: -50 (-67) and
+-14 (-22). `vm-day1`: all 65 malicious samples at risk through the two rules (63 and 2) are
+still reported by `pipeline+4` with the v6/v3 code.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 

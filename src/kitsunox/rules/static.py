@@ -47,28 +47,43 @@ class RegexRule:
     def accept(self, match: re.Match[str]) -> bool:
         return True
 
+    def lowered(self, match: re.Match[str]) -> str | None:
+        """Why an accepted match is only LOW (weight at most 1), as a note for its explanation;
+        None to keep the rule's severity."""
+        return None
+
     def explain(self, match: re.Match[str]) -> str:
         return f"Found `{match.group(0)[:80]}`."
 
     def evaluate_text(self, text: str) -> Sequence[FileMatch]:
+        """At most `MAX_MATCHES_PER_RULE` matches at the rule's severity, and as many LOW
+        (`lowered`) ones: a file's first matches being placeholders never hides a real one."""
         out: list[FileMatch] = []
+        kept = low = 0
         for match in self.pattern.finditer(text):
             if not self.accept(match):
+                continue
+            note = self.lowered(match)
+            if note is not None and low >= MAX_MATCHES_PER_RULE:
                 continue
             line, snippet = _line_and_snippet(text, match.start(), match.end())
             out.append(
                 FileMatch(
                     rule_id=self.id,
                     rule_version=self.version,
-                    severity=self.severity,
-                    weight=self.weight,
+                    severity=self.severity if note is None else Severity.LOW,
+                    weight=self.weight if note is None else min(self.weight, 1.0),
                     title=self.title,
-                    explanation=self.explain(match),
+                    explanation=self.explain(match) + (note or ""),
                     line=line,
                     snippet=snippet,
                 )
             )
-            if len(out) >= MAX_MATCHES_PER_RULE:
+            if note is not None:
+                low += 1
+                continue
+            kept += 1
+            if kept >= MAX_MATCHES_PER_RULE:
                 break
         return out
 
@@ -96,9 +111,19 @@ class ExfilEndpoint(RegexRule):
     # more different such services within 400 characters (`dsh-security-pack`'s vet checks,
     # agent policy engines). `vm-day1`: no malicious sample lost. A URL (`"https://...`) is
     # never a whole host literal, so `"https://api.telegram.org/bot" + token` still counts.
+    # v6 (2026-11-08, `docs/proposals/precision-round2.md` F3b, F3c): LOW, weight 1, for a
+    # tunnel host whose own label is a placeholder (`example.ngrok.app`, `xxx.trycloudflare.com`,
+    # `<your-tunnel>.serveo.net`, `*.ngrok.io`, `${sub}.ngrok-free.app`;
+    # `_PLACEHOLDER_LABEL`), and for a whole host literal among at least two other quoted
+    # domain literals within 400 characters that are not endpoints themselves (`LIST_DOMAINS`:
+    # a disposable-mail list naming `webhook.site` among mail domains; a table of ngrok's
+    # region hosts stays HIGH, as v5 decided). Real quick-tunnel names
+    # (`purple-river-1234.trycloudflare.com`) and bare suffixes stay HIGH. Live: 33 benign
+    # reports, no positive; none of the 63 `vm-day1` malicious samples at risk lost. Matches
+    # on comment lines stay HIGH: that loses `elf-stats-piney-pinecone-203@1.0.0`.
 
     id = "static.exfil-endpoint"
-    version = 5
+    version = 6
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -122,7 +147,33 @@ class ExfilEndpoint(RegexRule):
             return not _placeholder_id(webhook_id)
         return not _in_deny_list(match)
 
+    def lowered(self, match: re.Match[str]) -> str | None:
+        if match.group(0).startswith(".") and _PLACEHOLDER_LABEL.search(
+            match.string, max(0, match.start() - 64), match.start()
+        ):
+            return PLACEHOLDER_NOTE
+        if _in_domain_list(match):
+            return LIST_NOTE
+        return None
 
+
+# A placeholder written as a tunnel host's own label, ending right before `.ngrok.io`,
+# `.trycloudflare.com` or `.serveo.net`: a word label on its own (`example`, `xxx`, `your-app`,
+# `foo`; not `sidebar`), or `<...>`, `*`, `${...}`, `{...}`, `..`.
+_PLACEHOLDER_LABEL: Final = re.compile(
+    r"(?:(?<![\w-])(?:examples?|x{3,}|your[-_]?[\w-]*|foo|bar|baz|abc\d*|random"
+    r"|my[-_]?(?:app|tunnel|subdomain|domain))|<[^<>\n]*>|\*|\$?\{[^{}\n]*\}|\.{2,})$",
+    re.IGNORECASE,
+)
+PLACEHOLDER_NOTE: Final = " A placeholder host: documentation, not an endpoint."
+# A whole quoted domain literal (`"mailinator.com"`): its last label is letters.
+_DOMAIN_LITERAL: Final = re.compile(
+    r"""(?P<q>["'`])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"""
+    r"""\.[a-z]{2,}(?P=q)""",
+    re.IGNORECASE,
+)
+LIST_DOMAINS: Final = 2
+LIST_NOTE: Final = " A host in a list of domains, not an endpoint."
 # What documentation writes after `api.telegram.org/bot` instead of a token.
 _TELEGRAM_PLACEHOLDER: Final = re.compile(r"<|\[|YOUR_|\.\.\.")
 # A whole string literal naming one exfiltration or OAST service, optionally with a subdomain.
@@ -138,9 +189,8 @@ DENY_LIST_SERVICES: Final = 3
 DENY_LIST_WINDOW: Final = 400
 
 
-def _in_deny_list(match: re.Match[str]) -> bool:
-    """Whether `match` is a host written as a whole string literal among literals of at least
-    `DENY_LIST_SERVICES` different services: a block or deny list, not an endpoint."""
+def _whole_literal(match: re.Match[str]) -> tuple[int, int] | None:
+    """The span of the host `match` is in when that host is a whole string literal."""
     text, start, end = match.string, match.start(), match.end()
     while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "._-"):
         start -= 1
@@ -150,7 +200,35 @@ def _in_deny_list(match: re.Match[str]) -> bool:
             tail += 1
     quote = text[start - 1 : start]
     if not quote or quote not in "\"'`" or text[tail : tail + 1] != quote:
+        return None
+    return start, tail
+
+
+def _in_domain_list(match: re.Match[str]) -> bool:
+    """Whether `match` is a host written as a whole string literal with quoted literals of at
+    least `LIST_DOMAINS` other domains within `DENY_LIST_WINDOW` characters, none of them
+    itself an endpoint: a table of a tunnel's region hosts (`'eu.ngrok.io'`, `'us.ngrok.io'`)
+    is kept, as v5 decided (`gina`, `cro-pricing`)."""
+    span = _whole_literal(match)
+    if span is None:
         return False
+    start, tail = span
+    text = match.string
+    lo = max(0, start - DENY_LIST_WINDOW)
+    hi = min(len(text), tail + DENY_LIST_WINDOW)
+    own = text[start:tail].lower()
+    others = {m.group(0)[1:-1].lower() for m in _DOMAIN_LITERAL.finditer(text, lo, hi)}
+    return len({d for d in others - {own} if not ExfilEndpoint.pattern.search(d)}) >= LIST_DOMAINS
+
+
+def _in_deny_list(match: re.Match[str]) -> bool:
+    """Whether `match` is a host written as a whole string literal among literals of at least
+    `DENY_LIST_SERVICES` different services: a block or deny list, not an endpoint."""
+    span = _whole_literal(match)
+    if span is None:
+        return False
+    start, tail = span
+    text = match.string
     lo = max(0, start - DENY_LIST_WINDOW)
     hi = min(len(text), tail + DENY_LIST_WINDOW)
     services = {
@@ -312,10 +390,13 @@ PUBLIC_RESOLVERS: Final = frozenset(
 
 class HardcodedIp(RegexRule):
     """A URL to a raw public IPv4 address: common for second-stage downloads and C2. v2: not a
-    well-known public DNS resolver (`PUBLIC_RESOLVERS`)."""
+    well-known public DNS resolver (`PUBLIC_RESOLVERS`). v3 (2026-11-08, F4b): LOW in files
+    that hold data or tests and in `package.json`'s own repository, homepage and bugs URLs; a
+    path test, so it is in Stage 2 (`stages.static.IP_DATA_FILES`, `_metadata_url`). 20 benign
+    live reports, no positive; neither `vm-day1` malicious sample at risk lost."""
 
     id = "static.hardcoded-ip"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"

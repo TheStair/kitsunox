@@ -40,7 +40,7 @@ from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.rules.signatures import KnownSignature
-from kitsunox.rules.static import RULES
+from kitsunox.rules.static import RULES, HardcodedIp
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
@@ -138,6 +138,47 @@ _NUMBER: Final = re.compile(r"[0-9]+")
 PREVIOUS_NOTE: Final = " Also in the previous version's file: not new in this release."
 ELSEWHERE_NOTE: Final = " Also in another of the previous version's files: not new in this release."
 DOCS_NOTE: Final = " Only in a file that doesn't run (documentation, types, a source map or tests)."
+# `static.hardcoded-ip` v3 (F4b): files that hold data, not code that runs: markup and tables,
+# lockfiles, notices, tests named `*.test.js` / `*.spec.ts` (NON_EXECUTING has `.txt` and test
+# directories). `.json` and `.yml` are not here: an app loads its config from them
+# (`dsh-model-pipeline@0.10.4`'s undisclosed LLM provider IP). See `_metadata_url` for
+# `package.json`.
+IP_DATA_FILES: Final = re.compile(
+    r"\.(?:html?|xml|csv|tsv|svg|lock|txt)$"
+    r"|(?:^|/)(?:NOTICE|NOTICES|THIRD_PARTY_NOTICES|AUTHORS)[^/]*$"
+    r"|[._-](?:test|spec)\.[cm]?[jt]sx?$",
+    re.IGNORECASE,
+)
+IP_DATA_NOTE: Final = " Only in a file that holds data or tests, not code that runs."
+IP_METADATA_NOTE: Final = " The package's own repository, homepage or bugs URL."
+_JSON_URL_LINE: Final = re.compile(
+    r'\s*"(?:url|repository|homepage|bugs)"\s*:\s*"([^"\\]*)"\s*,?\s*'
+)
+
+
+def _metadata_url(manifest: bytes, line: int) -> bool:
+    """Line `line` of `manifest` (a `package.json`) is one `"url"`, `"repository"`,
+    `"homepage"` or `"bugs"` entry whose value is the package's `repository`, `homepage` or
+    `bugs` URL, and no script uses it: metadata npm shows, not something that runs. A hook's
+    command stays a finding."""
+    lines = manifest.split(b"\n")
+    if not 0 < line <= len(lines):
+        return False
+    entry = _JSON_URL_LINE.fullmatch(lines[line - 1].decode("utf-8", "replace"))
+    try:
+        parsed = json.loads(manifest)
+    except ValueError:
+        return False
+    if entry is None or not isinstance(parsed, dict):
+        return False
+    urls = set()
+    for field in ("repository", "homepage", "bugs"):
+        value = parsed.get(field)
+        urls.add(value.get("url") if isinstance(value, dict) else value)
+    scripts = parsed.get("scripts")
+    commands = scripts.values() if isinstance(scripts, dict) else ()
+    url = entry.group(1)
+    return url in urls and not any(isinstance(c, str) and url in c for c in commands)
 
 
 def _key(match: FileMatch) -> tuple[str, str]:
@@ -155,6 +196,7 @@ def _demoted(
     path: str,
     before: frozenset[tuple[str, str]],
     previous_note: str = PREVIOUS_NOTE,
+    content: bytes = b"",
 ) -> FileMatch:
     if match.severity in (Severity.INFO, Severity.LOW):
         return match
@@ -162,6 +204,14 @@ def _demoted(
         note = previous_note
     elif NON_EXECUTING.search(path):
         note = DOCS_NOTE
+    elif match.rule_id == HardcodedIp.id and IP_DATA_FILES.search(path):
+        note = IP_DATA_NOTE
+    elif (
+        match.rule_id == HardcodedIp.id
+        and path == "package.json"
+        and _metadata_url(content, match.line)
+    ):
+        note = IP_METADATA_NOTE
     else:
         return match
     return match.model_copy(
@@ -269,7 +319,17 @@ def content_matches(
         item.path in base.tree or base.counterparts(item.path)
     ):
         before, note = base.anywhere(cache), ELSEWHERE_NOTE
-    return [_demoted(m, item.path, before, note) for m in matches]
+    manifest = content if item.path == "package.json" and _all_ips_shown(content, matches) else b""
+    return [_demoted(m, item.path, before, note, manifest) for m in matches]
+
+
+def _all_ips_shown(content: bytes, matches: Sequence[FileMatch]) -> bool:
+    """`static.hardcoded-ip` reported every IP URL in `content`: past its cap of matches, a
+    hook's IP after three metadata URLs would go unseen, so then none is taken for metadata."""
+    rule = HardcodedIp()
+    text = content.decode("utf-8", errors="replace")
+    every = sum(rule.accept(m) for m in rule.pattern.finditer(text))
+    return every == sum(m.rule_id == HardcodedIp.id for m in matches)
 
 
 def analyse(content: bytes, rules: Sequence[FileRule] = RULES) -> tuple[FileMatch, ...]:
