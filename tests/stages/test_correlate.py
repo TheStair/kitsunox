@@ -32,6 +32,7 @@ from kitsunox.stages.correlate import (
     correlate,
     correlate_run,
     decide,
+    explained,
     repo_network_failures,
     repo_over_budget,
     score,
@@ -206,6 +207,27 @@ def test_rules_see_earlier_findings() -> None:
     )
     assert [f.rule_id for f in result.findings] == ["s1", "x:1", "y:2"]
     assert result.history[-1].stage == "correlate" and result.history[-1].forwarded
+
+
+def test_a_build_tool_explanation_makes_the_install_hook_low() -> None:
+    """F2: Stage 3's `npm.install-build-tool` (every hook only runs a build tool, binding.gyp
+    runs no command) makes `npm.install-hook` LOW, weight 1, with a note; nothing else."""
+    hook = finding("npm.install-hook", Severity.MEDIUM, 5.0)
+    added = finding("npm.install-hook", Severity.HIGH, 5.0)
+    code = finding("npm.install-script-code", Severity.MEDIUM, 3.0)
+    tool = finding("npm.install-build-tool", Severity.INFO, 0.0)
+    result = correlate(candidate("1.0.1", hook, added, tool), CTX, [])
+    assert not result.history[-1].forwarded
+    assert [(f.severity, f.weight) for f in result.findings[:2]] == [(Severity.LOW, 1.0)] * 2
+    assert result.findings[0].explanation.endswith("(npm.install-build-tool).")
+    assert result.findings[2] == tool
+    other = correlate(candidate("1.0.1", hook, code, tool), CTX, [])
+    assert other.history[-1].forwarded  # the install code's own finding still reports
+    assert other.findings[1] == code
+    alone = correlate(candidate("1.0.1", hook), CTX, [])
+    assert alone.findings == (hook,) and alone.history[-1].forwarded
+    low = finding("npm.install-hook", Severity.LOW, 1.0)
+    assert explained([low, tool]) == (low, tool)
 
 
 def test_run_reads_every_triaged_version(tmp_path: Path) -> None:

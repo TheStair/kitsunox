@@ -160,7 +160,7 @@ def test_revived_by_the_same_account_is_low() -> None:
 
     old = snap("2.14.1", publisher="ckniffen", maintainers=("ckniffen",))
     same = found(snap("2.14.2", publisher="ckniffen", maintainers=("ckniffen",)), old)
-    assert (same.severity, same.weight, same.rule_version) == (Severity.LOW, 1.0, 2)
+    assert (same.severity, same.weight, same.rule_version) == (Severity.LOW, 1.0, 3)
     assert "who published the previous release" in same.explanation
     other = found(snap("2.14.2", publisher="mukulljangid", maintainers=("ckniffen",)), old)
     assert (other.severity, other.weight) == (Severity.MEDIUM, 2.0)
@@ -168,6 +168,40 @@ def test_revived_by_the_same_account_is_low() -> None:
     assert (added.severity, added.weight) == (Severity.MEDIUM, 2.0)
     unknown = found(snap("2.14.2"), snap("2.14.1"))
     assert unknown.severity == Severity.MEDIUM
+
+
+def test_revived_with_provenance_is_low() -> None:
+    """v3 (F7): a release with a provenance attestation came from the repository's CI; a
+    takeover would need that CI too. 65 benign live reports, and the rule has no positive."""
+
+    def low(rule_id: str) -> Finding:
+        return Finding(
+            rule_id=rule_id,
+            rule_version=1,
+            severity=Severity.LOW,
+            weight=1.0,
+            title="t",
+            explanation=f"{rule_id}.",
+        )
+
+    rule, ctx = RevivedWithNewDependency(), CorrelationContext(as_of=T0)
+    fired = (low("npm.dormant-revived"), low("npm.dependency.added"))
+    old = snap("2.14.1", publisher="ckniffen", maintainers=("ckniffen",))
+
+    def found(new: VersionSnapshot) -> Finding:
+        (result,) = rule.evaluate_candidate(
+            cand(new, old).model_copy(update={"findings": fired}), ctx
+        )
+        return result
+
+    ci = found(snap("2.14.2", publisher="GitHub Actions", has_provenance=True))
+    assert (ci.severity, ci.weight) == (Severity.LOW, 1.0)
+    assert ci.explanation.endswith(
+        "Published with a provenance attestation (from the repository's CI)."
+    )
+    # the xrpl@2.14.2 shape: another account, no provenance, keeps MEDIUM
+    hand = found(snap("2.14.2", publisher="mukulljangid", maintainers=("ckniffen",)))
+    assert (hand.severity, hand.weight) == (Severity.MEDIUM, 2.0)
 
 
 def test_a_unity_package_s_built_in_module_is_low() -> None:

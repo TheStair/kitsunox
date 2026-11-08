@@ -667,10 +667,17 @@ class RevivedWithNewDependency(BaseRule):
     `ckniffen`; `@mastra/*`), so none is lost. A dormant account hijacked as itself (an expired
     e-mail domain) is LOW here and needs its other signals (`leo-logger@1.0.8` has them).
     See `docs/proposals/stage1-precision.md`.
+
+    v3 (2026-11-08): LOW, weight 1, too when the release carries a provenance attestation: a
+    takeover that publishes with provenance needs the repository's CI as well as the npm
+    account. 65 benign live reports (65 packages), and the rule has no positive live; the
+    takeovers it catches on `vm-day1` (`xrpl@2.14.2`, `@mastra/*`) have no provenance. Only on
+    this rule: provenance is no explanation for install code, where 37 `vm-day1` samples
+    were published from compromised CI (`docs/proposals/precision-round2.md`, F7).
     """
 
     id = "npm.combination.revived-with-new-dependency"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 2.0
     title = "Dormant package revived with a new dependency"
@@ -692,6 +699,17 @@ class RevivedWithNewDependency(BaseRule):
                     f"{revived.explanation} {added.explanation} Published by "
                     f"`{change.new.publish.publisher}`, who published the previous release, "
                     "with no maintainer added.",
+                    *revived.evidence,
+                    *added.evidence,
+                    severity=Severity.LOW,
+                    weight=1.0,
+                ),
+            )
+        if change.new.publish.has_provenance:
+            return (
+                self.finding(
+                    f"{revived.explanation} {added.explanation} Published with a provenance "
+                    "attestation (from the repository's CI).",
                     *revived.evidence,
                     *added.evidence,
                     severity=Severity.LOW,
