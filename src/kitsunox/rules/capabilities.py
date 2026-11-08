@@ -22,8 +22,14 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
-from kitsunox.lang.javascript import Capability, Use
-from kitsunox.stages.ast import CodeChange, Profile
+from kitsunox.lang.javascript import (
+    CONSTRUCTOR_CHAIN,
+    FUNCTION_ALIASES,
+    GIVEN_LOADER,
+    Capability,
+    Use,
+)
+from kitsunox.stages.ast import CodeChange, PathUse, Profile
 
 C = Capability
 # Gaining one of these alone is worth a look; network together with one of these is the shape of
@@ -104,4 +110,80 @@ class CapabilityGained(BaseRule):
         )
 
 
-RULES: Final = (CapabilityGained(),)
+def constructs_functions(where: Profile) -> tuple[PathUse, ...]:
+    """Uses of the Function constructor reached through `constructor` (`FUNCTION_ALIASES`)."""
+    return tuple(u for u in where.where(C.DYNAMIC_CODE) if u.use.detail in FUNCTION_ALIASES)
+
+
+def strong(use: Use) -> bool:
+    """The constructor of a constructor (plain `Function`), or any form in a file that hands it
+    `require`, `process` or `module`."""
+    return use.detail.startswith(CONSTRUCTOR_CHAIN) or use.detail.endswith(GIVEN_LOADER)
+
+
+class FunctionConstructor(BaseRule):
+    """Code reaches the Function constructor without naming it. It runs built code as `eval`
+    does, written so that it reads as neither `eval` nor `Function`. `txnforge` and
+    `mock-datas-lib` (2026-11-02) ran a Python dropper through
+    `globalThis.constructor.constructor` (split over two variables), and nothing else in
+    Stages 2-3 fired. New packages count, since that is where such droppers are published; on
+    an update, only a form the previous version's code didn't use.
+
+    MEDIUM for the constructor of a constructor (`x.constructor.constructor`, which is plain
+    `Function`: code that isn't hiding names it) and for any form in a file that passes
+    `require`, `process` or `module` to a call or names one as a parameter of the built
+    function (`(function () {}).constructor("require", body)(require)`). LOW for a function
+    literal's constructor otherwise (`Object.getPrototypeOf(async function () {}).constructor`):
+    the only way to build an *async* function from text, which code-mode executors and
+    expression compilers use. Measurements: `docs/stages/ast.md`."""
+
+    id = "code.function-constructor"
+    version = 1
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Reaches the Function constructor through `constructor`"
+
+    def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
+        seen = (
+            {u.use.detail for u in constructs_functions(change.before)} if change.before else set()
+        )
+        found = sorted(
+            (u for u in constructs_functions(change.after) if u.use.detail not in seen),
+            key=lambda u: not strong(u.use),
+        )
+        if not found:
+            return ()
+        medium = strong(found[0].use)
+        return (
+            self.finding(
+                "This version's code takes the Function constructor from "
+                + (
+                    "an object's `constructor` chain instead of naming `Function`"
+                    if found[0].use.detail.startswith(CONSTRUCTOR_CHAIN)
+                    else "a function literal's `constructor` (an async or generator function "
+                    "built from text)"
+                )
+                + (
+                    ", in a file that hands Node's `require`, `process` or `module` to code"
+                    if found[0].use.detail.endswith(GIVEN_LOADER)
+                    else ""
+                )
+                + ": a way to run code built at runtime that searches for `eval` and "
+                "`Function` don't find.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=u.path,
+                        line_start=u.use.line,
+                        line_end=u.use.line,
+                        snippet=f"[{u.use.detail}] {u.use.snippet}",
+                    )
+                    for u in found[:EVIDENCE_PER_CAPABILITY]
+                ),
+                severity=None if medium else Severity.LOW,
+                weight=None if medium else 1.0,
+            ),
+        )
+
+
+RULES: Final = (CapabilityGained(), FunctionConstructor())

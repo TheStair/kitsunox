@@ -32,7 +32,7 @@ uv run kitsunox eval run <dataset> --predictor pipeline+3     # end to end with 
 | `filesystem` | `fs` (and `fs/promises`), `fs-extra`, `graceful-fs` |
 | `os-info` | `os` |
 | `env-all` | `process.env` used as a value (passed, serialised, spread, `{...rest}`), not one variable read |
-| `dynamic-code` | `eval()`, `Function()`, `new Function`, `vm`, `global["eval"]` |
+| `dynamic-code` | `eval()`, `Function()`, `new Function`, `vm`, `global["eval"]`; the Function constructor reached through `constructor` (`x.constructor.constructor`, `(async () => {}).constructor`; extractor v5) |
 | `dynamic-require` | `require(x)` / `import(x)` with a non-constant argument |
 | `native` | `require("*.node")`, `process.binding`, `process.dlopen` |
 
@@ -102,6 +102,7 @@ is the malicious set.
 | `npm.install-explained` | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
+| `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
 
 New packages get no `capability-gained` finding: with no previous version everything is
 "gained", and 34% of benign new packages would fire. They are covered by what their install
@@ -173,6 +174,68 @@ all benign. On `vm-day1` none of the 433 malicious samples reported only through
 rules has build-tool-only hooks; 4 other malicious samples do (`duckdb@1.3.3`,
 `@mastra/node-speaker@0.1.1`, ...), and `pipeline+4` decides each as before (1 reported, 3
 not reported either way).
+**Extractor v5 and `code.function-constructor`** (2026-11-08). `txnforge@1.0.4` and
+`mock-datas-lib@1.0.1` (2026-11-02, same author, adjudicated malicious: a Python dropper
+fetched from a hard-coded host) decoded their payload and ran it with the Function
+constructor taken from `globalThis.constructor.constructor`, split over two variables
+(`const c = g.constructor; const F = c.constructor; return F`). Nothing in Stages 2-3 fired
+(score 0): neither `eval` nor `Function` appears. The extractor now counts as `dynamic-code`:
+
+- the constructor of a constructor: `x.constructor.constructor`, `x["constructor"]["constructor"]`
+  (keys folded), and `c.constructor` where `c` is declared as `x.constructor` in the same
+  function (detail `constructor.constructor`);
+- the constructor of a function literal: `(async () => {}).constructor`,
+  `Object.getPrototypeOf(async function () {}).constructor`, generators and classes too
+  (detail `function.constructor`).
+
+Only where the result is used as a function: called, `new`ed, stored, passed or returned. A
+read (`.name`, `.prototype`), a comparison or `instanceof`, a test (`if`, `?:`, `typeof`) or
+a bare statement is not, and a variable holding it counts only if one of its references in
+that function is such a use (echarts keeps `function () {}.constructor` only for its
+`.prototype`). Called directly with short constant code it is exempt, as `Function` is
+(`[].constructor.constructor("return this")()`). The first version followed any variable of
+the same name anywhere in the file: in minified bundles one-letter names are reused for
+everything, and on the 6-hour run of 2026-11-07 22:27Z it found uses in 135 of 5,850 versions
+read and fired on 15 (`t.constructor.name` in zod, React's `publicInstance.constructor`).
+Scoping the variable to its function, and requiring a use as a function, left uses in 15 and
+firings on 2 (both function literals). Cost: the
+same as before within measurement noise on 3-12 MB bundles (references are found by searching
+the scope's text for the name; a query over every identifier took 0.4 s on a 7 MB bundle).
+
+The rule is MEDIUM (weight 3) for the constructor of a constructor, which is plain `Function`,
+a name code that isn't hiding writes directly, and for either form in a file that hands Node's
+loader to code: a call passing `require`, `process` or `module` (`txnforge`:
+`f(Buffer, require, process)`), or the built function given one as a parameter name
+(detail suffix `(require)`). Otherwise a function literal's constructor is LOW (weight 1): it
+is the only way to build an *async* function from text, which code-mode executors and
+expression compilers use (`@opencode/codemode`, `@uipath/maestro-builder-sdk`, echarts).
+`code.capability-gained` sees the new uses as `dynamic-code` that is not `eval` (LOW alone),
+and `npm.install-script-code` as dynamic code in install code.
+
+Measured on the unpruned live runs (Stage 3's versions with captured tarballs: 2026-11-07
+22:27Z, 6.2 h, 5,850 versions; 2026-11-08 07:31Z, 9.3 h, 9,783; the 4-day catch-up run of
+2026-11-07 16:33Z, 1 in 10 by tarball digest, 16,639):
+
+- **The constructor of a constructor fired on no benign version.**
+- A function literal's fired on 15 versions; 7 with the loader handed over. Of those, 3 are
+  `jmrwd-gjdob-util`, `smfos-bskdz-util` and `tsbwt-hawsi-util` `@1.0.1` (07:31Z run, not
+  reported, unreviewed): each XOR-decodes a field of its own `package.json` and runs it with
+  `(function(){}).constructor("require", "__dirname", code)(require, __dirname)`. The other 4
+  look benign: `@nodegx/backend@0.1.0` (compiles user code to check its syntax),
+  `@muqian/xiangsu-mcp-plus@0.6.0` (an editor plugin's dev `eval`), and two
+  `@tailwindcss/oxide-wasm32-wasi` insiders builds (`@napi-rs/wasm-runtime` bundled under
+  `node_modules/`; their base was not in the capture, so live they may not fire at all).
+- **Extra benign reports: about 3 a day** (2 in the 15.5 hours of full runs), at most about 8 if
+  the sampled `oxide` builds fire live. The 8 LOW firings report nothing on their own (3 were
+  reported already for other reasons).
+- `vm-day1`: 2 of 1,500 benign samples fire, both LOW (`@maofuxing/mfx-ds-bot`,
+  `@oxidevm/sdk`); 4 of 3,443 malicious samples fire, all LOW (javascript-obfuscator's
+  `function(){return!![];}['constructor']` in three, `zapier-platform-core@18.0.3`'s
+  `AsyncFunction`), each already reported or not routed to Stage 3: no sample gains or loses
+  a report.
+- Reviewed live malicious versions with captured tarballs (42 of 90, plus 8 OSV-labelled misses):
+  `txnforge@1.0.4` and `mock-datas-lib@1.0.1` gain the MEDIUM finding (both were score 0); no
+  other Stage 3 finding changes on any of them.
 
 ### Explained install (S1-S3) and agent configuration
 
@@ -337,6 +400,12 @@ tool descriptions); 6 of them add no risky line. `vm-day1`: 3 malicious lost, al
   patterns don't know; guard 3 catches the plain forms only.
 - Tree-sitter gives syntax, not data flow. `const m = "child_process"; require(m)` is a
   `dynamic-require`, not `process`, and a capability reached through a dependency is invisible.
+- The Function constructor through `constructor` (extractor v5) follows one variable only when
+  it is declared (`const`, `let`, `var`) in the same function as its use: a `c` declared in an
+  outer function, or assigned (`c = x.constructor`), or passed through a parameter, is not
+  followed. Minified code reuses short names in every scope, so the wider rule fired on
+  unrelated reads. `Function.prototype.constructor` and `Reflect.construct(Function, ...)` are
+  not recognised.
 - Install-entry detection reads command lines. `node -e "<code>"` and shell scripts are not
   parsed.
 - **tree-sitter 0.26.0 is excluded** (`pyproject.toml`). Using nodes from query matches

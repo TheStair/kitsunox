@@ -19,6 +19,7 @@ hash like Stage 2's.
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Iterable, Iterator
 from enum import StrEnum
@@ -39,7 +40,10 @@ from kitsunox.core.models import Record
 # 4: `process.getBuiltinModule("fs")` loads a module as `require` does, and
 #    `Reflect.get(process, "env")` is `process.env` (`@atedone/workspace-bootstrap`, 2026-10-31,
 #    used both to keep its install code clear of the usual tells).
-EXTRACTOR_VERSION: Final = 4
+# 5: the Function constructor reached through `constructor` (`_function_constructors`):
+#    `x.constructor.constructor`, `(() => {}).constructor`, and a variable holding
+#    `x.constructor` whose own `constructor` is taken (`txnforge`, `mock-datas-lib`, 2026-11-02).
+EXTRACTOR_VERSION: Final = 5
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
@@ -116,10 +120,36 @@ PROCESS_NATIVE: Final = frozenset({"binding", "dlopen", "_linkedBinding"})
 
 GLOBAL_OBJECTS: Final = ("global", "globalThis", "window", "self", "this")
 
+# `detail` of a `dynamic-code` use that reaches the Function constructor through `constructor`.
+CONSTRUCTOR_CHAIN: Final = "constructor.constructor"  # also `c.constructor`, `c = x.constructor`
+FUNCTION_CONSTRUCTOR: Final = "function.constructor"  # `(async () => {}).constructor`
+# Either, in a file that hands Node's loader to code: a call passing `require`, `process` or
+# `module` (`f(require, process)`), or the constructor given them as parameter names
+# (`F("require", body)`).
+GIVEN_LOADER: Final = "(require)"
+FUNCTION_ALIASES: Final = frozenset(
+    {
+        CONSTRUCTOR_CHAIN,
+        FUNCTION_CONSTRUCTOR,
+        CONSTRUCTOR_CHAIN + GIVEN_LOADER,
+        FUNCTION_CONSTRUCTOR + GIVEN_LOADER,
+    }
+)
+LOADER_NAMES: Final = frozenset({"require", "process", "module"})
+_FUNCTION_LITERALS: Final = frozenset(
+    {"arrow_function", "function_expression", "function", "generator_function", "class"}
+)
+
 
 def _any_of(names: Iterable[str]) -> str:
     return " ".join(f'"{n}"' for n in sorted(names))
 
+
+# `x["constructor"]` by the key's source text, quotes included. Not `#match?`: py-tree-sitter
+# decodes the text for a regular expression and raised SystemError on a file that isn't UTF-8
+# (`llm-oracle@1.0.2`). A concatenated key (`x["constr" + "uctor"]`) is captured whenever its
+# left operand is a string, and folded in Python.
+_CONSTRUCTOR_KEYS: Final = '"\\"constructor\\"" "\'constructor\'" "`constructor`"'
 
 # One pattern per kind of construct, filtered by name in the query itself (matched in C), so
 # Python only sees relevant nodes. `@arg`, `@source` and `@key` are folded as strings.
@@ -136,6 +166,12 @@ _QUERY: Final = f"""
  (#any-of? @obj "process" "Reflect" {_any_of(GLOBAL_OBJECTS)}))
 ((subscript_expression object: (identifier) @obj index: (_) @key) @member
  (#any-of? @obj "process" {_any_of(GLOBAL_OBJECTS)}))
+((member_expression property: (property_identifier) @ctor_prop) @ctor_access
+ (#eq? @ctor_prop "constructor"))
+((subscript_expression index: [(string) (template_string)] @ctor_key) @ctor_access
+ (#any-of? @ctor_key {_CONSTRUCTOR_KEYS}))
+(subscript_expression index: (binary_expression left: [(string) (binary_expression)])) @ctor_access
+((arguments (identifier) @passed) (#any-of? @passed {_any_of(LOADER_NAMES)}))
 """
 
 # Where a file loads other files of its package from (`local_paths`): a relative `require`,
@@ -260,7 +296,7 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
     tree = parser.parse(content)
     uses: dict[Capability, list[Use]] = {}
     kept: dict[tuple[Capability, str], int] = {}
-    for capability, detail, node in _uses(query, tree.root_node):
+    for capability, detail, node in _uses(query, tree.root_node, content):
         key = (capability, detail[:80])
         if kept.get(key, 0) < MAX_EVIDENCE:
             kept[key] = kept.get(key, 0) + 1
@@ -276,9 +312,19 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
     return FileCapabilities(language=language, parse_errors=tree.root_node.has_error, uses=ordered)
 
 
-def _uses(query: ts.Query, root: ts.Node) -> Iterator[tuple[Capability, str, ts.Node]]:
+def _uses(
+    query: ts.Query, root: ts.Node, content: bytes
+) -> Iterator[tuple[Capability, str, ts.Node]]:
+    accesses: list[ts.Node] = []
+    passes_loader = False
     for _, match in ts.QueryCursor(query).matches(root):
-        if "call" in match:
+        if "passed" in match:
+            passes_loader = True
+            continue
+        if "ctor_access" in match:
+            if _is_constructor_access(match["ctor_access"][0]):
+                accesses.append(match["ctor_access"][0])
+        elif "call" in match:
             yield from _call(match)
         elif "new" in match:
             name = _text(match["ctor"][0])
@@ -293,6 +339,7 @@ def _uses(query: ts.Query, root: ts.Node) -> Iterator[tuple[Capability, str, ts.
                 yield capability, specifier, match["import"][0]
         elif "member" in match:
             yield from _member(match)
+    yield from _function_constructors(accesses, content, passes_loader)
 
 
 def _call(match: dict[str, list[ts.Node]]) -> Iterator[tuple[Capability, str, ts.Node]]:
@@ -328,6 +375,214 @@ def _constant_code(node: ts.Node) -> bool:
     # A long constant can be a payload: obfuscator output is often passed to `Function` as one
     # literal (`calculatorscool346`), so only short code is let through.
     return sum(len(v or "") for v in values) <= MAX_CONSTANT_CODE
+
+
+def _is_constructor_access(node: ts.Node) -> bool:
+    """`x.constructor` or `x["constructor"]` (a folded key: `x["constr" + "uctor"]`)."""
+    if node.type == "member_expression":
+        return _text(node.child_by_field_name("property")) == "constructor"
+    return node.type == "subscript_expression" and (
+        fold_string(node.child_by_field_name("index")) == "constructor"
+    )
+
+
+def _unparenthesized(node: ts.Node | None) -> ts.Node | None:
+    while node is not None and node.type == "parenthesized_expression":
+        node = node.named_children[-1] if node.named_child_count else None
+    return node
+
+
+def _function_constructors(
+    accesses: list[ts.Node], content: bytes, passes_loader: bool
+) -> Iterator[tuple[Capability, str, ts.Node]]:
+    """The Function constructor reached without naming it, a way to run built code that reads
+    as neither `eval` nor `Function`: the `constructor` of a function (`(() => {}).constructor`,
+    `Object.getPrototypeOf(async function () {}).constructor`) or of a constructor
+    (`globalThis.constructor.constructor`, also split over a variable declared in the same
+    function: `const c = g.constructor; c.constructor`). It counts only where it is used as a
+    function (called, stored, passed, returned), not where it is read (`.name`), compared or
+    tested (`instanceof`), and not when called directly with only short constant code
+    (`_constant_code`). The detail says `GIVEN_LOADER` when the file passes `require`,
+    `process` or `module` to a call, or the constructor is given one as a parameter name."""
+    declared: dict[str, list[tuple[tuple[int, int], int]]] = {}
+    for node in accesses:
+        if (name := _declared_name(node)) is not None:
+            declared.setdefault(name, []).append((_scope(node), node.start_byte))
+    for node in accesses:
+        obj = _unparenthesized(node.child_by_field_name("object"))
+        if obj is None:
+            continue
+        if _is_constructor_access(obj) or (
+            obj.type == "identifier"
+            and any(
+                scope == _scope(node) and start < node.start_byte
+                for scope, start in declared.get(_text(obj), ())
+            )
+        ):
+            detail = CONSTRUCTOR_CHAIN
+        elif obj.type in _FUNCTION_LITERALS or _prototype_of_function(obj):
+            detail = FUNCTION_CONSTRUCTOR
+        else:
+            continue
+        sites = _function_uses(node, content)
+        if sites and not _called_with_constant_code(node):
+            if passes_loader or any(_given_loader_names(site) for site in sites):
+                detail += GIVEN_LOADER
+            yield Capability.DYNAMIC_CODE, detail, node
+
+
+def _declared_name(node: ts.Node) -> str | None:
+    """The variable `node` initialises: `const c = node` (not a later assignment, which in
+    minified code reuses one-letter names for anything)."""
+    parent = node.parent
+    if parent is None or parent.type != "variable_declarator":
+        return None
+    name = parent.child_by_field_name("name")
+    if parent.child_by_field_name("value") != node or name is None or name.type != "identifier":
+        return None
+    return _text(name)
+
+
+_SCOPES: Final = frozenset(
+    {
+        "program",
+        "function_declaration",
+        "function_expression",
+        "function",
+        "arrow_function",
+        "method_definition",
+        "generator_function",
+        "generator_function_declaration",
+    }
+)
+
+
+def _scope_node(node: ts.Node) -> ts.Node | None:
+    """The function (or file) `node` is in."""
+    parent = node.parent
+    while parent is not None and parent.type not in _SCOPES:
+        parent = parent.parent
+    return parent
+
+
+def _scope(node: ts.Node) -> tuple[int, int]:
+    scope = _scope_node(node)
+    return (scope.start_byte, scope.end_byte) if scope is not None else (0, 0)
+
+
+_FLOWS_ON: Final = frozenset({"||", "&&", "??"})
+_INVOKERS: Final = frozenset({"call", "apply", "bind"})
+_TESTS: Final = frozenset(
+    {
+        "if_statement",
+        "while_statement",
+        "do_statement",
+        "for_statement",
+        "expression_statement",
+        "unary_expression",
+        "binary_expression",
+    }
+)
+
+
+def _used_as_function(node: ts.Node) -> bool:
+    """`node` is called, stored, passed or returned; not read from (`c.name`, `c.prototype`),
+    compared, tested (`f instanceof (async () => {}).constructor`, `typeof c`, `c ? ... :`) or
+    left unused. Its value flows on through parentheses, `||`, `&&`, `??` and a ternary's
+    branches."""
+    child, parent = node, node.parent
+    while parent is not None and (
+        parent.type == "parenthesized_expression"
+        or (
+            parent.type == "binary_expression"
+            and _text(parent.child_by_field_name("operator")) in _FLOWS_ON
+        )
+        or (
+            parent.type == "ternary_expression" and parent.child_by_field_name("condition") != child
+        )
+    ):
+        child, parent = parent, parent.parent
+    if parent is None:
+        return True
+    if parent.type == "member_expression" and parent.child_by_field_name("object") == child:
+        return _text(parent.child_by_field_name("property")) in _INVOKERS
+    if parent.type == "subscript_expression" and parent.child_by_field_name("object") == child:
+        return fold_string(parent.child_by_field_name("index")) in _INVOKERS
+    return parent.type not in _TESTS and parent.type != "ternary_expression"
+
+
+_IDENTIFIER: Final = re.compile(r"[\w$]+")
+_REFERENCE_TYPES: Final = frozenset({"identifier", "shorthand_property_identifier"})
+
+
+MAX_REFERENCES: Final = 1000  # references of one variable examined (`_function_uses`)
+
+
+def _function_uses(node: ts.Node, content: bytes) -> list[ts.Node]:
+    """Where `node` is used as a function (`_used_as_function`): `node` itself, or for
+    `const c = <node>` the references to `c` in its scope that are (echarts keeps
+    `function () {}.constructor` only to read its `.prototype`). References are found by
+    searching the scope's text for the name (a query over every identifier of a 7 MB bundle
+    took 0.4 s); at most MAX_REFERENCES are examined, and the search stops at a use that is
+    given Node's loader (a minified bundle can name thousands of things `t`)."""
+    name = _declared_name(node)
+    scope = _scope_node(node)
+    if name is None or scope is None:
+        return [node] if _used_as_function(node) else []
+    if not _IDENTIFIER.fullmatch(name):
+        return [node]
+    word = re.compile(rb"(?<![\w$])" + re.escape(name.encode()) + rb"(?![\w$])")
+    declarator_name = node.parent.child_by_field_name("name") if node.parent else None
+    sites = []
+    for count, found in enumerate(word.finditer(content, scope.start_byte, scope.end_byte)):
+        if count >= MAX_REFERENCES:
+            break
+        ref = scope.descendant_for_byte_range(found.start(), found.end())
+        if (
+            ref is not None
+            and ref.type in _REFERENCE_TYPES
+            and ref != declarator_name
+            and _used_as_function(ref)
+        ):
+            sites.append(ref)
+            if _given_loader_names(ref):
+                break
+    return sites
+
+
+def _given_loader_names(site: ts.Node) -> bool:
+    """`site` is called or `new`ed with `"require"`, `"process"` or `"module"` among its
+    arguments: a function built with Node's loader as a parameter."""
+    child, parent = site, site.parent
+    while parent is not None and parent.type == "parenthesized_expression":
+        child, parent = parent, parent.parent
+    if parent is None or parent.type not in ("call_expression", "new_expression"):
+        return False
+    field = "function" if parent.type == "call_expression" else "constructor"
+    arguments = parent.child_by_field_name("arguments")
+    if parent.child_by_field_name(field) != child or arguments is None:
+        return False
+    return any(fold_string(a) in LOADER_NAMES for a in arguments.named_children)
+
+
+def _prototype_of_function(node: ts.Node) -> bool:
+    """`Object.getPrototypeOf(<function>)` or `Reflect.getPrototypeOf(<function>)`."""
+    if node.type != "call_expression":
+        return False
+    callee = node.child_by_field_name("function")
+    if callee is None or _text(callee) not in ("Object.getPrototypeOf", "Reflect.getPrototypeOf"):
+        return False
+    arguments = node.child_by_field_name("arguments")
+    args = [c for c in arguments.named_children if c.type != "comment"] if arguments else []
+    return bool(args) and (_unparenthesized(args[0]) or args[0]).type in _FUNCTION_LITERALS
+
+
+def _called_with_constant_code(node: ts.Node) -> bool:
+    parent = node.parent
+    if parent is None or parent.type not in ("call_expression", "new_expression"):
+        return False
+    field = "function" if parent.type == "call_expression" else "constructor"
+    return parent.child_by_field_name(field) == node and _constant_code(parent)
 
 
 def _member(match: dict[str, list[ts.Node]]) -> Iterator[tuple[Capability, str, ts.Node]]:

@@ -2,6 +2,60 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: The Function constructor through `constructor` (Stage 3)
+
+**Stage(s):** Stage 3 capability analysis (extractor v5, `code.function-constructor`)
+**Context:** Two live false negatives of window A, `txnforge@1.0.4` and `mock-datas-lib@1.0.1`
+(adjudicated malicious: a Python dropper fetched from a hard-coded host), ran their decoded
+payload with the Function constructor taken from `globalThis.constructor.constructor` and
+scored 0: Stages 2-3 look for `eval` and `Function` by name. The owner approved a rule for
+the pre-freeze window, to be built only if it doesn't flood benign reports.
+
+### Decisions
+- **A `dynamic-code` use, not a separate capability**: the alias forms are recorded with
+  details `constructor.constructor` / `function.constructor` (suffix `(require)` when the file
+  hands `require`, `process` or `module` to code), so `capability-gained` and
+  `install-script-code` see them like other dynamic code, and one rule reads the details.
+- **MEDIUM only for the strong forms.** The constructor of a constructor is plain `Function`,
+  which code that isn't hiding names: 0 benign firings in 32,272 live versions read (two full
+  runs and a 1-in-10 sample of the 4-day run) and in 1,500 `vm-day1` benign samples. A function
+  literal's constructor (`Object.getPrototypeOf(async function () {}).constructor`) is the
+  only way to build an async function from text, and code-mode executors use it: LOW, unless
+  the file hands Node's loader over. The first cut made it LOW unconditionally; the live sample
+  then showed three unreported `*-util@1.0.1` packages (`jmrwd-gjdob-util`, `smfos-bskdz-util`,
+  `tsbwt-hawsi-util`) running an XOR-decoded `package.json` field with
+  `(function(){}).constructor("require", "__dirname", code)(require, __dirname)`, so the
+  loader condition was added.
+- **New packages count** (unlike `capability-gained`): both misses were new packages.
+
+### Challenges
+- **Minified names.** Following any variable that holds `x.constructor` fired on 15 of 5,850
+  versions of one run (uses in 135): one-letter names are reused across scopes (`t.constructor.name`
+  in zod, React's `publicInstance = publicInstance.constructor`).
+  - **Resolution:** follow a variable only when it is declared in the same function, and count
+    a use only where the value is called, stored, passed or returned (not `.name`, comparisons,
+    tests); for a stored value, at least one reference must be such a use.
+  - **Why it worked:** the same run then had uses in 15 versions and firings on 2, both function
+    literals. `txnforge`'s split form (`const c = g.constructor; const F = c.constructor;
+    return F`) is still found.
+- **Cost.** A tree-sitter query over every identifier of a scope took 0.4 s on a 7 MB bundle;
+  searching the scope's text for the name and mapping hits back to nodes made the extractor's
+  cost indistinguishable from v4 on 3-12 MB bundles.
+
+### Evaluation snapshot
+- Live: 2 adjudicated misses now MEDIUM, plus 3 unreviewed new catches; reviewed malicious
+  versions with captured tarballs (42): no other Stage 3 finding changes.
+- `vm-day1`: 4 of 3,443 malicious fire, all LOW (already reported or not routed): recall
+  unchanged; benign 2 of 1,500 fire, both LOW (none reported).
+- Benign live: about 3 extra reports a day (`@nodegx/backend`, `@muqian/xiangsu-mcp-plus`;
+  at most ~8 if two sampled `@tailwindcss/oxide-wasm32-wasi` builds fire live).
+
+### Open questions / next steps
+- Review the three `*-util@1.0.1` packages (run `20261108T073127Z-npm`).
+- A variable declared in an outer function, an assignment, or a parameter is not followed
+  ([stages/ast.md](stages/ast.md#known-limits)).
+- Extractor v5 re-parses everything once; `data/cache/ast/v1`-`v4` (36 GB together) are no
+  longer read.
 ## 2026-11-08: Explained install (S1-S3) and agent configuration, built before the freeze
 
 **Stage(s):** Stage 3 AST (`npm.install-explained`, `agent.hostile-instructions`), Stage 4

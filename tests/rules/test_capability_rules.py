@@ -11,7 +11,7 @@ from kitsunox.ecosystems.npm.rules.install_code import (
     InstallScriptCode,
     InstallScriptObfuscated,
 )
-from kitsunox.rules.capabilities import CapabilityGained
+from kitsunox.rules.capabilities import CapabilityGained, FunctionConstructor
 from kitsunox.stages.ast import CapabilityCache, CodeChange, code_change
 
 CACHE = CapabilityCache(None)
@@ -314,3 +314,46 @@ def test_a_gyp_command_or_any_other_hook_keeps_the_hook_unexplained() -> None:
         install_sources,
     )
     assert unknown.build_commands == ()
+
+
+def test_function_constructor_counts_for_new_packages_and_gains() -> None:
+    """`txnforge` ran its payload through `globalThis.constructor.constructor` in a new
+    package; Stages 2-3 saw neither `eval` nor `Function`."""
+    rule = FunctionConstructor()
+    code = b"const c = globalThis.constructor; const f = c.constructor; f(a, b)(x)"
+    new = pkg(files={"lib/x.js": code})
+    (finding,) = rule.evaluate_code(code_change(SNAP, new, None, CACHE, install_sources))
+    assert finding.severity is Severity.MEDIUM
+    assert [e.path for e in finding.evidence] == ["lib/x.js"]
+    assert (finding.evidence[0].snippet or "").startswith("[constructor.constructor] c.constructor")
+    (finding,) = rule.evaluate_code(change(new, PLAIN))  # gained in an update
+    assert finding.rule_id == "code.function-constructor"
+    assert rule.evaluate_code(change(new, new)) == ()  # the previous version did it already
+    assert rule.evaluate_code(change(PLAIN, PLAIN)) == ()
+    # `capability-gained` sees it as `dynamic-code` that isn't `eval`: LOW
+    (gained,) = CapabilityGained().evaluate_code(change(new, PLAIN))
+    assert gained.severity is Severity.LOW
+
+
+def test_a_function_literals_constructor_is_low() -> None:
+    """The only way to build an async function from text: code-mode executors use it."""
+    rule = FunctionConstructor()
+    literal = pkg(files={"lib/x.js": b"const AF = (async () => {}).constructor; new AF(a, b)"})
+    (finding,) = rule.evaluate_code(change(literal, PLAIN))
+    assert (finding.severity, finding.weight) == (Severity.LOW, 1.0)
+    assert "function literal" in finding.explanation
+    chain = pkg(files={"lib/y.js": b"run(x.constructor.constructor)"})
+    both = literal | chain
+    (finding,) = rule.evaluate_code(change(both, literal))  # only the chain is new
+    assert finding.severity is Severity.MEDIUM
+    assert [e.path for e in finding.evidence] == ["lib/y.js"]
+    assert rule.evaluate_code(change(both, both)) == ()
+
+
+def test_a_function_literals_constructor_given_the_loader_is_medium() -> None:
+    """`smfos-bskdz-util@1.0.1` (2026-11-08): a payload decoded from package.json and run by
+    `(function(){}).constructor("require", "__dirname", code)(require, __dirname)`."""
+    code = b"var F = (function () {}).constructor; F('require', s)(require)"
+    (finding,) = FunctionConstructor().evaluate_code(change(pkg(files={"x.js": code}), PLAIN))
+    assert finding.severity is Severity.MEDIUM
+    assert "hands Node's" in finding.explanation
