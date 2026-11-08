@@ -30,14 +30,16 @@ def atomic_write(path: Path, data: bytes) -> None:
     for _ in range(WRITE_ATTEMPTS):
         tmp.write_bytes(data)
         if tmp.read_bytes() == data:
-            _sync(tmp)
+            sync_file(tmp)
             os.replace(tmp, path)
             return
     tmp.unlink(missing_ok=True)
     raise OSError(f"{path}: written bytes did not read back intact")
 
 
-def _sync(path: Path) -> None:
+def sync_file(path: Path) -> None:
+    """Flush a written file's data to disk (`fsync`), for writers that rename a temp file into
+    place themselves (see `atomic_write`)."""
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
     try:
         os.fsync(fd)

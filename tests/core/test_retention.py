@@ -1,11 +1,13 @@
 """Retention: prune old runs, pin packuments of labeled packages, collect unreferenced blobs."""
 
+from compression import zstd
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from conftest import AS_OF, Router
+from kitsunox.core import retention
 from kitsunox.core.retention import PruneReport, RetentionMarker, prune
 from kitsunox.core.run import (
     CORRELATE_SNAPSHOT,
@@ -21,6 +23,7 @@ from kitsunox.core.run import (
 )
 from kitsunox.ecosystems.npm.registry import REGISTRY_URL, NpmEcosystem, packument_url
 from kitsunox.githost.github import is_archive_url
+from kitsunox.stages import ingest
 from kitsunox.stages.ingest import changes_file, read_changes
 from kitsunox.util.http import FetchMode, HttpFetcher, Snapshot, SnapshotEntry
 
@@ -93,6 +96,35 @@ def test_crash_after_compressing_still_pins(tmp_path: Path, registry: Router) ->
     (run_dir / "retention.json").unlink()  # as if the process died before writing it
     report = prune_at(data, 8, {"kx-fixture"})
     assert report.blobs_pinned == 1 and blob_count(data) == 1
+
+
+def test_prune_streams_changes_and_the_compressed_file_round_trips(
+    tmp_path: Path, registry: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pruning the 4-day catch-up (405k changes, 2.9 GB) with every Change in memory and a
+    # one-shot compress would take ~16 GB: the prune reads changes one at a time and
+    # compresses in chunks (two of them here, so chunk boundaries are crossed).
+    data = DataDir(tmp_path)
+    manifest = run(data, registry)
+    run_dir = data.run_dir(manifest.run_id)
+    plain = (run_dir / "changes.jsonl").read_bytes()
+    assert len(plain) > 1
+
+    def whole_run(path: Path) -> object:
+        raise AssertionError(f"prune loaded the whole run {path}")
+
+    monkeypatch.setattr(ingest, "read_changes", whole_run)
+    monkeypatch.setattr(retention, "COMPRESS_CHUNK", len(plain) // 2 + 1)
+    synced: list[Path] = []
+    monkeypatch.setattr(retention, "sync_file", synced.append)
+
+    report = prune_at(data, 8, {"kx-fixture"})
+    assert report.runs_pruned == (manifest.run_id,) and report.blobs_pinned == 1
+    packed = run_dir / "changes.jsonl.zst"
+    assert not (run_dir / "changes.jsonl").exists()
+    assert not packed.with_suffix(".zst.tmp").exists()
+    assert synced == [packed.with_suffix(".zst.tmp")]  # synced before the rename
+    assert zstd.decompress(packed.read_bytes()) == plain
 
 
 def fetch_tarballs(data: DataDir, run_dir: Path, router: Router) -> list[str]:

@@ -2,6 +2,57 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Streaming, step 1 (`collect`, retention)
+
+**Stage(s):** `collect`, retention (step 1)
+**Context:** The owner approved steps 1 and 2 of
+[the streaming proposal](proposals/streaming-stages.md). Step 1 was urgent: the 4-day run
+`20261107T163310Z-npm` (405,710 changes, 2.9 GB `changes.jsonl`) becomes due for pruning
+after 2026-11-09 16:33Z, inside a `collect` tick, and the prune loaded every `Change` and the
+whole file: ~16 GB (the proposal's estimate) on the 30 GB VM, next to the tick's own stages.
+
+### Decisions
+- **`collect.run_stages` reduces each stage's result to its log counts and `del`s it** before
+  the next stage starts (Stage 1's candidates and forwarded batches; Stage 2's batches; Stage
+  3's batches; Stage 4's `CandidateFile`, which already streams). Before, triage's `_`
+  (the forwarded batches) and every earlier result stayed alive until the function returned.
+  The log lines are byte-identical. The stage functions still return whole runs; that is
+  steps 3-6.
+- **`_resume_from` reads `static.jsonl` a line at a time** (`_static_needs_retry`) and
+  parses only lines holding the `WILL_RETRY` text; the parsed decision confirms it, since an
+  evidence snippet or explanation can quote the text. Before, it split the whole file into
+  lines first (3.3 GB of bytes at 405k), for every pending run, every tick.
+- **`retention._prune_run` streams**: one pass of `iter_changes` collects the URLs to pin,
+  and `changes.jsonl` is compressed in 1 MiB chunks through `compression.zstd.open(..., "wb",
+  level=9)`. The `.zst` bytes may differ from a one-shot compress; nothing hashes them. The
+  temp file is now `fsync`ed before the rename (new `util.files.sync_file`, which
+  `atomic_write` also uses): before, a crash could keep the rename and the deletion of
+  `changes.jsonl` without the compressed data, the failure that left 211 empty blobs on
+  2026-11-07. Decision [0006](decisions/0006-scheduled-collection-and-retention.md) addendum.
+- **Alternative not taken:** two passes over the changes (one for metadata URLs, one for
+  tarball URLs) as the proposal allowed; one pass gives the same set.
+
+### Challenges
+- **Proving the prune is the same without running the old one on the big run** (it would need
+  ~16 GB). Resolution: the old and new code on copies of an hourly run give a byte-identical
+  `retention.json`; the URL logic is the same expressions in one loop; on the 4-day copy the
+  decompressed `.zst` hashes the same as the original.
+
+### Evaluation snapshot
+- Not a detection change: no recall or false-positive numbers move. Memory, measured on
+  hard-linked copies (details in [validation](validation.md#2026-11-08-streaming-step-1-collect-retention)):
+  - prune of the 4-day run: 1.19 GB peak RSS in 41 s, 0.74 GB of it the label set loaded
+    before pruning (~16 GB before, estimated);
+  - the resume check on its 1.67 GB `static.jsonl`: 86 MB.
+- **Not measured:** `run_stages`' saving needs a whole tick; the ~13-21 GB held into Stage 3
+  on the 4-day run is the proposal's model, not a new measurement.
+
+### Open questions / next steps
+- `retention.json` itself is still written with `write_text`, not atomically; a crash mid-write
+  would leave a marker that fails to load (and garbage collection would then raise before
+  deleting anything). Unchanged here; worth a one-line `atomic_write` later.
+- Steps 3-7 of the proposal, each with the owner's go-ahead.
+
 ## 2026-11-08: Stage 4 filled the disk on the 4-day run; a per-run comparison budget
 
 **Stage(s):** Stage 4 correlation (repository comparison), collect

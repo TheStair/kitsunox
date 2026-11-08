@@ -25,15 +25,20 @@ hold `DataDir.lock()`: a run that is still recording has blobs no snapshot refer
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable, Collection
 from compression import zstd
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 from kitsunox.core.models import Persisted, Record
 from kitsunox.core.run import STAGE_SNAPSHOTS, DataDir, RunManifest
-from kitsunox.stages.ingest import changes_file, read_changes
+from kitsunox.stages.ingest import changes_file, iter_changes
+from kitsunox.util.files import sync_file
 from kitsunox.util.http import Snapshot, SnapshotEntry
+
+COMPRESS_CHUNK: Final = 1 << 20
 
 
 class RetentionMarker(Persisted):
@@ -91,17 +96,18 @@ def _prune_run(
     metadata_url: Callable[[str], str],
 ) -> int:
     # changes_file, not changes.jsonl: after a crash between compressing and writing the
-    # marker, only the .zst exists, and the retry must still pin from it.
-    changes = read_changes(changes_file(run_dir))
+    # marker, only the .zst exists, and the retry must still pin from it. One streamed pass:
+    # a whole run as objects is ~32 KB a change (~13 GB for the 4-day catch-up of 405k).
     plain = run_dir / "changes.jsonl"
-    urls = {metadata_url(c.new.ref.name) for c in changes if c.new.ref.name in pinned_names}
-    urls |= {
-        snap.artifact.url
-        for c in changes
-        if c.new.ref.name in pinned_names
-        for snap in (c.new, c.previous)
-        if snap is not None and snap.artifact is not None
-    }
+    urls: set[str] = set()
+    for change in iter_changes(changes_file(run_dir)):
+        if change.new.ref.name in pinned_names:
+            urls.add(metadata_url(change.new.ref.name))
+            urls.update(
+                snap.artifact.url
+                for snap in (change.new, change.previous)
+                if snap is not None and snap.artifact is not None
+            )
     entries = dict(Snapshot.load(run_dir / "snapshot.json").entries)
     for name in STAGE_SNAPSHOTS:
         if (run_dir / name).exists():
@@ -111,12 +117,20 @@ def _prune_run(
     if plain.exists():
         packed = run_dir / "changes.jsonl.zst"
         tmp = packed.with_suffix(".zst.tmp")
-        tmp.write_bytes(zstd.compress(plain.read_bytes(), level=9))
+        _compress(plain, tmp)
+        sync_file(tmp)  # before the rename, and before `plain` goes
         os.replace(tmp, packed)
         plain.unlink()
     # Written last: a crash before this point leaves the run unpruned, so it is retried.
     (run_dir / "retention.json").write_text(marker.model_dump_json(indent=2) + "\n")
     return len(retained)
+
+
+def _compress(source: Path, target: Path) -> None:
+    """zstd level 9, streamed in `COMPRESS_CHUNK` pieces. The frames can differ from a one-shot
+    `zstd.compress`; nothing hashes them, and the decompressed bytes are the same."""
+    with source.open("rb") as plain, zstd.open(target, "wb", level=9) as packed:
+        shutil.copyfileobj(plain, packed, COMPRESS_CHUNK)
 
 
 def _collect_garbage(

@@ -142,3 +142,17 @@ and die the same way.
   chaining, as before.
 - Only chained runs are sliced; `ingest record` with an explicit range or `--lookback` reads
   what it is asked to.
+
+## Addendum (2026-11-08, later): pruning streams the run
+
+Pruning read every `Change` of a run into memory to find the URLs to pin, and compressed
+`changes.jsonl` in one call on the whole file: about 16 GB for the 4-day run
+(`20261107T163310Z-npm`, 2.9 GB), which becomes due inside a `collect` tick. `_prune_run` now
+reads the changes one at a time (`iter_changes`) and compresses in 1 MiB chunks
+(`compression.zstd.open(..., "wb", level=9)`). The order is unchanged: temp file, then
+`fsync`, then rename, then delete `changes.jsonl`, then `retention.json` last. The `fsync`
+is new: without it a crash could keep the rename and the deletion but not the compressed data.
+The `.zst` bytes can differ from a one-shot compress (nothing hashes them); the decompressed
+bytes are the same. On a hard-linked copy of that run: 41 s, 1.19 GB peak RSS for the whole
+`prune` call, 0.74 GB of it the label set loaded before pruning
+([validation](../validation.md)). See `docs/proposals/streaming-stages.md`, step 1.

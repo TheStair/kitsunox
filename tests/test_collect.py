@@ -19,9 +19,12 @@ from kitsunox.collect import (
     rescore_run,
     run_stages,
 )
+from kitsunox.core.models import Candidate, Finding, PackageBatch, Severity, StageDecision
 from kitsunox.core.run import MAX_RUN_FEED_SPAN, Checkpoint, DataDir
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL
 from kitsunox.evaluation.labels import LabelSet, label_store
+from kitsunox.stages.static import STAGE_ID as STATIC_STAGE
+from kitsunox.stages.static import WILL_RETRY
 from kitsunox.util import disk
 from kitsunox.util.disk import GIB
 
@@ -204,6 +207,48 @@ def test_an_interrupted_rerun_leaves_no_stale_report(
     # The old report would otherwise count as complete for the rewritten Stage 1-3 outputs.
     assert not (run_dir / "report" / "index.md").exists()
     assert _resume_from(run_dir) == REPORT_ONLY
+
+
+def test_only_a_stage2_decision_to_retry_resumes_from_stage1(
+    tmp_path: Path, registry: Router
+) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    feed_from(registry, 200)
+    first = collect(data, now=AS_OF, log=lambda _: None, clients=registry.client).manifest
+    assert first is not None
+    run_dir = data.run_dir(first.run_id)
+    static = run_dir / "static.jsonl"
+    (batch,) = [PackageBatch.load_json(line) for line in static.read_bytes().splitlines()]
+    version = batch.versions[-1]
+    assert _resume_from(run_dir) is None
+
+    def rewrite(candidate: Candidate) -> None:
+        changed = batch.model_copy(update={"versions": (*batch.versions[:-1], candidate)})
+        static.write_bytes(b"\n" + changed.model_dump_json().encode() + b"\n\n")
+
+    # The text alone (here in a finding's explanation) is not a decision to retry.
+    quoted = Finding(
+        rule_id="x",
+        rule_version=1,
+        severity=Severity.LOW,
+        weight=0.0,
+        title="x",
+        explanation=f"files unavailable, {WILL_RETRY}TransientFetchError: x",
+    )
+    rewrite(version.model_copy(update={"findings": (*version.findings, quoted)}))
+    assert WILL_RETRY.encode() in static.read_bytes()
+    assert _resume_from(run_dir) is None
+
+    retry = StageDecision(
+        stage=STATIC_STAGE,
+        forwarded=False,
+        reason=f"files unavailable, {WILL_RETRY}TransientFetchError: x",
+    )
+    rewrite(version.model_copy(update={"history": (*version.history[:-1], retry)}))
+    assert _resume_from(run_dir) == 1
 
 
 def test_stage5_runs_only_with_a_results_root(tmp_path: Path, registry: Router) -> None:

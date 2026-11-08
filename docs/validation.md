@@ -214,3 +214,17 @@ Run `20261029T221803Z-npm`, a 24-hour catch-up window, timed from its files and
 | `static.exfil-endpoint` forms on `vm-day1` (1,176 malicious, 5 benign samples) | Telegram only with a literal bot token and tunnels only as a concrete host would drop 30 malicious (29 caught by nothing else) and 4 benign; not adopted. ngrok region hosts only: 9 live reported versions, but 11 malicious samples (`stage2-rules` 2,169 -> 2,158 forwarded; the first scan missed 2-letter labels); not adopted |
 | Stage 5 bundles for the run's reported versions with install hooks (154; 78 more not captured) | Bundle format 2, 4 workers: 123 offline-installable (102 complete, 25 without dependencies, 4 of the complete predict network); 12 incomplete only because one dependency file was over 64 MiB (native CLIs: bun, opencode, `@square/cli`). After letting a file take the unpacked cap: **135 of 154 (87.7%)**; still out: 10 over a cap (8 unpacked, `@opencode/cli` x6), 4 with an unresolved dependency (2 not on the registry, 1 a remote URL, 1 for another platform), 1 with a dependency shrinkwrap. p50 / p90 / max: 127 / 230 / 642 packages, 14 / 63 / 126 MB `.tgz`, 10 / 24 / 45 s; 2.8 GB fetched once for all 154; 4.3 GB peak RSS |
 | Ticks after the catch-up (bounded Stage 4: archive and packument slots) | 11:30-12:13 UTC, 23,807 changes: 43 min, 196 to review, available memory never under 20.7 GB of 30.7 (old code: 5.5 GB); systemd cgroup peak 16 GB, page cache included. Hourly ticks of ~5,000 changes since: 8-10 min, cgroup peak 6-7 GB. The queue held 1,119 packages (1,568 versions) from 7 runs at 14:43 |
+
+## 2026-11-08: Streaming step 1 (`collect`, retention)
+
+`docs/proposals/streaming-stages.md` step 1, measured from a worktree against the live
+`data/` read-only (copies for anything that writes), each job under
+`systemd-run --user --scope -p MemoryMax=4G`. Peak RSS is
+`getrusage(RUSAGE_SELF).ru_maxrss`.
+
+| Check | Result |
+|---|---|
+| `prune` on a hard-linked copy of the 4-day run `20261107T163310Z-npm` (405,710 changes, 2.94 GB `changes.jsonl`), with the newest label set (222,873 names) | 41 s; **1.19 GB peak RSS**, of which 0.74 GB is the label set, loaded before pruning (the old code: ~16 GB, estimated in the proposal, not run); 1,983 entries pinned; `.zst` 209.6 MB; decompressed SHA-256 equals the original's |
+| `prune` on a copy of the hourly `20261108T153157Z-npm` (1,598 changes), new code vs. the old | `retention.json` byte-identical; `.zst` 1,146,488 vs. 1,146,134 B (streamed frames); both decompress to the original |
+| `collect._resume_from`'s Stage 2 retry check on the 4-day run's `static.jsonl` (1.67 GB, 42,719 batches) | Streamed: no line holds the `WILL_RETRY` text, so nothing is parsed; ~1 s, **86 MB peak RSS** (the old check read the file and split it into lines first: ~3.3 GB before parsing, from the proposal's sizes) |
+| `collect.run_stages` dropping each stage's result after counting | Not measured live (it needs a whole tick); the existing `tests/test_collect.py` log-line checks pass unchanged. The proposal's model puts the saving at the earlier stages' results: ~13-21 GB held when Stage 3 started on the 4-day run |

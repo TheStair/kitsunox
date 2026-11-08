@@ -89,7 +89,7 @@ from kitsunox.stages.code import run_code_stage
 from kitsunox.stages.correlate import repo_network_failures, repo_over_budget
 from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.sandbox import OVERDUE_AFTER, run_sandbox_stage
-from kitsunox.stages.static import needs_retry, record_static
+from kitsunox.stages.static import WILL_RETRY, needs_retry, record_static
 from kitsunox.stages.triage import triage_run
 from kitsunox.util.disk import GIB, DiskSpaceError, free_bytes, gib
 from kitsunox.util.env import env_value
@@ -283,27 +283,37 @@ def run_stages(
         # The old report no longer matches what is about to be rewritten. Without its index
         # (written last), a tick killed before the new report resumes as REPORT_ONLY.
         (run_dir / REPORT_DIR / "index.md").unlink(missing_ok=True)
+    # Each stage's result is reduced to the counts its log line needs, then dropped, before the
+    # next stage starts: a stage returns its whole output (Stage 1 ~33 KB a change), so holding
+    # them all is what made Stage 3 of the 4-day catch-up start with ~21 GB already in use
+    # (docs/proposals/streaming-stages.md).
     if start <= 2:
         manifest = RunManifest.load_json((run_dir / "manifest.json").read_bytes())
-        candidates, _ = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
+        candidates, forwarded = triage_run(run_dir, RuleContext(as_of=manifest.as_of))
+        triaged = len(candidates)
+        stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
+        del candidates, forwarded
         batches = record_static(
             data, run_id, NpmEcosystem, client=client(), seed=seed(STATIC_SNAPSHOT)
         )
-        decisions = [c.history[-1] for b in batches for c in b.versions]
-        stage1 = sum(c.history[-1].reason.startswith("rules:") for c in candidates)
-        stage2 = sum(d.forwarded for d in decisions)
-        missing = sum(d.reason.startswith("files unavailable") for d in decisions)
+        read = stage2 = missing = 0
+        for decision in (c.history[-1] for b in batches for c in b.versions):
+            read += 1
+            stage2 += decision.forwarded
+            missing += decision.reason.startswith("files unavailable")
         retry = " (network failures: retried next tick)" if needs_retry(batches) else ""
+        del batches
         parts.append(
-            f"{len(candidates)} triaged, {stage1} flagged by Stage 1; {len(decisions)} versions "
+            f"{triaged} triaged, {stage1} flagged by Stage 1; {read} versions "
             f"read by Stage 2, {stage2} flagged, {missing} without files{retry}"
         )
     if start <= 3:
         coded = run_code_stage(data, run_id, client=client())
-        parts.append(
-            f"{sum(c.history[-1].forwarded for b in coded for c in b.versions)} flagged by Stage 3"
-        )
+        stage3 = sum(c.history[-1].forwarded for b in coded for c in b.versions)
+        del coded
+        parts.append(f"{stage3} flagged by Stage 3")
     if start <= 4:
+        # A `CandidateFile`: Stage 4's versions are read from disk on each pass, never held.
         versions = run_correlate_stage(
             data,
             run_id,
@@ -320,6 +330,7 @@ def run_stages(
         )
         uncompared = repo_network_failures(versions)
         over_budget = repo_over_budget(versions)
+        del versions
         parts.append(
             f"{compared} compared with their repository"
             + (f", {uncompared} not compared (network)" if uncompared else "")
@@ -432,9 +443,7 @@ def run_sandbox(
 def _resume_from(run_dir: pathlib.Path) -> int | None:
     """The first stage whose output is missing (or, for Stage 2, hit network failures)."""
     static = run_dir / "static.jsonl"
-    if not static.exists() or needs_retry(
-        PackageBatch.load_json(line) for line in static.read_bytes().splitlines() if line.strip()
-    ):
+    if not static.exists() or _static_needs_retry(static):
         return 1
     if not (run_dir / "ast.jsonl").exists():
         return 3
@@ -443,6 +452,19 @@ def _resume_from(run_dir: pathlib.Path) -> int | None:
     if not _report_complete(run_dir / REPORT_DIR):
         return REPORT_ONLY
     return None
+
+
+def _static_needs_retry(path: pathlib.Path) -> bool:
+    """`needs_retry` over a Stage 2 output, read a line at a time: only lines holding the
+    `WILL_RETRY` text are parsed (the 4-day catch-up's `static.jsonl` is 1.7 GB, ~7.5 GB as
+    objects, and this runs for every pending run on every tick). The parsed decision confirms
+    it, since an evidence snippet can hold the same text. The text is plain ASCII, so it is
+    written into the JSON unescaped."""
+    marker = WILL_RETRY.encode()
+    with path.open("rb") as handle:
+        return any(
+            marker in line and needs_retry((PackageBatch.load_json(line),)) for line in handle
+        )
 
 
 def _report_complete(directory: pathlib.Path) -> bool:

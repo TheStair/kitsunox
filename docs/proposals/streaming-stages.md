@@ -1,9 +1,10 @@
 # Proposal: stream Stages 0-3 from disk (bounded memory)
 
-> **Status:** proposed 2026-11-08, not implemented. Measured read-only on
-> `20261107T163310Z-npm` (405,710 changes, the 4-day catch-up). Nothing under `src/` or `tests/`
-> was changed. Each step below is a separate task (one stage per task), and each needs the
-> owner's go-ahead.
+> **Status:** proposed 2026-11-08. **Step 1** (`collect` + retention) implemented 2026-11-08;
+> steps 2-7 not implemented (see section 7 and the devlog). The measurements below were taken
+> read-only on `20261107T163310Z-npm` (405,710 changes, the 4-day catch-up) before any code
+> changed. Each step is a separate task (one stage per task), and each needs the owner's
+> go-ahead.
 
 ## Summary
 
