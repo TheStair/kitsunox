@@ -53,6 +53,16 @@ from kitsunox.evaluation.harness import (
 )
 from kitsunox.evaluation.labels import label_store
 from kitsunox.evaluation.ledger import LIVE_DIR, backfill
+from kitsunox.evaluation.live import (
+    DEFAULT_D,
+    DEFAULT_WINDOWS,
+    LiveReport,
+    LiveSources,
+    live_paths,
+    parse_window,
+    read_log,
+    run_live_eval,
+)
 from kitsunox.evaluation.metrics import render_markdown
 from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import (
@@ -928,6 +938,82 @@ def live_ledger(
     with _maybe_locked(data, inside):
         written = backfill(data.root / "runs", live, run_ids=run_ids, log=typer.echo)
     typer.echo(f"{len(written)} ledgers written to {live}/ledger")
+
+
+@live_app.command("eval")
+def live_eval(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    live_dir: LiveDirOption = None,
+    labels: Annotated[str | None, typer.Option(help="Label set id. Default: newest.")] = None,
+    days: Annotated[int, typer.Option("--d", min=0, help="Benign delay D, in days.")] = DEFAULT_D,
+    window: Annotated[
+        list[str] | None,
+        typer.Option(help="NAME:YYYY-MM-DD:YYYY-MM-DD (end exclusive). Default: A and B."),
+    ] = None,
+    ledger: Annotated[bool, typer.Option(help="Write missing ledgers first.")] = True,
+) -> None:
+    """Join the ledgers with labels, takedowns and verdicts; write the live dataset, the
+    confusion matrices (LIVE/reports/) and a results-log line (LIVE/log.jsonl)."""
+    data = DataDir(data_dir)
+    live, inside = _live(data, live_dir)
+    try:
+        windows = tuple(parse_window(w) for w in window) if window else DEFAULT_WINDOWS
+    except ValueError as exc:
+        typer.echo(f"bad --window: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    with _maybe_locked(data, inside):
+        if ledger:
+            backfill(data.root / "runs", live)
+        try:
+            report, line, path = run_live_eval(
+                LiveSources(data.root, live),
+                built_at=datetime.now(UTC),
+                label_set_id=labels,
+                windows=windows,
+                d=days,
+            )
+        except LookupError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from exc
+    typer.echo(f"dataset {path} ({report.windows['all'].versions:,} versions)")
+    for name, w in report.windows.items():
+        m = w.matrices.get("behaviour")
+        if m is not None and w.versions:
+            typer.echo(
+                f"  {name:9s} TP {m.tp:,} FP {m.fp:,} FN {m.fn:,} TN {m.tn:,} "
+                f"recall {_rate(m.recall.value)} precision {_rate(m.precision.value)}"
+            )
+    typer.echo(
+        f"{line.newly_labeled} newly labeled malicious; {live_paths(live, report.dataset)[1]}"
+    )
+
+
+def _rate(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.1%}"
+
+
+@live_app.command("misses")
+def live_misses(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    live_dir: LiveDirOption = None,
+) -> None:
+    """Labeled-malicious versions the pipeline didn't report (newest live report), for
+    adjudication: record a verdict on one with `kitsunox live verdict`."""
+    data = DataDir(data_dir)
+    live, _ = _live(data, live_dir)
+    entries = read_log(live / "log.jsonl")
+    if not entries:
+        typer.echo("no live evaluation yet; run `kitsunox live eval`", err=True)
+        raise typer.Exit(code=2)
+    report = LiveReport.load_json(live_paths(live, entries[-1].dataset)[0].read_bytes())
+    for m in report.misses:
+        verdict = f" verdict {m.verdict}" if m.verdict else ""
+        typer.echo(
+            f"{m.run_id} {m.name!r} {m.version!r} shape {m.shape}, {m.cause}, score {m.score:g}, "
+            f"tarball {'captured' if m.tarball else 'not captured'}, {', '.join(m.osv) or '-'}"
+            f"{verdict}"
+        )
+    typer.echo(f"{len(report.misses)} missed ({report.dataset})")
 
 
 @data_app.command("prune")

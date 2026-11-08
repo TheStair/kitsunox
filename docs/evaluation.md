@@ -80,6 +80,8 @@ owner's decisions are [0019](decisions/0019-live-evaluation.md).
 
 ```sh
 uv run kitsunox live ledger                       # backfill: a ledger for every finished run
+uv run kitsunox live eval                         # dataset + matrices -> data/eval/live/reports/
+uv run kitsunox live misses                       # labeled-malicious versions not reported
 ```
 
 ### The decision ledger (`evaluation/ledger.py`)
@@ -105,6 +107,59 @@ backfill can't know them, so it is empty). Then one row per version that entered
 A re-scored run (`kitsunox rescore`) is ledgered as the tick scored it (`before-rescore/`); its
 current outputs go to `<run_id>.rescored.jsonl.zst`, used only for a secondary recall figure.
 The ledger streams `correlate.jsonl` a line at a time and is a pure function of the run's files.
+
+### The live dataset and the matrices (`evaluation/live.py`)
+
+`kitsunox live eval` (and `collect`, daily) joins the ledgers with the newest label set and
+writes `data/eval/live/datasets/live-<labels id>.jsonl.zst`: a header with the SHA-256 of every
+input (the label set and every earlier one, the takedown log, the verdict lines used, every
+ledger), the runs with their rule fingerprints, and the runs that never finished; then one row
+per version with every label source attached. `as_of` is the label set's `fetched_at`; verdicts
+recorded after it are not used. Rebuilding from the same files gives the same bytes. The
+report goes to `data/eval/live/reports/live-<id>.json` and `.md`, and a line to
+`data/eval/live/log.jsonl` (`collect` never edits `docs/`).
+
+**Population.** Each version that entered Stage 4 in a finished run, once, in the first run
+that recorded it. A **window** is the runs whose `as_of` falls in `[start, end)`: A is
+2026-10-29 to 2026-11-04, B (the rule freeze, [0019](decisions/0019-live-evaluation.md)) is
+2026-11-12 to 2026-11-19. `all` is every window together. A version captured more than 6 hours
+after its release (the first VM run's 24-hour window, the 4-day catch-up of 11-07) is counted
+in a separate `catch-up` group, not in any window: npm may already have removed the malware, so
+its recall is survivor-biased.
+
+**Flagged** = in the run's report as the tick wrote it (`before-rescore/` for a re-scored run).
+The row "flagged = current report" uses the report after re-scores, for recall.
+
+**Truth** for a version, in this order (`live.truth`):
+
+| | Behaviour truth (headline) | OSV truth | OSV only |
+|---|---|---|---|
+| npm placeholder (`0.0.1-security`, `0.0.0-stage`) | excluded | excluded | excluded |
+| verdict `malicious` / `benign` | malicious / benign | used only without an OSV record | ignored |
+| verdict `inconclusive` | excluded unless OSV | excluded unless OSV | ignored |
+| OSV record *observes* it ([0005](decisions/0005-label-hygiene.md)) | malicious | malicious | malicious |
+| OSV record only *projects* onto it | excluded | excluded | excluded |
+| npm takedown after it, no OSV | benign (malicious in the "+ takedowns" row) | same | same |
+| none of these, released ≥ D days before `as_of` | benign | benign | benign |
+| none of these, younger | excluded (provisional) | same | same |
+
+**Cells.** TP = flagged and malicious; FP = flagged and benign (`fp_unreviewed`: of those, how
+many have no verdict, so they are *presumed* benign); FN = not flagged and malicious; TN = not
+flagged and benign. Recall = TP / (TP + FN), precision = TP / (TP + FP), FP rate = FP / (FP +
+TN), each with a Wilson 95% interval. Excluded versions are counted by reason.
+
+**Also per window:** the matrix by shape (A = update, B = new package); recall by **OSV record**
+(a record counts as caught if any of its malicious versions was reported) and by **publisher
+account**; the D = 3 and 14 rows and how many OSV labels came more than 3 / 7 / 14 days after
+the release; the **funnel** (entered, Stage 1 rule, Stage 1 forwarded, Stage 2 read, had files,
+flagged, Stage 3 flagged, reported) for malicious and benign versions; **why each miss
+happened** (not read by Stage 2; Stage 2 had no files; read with no finding; findings below the
+report bar), by new package or update; **rule firing** on TP vs FP; how many verdicts were
+recorded after an OSV record or takedown was public; and the **rule sets** that scored it (Stage
+4 fingerprints, full fingerprints where recorded, rules seen with more than one version, and
+whether the window is single-version). **Label timing**, per OSV record from its earliest
+capture: publish → capture, capture → OSV `published`, capture → the first of our label sets
+that had it, capture → npm takedown (n, median, p75, max hours).
 
 ## Data sources
 
