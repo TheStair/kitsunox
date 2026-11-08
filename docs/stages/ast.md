@@ -71,6 +71,10 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
   the batch holds a staged-publishing placeholder before it (`0.0.0-stage`, then `1.4.0`).
   Comparing with the placeholder made every capability "gained": 37 of the 44 versions Stage 3
   flagged in the first live hour were such packages (fixed 2026-10-28).
+- **Build commands** (2026-11-08): `CodeChange.build_commands` holds the commands the
+  version's own build files run at install besides its hooks, as the ecosystem finds them
+  (`build_commands=`, npm: `install.gyp_commands`, `binding.gyp`'s actions and command
+  expansions). Empty when the ecosystem passes none.
 - **Rules** implement `CodeRule.evaluate_code(CodeChange)`. A version is flagged at MEDIUM
   or above.
 - **Output:** `ast.jsonl`, with the same batches in the same order, plus Stage 3 findings and a
@@ -85,6 +89,7 @@ is the malicious set.
 |---|---|---|---|---|
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
+| `npm.install-build-tool` | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...), and `binding.gyp` runs no command. An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 
 New packages get no `capability-gained` finding: with no previous version everything is
@@ -135,6 +140,28 @@ code they pass to `node -e` / `-p` is profiled as `binding.gyp#commands.js`.
 (a computed name is `dynamic-require`), and `Reflect.get(process, "env")` is `process.env`
 (the whole environment unless only one variable is read from it). The same package used both,
 so that its install code carried none of the usual tells.
+
+**`npm.install-build-tool`** (INFO, weight 0; 2026-11-08,
+[proposal round 2](../proposals/precision-round2.md), F2): a hook that only runs a build tool
+says nothing about what the package does at install; what a native build runs is in
+`binding.gyp`. npm itself adds `install: node-gyp rebuild` to any package with a
+`binding.gyp`, so a hook that writes it out adds nothing. The rule needs both the hooks
+(whole command lines, compared exactly: `node-gyp rebuild && node x.js` is not one) and the
+gyp file, which is why it is a Stage 3 rule and not a Stage 1 condition: a gyp action or a
+`<!(...)` expansion keeps the hook's own severity (`@atedone/workspace-bootstrap@0.0.1`,
+inconclusive, ran its payload from a gyp action). Most `tree-sitter-*` grammars keep MEDIUM:
+their `binding.gyp` expands `<!(node -p "require('node-addon-api').include")`. Stage 4 makes
+`npm.install-hook` LOW, weight 1, with a note, when this finding is present; the install code's
+own findings (`install-script-code`, `-changed`, `-obfuscated`) are untouched. Measured with
+the real code on the proposal's 3,032 reported live versions: 7 fewer reports where the
+tarball was captured (`tree-sitter-angular-html`, `tree-sitter-aspx`,
+`@inkdropapp/electron-vibrancy-gpu-fix`, `ezsnmp-data-logger`, `@prettier/cli`,
+`vscode-colaview`, `@globalpayments-private/gpds-pattern-web`), 12 counting the 5
+`husky`/`only-allow`/`patch-package` versions without a tarball as having no `binding.gyp`;
+all benign. On `vm-day1` none of the 433 malicious samples reported only through the install
+rules has build-tool-only hooks; 4 other malicious samples do (`duckdb@1.3.3`,
+`@mastra/node-speaker@0.1.1`, ...), and `pipeline+4` decides each as before (1 reported, 3
+not reported either way).
 
 **`npm.install-script-obfuscated`** (HIGH, weight 4; 2026-10-31, at the owner's request) flags
 install code nobody can review by reading it: what it does at install is a question only Stage 5

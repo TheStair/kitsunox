@@ -18,6 +18,7 @@ from typing import Final
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.install import loaded_files
+from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.lang.javascript import Capability
 from kitsunox.rules.capabilities import evidence
 from kitsunox.rules.static import Obfuscated
@@ -284,4 +285,78 @@ class InstallScriptObfuscated(BaseRule):
         )
 
 
-RULES: Final = (InstallScriptCode(), InstallScriptChanged(), InstallScriptObfuscated())
+# Install hooks that only run a well-known build tool: node-gyp and the prebuilt-binary loaders
+# that fall back to it, and development tools a published package runs at install by mistake
+# (git hooks, a package-manager check, patches to its own dependencies). Whole command lines,
+# compared exactly: `node-gyp rebuild && node x.js` is not one.
+BUILD_TOOL_HOOKS: Final = frozenset(
+    {
+        "node-gyp-build",
+        "node-gyp-build-optional-packages",
+        "node-gyp rebuild",
+        "node-gyp rebuild -j max",
+        "prebuild-install",
+        "prebuild-install || node-gyp rebuild",
+        "node-pre-gyp install --fallback-to-build",
+        "husky",
+        "husky install",
+        "npx only-allow pnpm",
+        "npx only-allow yarn",
+        "npx only-allow bun",
+        "patch-package",
+    }
+)
+
+
+class InstallBuildTool(BaseRule):
+    """Every install hook of the version runs only a build tool (`BUILD_TOOL_HOOKS`), and its
+    `binding.gyp` runs no command (`CodeChange.build_commands`, from `install.gyp_commands`).
+    An explanation for Stage 4, not a signal: `correlate.EXPLAINED` makes `npm.install-hook`
+    LOW, weight 1, when this is present. npm itself adds `install: node-gyp rebuild` to any
+    package with a `binding.gyp`, so writing it out adds nothing; what the build runs is in the
+    gyp file, and a gyp action or `<!(...)` expansion keeps the hook's own severity
+    (`@atedone/workspace-bootstrap@0.0.1` ran its payload from a gyp action, 2026-10-31).
+
+    Added 2026-11-08 (`docs/proposals/precision-round2.md`, F2): 12 benign live reports, no
+    positive; none of the 433 `vm-day1` malicious samples reported only through the install
+    rules has build-tool-only hooks."""
+
+    id = "npm.install-build-tool"
+    severity = Severity.INFO
+    weight = 0.0
+    title = "Install hooks only run a build tool"
+
+    def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
+        declared = scripts(change.snapshot.manifest)
+        hooks = {
+            hook: declared[hook].strip() for hook in INSTALL_HOOKS if declared.get(hook, "").strip()
+        }
+        if (
+            not hooks
+            or change.build_commands
+            or not all(command in BUILD_TOOL_HOOKS for command in hooks.values())
+        ):
+            return ()
+        return (
+            self.finding(
+                "Every install hook only runs a build tool ("
+                + ", ".join(f"`{hook}`: `{command}`" for hook, command in hooks.items())
+                + "), and `binding.gyp` runs no command.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.MANIFEST_FIELD,
+                        path=f"package.json:scripts.{hook}",
+                        after=snippet(command),
+                    )
+                    for hook, command in hooks.items()
+                ),
+            ),
+        )
+
+
+RULES: Final = (
+    InstallScriptCode(),
+    InstallScriptChanged(),
+    InstallScriptObfuscated(),
+    InstallBuildTool(),
+)

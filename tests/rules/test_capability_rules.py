@@ -3,9 +3,10 @@
 import json
 
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
-from kitsunox.ecosystems.npm.install import install_sources
+from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.rules import install_code
 from kitsunox.ecosystems.npm.rules.install_code import (
+    InstallBuildTool,
     InstallScriptChanged,
     InstallScriptCode,
     InstallScriptObfuscated,
@@ -245,3 +246,71 @@ def test_renamed_obfuscator_output_is_found_by_its_rotation_prologue() -> None:
     assert found.evidence[0].snippet is not None and "rotation" in found.evidence[0].snippet
     plain = pkg("node run.js", {"run.js": b"while (!done) { try { step() } catch {} }"})
     assert InstallScriptObfuscated().evaluate_code(change(plain, None)) == ()
+
+
+def _hooked(scripts: dict[str, str], files: dict[str, bytes] | None = None) -> CodeChange:
+    snapshot = SNAP.model_copy(update={"manifest": {"scripts": scripts}})
+    tree = dict(PLAIN) | (files or {})
+    return code_change(
+        snapshot, tree, None, CACHE, install_sources, None, build_commands=gyp_commands
+    )
+
+
+GYP_ACTION = b"""{'targets': [{'target_name': 'x', 'actions': [{'action_name': 'a',
+  'inputs': [], 'outputs': ['o'], 'action': ['node', 'scripts/write-state.js']}]}]}"""
+GYP_EXPANSION = b"""{"targets": [{"target_name": "x",
+  "include_dirs": ["<!(node -p \\"require('node-addon-api').include\\")"]}]}"""
+GYP_PLAIN = b"""{"targets": [{"target_name": "x", "sources": ["src/x.cc"]}]}"""
+
+
+def test_build_tool_hooks_are_explained_when_binding_gyp_runs_nothing() -> None:
+    """F2: `husky`, `npx only-allow pnpm`, `patch-package`, and `node-gyp-build` /
+    `node-gyp rebuild` whose binding.gyp runs no command."""
+    rule = InstallBuildTool()
+    for scripts in (
+        {"postinstall": "husky install"},
+        {"preinstall": "npx only-allow pnpm"},
+        {"postinstall": " patch-package "},
+        {"install": "node-gyp-build"},
+        {"install": "node-gyp rebuild", "prepare": "node build.js"},  # prepare isn't install
+    ):
+        (finding,) = rule.evaluate_code(_hooked(scripts, {"binding.gyp": GYP_PLAIN}))
+        assert finding.severity is Severity.INFO
+        assert finding.weight == 0
+        assert finding.explanation.endswith("and `binding.gyp` runs no command.")
+    (two,) = rule.evaluate_code(
+        _hooked({"preinstall": "npx only-allow pnpm", "install": "node-gyp-build"})
+    )
+    assert [e.path for e in two.evidence] == [
+        "package.json:scripts.preinstall",
+        "package.json:scripts.install",
+    ]
+
+
+def test_a_gyp_command_or_any_other_hook_keeps_the_hook_unexplained() -> None:
+    """`@atedone/workspace-bootstrap@0.0.1` ran its payload from a gyp action; a command
+    expansion is a command too. A hook beside the build tool, or a longer command line, is
+    not a build tool."""
+    rule = InstallBuildTool()
+    for gyp in (GYP_ACTION, GYP_EXPANSION):
+        assert not rule.evaluate_code(
+            _hooked({"install": "node-gyp rebuild"}, {"binding.gyp": gyp})
+        )
+        assert not rule.evaluate_code(_hooked({"postinstall": "husky"}, {"binding.gyp": gyp}))
+    for scripts in (
+        {},
+        {"postinstall": ""},
+        {"install": "node-gyp rebuild && node x.js"},
+        {"install": "node-gyp-build", "postinstall": "node setup.js"},
+        {"preinstall": "npx only-allow npm-evil"},
+    ):
+        assert not rule.evaluate_code(_hooked(scripts))
+    # Without the ecosystem's build commands the stage can't know; npm passes them.
+    unknown = code_change(
+        SNAP.model_copy(update={"manifest": {"scripts": {"install": "node-gyp rebuild"}}}),
+        dict(PLAIN) | {"binding.gyp": GYP_ACTION},
+        None,
+        CACHE,
+        install_sources,
+    )
+    assert unknown.build_commands == ()

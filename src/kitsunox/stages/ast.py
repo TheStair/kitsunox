@@ -130,6 +130,10 @@ class CodeChange(Record):
     install_files: dict[str, bytes] = Field(default_factory=dict)
     install_files_before: dict[str, bytes] | None = None
     previous_version: str | None = None
+    # Commands the version's own build files make its install run besides the hooks
+    # (`BuildCommands`; npm: `binding.gyp`'s actions and command expansions). Empty when the
+    # ecosystem has none or the stage was given no `build_commands`.
+    build_commands: tuple[str, ...] = ()
 
     @property
     def added(self) -> frozenset[Capability]:
@@ -149,6 +153,9 @@ class CodeRule(Protocol):
 # What an install script runs, as path -> code: the files its command names, and code it passes
 # inline (an ecosystem's choice of virtual path). `ecosystems.npm.install.install_sources`.
 InstallEntries = Callable[[Tree], Mapping[str, bytes]]
+# The commands a tree's build files run at install, besides its hooks (an ecosystem's choice:
+# `ecosystems.npm.install.gyp_commands`).
+BuildCommands = Callable[[Tree], Sequence[str]]
 MAX_INSTALL_FILE_BYTES: Final = 256 * 1024  # of each install file kept for the diff
 
 
@@ -165,6 +172,7 @@ def analyse_batch(
     rules: Sequence[CodeRule],
     *,
     install_entries: InstallEntries | None = None,
+    build_commands: BuildCommands | None = None,
     threshold: Severity = DEFAULT_THRESHOLD,
 ) -> PackageBatch:
     """Run Stage 3 on a batch. Each version is compared with its `change.previous` (the base,
@@ -226,6 +234,7 @@ def analyse_batch(
             install_files=files,
             install_files_before=files_before,
             previous_version=previous.ref.version if previous else None,
+            build_commands=tuple(build_commands(tree)) if build_commands else (),
         )
         findings = tuple(f for rule in rules for f in rule.evaluate_code(change))
         flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
@@ -246,6 +255,7 @@ def code_change(
     cache: CapabilityCache,
     install_entries: InstallEntries | None = None,
     previous_version: str | None = None,
+    build_commands: BuildCommands | None = None,
 ) -> CodeChange:
     """The `CodeChange` for one version against one base (evaluation uses this directly)."""
     return CodeChange(
@@ -261,6 +271,7 @@ def code_change(
             install_files(base_tree, install_entries) if base_tree is not None else None
         ),
         previous_version=previous_version,
+        build_commands=tuple(build_commands(tree)) if build_commands else (),
     )
 
 
@@ -289,6 +300,7 @@ def ast_run(
     rules: Sequence[CodeRule],
     *,
     install_entries: InstallEntries | None = None,
+    build_commands: BuildCommands | None = None,
     workers: int = 8,
 ) -> tuple[PackageBatch, ...]:
     """Stage 3 over a run that Stage 2 has processed: reads `static.jsonl`, writes `ast.jsonl`
@@ -304,6 +316,7 @@ def ast_run(
                     cache,
                     rules,
                     install_entries=install_entries,
+                    build_commands=build_commands,
                 ),
                 lines,
             )
@@ -319,6 +332,7 @@ def record_ast(
     rules: Sequence[CodeRule],
     *,
     install_entries: InstallEntries | None = None,
+    build_commands: BuildCommands | None = None,
     workers: int = 8,
     client: httpx.Client | None = None,
 ) -> tuple[PackageBatch, ...]:
@@ -339,6 +353,7 @@ def record_ast(
             CapabilityCache(data.root / "cache" / "ast"),
             rules,
             install_entries=install_entries,
+            build_commands=build_commands,
             workers=workers,
         )
     finally:

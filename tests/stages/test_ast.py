@@ -12,7 +12,7 @@ from kitsunox.core.models import (
     Severity,
     VersionSnapshot,
 )
-from kitsunox.ecosystems.npm.install import install_sources
+from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.lang.javascript import EXTRACTOR_VERSION, Capability
 from kitsunox.stages.ast import (
     CapabilityCache,
@@ -163,6 +163,30 @@ def test_install_profile_covers_only_entry_files() -> None:
     assert change.before is None
     assert change.install is not None
     assert change.install.capabilities == {Capability.NETWORK, Capability.ENV_ALL}
+
+
+def test_build_commands_reach_the_rules() -> None:
+    """npm passes `binding.gyp`'s commands (`gyp_commands`) for `npm.install-build-tool`."""
+    gyp = b"{'targets': [{'actions': [{'action': ['node', 'x.js']}]}]}"
+    files = NEW | {"binding.gyp": gyp}
+    seen: list[CodeChange] = []
+
+    class Spy:
+        id = "test.spy"
+        version = 1
+
+        def evaluate_code(self, change: CodeChange) -> list[Finding]:
+            seen.append(change)
+            return []
+
+    batch = PackageBatch(
+        ecosystem="npm", name="kx", base=None, versions=(Candidate(change=Change(new=snap("1"))),)
+    )
+    analyse_batch(
+        batch, lambda s: files, CapabilityCache(None), [Spy()], build_commands=gyp_commands
+    )
+    analyse_batch(batch, lambda s: files, CapabilityCache(None), [Spy()])
+    assert [c.build_commands for c in seen] == [("node x.js",), ()]
 
 
 def test_a_previous_outside_the_batch_is_fetched() -> None:
