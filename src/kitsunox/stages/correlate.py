@@ -60,8 +60,9 @@ STAGE_ID: Final = "correlate"
 # updates carry the previous release's commit (`RepoComparison.history`): `repo.history-match`,
 # `repo.commit-after-release`, `npm.repo.no-new-commits`; clearing with a history match is off
 # too (`CLEAR_HISTORY`). 11: at most `MAX_REPO_COMPARISONS` versions a run are compared,
-# flagged ones first (`plan_comparisons`). Output without the field is 1.
-STAGE_VERSION: Final = 11
+# flagged ones first (`plan_comparisons`). 12: a dependency lookup that returned 404 (`MISSING`)
+# is a finding (`npm.dependency.missing`), no longer only a count. Output without the field is 1.
+STAGE_VERSION: Final = 12
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -121,7 +122,7 @@ class KnownBad(Protocol):
 
 class DependencyStatus(StrEnum):
     FOUND = "found"
-    MISSING = "missing"  # permanent: the registry has no such package (404)
+    MISSING = "missing"  # the registry had no such package (404) when the run asked
     FAILED = "failed"  # the lookup failed (the network, a malformed record): not evaluated
     CAPPED = "capped"  # not looked up: over the release's or the run's lookup limit
 

@@ -1,5 +1,5 @@
-"""Stage 4 dependency-reputation rules: `npm.dependency.fresh-foreign` and
-`npm.dependency.name-embeds-popular`, on hand-made packuments."""
+"""Stage 4 dependency-reputation rules: `npm.dependency.fresh-foreign`,
+`npm.dependency.missing` and `npm.dependency.name-embeds-popular`, on hand-made packuments."""
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -18,10 +18,13 @@ from kitsunox.core.models import (
 from kitsunox.core.watchlist import WatchEntry, Watchlist
 from kitsunox.ecosystems.npm.packument import Packument
 from kitsunox.ecosystems.npm.rules.correlate import (
+    AddedDependency,
     FreshForeignDependency,
+    MissingDependency,
     NameEmbedsPopular,
     embedded_popular_name,
     foreign_added_dependencies,
+    sibling_reason,
 )
 from kitsunox.reporting.report import stage_of
 from kitsunox.stages.correlate import (
@@ -29,6 +32,7 @@ from kitsunox.stages.correlate import (
     CorrelationContext,
     DependencyRecord,
     DependencyStatus,
+    decide,
     score,
 )
 from kitsunox.stages.repo import NetworkRequests
@@ -49,6 +53,8 @@ WATCHLIST = Watchlist(
         "left-pad": WatchEntry(monthly_downloads=500_000),  # watched, but below the bar
         "@babel/core": WatchEntry(monthly_downloads=100_000_000),  # scoped: never a target
         "vue": WatchEntry(monthly_downloads=30_000_000),  # too short to embed
+        "tailwindcss": WatchEntry(monthly_downloads=60_000_000),
+        "postcss": WatchEntry(monthly_downloads=300_000_000),
     },
 )
 
@@ -366,3 +372,133 @@ def test_both_rules_together_score_four() -> None:
         *NameEmbedsPopular().evaluate_candidate(candidate, context),
     ]
     assert score(found) == 4.0
+
+
+# `npm.dependency.missing`: names and specifiers from the live runs of 2026-10-29 - 11-08.
+
+
+def missing(candidate: Candidate, context: CorrelationContext) -> list[Any]:
+    return list(MissingDependency().evaluate_candidate(candidate, context))
+
+
+def new_package(name: str, version: str, deps: Mapping[str, str]) -> Candidate:
+    return Candidate(change=Change(new=snap(name, version, deps, published_at=PUBLISHED)))
+
+
+def test_a_missing_unrelated_dependency_reports_alone() -> None:
+    # The Tailwind-wrapper campaign: the payload dependency is published after the wrapper.
+    candidate = new_package(
+        "tailwindcss-animate-bridge",
+        "2.0.8",
+        {"@utilitycraft/tailwindcss-motion-atelier": "^1.0.4", "kept": "^1"},
+    )
+    (found,) = missing(candidate, ctx(kept=packument("kept", OLD)))  # unknown names are 404
+    assert found.rule_id == "npm.dependency.missing" and found.rule_version == 1
+    assert found.severity is Severity.MEDIUM and found.weight == 3.0
+    assert "`@utilitycraft/tailwindcss-motion-atelier`" in found.explanation
+    assert "HTTP 404" in found.explanation and "`kept`" not in found.explanation
+    assert found.evidence[0].path == (
+        "package.json:dependencies.@utilitycraft/tailwindcss-motion-atelier"
+    )
+    assert decide([found]).forwarded  # not `WEAK_ALONE`: the wrappers had no other finding
+    assert stage_of(found.rule_id) == "Stage 4: correlation"
+    # An update that adds it fires too; one that already had it doesn't.
+    deps = {"@nexlayerlabs/postcss-keyframe-utils": "^1.0.3"}
+    assert missing(update(deps, name="tailwindcss-visual-kit"), ctx())
+    assert not missing(update(deps, name="tailwindcss-visual-kit", before=deps), ctx())
+
+
+def test_several_missing_dependencies_share_one_finding() -> None:
+    deps = {f"dsh-tool-{i:02}": "^0.1.0" for i in range(12)}
+    (found,) = missing(new_package("@capyclaw/ppt-suite", "2.4.0", deps), ctx())
+    assert "`dsh-tool-00`" in found.explanation and "(+2 more)" in found.explanation
+    assert len(found.evidence) == 5
+
+
+def test_only_a_404_counts() -> None:
+    candidate = update({"helper": "^1"}, name="wrapper")
+    for status in (DependencyStatus.FAILED, DependencyStatus.CAPPED):
+        record = DependencyRecord(name="helper", status=status, transient=True)
+        assert not missing(candidate, ctx(helper=record))  # not evaluated, never "missing"
+    assert not missing(candidate, ctx(helper=packument("helper", FRESH)))
+    assert not missing(candidate, CorrelationContext(as_of=AS_OF, watchlist=WATCHLIST))
+    # Own scope, watched and non-registry dependencies are never looked up.
+    lookup = Lookup({})
+    context = CorrelationContext(as_of=AS_OF, watchlist=WATCHLIST, dependencies=lookup)
+    exempt = {"@mastra/core": "^1", "react": "^19", "gh": "github:o/r", "s": "workspace:*"}
+    assert not missing(update(exempt), context)
+    assert lookup.asked == []
+
+
+def sibling(target: str, spec: str, own: str, version: str = "1.0.0") -> str | None:
+    change = new_package(own, version, {target: spec}).change
+    return sibling_reason(AddedDependency(key=target, spec=spec, target=target), change, WATCHLIST)
+
+
+def test_siblings_are_info() -> None:
+    # Release trains: the specifier is the release's own version.
+    assert sibling("@allyhub-next/scaffold", "0.2.0-next.4", "allyhub", "0.2.0-next.4") == (
+        "its specifier is this release's own version (0.2.0-next.4)"
+    )
+    assert sibling("text-engine", "=0.32.0", "domotion-svg", "0.32.0")
+    assert sibling("x-core", "npm:y-core@1.2.0", "app", "1.2.0")  # an alias's version
+    # Not a range: a campaign wrapper asked for `^1.0.1` of its payload at its own 1.0.1.
+    assert (
+        sibling("@claudeorg/universal-code-generator", "^1.0.1", "fast-deep-thinking", "1.0.1")
+        is None
+    )
+    # Platform builds and other names that extend the package's, either way round.
+    assert sibling("envdoc-cli-linux-x64", "0.1.3", "envdoc-cli", "0.1.2") == (
+        "its name extends `envdoc-cli`"
+    )
+    assert sibling("@armyantsec/codegravity-darwin-x64", "^0.1", "codegravity")
+    assert sibling("dsh-cli", "^0.1.0", "dsh-cli-flow")
+    assert sibling("monolith-core-database", "^1.0.0", "monolith-core-cli") == (
+        "its name starts with this package's `monolith`"
+    )
+    # A scope kin to a part of the package's name (equal, or one starts the other).
+    assert sibling("@ocean/core", "2.0.0", "@amoree-code/ocean") == (
+        "its scope `@ocean` matches this package's name"
+    )
+    assert sibling("@ranu/core", "0.1.0", "@ranujs/adapter-vercel", "0.1.6")
+    assert sibling("@materialinstruments/colorscope", "10.2.1", "@instruments/materia-ui")
+    candidate = new_package("envdoc-cli", "0.1.2", {"envdoc-cli-darwin-arm64": "0.1.2"})
+    (found,) = missing(candidate, ctx())
+    assert found.severity is Severity.INFO and found.weight == 0.0
+    assert "`envdoc-cli-darwin-arm64`: its specifier is this release's own version" in (
+        found.explanation
+    )
+    assert not decide([found]).forwarded and score([found]) == 0.0
+    many = {f"envdoc-cli-{i:02}": "^9" for i in range(11)}
+    (found,) = missing(new_package("envdoc-cli", "0.1.2", many), ctx())
+    assert found.explanation.startswith("Depends on 11 package(s)") and "(+1 more)" in (
+        found.explanation
+    )
+
+
+def test_popular_or_short_names_make_no_kin() -> None:
+    # Every campaign wrapper's payload is unrelated, though some share `tailwindcss`, `postcss`.
+    for target, spec, own, version in (
+        (
+            "@utilitycraft/tailwindcss-motion-atelier",
+            "^1.0.4",
+            "tailwindcss-animate-bridge",
+            "2.0.8",
+        ),
+        ("@scott-rogers/postcss-signal-bridge", "^1.0.5", "signalledger-diagnostics", "2.0.8"),
+        ("@doublekk61_pro/postcss-motion-animation", "1.0.4", "framer-motionanimate", "14.7.2"),
+        ("@unipswap/postcss-animate-units", "^1.0.5", "tailwind-animatrix", "1.0.7"),
+    ):
+        assert sibling(target, spec, own, version) is None
+    assert sibling("@tailwindcss-x/y", "^1", "tailwindcss-pixel-tools") is None  # watched part
+    assert sibling("postcss-evil", "^1", "postcss") is None  # extends a watched name
+    assert sibling("@vk/helper", "dev", "vk-scheduler") is None  # `vk` is too short
+    assert sibling("vk-helper", "dev", "vk-scheduler") is None
+    assert sibling("postcss-units", "^1", "postcss-motion-kit") is None  # a watched first part
+    assert sibling("@pro/x", "^1", "prompt-kit") is None  # a 3-letter prefix is not kin
+    bare = sibling_reason(
+        AddedDependency(key="react-x", spec="^1", target="react-x"),
+        new_package("react", "1.0.0", {}).change,
+        None,
+    )
+    assert bare == "its name extends `react`"  # without a watchlist nothing is popular

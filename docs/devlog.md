@@ -2,6 +2,58 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: A dependency the registry doesn't have (`npm.dependency.missing`)
+
+**Stage(s):** Stage 4 correlation (`STAGE_VERSION` 12)
+**Context:** The adjudicated live misses (review 11) include a campaign of Tailwind/Animate.css
+wrappers whose code requires a scoped postcss-style package that did not exist yet when the
+wrapper was published; the payload came later (`tailwindcss-animate-bridge@2.0.8` →
+`@utilitycraft/tailwindcss-motion-atelier`, MAL-2026-18468). Stage 4 looked those
+dependencies up, got 404, and by design said nothing (the proposal had measured 404s as benign
+"exposures"). The owner approved a rule on 2026-11-08 if it doesn't flood benign reports.
+Details: [stages/correlate.md](stages/correlate.md#missing-dependencies-npmdependencymissing-stage-version-12).
+
+### Decisions
+- **MEDIUM on its own, weight 3, not `WEAK_ALONE`.** The brief expected "weak alone, stronger
+  combined" (with an install hook, obfuscation, or the code requiring the name). The data say
+  otherwise: 8 of the 16 wrappers had no other finding and the rest only LOW ones, so any
+  combination reports none of them.
+- **Siblings are INFO, by name and version.** Of 121 releases with a 404 dependency, most are a
+  project's own packages published one by one: platform builds (`envdoc-cli-linux-x64`),
+  monorepo scopes (`@ocean/*` from `@amoree-code/ocean`), release trains (exact specifier =
+  the release's version). `sibling_reason` checks those; watched names never make two names
+  kin, because the campaign borrows `tailwindcss`/`postcss`. Rejected: "the code requires
+  it", since benign siblings are required just the same (38 captured tarballs read).
+- **Only a 404.** `FAILED` and `CAPPED` stay "not evaluated" (decision 0009); a 404 is a
+  recorded response, so replays agree (`test_dependency_lookup_replays_byte_identically`).
+
+### Challenges
+- **Ranges as release trains hid a wrapper.** The first `sibling_reason` treated `^1.0.1` at
+  version 1.0.1 as lockstep. That made `fast-deep-thinking@1.0.1` INFO, and it turned out to
+  be the campaign's template ("A configurable, namespaced Animate.css integration for Tailwind
+  CSS"). Grepping the hits' descriptions for that template found it.
+  - **Resolution:** only an exact specifier counts. That made 3 benign releases MEDIUM
+    (`monolith-core-cli`, `dsh-fairy-next` x2), so a shared, unwatched first name part became a
+    sibling reason too.
+  - **Why it worked:** re-simulated over every run: all 16 template releases are MEDIUM, and
+    none of the 86 INFO releases has the template.
+
+### Evaluation snapshot
+- Live (every recorded run, 10-28 22:18Z to 11-08 15:32Z, 10.7 days, simulated from each run's
+  recorded 404s): **16 of 16 campaign wrappers reported** (0 before; 5 have OSV `MAL-` records,
+  verdicts 1 malicious, 3 unverified). Extra benign-looking reports: 15 (~1.4/day against
+  ~290/day). No report lost (the rule only adds findings).
+- DataDog `vm-day1`: unchanged. The rule fires on 1 sample (already reported) and on 0 of 1,500
+  benign; none of DataDog's 1,231 added-dependency edges has a dependency published after its
+  dependent, so this set can't measure the pattern.
+
+### Open questions / next steps
+- 4 of the 8 adjudicated wrapper misses `require` the payload without declaring it
+  (`tailwind-animate-engine@1.0.6`): a Stage 3 rule for an undeclared, non-builtin `require`.
+- Owner: whether the 15 private/unpublished reports (dependency-confusion exposures) belong in
+  the queue or in a separate exposure list; review them in the first live week.
+- The eval's `PinnedFetcher` doesn't pin 404s, so a 404 sample is re-asked each run.
+
 ## 2026-11-08: Verdicts reclassified into the four categories; WhatsApp channel follow is unwanted
 
 **Stage(s):** Review (verdicts, decisions 0015 and 0019)

@@ -506,6 +506,10 @@ def test_dependency_lookup_replays_byte_identically(tmp_path: Path, router: Rout
     candidates = [dependent("app", "fresh-dep", "old-dep", "missing-dep"), dependent("b", "x")]
     recorded, snapshot, info = run_dependencies(tmp_path, candidates, router.client())
     assert info["found"] == 2 and info["missing"] == 2
+    # The 404s are what the run recorded: a finding now, and the same one in the replay.
+    for result, name in zip(recorded, ("missing-dep", "x"), strict=True):
+        (found,) = (f for f in result.findings if f.rule_id == "npm.dependency.missing")
+        assert f"`{name}`" in found.explanation and result.history[-1].forwarded
     correlated = (tmp_path / "run" / "correlate.jsonl").read_bytes()
     correlate_json = (tmp_path / "run" / CORRELATE_INFO).read_bytes()
     snapshot.save(tmp_path / "correlate-snapshot.json")
@@ -532,6 +536,8 @@ def test_dependency_network_failure_is_not_evaluated(tmp_path: Path, router: Rou
         ((severity, text),) = dependency_findings(result)
         assert severity == "info" and text.startswith(NOT_EVALUATED)
         assert not result.history[-1].forwarded  # not reported, and not "checked and clean"
+        # A network failure is never a missing package (decision 0009).
+        assert not any(f.rule_id == "npm.dependency.missing" for f in result.findings)
     assert f"GET {url} accept=application/json" not in snapshot.entries
     assert info["failed"] == info["still_failing"] == 1
     assert (info["first_pass"], info["requests"], info["failed_requests"]) == (1, 1, 1)

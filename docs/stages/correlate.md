@@ -6,7 +6,10 @@
 > Dependency reputation (`npm.dependency.fresh-foreign`, `npm.dependency.name-embeds-popular`)
 > added 2026-10-29 from [the proposal](../proposals/dependency-reputation.md); `STAGE_VERSION` 4.
 > After review the same day: dependency lookups are retried like repository lookups, capped per
-> release as well as per run, and shown in reports; `STAGE_VERSION` 5.
+> release as well as per run, and shown in reports; `STAGE_VERSION` 5. A dependency the
+> registry doesn't have (404) is a finding since 2026-11-08 (`npm.dependency.missing`,
+> [Missing dependencies](#missing-dependencies-npmdependencymissing-stage-version-12));
+> `STAGE_VERSION` 12.
 
 ## Purpose
 
@@ -16,8 +19,9 @@ decides what a person should review:
 - **Combines** weak signals that mean little alone (a dormant package revived; a dependency
   added) into named combination findings.
 - **Looks up** outside knowledge: does the release depend on a package OSV calls malware, or on
-  one registered days ago by accounts unrelated to it? (A dependency-chain attack leaves the
-  dependent's own tarball clean, so Stages 2 and 3 see nothing.)
+  one registered days ago by accounts unrelated to it, or on one that doesn't exist yet? (A
+  dependency-chain attack leaves the dependent's own tarball clean, so Stages 2 and 3 see
+  nothing.)
 - **Compares** the release with its source repository at the commit it was built from. Code on
   npm that isn't in git is the mark of a publish with a stolen token, whatever the code does.
 - **Scores** each version and orders the review queue by score.
@@ -163,7 +167,7 @@ the [0010 addendum](../decisions/0010-stage4-correlation-and-repo-comparison.md#
 ## Dependency lookups
 
 `npm.dependency.fresh-foreign` needs to know when a dependency first existed and who publishes
-it. `NpmDependencyLookup` (`stages/review.py`, a `DependencyLookup`) gets it from the
+it, and `npm.dependency.missing` whether it exists at all. `NpmDependencyLookup` (`stages/review.py`, a `DependencyLookup`) gets it from the
 dependency's packument.
 
 - **Which names:** `foreign_added_dependencies` (`ecosystems/npm/rules/correlate.py`): registry
@@ -214,8 +218,10 @@ dependency's packument.
   response, a 4xx other than 404, and a document that isn't this package's packument (not
   JSON, a proxy's or captive portal's HTML page, another name). They read the same as a
   network failure, so a replay of a failed run gives the same `correlate.jsonl`. Only a 404 is
-  `MISSING` and gives no finding. (Before `STAGE_VERSION` 5 a malformed document was
-  `MISSING`, so a captive portal page silently cleared the dependency.)
+  `MISSING`: `fresh-foreign` gives nothing for it, and since `STAGE_VERSION` 12
+  `npm.dependency.missing` reports it (below). (Before `STAGE_VERSION` 5 a malformed document
+  was `MISSING`, so a captive portal page silently cleared the dependency.) A 404 is recorded in
+  `correlate-snapshot.json` like any response, so a replay answers `MISSING` again.
 - **`dependency_lookups` in `correlate.json`:** `cap`, `per_release`, `names` (distinct names
   the rule would look up), `capped` (over either limit), `releases_limited` (releases with
   names over the per-release limit), `looked_up`, `found`, `missing` (404), `failed` (not
@@ -232,6 +238,57 @@ dependency's packument.
   whose lookup failed (`test_dependency_network_failure_is_not_evaluated`); one distinct
   output over 20 runs with a name down, one that clears on the retry, a slow one and limits
   that bind, on 1 or 8 workers (`test_dependency_output_does_not_depend_on_thread_timing`).
+
+## Missing dependencies (`npm.dependency.missing`; stage version 12)
+
+A release that adds a dependency the registry doesn't have (its lookup returned 404) can't be
+installed until someone publishes that name, and whoever does decides what runs. A campaign of
+Tailwind-plugin wrappers did exactly this from 2026-10-29: an Animate.css plugin ("A
+configurable, namespaced Animate.css integration for Tailwind CSS") whose code requires a
+scoped postcss-style package published *after* the wrapper, the payload
+(`tailwindcss-animate-bridge@2.0.8` → `@utilitycraft/tailwindcss-motion-atelier`,
+MAL-2026-18468; `tailwindcss-visual-kit@1.3.7` → `@nexlayerlabs/postcss-keyframe-utils`,
+MAL-2026-18407). The wrapper is clean for Stages 2-3, `fresh-foreign` can't age a package that
+doesn't exist yet, and until 2026-11-08 a 404 gave no finding, so every such release was missed.
+
+- **What fires:** an added dependency (`foreign_added_dependencies`, the lookup's own
+  selection) whose record is `MISSING`. `FAILED` (the network, a malformed record) is never
+  missing (decision 0009) and `CAPPED` was never asked: `fresh-foreign` says both were not
+  evaluated. MEDIUM, weight 3, one finding for all of a release's unrelated missing
+  dependencies. Not `WEAK_ALONE`, and not tied to a second signal (an install hook, obfuscated
+  code): 8 of the 16 campaign releases had no other finding and the rest only LOW ones
+  (`npm.dependency.added`), so either would report none of them.
+- **Siblings are INFO** (weight 0, `sibling_reason`): a dependency whose specifier is exactly
+  the release's version (a release train; a *range* doesn't count: `fast-deep-thinking@1.0.1`,
+  a wrapper, asked for `^1.0.1`), whose name extends the release's or the reverse (platform
+  builds such as `envdoc-cli-linux-x64`), whose name starts with the same part
+  (`monolith-core-*`), or whose scope is kin to a part of the release's name (`@ocean/*` from
+  `@amoree-code/ocean`, `@allyhub-next/*` from `allyhub`; parts of 3+ characters, equal or one
+  starting the other from 4). Parts that are watched package names never make two names kin
+  (`tailwindcss`, `postcss`: the campaign borrows them), so
+  `@utilitycraft/tailwindcss-motion-atelier` is not `tailwindcss-animate-bridge`'s sibling.
+- **Measured** (read-only, every recorded run of 2026-10-28 22:18Z to 11-08 15:32Z, 10.7 days,
+  from each run's `correlate-snapshot.json` 404s and `correlate.jsonl`): 121 releases added a
+  dependency that was 404 (~11 a day; 234 distinct names were 404), 86 of them only siblings
+  (INFO).
+  The other **35** get the MEDIUM finding: **16 are the campaign** (all 16 recorded wrappers
+  that declared their payload; 5 carry their own OSV `MAL-` record; verdicts: 1 malicious,
+  3 unverified, the rest unreviewed), and 19 are not: 4 were reported already (benign
+  verdicts: `@nutui/nutui-react-taro` → `@jmfe/npm-usage-stats-tool`, `gihanga`, two
+  `@mchp-mcc/*` → `@microchip/*`), 15 are new reports (~1.4 a day, against ~290 reports a
+  day), all unreviewed and apparently benign: private registries' packages
+  (`@fortawesome/pro-*`; `@virtualkey/*`, `@skillspec/*` look private too), monorepos not
+  published yet (`@capyclaw/*` → `dsh-*`), a Unity package's NuGet name, and `mm_os` →
+  `mm_no_such_module_xyz` (twice). Private packages are dependency-confusion exposures: anyone
+  may register the name. Of the 86 INFO releases, none is the campaign.
+- **Code vs. manifest:** the wrapper's code requires the missing dependency (checked in the 38
+  captured tarballs: `lib/styles/variables.js:5`, `src/motion.js:5`), but so does the code of
+  almost every benign sibling and platform launcher, so "required by the code" doesn't separate
+  them and isn't used.
+- **Not caught:** wrappers that require the payload without declaring it
+  (`tailwind-animate-engine@1.0.6` requires `@unipswap/postcss-animate-units` in
+  `src/motion.js`; 4 of the 8 adjudicated wrapper misses): no dependency, no lookup. That is a
+  Stage 3 question (a `require` of a package that is neither declared nor built in).
 
 ## Decision and score
 
@@ -394,6 +451,7 @@ Rules over it:
 | `npm.dependency.known-malware` (v3) | an added (or re-pointed) runtime dependency, or its `npm:` alias target, is malware in every version per an OSV record published by `as_of`. LOW (weight 1) when the specifier only matches npm's empty `0.0.1-security` holding package (`fs: ^0.0.1-security`, what `npm install fs` writes), or when a Unity (UPM) package (`unity` field) depends on a `com.unity.*` built-in module, which Unity resolves from its own registry while the npm names are malware squats (v3) | HIGH | 5 |
 | `npm.combination.revived-with-new-dependency` (v2) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one and no maintainer was added: the package's own maintainer coming back (v2) | MEDIUM | 2 |
 | `npm.dependency.fresh-foreign` | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them | MEDIUM | 3 |
+| `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count) | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.established-match` | a clean comparison with a repository that is not a fork or archived, ≥ 30 days old at the release, ≥ 5 stars, the commit on its default branch (Repository trust, above). Clears install-code MEDIUM findings in the decision | INFO | 0 |
@@ -501,6 +559,18 @@ updates, 500 benign new packages, DataDog). `pipeline+4` before → after the tw
 (`axios`, `chalk`, `debug`: OSV has records for compromised *versions*); counting only records
 that cover every version: 11 malicious new packages, 0 benign.
 
+**Missing dependencies** (2026-11-08, `npm.dependency.missing` v1). On `vm-day1` the rule can
+fire only where an added dependency is 404 at evaluation time (found packuments are pinned):
+1 of 3,444 DataDog samples (`@financials/using-dep-conf@1.0.0` → `@tag/test1234`, already
+reported through its `preinstall`; checked with the real `pipeline+4` predictor on a
+hard-linked scratch copy of `data/eval`) and 0 of 1,500 benign (`rsshub@1.0.0-master.*`'s one
+unpinned dependency, `narou`, is found). Recall can't drop: the rule only adds findings, and
+nothing clears them (`CLEAR_*` are off). The full `pipeline+4` run was not repeated. DataDog can't measure the pattern: of its
+1,231 added-dependency edges none has a dependency first published after the dependent (6
+within the hour before, which is `fresh-foreign`'s case), and its dependencies are taken down
+now. The evidence is live (Missing dependencies, above): 16 of 16 campaign wrappers reported,
+for ~1.4 extra benign reports a day.
+
 ## Known limits
 
 - **An established match can't see a compromised repository.** A malicious commit pushed to
@@ -550,7 +620,17 @@ that cover every version: 11 malicious new packages, 0 benign.
     first, then the payload) gives no finding, isn't counted, and the dependent is never
     re-evaluated on a later tick.
   - **A dependency that is 404 when Stage 4 runs** (published and taken down, or published
-    later) gives no finding.
+    later) is `npm.dependency.missing` since `STAGE_VERSION` 12, unless its name looks like a
+    sibling's (INFO). Naming the payload after the wrapper (`@kinetics-x/units` for
+    `tailwind-kinetics`) or pinning it to the wrapper's own version avoids it, and so does
+    publishing a placeholder of the payload first (the campaign already does it for wrappers:
+    `fast-deep-thinking@0.0.0-stage`, "Temporary package placeholder for staged publishing");
+    a days-old placeholder from other accounts is `fresh-foreign`'s. A dependency that is not
+    declared at all is never looked up.
+  - **The evaluation pins found packuments, not 404s** (`PinnedFetcher`): a `vm-day1` sample
+    whose dependency is 404 is asked again on every evaluation, so the answer can change if
+    the name is published later. Only `@financials/using-dep-conf@1.0.0` (DataDog, →
+    `@tag/test1234`) is affected today.
   - **A dependency published after its dependent but before `as_of`** is evaluated; the
     finding says "first published N hours after this release".
   - **Padding.** A release with more than 40 new foreign dependencies is checked on the first

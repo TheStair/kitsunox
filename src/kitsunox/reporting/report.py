@@ -51,6 +51,7 @@ STAGE_OF_RULE: Final = {
     "npm.provenance.": "Stage 4: correlation",
     "npm.dependency.known-malware": "Stage 4: correlation",
     "npm.dependency.fresh-foreign": "Stage 4: correlation",
+    "npm.dependency.missing": "Stage 4: correlation",
     "npm.dependency.name-embeds-popular": "Stage 4: correlation",
     "npm.combination.": "Stage 4: correlation",
     "npm.repo.": "Stage 4: repository",

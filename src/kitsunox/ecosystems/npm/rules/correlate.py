@@ -291,7 +291,7 @@ class FreshForeignDependency(BaseRule):
     `NOT_EVALUATED` finding instead, so a failed lookup never reads as "not fresh" (decision
     0009). Dependencies over the lookup limits (per release, per run) share one such finding,
     so a release with 2,000 of them has one, not 2,000. A dependency the registry doesn't have
-    (404) gives nothing.
+    (404) gives nothing here: `npm.dependency.missing` reports it.
 
     | Proposal (run `20261029T221803Z-npm`) | Benign | Malicious (DataDog) |
     |---|---|---|
@@ -391,6 +391,144 @@ class FreshForeignDependency(BaseRule):
     def _info(self, explanation: str, *evidence: Evidence) -> Finding:
         finding = self.finding(explanation, *evidence, severity=Severity.INFO)
         return finding.model_copy(update={"weight": 0.0})
+
+
+# `npm.dependency.missing`: how a dependency's name relates to its dependent's. Names are split
+# into parts on `-_./@`; parts shorter than `KIN_MIN_PART` (`rn`, `ui`, `vk`) and parts that are
+# a watched package's name (`tailwindcss`, `postcss`, `react`: anyone can borrow those) say
+# nothing. Two parts are kin when equal, or when the shorter, at least `KIN_PREFIX_MIN` long,
+# starts the longer (`ranu` / `ranujs`, `materia` / `materialinstruments`).
+KIN_MIN_PART: Final = 3
+KIN_PREFIX_MIN: Final = 4
+_NAME_PARTS: Final = re.compile(r"[-_./@]+")
+_NAME_EXTENSION: Final = ("-", "_", ".")
+_EXACT_PREFIX: Final = re.compile(r"^[=v\s]+")
+
+
+def _base(name: str) -> str:
+    """A name without its scope: `@scope/pkg` -> `pkg`."""
+    return name.split("/", 1)[1] if scope(name) is not None else name
+
+
+def _parts(text: str, popular: Mapping[str, object]) -> set[str]:
+    return {
+        p for p in _NAME_PARTS.split(text.lower()) if len(p) >= KIN_MIN_PART and p not in popular
+    }
+
+
+def _kin(a: str, b: str) -> bool:
+    short, long = sorted((a, b), key=len)
+    return short == long or (len(short) >= KIN_PREFIX_MIN and long.startswith(short))
+
+
+def sibling_reason(dep: AddedDependency, change: Change, watchlist: Watchlist | None) -> str | None:
+    """Why a dependency looks like the dependent's own sibling, published on its own (or not
+    yet), or None if nothing relates them:
+    - its specifier is exactly the dependent's version (a release train:
+      `@allyhub-next/scaffold: 0.2.0-next.4` from `allyhub@0.2.0-next.4`). Not a range:
+      `fast-deep-thinking@1.0.1`, a campaign wrapper, asked for `^1.0.1` of its payload;
+    - its name (without scope) extends the dependent's or the reverse (platform builds:
+      `envdoc-cli-linux-x64` from `envdoc-cli`), or the two start with the same part
+      (`monolith-core-database` from `monolith-core-cli`);
+    - its scope is kin to a part of the dependent's name (`@ocean/core` from
+      `@amoree-code/ocean`, `@allyhub-next/*` from `allyhub`).
+    A watched name never makes them kin: `react-x` is not in `react`'s family, and
+    `@utilitycraft/tailwindcss-motion-atelier` is not `tailwindcss-animate-bridge`'s."""
+    own = change.new.ref.name
+    version = change.new.ref.version
+    if _EXACT_PREFIX.sub("", _alias_range(dep.spec)).strip() == version:
+        return f"its specifier is this release's own version ({version})"
+    popular: Mapping[str, object] = watchlist.entries if watchlist is not None else {}
+    theirs, mine = _base(dep.target).lower(), _base(own).lower()
+    for short, long in ((mine, theirs), (theirs, mine)):
+        if short not in popular and any(long.startswith(short + s) for s in _NAME_EXTENSION):
+            return f"its name extends `{short}`"
+    lead = _NAME_PARTS.split(mine)[0]
+    if lead == _NAME_PARTS.split(theirs)[0] and len(lead) >= KIN_MIN_PART and lead not in popular:
+        return f"its name starts with this package's `{lead}`"
+    their_scope = scope(dep.target)
+    if their_scope is not None:
+        own_parts = _parts(own, popular)
+        for part in sorted(_parts(their_scope, popular)):
+            if any(_kin(part, p) for p in own_parts):
+                return f"its scope `{their_scope}` matches this package's name"
+    return None
+
+
+class MissingDependency(BaseRule):
+    """The release adds a dependency (`foreign_added_dependencies`) that the registry doesn't
+    have: its packument lookup in this run returned 404 (`DependencyStatus.MISSING`). `npm
+    install` fails until someone publishes the name, and whoever does decides what runs. That
+    is how a campaign of Tailwind-plugin wrappers worked in 2026-10/11
+    (`tailwindcss-animate-bridge@2.0.8` -> `@utilitycraft/tailwindcss-motion-atelier`,
+    MAL-2026-18468; `tailwindcss-visual-kit@1.3.7` -> `@nexlayerlabs/postcss-keyframe-utils`,
+    MAL-2026-18407): a clean wrapper whose code requires a scoped postcss-style package
+    published after it, the payload. The wrapper's own files carry nothing for Stages 2-3, and
+    `fresh-foreign` can't age a package that doesn't exist yet.
+
+    A dependency that looks like the release's own sibling (`sibling_reason`: monorepo
+    packages published one by one, platform builds published after the main package, a
+    specifier equal to the release's version) gives an INFO finding instead. Measured on the
+    live runs of 2026-10-28 to 11-08 (10.7 days, `docs/stages/correlate.md`): 121 releases
+    added a dependency that was 404, 86 of them only siblings; of the other 35, 16 were the
+    campaign (all of its recorded wrappers that declared the payload) and 19 not (private
+    registries' packages such as `@fortawesome/pro-*` and `@microchip/*`, names of a monorepo
+    not published yet, a test `mm_no_such_module_xyz`), 4 of those reported already: ~1.4
+    extra reports a day. A private package is a dependency-confusion exposure: worth a look.
+    MEDIUM on its own (not `WEAK_ALONE`): 8 of the 16 wrappers had no other finding, the rest
+    only LOW ones.
+
+    Only a 404 counts. A lookup that failed (the network, a malformed record) is `FAILED`, not
+    missing (decision 0009), and one over the lookup limits was never asked; `fresh-foreign`
+    says both were not evaluated. The 404 is the run's recorded answer, so a replay reads the
+    same. All unrelated missing dependencies share one MEDIUM finding, the siblings one INFO."""
+
+    id = "npm.dependency.missing"
+    version = 1
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Depends on a package the registry doesn't have"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        if ctx.dependencies is None:
+            return ()
+        change = candidate.change
+        unrelated: list[AddedDependency] = []
+        siblings: list[tuple[AddedDependency, str]] = []
+        for dep in foreign_added_dependencies(change, ctx.watchlist):
+            if ctx.dependencies(dep.target).status is not DependencyStatus.MISSING:
+                continue
+            why = sibling_reason(dep, change, ctx.watchlist)
+            if why is None:
+                unrelated.append(dep)
+            else:
+                siblings.append((dep, why))
+        findings = []
+        if unrelated:
+            findings.append(
+                self.finding(
+                    f"Depends on {_list([f'`{d.target}`' for d in unrelated])}, which the "
+                    "registry did not have when this run looked (HTTP 404), under a name "
+                    "unrelated to this package's. Installing it fails until someone publishes "
+                    "the name, and whoever does decides what runs: a payload published after "
+                    "its wrapper looks like this, and so does a private registry's package (a "
+                    "dependency-confusion exposure).",
+                    *(_dependency_evidence(d) for d in unrelated[:5]),
+                )
+            )
+        if siblings:
+            listed = "; ".join(f"`{d.target}`: {why}" for d, why in siblings[:10])
+            more = f" (+{len(siblings) - 10} more)" if len(siblings) > 10 else ""
+            finding = self.finding(
+                f"Depends on {len(siblings)} package(s) the registry did not have when this "
+                f"run looked (HTTP 404) that look like this package's own: {listed}{more}.",
+                *(_dependency_evidence(d) for d, _ in siblings[:5]),
+                severity=Severity.INFO,
+            )
+            findings.append(finding.model_copy(update={"weight": 0.0}))
+        return findings
 
 
 def normalize_name(name: str) -> str:
@@ -765,6 +903,7 @@ RULES: Final = (
     KnownMalwareDependency(),
     RevivedWithNewDependency(),
     FreshForeignDependency(),
+    MissingDependency(),
     NameEmbedsPopular(),
     InstallScriptNotInRepo(),
     DependencyNotInRepo(),
