@@ -8,6 +8,7 @@ from kitsunox.core.models import PackageVersionRef, PublishInfo, VersionSnapshot
 from kitsunox.ecosystems.npm.packument import (
     Packument,
     PackumentError,
+    commit_line,
     is_registry_placeholder,
     is_security_holder,
     normalize_repository_url,
@@ -298,3 +299,156 @@ def test_a_chain_of_shrinking_releases_keeps_the_usual_diff_base() -> None:
     chain = releases(*((f"1.0.{i}", n, None) for i, n in enumerate(sizes)))
     assert chain.previous_version("1.0.5") == "1.0.4"
     assert chain.previous_version("9.9.9") is None  # no publish time: not in the packument
+
+
+def published(*versions: str, manifests: dict[str, dict[str, Any]] | None = None) -> Packument:
+    """A packument of `versions`, published an hour apart in the order given."""
+    extra = manifests or {}
+    doc = {
+        "name": "kx",
+        "versions": {v: {"version": v, **extra.get(v, {})} for v in versions},
+        "time": {v: f"2026-10-29T{hour:02d}:00:00Z" for hour, v in enumerate(versions)},
+    }
+    return Packument(doc, expected_name="kx")
+
+
+def test_a_commit_named_canary_is_diffed_against_the_canary_before_it() -> None:
+    """`@astryxdesign/cli@0.7.6-canary.2936b07` was diffed against `0.7.6-canary.2782f99`, the
+    canary whose hash sorts just below it, not the one published before it."""
+    canaries = published(
+        "0.7.5",
+        "0.7.6-canary.2782f99",
+        "0.7.6-canary.f29e90e",
+        "0.7.6-canary.0bd3b37",
+        "0.7.6-canary.2936b07",
+    )
+    assert canaries.previous_version("0.7.6-canary.2936b07") == "0.7.6-canary.0bd3b37"
+    assert canaries.previous_version("0.7.6-canary.0bd3b37") == "0.7.6-canary.f29e90e"
+    assert canaries.previous_version("0.7.6-canary.2782f99") == "0.7.5"  # first on its line
+    # Runs recorded with diff base 4 replay with the base they had:
+    assert canaries.previous_version("0.7.6-canary.2936b07", diff_base=4) == "0.7.6-canary.2782f99"
+    assert canaries.previous_version("0.7.6-canary.0bd3b37", diff_base=4) == "0.7.5"
+
+
+def test_each_channel_is_its_own_line() -> None:
+    """`create-strapi-app` publishes `0.0.0-experimental.<sha>` and `0.0.0-next.<sha>`."""
+    sha = "7150f4afc4d03e57c3b9e774a308edb31990ee70"
+    channels = published(
+        f"0.0.0-experimental.{sha}",
+        "0.0.0-next.7ad8a01310d1599e990489b87a37503e766d4c54",
+        "0.0.0-experimental.1e43302fbe9572b7275aedb547333dbf5c71d599",
+        "0.0.0-next.a38539834b739bad1b681f690f384a9e6068d727",
+    )
+    assert (
+        channels.previous_version("0.0.0-experimental.1e43302fbe9572b7275aedb547333dbf5c71d599")
+        == f"0.0.0-experimental.{sha}"
+    )
+    assert (
+        channels.previous_version("0.0.0-next.a38539834b739bad1b681f690f384a9e6068d727")
+        == "0.0.0-next.7ad8a01310d1599e990489b87a37503e766d4c54"
+    )
+
+
+def test_stable_releases_and_other_cores_keep_the_usual_base() -> None:
+    mixed = published(
+        "1.1.8",
+        "1.1.9-canary.e098c93",
+        "1.1.9",
+        "1.2.0-canary.8915c17",
+        "1.1.9-canary.2911f40",  # a late canary of 1.1.9, after 1.1.9 itself
+        "1.2.0",
+        "1.2.0-canary.11f9079",
+    )
+    assert mixed.previous_version("1.1.9") == "1.1.9-canary.e098c93"  # not a commit line
+    assert mixed.previous_version("1.2.0-canary.8915c17") == "1.1.9"  # first of 1.2.0's line
+    assert mixed.previous_version("1.1.9-canary.2911f40") == "1.1.9-canary.e098c93"
+    assert mixed.previous_version("1.2.0") == "1.2.0-canary.8915c17"
+    # The stable release isn't on the line (it isn't a prerelease of 1.2.0):
+    assert mixed.previous_version("1.2.0-canary.11f9079") == "1.2.0-canary.8915c17"
+
+
+def test_a_numbered_part_before_the_commit_stays_in_the_line() -> None:
+    """`@jonaskahn/relo@0.2.1-beta.60.90c6f7c6`: the build number already sorts."""
+    numbered = published("0.2.1-beta.59.2f8fb615", "0.2.1-beta.60.90c6f7c6")
+    assert numbered.previous_version("0.2.1-beta.60.90c6f7c6") == "0.2.1-beta.59.2f8fb615"
+    hyphen = published(
+        "0.14.3-dev-0105e1a.0", "0.14.3-dev-d4b32f1.0", "0.14.3-dev-0110e2a.0.0110e2a"
+    )  # `@agoric/xsnap`: the commit id inside a hyphenated part
+    assert hyphen.previous_version("0.14.3-dev-0110e2a.0.0110e2a") == "0.14.3-dev-d4b32f1.0"
+    assert hyphen.previous_version("0.14.3-dev-0110e2a.0.0110e2a", diff_base=4) == (
+        "0.14.3-dev-0105e1a.0"
+    )
+
+
+def test_a_malicious_canary_still_shows_what_it_added() -> None:
+    """A canary that adds a postinstall is diffed against the clean canary published before
+    it, so the hook reads as added; under diff base 4 its hash sorted lowest and it was
+    diffed against the stable release (also clean). A second malicious canary is diffed
+    against the first, as any release is against the one before it: the first is the one
+    reported, and install-hook rules that read the new version alone still fire on both."""
+    hook = {"scripts": {"postinstall": "node x.js"}}
+    line = published(
+        "2.0.0",
+        "2.0.1-canary.fa3f760",
+        "2.0.1-canary.1010d4c",
+        "2.0.1-canary.c39a5b1",
+        manifests={"2.0.1-canary.1010d4c": hook, "2.0.1-canary.c39a5b1": hook},
+    )
+    base = line.previous_version("2.0.1-canary.1010d4c")
+    assert base == "2.0.1-canary.fa3f760"
+    assert "scripts" not in line.versions[base]
+    assert line.previous_version("2.0.1-canary.1010d4c", diff_base=4) == "2.0.0"
+    assert line.previous_version("2.0.1-canary.c39a5b1") == "2.0.1-canary.1010d4c"
+
+
+def test_the_line_passes_over_stubs_platform_builds_and_partial_publishes() -> None:
+    line = published(
+        "3.0.0-dev.aaaa111",
+        "3.0.0-dev.bbbb222",
+        "3.0.0-dev.cccc333.linux-x64",
+        "3.0.0-dev.dddd444",
+        "3.0.0-dev.eeee555",
+        manifests={
+            "3.0.0-dev.aaaa111": {"dist": {"fileCount": 400}},
+            "3.0.0-dev.bbbb222": {"dist": {"fileCount": 400}},
+            "3.0.0-dev.dddd444": {"stub": True},
+            "3.0.0-dev.eeee555": {"dist": {"fileCount": 400}},
+        },
+    )
+    assert line.previous_version("3.0.0-dev.eeee555") == "3.0.0-dev.bbbb222"
+    small = published(
+        "3.0.0-dev.aaaa111",
+        "3.0.0-dev.bbbb222",
+        "3.0.0-dev.cccc333",
+        manifests={
+            "3.0.0-dev.aaaa111": {"dist": {"fileCount": 400}},
+            "3.0.0-dev.bbbb222": {"dist": {"fileCount": 9}},
+            "3.0.0-dev.cccc333": {"dist": {"fileCount": 400}},
+        },
+    )
+    assert small.previous_version("3.0.0-dev.cccc333") == "3.0.0-dev.aaaa111"
+
+
+@pytest.mark.parametrize(
+    ("version", "line"),
+    [
+        ("0.7.6-canary.2936b07", ((0, 7, 6), "canary.")),
+        ("1.0.0-741727bc1", ((1, 0, 0), "")),
+        ("0.14.3-dev-12a46af.0.12a46af", ((0, 14, 3), "dev-")),
+        ("0.2.1-beta.60.90c6f7c6", ((0, 2, 1), "beta.60.")),
+        ("1.0.0-nightly-2e4cf78-20261030", ((1, 0, 0), "nightly-")),
+        ("1.0.0-x." + "ab12" * 10, ((1, 0, 0), "x.")),  # 40 hex digits: a full SHA-1
+        ("1.0.0-x." + "ab12" * 10 + "a", None),  # 41: not a commit id
+        ("1.0.0-canary.abc123", None),  # 6 digits: too short
+        ("1.0.0-nightly.20261031", None),  # all digits: a build number or a date
+        ("1.0.0-nightly-8627589-20261104", None),  # an all-digit hash can't be told apart
+        ("1.0.0-canary.deadbee", None),  # letters only
+        ("1.0.0-canary.ABC1234", None),  # git prints commit ids in lowercase
+        ("1.0.0-nightly.gdba95ce", None),  # `git describe`'s g prefix: not a bare id
+        ("1.0.0+2936b07", None),  # build metadata isn't a prerelease
+        ("1.0.0", None),
+        ("not-a-version", None),
+    ],
+)
+def test_commit_line(version: str, line: tuple[tuple[int, int, int], str] | None) -> None:
+    assert commit_line(version) == line

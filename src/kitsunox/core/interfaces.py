@@ -48,7 +48,9 @@ class DownloadCounts(Record):
 # 2: the same, passing over a partial publish (npm: `Packument.previous_version`).
 # 3: the same, passing over a platform build for a release that isn't one.
 # 4: the same, with OpenHarmony (`ohos-arm64`) builds among the platform builds.
-DIFF_BASE: Final = 4
+# 5: the same, but a prerelease named by a commit id (`0.7.6-canary.2936b07`) is diffed against
+#    the latest earlier publish of its own line (npm: `Packument.previous_version`).
+DIFF_BASE: Final = 5
 
 
 class Ecosystem(Protocol):

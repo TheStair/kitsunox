@@ -42,6 +42,12 @@ _CPUS: Final = "x64|x86_64|amd64|arm64|aarch64|ia32|x86|arm|armv7l?|ppc64le?|s39
 _PLATFORM_BUILD: Final = re.compile(rf"(?:^|[.-])(?:{_OSES})[.-](?:{_CPUS})(?:$|[.-])", re.I)
 # Diff base 4 adds OpenHarmony (`0.2.19-daily.20261030.ohos-arm64`).
 _PLATFORM_BUILD_4: Final = re.compile(rf"(?:^|[.-])(?:{_OSES}|ohos)[.-](?:{_CPUS})(?:$|[.-])", re.I)
+# A commit id in a prerelease (`0.7.6-canary.2936b07`, `0.14.3-dev-12a46af.0`): 7 to 40
+# lowercase hex digits with at least one letter and one digit, a whole dot- or hyphen-separated
+# part (diff base 5). All-digit hashes are left out: they can't be told from build numbers.
+_COMMIT_ID: Final = re.compile(
+    r"(?:^|[.-])((?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40})(?=$|[.-])"
+)
 
 _GITHUB_REPO = re.compile(
     r"^(?:git\+)?(?:https?|git|ssh)://(?:git@)?(?:www\.)?github\.com[/:]"
@@ -142,8 +148,17 @@ class Packument:
         published just before it with a single platform's binary and no postinstall, so the
         release's own postinstall read as added (8 live reports on the first two VM days). A
         platform build is still analysed itself, and is still a base if nothing else is.
-        Diff base 4 also knows OpenHarmony builds (`@bitfun-test/bitfun`'s daily `.ohos-arm64`)."""
+        Diff base 4 also knows OpenHarmony builds (`@bitfun-test/bitfun`'s daily `.ohos-arm64`).
+
+        Diff base 5 diffs a prerelease named by a commit id against the latest earlier publish
+        of its own line (`commit_line`): `@astryxdesign/cli@0.7.6-canary.2936b07` was diffed
+        against `0.7.6-canary.2782f99`, the canary whose hash happens to sort just below, often
+        weeks older, so every canary read as changing its install code (118 benign reports in
+        R2-R4). Publish order is the only order such versions have. With no earlier publish on
+        the line, the usual base is kept."""
         ranked = self._diff_bases(version)
+        if diff_base >= 5:
+            ranked = self._line_bases(version) or ranked
         if diff_base >= 3 and not platform_build(version, diff_base=diff_base):
             ranked = [v for v in ranked if not platform_build(v, diff_base=diff_base)] or ranked
         if not ranked:
@@ -177,6 +192,27 @@ class Packument:
                 lower.sort(key=lambda pair: (pair[0], self.publish_times[pair[1]]), reverse=True)
                 return [v for _, v in lower]
         return sorted(earlier, key=lambda v: (self.publish_times[v], v), reverse=True)
+
+    def _line_bases(self, version: str) -> list[str]:
+        """Earlier publishes on `version`'s commit line, latest first; empty if it has none."""
+        published = self.publish_times.get(version)
+        line = commit_line(version)
+        if published is None or line is None:
+            return []
+        core, prefix = line
+        same = []
+        for v, t in self.publish_times.items():
+            if (t, v) >= (published, version) or self.is_stub(v):
+                continue
+            sv = semver.parse(v)
+            if (
+                sv is not None
+                and sv.is_prerelease
+                and (sv.major, sv.minor, sv.patch) == core
+                and _prerelease_text(sv).startswith(prefix)
+            ):
+                same.append(v)
+        return sorted(same, key=lambda v: (self.publish_times[v], v), reverse=True)
 
     def _partial(self, small: str, full: str) -> bool:
         """`small` has under 1/PARTIAL_RATIO of `full`'s files (`dist.fileCount`), or of its
@@ -313,6 +349,26 @@ def normalize_repository_url(raw: str) -> str | None:
         (match.group(i), match.group(i + 1)) for i in (1, 3, 5) if match.group(i) is not None
     )
     return f"https://github.com/{owner}/{repo}"
+
+
+def commit_line(version: str) -> tuple[tuple[int, int, int], str] | None:
+    """The release line of a prerelease named by a commit id (diff base 5): its core version
+    and the prerelease text before the first commit id (`0.7.6-canary.2936b07` is on
+    `((0, 7, 6), "canary.")`; `1.0.0-741727bc1` on `((1, 0, 0), "")`). None for any other
+    version. Every prerelease of that core whose text starts so is on the line, so a numbered
+    part before the id (`beta.60.90c6f7c6`) stays in it: those already sort."""
+    parsed = semver.parse(version)
+    if parsed is None or not parsed.is_prerelease:
+        return None
+    text = _prerelease_text(parsed)
+    match = _COMMIT_ID.search(text)
+    if match is None:
+        return None
+    return (parsed.major, parsed.minor, parsed.patch), text[: match.start(1)]
+
+
+def _prerelease_text(version: semver.SemVer) -> str:
+    return ".".join(str(part) for part in version.prerelease)
 
 
 def platform_build(version: str, *, diff_base: int = DIFF_BASE) -> bool:

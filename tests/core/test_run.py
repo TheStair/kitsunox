@@ -286,7 +286,7 @@ def test_a_replay_uses_the_diff_base_rule_its_run_was_recorded_with(
 ) -> None:
     data = DataDir(tmp_path)
     manifest = record(data, registry, NONE)
-    assert manifest.diff_base == DIFF_BASE == 4
+    assert manifest.diff_base == DIFF_BASE == 5
     path = data.run_dir(manifest.run_id) / "manifest.json"
     raw = json.loads(path.read_text())
     del raw["diff_base"]  # written before the rule was recorded
