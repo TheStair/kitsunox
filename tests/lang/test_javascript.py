@@ -13,6 +13,7 @@ from kitsunox.lang.javascript import (
     fold_string,
     language_for,
     module_capability,
+    package_name,
 )
 
 C = Capability
@@ -90,6 +91,8 @@ def test_language_for() -> None:
     assert language_for("src/a.ts") == "typescript"
     assert language_for("src/a.tsx") == "tsx"
     assert language_for("types/index.d.ts") is None  # declarations: no code runs
+    assert language_for("dist/index.d.cts") is None
+    assert language_for("dist/index.d.mts") is None
     assert language_for("README.md") is None
 
 
@@ -232,3 +235,52 @@ def test_a_file_that_is_not_utf8() -> None:
     code = b"\xff\xfe x['constructor']['constructor'](c); q['\xc3\x28'] /* \xc3\x28 */"
     uses = analyse_source(code, "javascript").uses
     assert [u.detail for u in uses] == ["constructor.constructor"]
+
+
+def test_packages_loaded_by_name() -> None:
+    """v6: what `npm.undeclared-package` compares with the manifest."""
+    code = b"""const a = require("@scope/payload/lib/x");
+import b from "lodash/fp";
+import t from "node:test";
+const fs = require("fs/promises");
+try { require("optional-a") } catch {}
+try { require("optional-b") } catch {}
+require("optional-b");
+require("./local"); require("/abs"); require("#internal"); require("~/alias");
+import("dynamic-pkg"); require(name); require("BAD NAME");
+export * from "re-exported";
+eval("not-a-package"); fetch("also-not");
+"""
+    result = analyse_source(code, "javascript")
+    assert [(p.name, p.line, p.guarded) for p in result.packages] == [
+        ("@scope/payload", 1, False),
+        ("lodash", 2, False),
+        ("optional-a", 5, True),
+        ("optional-b", 7, False),  # loaded outside a `try` too
+        ("dynamic-pkg", 9, False),
+        ("re-exported", 10, False),
+    ]
+    typed = analyse_source(
+        b'import type {A} from "types-only"; import {B} from "real"', "typescript"
+    )
+    assert [p.name for p in typed.packages] == ["real"]
+
+
+@pytest.mark.parametrize(
+    ("specifier", "name"),
+    [
+        ("x", "x"),
+        ("x/sub/path.js", "x"),
+        ("@s/x/sub", "@s/x"),
+        ("JSONStream", None),  # uppercase: not a name npm accepts now (an AMD global)
+        ("fs", None),
+        ("node:sqlite", None),
+        ("bun:test", None),
+        ("https://esm.sh/x", None),
+        ("./x", None),
+        ("@s", None),
+        ("{x}", None),
+    ],
+)
+def test_package_name(specifier: str, name: str | None) -> None:
+    assert package_name(specifier) == name

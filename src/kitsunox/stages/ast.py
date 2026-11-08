@@ -37,6 +37,7 @@ from kitsunox.lang.javascript import (
     EXTRACTOR_VERSION,
     Capability,
     FileCapabilities,
+    PackageLoad,
     Use,
     analyse_source,
     language_for,
@@ -79,12 +80,21 @@ class PathUse(Record):
     use: Use
 
 
+class PathPackage(Record):
+    path: str
+    load: PackageLoad
+
+
 class Profile(Record):
-    """Capabilities of one version's code, with where each is used (paths sorted)."""
+    """Capabilities of one version's code, with where each is used (paths sorted); the
+    packages its own files load by name (not files under `node_modules/`), and the packages
+    it ships under `node_modules/`."""
 
     uses: tuple[PathUse, ...] = ()
     files_parsed: int = 0
     files_with_errors: int = 0
+    packages: tuple[PathPackage, ...] = ()
+    bundled: frozenset[str] = frozenset()
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -97,10 +107,15 @@ class Profile(Record):
 def profile(tree: Tree, cache: CapabilityCache, *, paths: frozenset[str] | None = None) -> Profile:
     """The profile of `tree`, or of only `paths` within it (e.g. an install script's files)."""
     uses: list[PathUse] = []
+    packages: list[PathPackage] = []
+    bundled: set[str] = set()
     parsed = errors = 0
     for path in sorted(tree):
         if paths is not None and path not in paths:
             continue
+        vendored = bundled_package(path)
+        if vendored is not None:
+            bundled.add(vendored)
         language = language_for(path)
         if language is None:
             continue
@@ -108,7 +123,26 @@ def profile(tree: Tree, cache: CapabilityCache, *, paths: frozenset[str] | None 
         parsed += 1
         errors += result.parse_errors
         uses.extend(PathUse(path=path, use=use) for use in result.uses)
-    return Profile(uses=tuple(uses), files_parsed=parsed, files_with_errors=errors)
+        if vendored is None:
+            packages.extend(PathPackage(path=path, load=load) for load in result.packages)
+    return Profile(
+        uses=tuple(uses),
+        files_parsed=parsed,
+        files_with_errors=errors,
+        packages=tuple(packages),
+        bundled=frozenset(bundled),
+    )
+
+
+def bundled_package(path: str) -> str | None:
+    """The package a file under `node_modules/` belongs to (the outermost one), or None."""
+    parts = path.split("/")
+    if "node_modules" not in parts:
+        return None
+    rest = parts[parts.index("node_modules") + 1 :]
+    if rest and rest[0].startswith("@"):
+        return "/".join(rest[:2]) if len(rest) > 1 else None
+    return rest[0] if rest else None
 
 
 def added(base: Profile | None, new: Profile) -> frozenset[Capability]:

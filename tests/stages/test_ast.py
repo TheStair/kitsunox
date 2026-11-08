@@ -262,3 +262,14 @@ def test_a_previous_outside_the_batch_is_fetched() -> None:
     analyse_batch(batch, tree_of, CapabilityCache(None), [Spy()])
     assert fetched == ["base", "branch-a.1", "branch-b.1", "branch-b.2"]
     assert seen[1].before is not None and seen[1].added == frozenset()
+
+
+def test_bundled_package() -> None:
+    from kitsunox.stages.ast import bundled_package
+
+    assert bundled_package("node_modules/a/index.js") == "a"
+    assert bundled_package("dist/node_modules/@s/b/lib/x.js") == "@s/b"
+    assert bundled_package("node_modules/a/node_modules/c/x.js") == "a"
+    assert bundled_package("node_modules/@s") is None
+    assert bundled_package("lib/node_modules") is None
+    assert bundled_package("lib/x.js") is None

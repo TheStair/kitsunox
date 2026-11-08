@@ -13,6 +13,7 @@ from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.rules.install_code import RULES as NPM_CODE_RULES
 from kitsunox.ecosystems.npm.rules.install_shapes import RULES as NPM_SHAPE_RULES
+from kitsunox.ecosystems.npm.rules.undeclared import RULES as NPM_UNDECLARED_RULES
 from kitsunox.rules.agents import RULES as AGENT_RULES
 from kitsunox.rules.capabilities import RULES as GENERIC_CODE_RULES
 from kitsunox.stages.ast import CodeRule, record_ast
@@ -22,6 +23,7 @@ CODE_RULES: Final[tuple[CodeRule, ...]] = (
     *AGENT_RULES,
     *NPM_CODE_RULES,
     *NPM_SHAPE_RULES,
+    *NPM_UNDECLARED_RULES,
 )
 
 

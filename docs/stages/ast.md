@@ -103,6 +103,7 @@ is the malicious set.
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
+| `npm.undeclared-package` (v1) | a version's own files (not those under `node_modules/`) load a package by name, outside a `try`, that `dependencies`, `peerDependencies`, `optionalDependencies` and `bundleDependencies` don't list and the tarball doesn't ship (Node's modules, paths and the package's own name don't count; on an update, only names the previous version's code didn't load) | INFO (weight 0) | `vm-day1`: 64 of 1,500; live: 700-1,150 a day | `vm-day1`: 758 of 3,443 (`bun_environment.js` importing `undici`); live: `tailwind-animate-engine@1.0.6` (INFO: still not reported) |
 
 New packages get no `capability-gained` finding: with no previous version everything is
 "gained", and 34% of benign new packages would fire. They are covered by what their install
@@ -237,6 +238,39 @@ Measured on the unpruned live runs (Stage 3's versions with captured tarballs: 2
   `txnforge@1.0.4` and `mock-datas-lib@1.0.1` gain the MEDIUM finding (both were score 0); no
   other Stage 3 finding changes on any of them.
 
+**Extractor v6 and `npm.undeclared-package`** (2026-11-08, INFO). Four Tailwind-wrapper
+campaign misses (`tailwind-animate-engine@1.0.6`, `tailwind-animate-final@1.0.6`,
+`tailwind-animate-test` 1.0.1 and 1.0.4) required their payload, `@unipswap/postcss-animate-units`,
+without declaring it, so `npm.dependency.missing` (Stage 4, declared names) could not see it.
+The extractor now records the packages a file loads by a constant name (`require`, `import`,
+`export ... from`, `import()`; not `import type`), whether the load is inside a `try`, and
+the profile records which packages the tarball ships under `node_modules/` (files there are
+not the package's own code). The rule compares them with `dependencies`, `peerDependencies`,
+`optionalDependencies` and `bundleDependencies`. Node's modules (with or without `node:`),
+paths, `#imports`, URL-like and capitalised specifiers (bundler externals and AMD globals such
+as `React`) and the package's own name are not packages to declare. `.d.cts` and `.d.mts` are
+now skipped as declarations, like `.d.ts`.
+
+The rule is **INFO** (scores nothing): as MEDIUM it would have reported 700-1,150 benign
+versions a day that nothing else reports, measured on the same live versions as
+`code.function-constructor` above. The names were overwhelmingly real packages provided by a
+host or used only at build time: `react` (217 versions), `zod` (71), `vscode` (38),
+`better-sqlite3` (23), `@deepseek-ai/dsh-client-ui-primitives` (19, a host's plugin API).
+
+| Variant (live, versions not reported otherwise) | 6.2 h run | 9.3 h run | 4-day run, 1 in 10 | per day |
+|---|---|---|---|---|
+| As built | 179 | 337 | 467 | 700-1,150 |
+| devDependencies count as declared | 122 | 239 | 281 | 480-700 |
+| also no test, example, template or declaration files | 113 | 177 | 225 | 440-560 |
+| also only a scoped name of another scope | 24 | 24 | 53 | 60-130 |
+| devDependencies and paths as above, and the name was not on npm (2026-11-08) | 1 | 4 | 19 | 8-47 |
+
+Only the last is near a reportable rate, and it needs to know whether the name existed when
+the release was published: a registry lookup, which Stage 4 makes for declared dependencies
+(`npm.dependency.missing`) and could make for these names (an owner decision; it changes
+Stage 4's input). Even then, path aliases (`@shared/x`, `@generated/gql`) and AMD module
+names remain. In `vm-day1` the rule fires on 64 of 1,500 benign samples and on 758 of 3,443 malicious ones, mostly the Shai-Hulud `bun_environment.js` importing `undici`
+(which Bun provides), already reported through other rules.
 ### Explained install (S1-S3) and agent configuration
 
 `npm.install-explained` (INFO, weight 0; 2026-11-08,
@@ -406,6 +440,9 @@ tool descriptions); 6 of them add no risky line. `vm-day1`: 3 malicious lost, al
   followed. Minified code reuses short names in every scope, so the wider rule fired on
   unrelated reads. `Function.prototype.constructor` and `Reflect.construct(Function, ...)` are
   not recognised.
+- `npm.undeclared-package` reads constant specifiers only: `require(name)` is
+  `dynamic-require`, and a package loaded through `createRequire`, `module.require` or a
+  bundler's runtime is not seen. It does not know whether a name exists on npm.
 - Install-entry detection reads command lines. `node -e "<code>"` and shell scripts are not
   parsed.
 - **tree-sitter 0.26.0 is excluded** (`pyproject.toml`). Using nodes from query matches

@@ -2,6 +2,49 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Undeclared packages: measured, kept as INFO (Stage 3)
+
+**Stage(s):** Stage 3 (extractor v6, `npm.undeclared-package`)
+**Context:** Four Tailwind-wrapper campaign misses (`tailwind-animate-engine@1.0.6` and three
+releases built from the same template) load their payload, `@unipswap/postcss-animate-units`,
+with `require()` without declaring it, so Stage 4's new `npm.dependency.missing` (declared
+names that 404) can't see it. The owner approved a rule for undeclared packages on the same
+terms as the Function-constructor one: build it only if benign reports stay low.
+
+### Decisions
+- **Record the loads, keep the rule INFO.** The extractor now lists the packages each file
+  loads by constant name (and whether inside a `try`), and the profile lists what the tarball
+  ships under `node_modules/`. The rule names undeclared packages as INFO evidence (weight 0)
+  rather than MEDIUM, because the measurement below says MEDIUM would flood the queue. The
+  alternatives (dropping it, or a narrower MEDIUM) are in the table in
+  [stages/ast.md](stages/ast.md); none is below tens of benign reports a day without a
+  registry lookup.
+- **Capitalised specifiers are not packages** (npm refuses new capitalised names): they were
+  bundler externals and AMD globals (`require("React")`, `GISDK`).
+
+### Challenges
+- **Benign releases load undeclared packages all the time.** Live (32,272 versions Stage 3
+  read): 700-1,150 a day not otherwise reported. Plugins whose host provides `react` (217
+  versions) or `vscode` (38), TypeScript sources and scaffolding templates shipped beside the
+  build, path aliases (`@shared/x`). Excluding devDependencies and test/example/template paths
+  leaves 440-560 a day; scoped names of another scope only, 60-130.
+  - **Resolution:** INFO. With the names npm didn't have (570 of 3,008 when checked) it would
+    be 8-47 a day, but only Stage 4 can ask the registry at the release's time.
+  - **Why it worked:** INFO scores nothing (`correlate.score`), so no report changes; unproven
+    whether the Stage 4 combination is precise enough.
+- `.d.cts` / `.d.mts` declaration files were parsed as TypeScript (only `.d.ts` was skipped);
+  their `import`s were among the first false hits. Now skipped.
+
+### Evaluation snapshot
+- Recall unchanged (INFO). `vm-day1`: fires on 64 of 1,500 benign and 758 of 3,443 malicious
+  samples (108 of them with no other Stage 3 MEDIUM finding).
+- `tailwind-animate-engine@1.0.6` gets the INFO finding naming `@unipswap/postcss-animate-units`.
+
+### Open questions / next steps
+- Owner: should Stage 4 look up the names this rule reports, and raise to MEDIUM on a 404
+  (as `npm.dependency.missing` does for declared names)? Measured upper bound 8-47 benign a day
+  before excluding path aliases.
+
 ## 2026-11-08: The Function constructor through `constructor` (Stage 3)
 
 **Stage(s):** Stage 3 capability analysis (extractor v5, `code.function-constructor`)

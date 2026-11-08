@@ -43,7 +43,9 @@ from kitsunox.core.models import Record
 # 5: the Function constructor reached through `constructor` (`_function_constructors`):
 #    `x.constructor.constructor`, `(() => {}).constructor`, and a variable holding
 #    `x.constructor` whose own `constructor` is taken (`txnforge`, `mock-datas-lib`, 2026-11-02).
-EXTRACTOR_VERSION: Final = 5
+# 6: the packages a file loads by name (`FileCapabilities.packages`), for
+#    `npm.undeclared-package`; `.d.cts` and `.d.mts` are type declarations, like `.d.ts`.
+EXTRACTOR_VERSION: Final = 6
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
@@ -70,10 +72,22 @@ class Use(Record):
     snippet: str
 
 
+class PackageLoad(Record):
+    """A package loaded by name (`require("x")`, `import ... from "x"`, `import("x")`): the
+    package (`@scope/x` for `@scope/x/sub`), 1-based line, a short snippet, and whether it is
+    loaded inside a `try` (the usual way to load an optional package)."""
+
+    name: str
+    line: int
+    snippet: str
+    guarded: bool = False
+
+
 class FileCapabilities(Record):
     language: str
     parse_errors: bool
     uses: tuple[Use, ...]
+    packages: tuple[PackageLoad, ...] = ()  # each package once, unguarded first
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -119,6 +133,26 @@ CONSTRUCTORS: Final[dict[str, Capability]] = {
 PROCESS_NATIVE: Final = frozenset({"binding", "dlopen", "_linkedBinding"})
 
 GLOBAL_OBJECTS: Final = ("global", "globalThis", "window", "self", "this")
+
+# Node's own modules (`require("module").builtinModules`, Node 22), loaded without a package;
+# subpaths count (`fs/promises`), and every `node:` specifier is Node's.
+NODE_BUILTINS: Final = frozenset(
+    {
+        "_http_agent", "_http_client", "_http_common", "_http_incoming", "_http_outgoing",
+        "_http_server", "_stream_duplex", "_stream_passthrough", "_stream_readable",
+        "_stream_transform", "_stream_wrap", "_stream_writable", "_tls_common", "_tls_wrap",
+        "assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants",
+        "crypto", "dgram", "diagnostics_channel", "dns", "domain", "events", "fs", "http",
+        "http2", "https", "inspector", "module", "net", "os", "path", "perf_hooks", "process",
+        "punycode", "querystring", "readline", "repl", "stream", "string_decoder", "sys",
+        "timers", "tls", "trace_events", "tty", "url", "util", "v8", "vm", "wasi",
+        "worker_threads", "zlib",
+    }
+)  # fmt: skip
+_LOADERS: Final = frozenset({"require", "import"})  # `import("x")`'s callee is `import` too
+# npm has refused new names with capitals since 2017; a capitalised specifier is a bundler's
+# external or an AMD global (`require("React")`), not a package to install.
+_PACKAGE_NAME: Final = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
 
 # `detail` of a `dynamic-code` use that reaches the Function constructor through `constructor`.
 CONSTRUCTOR_CHAIN: Final = "constructor.constructor"  # also `c.constructor`, `c = x.constructor`
@@ -250,7 +284,7 @@ def _parser(language: str) -> tuple[ts.Parser, ts.Query]:
 def language_for(path: str) -> str | None:
     """The grammar for a path, or None if it isn't JavaScript or TypeScript source."""
     lower = path.lower()
-    if lower.endswith(".d.ts"):
+    if lower.endswith((".d.ts", ".d.cts", ".d.mts")):
         return None  # type declarations: no code runs
     if lower.endswith(".tsx"):
         return "tsx"
@@ -296,7 +330,8 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
     tree = parser.parse(content)
     uses: dict[Capability, list[Use]] = {}
     kept: dict[tuple[Capability, str], int] = {}
-    for capability, detail, node in _uses(query, tree.root_node, content):
+    loads: list[tuple[str, ts.Node]] = []
+    for capability, detail, node in _uses(query, tree.root_node, content, loads):
         key = (capability, detail[:80])
         if kept.get(key, 0) < MAX_EVIDENCE:
             kept[key] = kept.get(key, 0) + 1
@@ -309,18 +344,76 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
                 )
             )
     ordered = tuple(u for capability in Capability for u in uses.get(capability, ()))
-    return FileCapabilities(language=language, parse_errors=tree.root_node.has_error, uses=ordered)
+    return FileCapabilities(
+        language=language,
+        parse_errors=tree.root_node.has_error,
+        uses=ordered,
+        packages=_packages(content, loads),
+    )
+
+
+def package_name(specifier: str) -> str | None:
+    """The npm package a specifier loads (`@scope/x` for `@scope/x/sub`, `x` for `x/sub`), or
+    None for Node's own modules, paths (`./x`, `/x`), URLs and other schemes (`node:`,
+    `http:`), package-internal imports (`#x`) and anything that isn't a package name."""
+    if ":" in specifier or specifier.startswith((".", "/", "#", "~")):
+        return None
+    parts = specifier.split("/")
+    name = "/".join(parts[:2]) if specifier.startswith("@") else parts[0]
+    if name in NODE_BUILTINS or not _PACKAGE_NAME.fullmatch(name):
+        return None
+    return name
+
+
+def _packages(content: bytes, loads: list[tuple[str, ts.Node]]) -> tuple[PackageLoad, ...]:
+    found: dict[str, PackageLoad] = {}
+    for specifier, node in sorted(loads, key=lambda load: load[1].start_byte):
+        name = package_name(specifier)
+        if name is None or (name in found and not found[name].guarded):
+            continue
+        guarded = _in_try(node)
+        if name not in found or not guarded:
+            found[name] = PackageLoad(
+                name=name,
+                line=node.start_point.row + 1,
+                snippet=_snippet(content, node),
+                guarded=guarded,
+            )
+    return tuple(found.values())
+
+
+def _in_try(node: ts.Node) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "try_statement":
+            return True
+        parent = parent.parent
+    return False
+
+
+def _type_only(node: ts.Node) -> bool:
+    """`import type {X} from "y"` and `export type {X} from "y"` (TypeScript): no code loads."""
+    return node.type in ("import_statement", "export_statement") and any(
+        c.type == "type" for c in node.children
+    )
 
 
 def _uses(
-    query: ts.Query, root: ts.Node, content: bytes
+    query: ts.Query, root: ts.Node, content: bytes, loads: list[tuple[str, ts.Node]]
 ) -> Iterator[tuple[Capability, str, ts.Node]]:
+    """Capability uses; also appends each constant specifier loaded, with its node, to
+    `loads`."""
     accesses: list[ts.Node] = []
     passes_loader = False
     for _, match in ts.QueryCursor(query).matches(root):
         if "passed" in match:
             passes_loader = True
             continue
+        if "import" in match or ("call" in match and _text(match["callee"][0]) in _LOADERS):
+            node = match["import" if "import" in match else "call"][0]
+            source = match["source"][0] if "source" in match else match.get("arg", [None])[0]
+            if (specifier := fold_string(source)) is not None and not _type_only(node):
+                loads.append((specifier, node))
         if "ctor_access" in match:
             if _is_constructor_access(match["ctor_access"][0]):
                 accesses.append(match["ctor_access"][0])
