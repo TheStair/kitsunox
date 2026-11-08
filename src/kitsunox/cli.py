@@ -4,7 +4,8 @@ import os
 import plistlib
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +52,7 @@ from kitsunox.evaluation.harness import (
     sync_labels,
 )
 from kitsunox.evaluation.labels import label_store
+from kitsunox.evaluation.ledger import LIVE_DIR, backfill
 from kitsunox.evaluation.metrics import render_markdown
 from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import (
@@ -104,6 +106,10 @@ eval_app = typer.Typer(help="Evaluation: build datasets from runs and score pred
 app.add_typer(eval_app, name="eval")
 samples_app = typer.Typer(help="Known-malicious samples from third-party datasets.")
 app.add_typer(samples_app, name="samples")
+live_app = typer.Typer(
+    help="Live evaluation (Phase 9): decision ledgers, confusion matrices, review sample."
+)
+app.add_typer(live_app, name="live")
 data_app = typer.Typer(help="Data directory maintenance.")
 app.add_typer(data_app, name="data")
 schedule_app = typer.Typer(
@@ -124,6 +130,14 @@ DataDirOption = Annotated[
     ),
 ]
 DEFAULT_DATA_DIR = Path(os.environ.get("KITSUNOX_DATA_DIR", "data"))
+LiveDirOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--live-dir",
+        help=f"Where live evaluation is written (default: DATA_DIR/{LIVE_DIR}). Outside the "
+        "data directory, nothing is written to it and no lock is taken.",
+    ),
+]
 
 
 def _print_version(value: bool) -> None:
@@ -878,6 +892,42 @@ def _post_daily(data: DataDir, webhook: str | None, log: Callable[[str], None]) 
             save_state(state_dir, state.model_copy(update={"daily_posted": day}))
         except OSError as exc:
             log(f"notify: state not written ({type(exc).__name__})")
+
+
+def _live(data: DataDir, live_dir: Path | None) -> tuple[Path, bool]:
+    """The live directory, and whether it is inside the data directory (then writers take
+    the data directory's lock, as `collect` does)."""
+    live = live_dir if live_dir is not None else data.root / LIVE_DIR
+    inside = live.resolve().is_relative_to(data.root.resolve())
+    return live, inside
+
+
+@contextmanager
+def _maybe_locked(data: DataDir, locked: bool) -> Iterator[None]:
+    if not locked:
+        yield
+        return
+    try:
+        with data.lock():
+            yield
+    except DataDirBusyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@live_app.command("ledger")
+def live_ledger(
+    run_ids: Annotated[list[str] | None, typer.Argument(help="Default: every run.")] = None,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    live_dir: LiveDirOption = None,
+) -> None:
+    """Write the decision ledger of every finished run that has none (a backfill; `collect`
+    writes them as runs finish). Streams each run's `correlate.jsonl`."""
+    data = DataDir(data_dir)
+    live, inside = _live(data, live_dir)
+    with _maybe_locked(data, inside):
+        written = backfill(data.root / "runs", live, run_ids=run_ids, log=typer.echo)
+    typer.echo(f"{len(written)} ledgers written to {live}/ledger")
 
 
 @data_app.command("prune")

@@ -21,7 +21,19 @@ import pytest
 from hypothesis import settings
 
 import kitsunox.collect
-from kitsunox.core.models import Severity, Window
+from kitsunox.core.models import (
+    ArtifactRef,
+    Candidate,
+    Change,
+    Finding,
+    PackageVersionRef,
+    Popularity,
+    PublishInfo,
+    Severity,
+    StageDecision,
+    VersionSnapshot,
+    Window,
+)
 from kitsunox.core.run import DataDir, RunManifest
 from kitsunox.core.watchlist import WatchEntry, Watchlist
 from kitsunox.ecosystems.npm.registry import (
@@ -32,7 +44,7 @@ from kitsunox.ecosystems.npm.registry import (
 )
 from kitsunox.reporting.report import Links, Report, ReportEntry, ScoreTerm
 from kitsunox.util import disk
-from kitsunox.util.http import HttpFetcher
+from kitsunox.util.http import HttpFetcher, Snapshot, SnapshotEntry
 
 # Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
 # reproducibility rule. `HYPOTHESIS_PROFILE=deep` runs many more examples for a validation pass.
@@ -273,3 +285,112 @@ def run_manifest(
     }
     fields.update(extra)
     return RunManifest.model_validate(fields)
+
+
+@dataclass
+class LiveVersion:
+    """One version of a finished fake run, as Stages 1-4 and the report left it (live eval)."""
+
+    name: str
+    version: str = "1.0.1"
+    published: datetime = REPORT_AS_OF - timedelta(minutes=30)
+    previous: str | None = "1.0.0"
+    watched: bool = False
+    publisher: str = "alice"
+    triage: str = "no signal"  # Stage 1's reason; forwarded unless "no signal"
+    static: str | None = None  # Stage 2's reason (None: not read); flagged if "rules: ..."
+    ast: str | None = None
+    score: float = 0.0
+    reported: bool = False
+    rules: tuple[tuple[str, Severity], ...] = ()
+    tarball_size: int | None = None  # captured by Stage 2 with this size
+    base_size: int | None = None
+    hook: bool = False
+
+    @property
+    def tarball_url(self) -> str:
+        return f"https://registry.npmjs.org/{self.name}/-/{self.name}-{self.version}.tgz"
+
+    @property
+    def base_url(self) -> str:
+        return f"https://registry.npmjs.org/{self.name}/-/{self.name}-{self.previous}.tgz"
+
+
+def live_candidate(v: LiveVersion) -> Candidate:
+    def snap(version: str, url: str) -> VersionSnapshot:
+        return VersionSnapshot(
+            ref=PackageVersionRef(ecosystem="npm", name=v.name, version=version),
+            publish=PublishInfo(published_at=v.published, publisher=v.publisher),
+            manifest={"scripts": {"postinstall": "node x.js"}} if v.hook else {},
+            artifact=ArtifactRef(url=url, unpacked_size=1000),
+        )
+
+    history = [StageDecision(stage="triage", forwarded=v.triage != "no signal", reason=v.triage)]
+    for stage, reason in (("static", v.static), ("ast", v.ast)):
+        if reason is not None:
+            history.append(
+                StageDecision(stage=stage, forwarded=reason.startswith("rules:"), reason=reason)
+            )
+    history.append(
+        StageDecision(stage="correlate", forwarded=v.reported, reason=f"score {v.score:g}")
+    )
+    findings = tuple(
+        Finding(
+            rule_id=rule, rule_version=1, severity=severity, weight=1.0, title="t", explanation="e"
+        )
+        for rule, severity in v.rules
+    )
+    change = Change(
+        new=snap(v.version, v.tarball_url),
+        previous=snap(v.previous, v.base_url) if v.previous else None,
+        popularity=Popularity(source="t", downloads=None, period_days=30, watched=v.watched),
+    )
+    return Candidate(change=change, findings=findings, history=tuple(history))
+
+
+def write_live_run(
+    runs_root: Path,
+    run_id: str,
+    versions: Iterable[LiveVersion],
+    *,
+    as_of: datetime = REPORT_AS_OF,
+    window: timedelta = timedelta(hours=1),
+    rules_hash: str = "r1",
+    stage_version: int = 8,
+    finished: bool = True,
+) -> Path:
+    """A run directory with what a finished tick leaves: manifest, `correlate.jsonl`,
+    `correlate.json`, the report and Stage 2's snapshot."""
+    run_dir = runs_root / run_id
+    (run_dir / "report").mkdir(parents=True, exist_ok=True)
+    manifest = run_manifest(run_id, as_of=as_of, window=Window(start=as_of - window, end=as_of))
+    (run_dir / "manifest.json").write_text(manifest.model_dump_json())
+    listed = list(versions)
+    with (run_dir / "correlate.jsonl").open("w") as handle:
+        for v in listed:
+            handle.write(live_candidate(v).model_dump_json() + "\n")
+    info = {"stage_version": stage_version, "rules": rules_hash, "report_score": 6.0}
+    (run_dir / "correlate.json").write_text(json.dumps(info))
+    reported = sorted((v for v in listed if v.reported), key=lambda v: (-v.score, v.name))
+    entries = [
+        report_entry(rank, v.name, v.version, v.score, Severity.MEDIUM, published_at=v.published)
+        for rank, v in enumerate(reported, start=1)
+    ]
+    report = make_report(run_id, *entries, as_of=as_of)
+    (run_dir / "report" / "report.json").write_text(report.model_dump_json())
+    if finished:
+        (run_dir / "report" / "index.md").write_text("# report\n")
+    entries_snap = {}
+    for v in listed:
+        for url, size in ((v.tarball_url, v.tarball_size), (v.base_url, v.base_size)):
+            if size is not None:
+                entries_snap[url] = SnapshotEntry(
+                    url=url,
+                    status=200,
+                    content_type=None,
+                    sha256=hashlib.sha256(url.encode()).hexdigest(),
+                    size=size,
+                    fetched_at=as_of,
+                )
+    Snapshot(entries=entries_snap).save(run_dir / "static-snapshot.json")
+    return run_dir

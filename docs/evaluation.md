@@ -70,6 +70,42 @@ Recall is reported **separately for shape A (compromised existing package) and s
 malicious package)** ([threat-model.md](threat-model.md#two-attack-shapes)). Public datasets are
 dominated by shape B, so a single recall number would mostly measure typosquat detection.
 
+## Live evaluation (Phase 9)
+
+Datasets built with `eval build` and the DataDog samples measure rules in the lab. Live
+evaluation measures what the pipeline decided **at the time**, on every version it saw, against
+labels that arrive days later: OSV `MAL-` records, npm takedowns and reviewer verdicts. The design
+is [proposals/prospective-labeling.md](proposals/prospective-labeling.md) (option B) and the
+owner's decisions are [0019](decisions/0019-live-evaluation.md).
+
+```sh
+uv run kitsunox live ledger                       # backfill: a ledger for every finished run
+```
+
+### The decision ledger (`evaluation/ledger.py`)
+
+Run outputs are large and partly pruned, so each finished run (Stage 4 and its report complete)
+is boiled down once to `data/eval/live/ledger/<run_id>.jsonl.zst`, kept for good (~90 KB for an
+hourly run of ~2,200 versions). Its first line is a header: the run, `as_of`, Stage 4's
+`stage_version` and rule fingerprint (`correlate.json`), the report bar, the label set and
+watchlist Stage 4 used, the SHA-256 of every file read, and, when `collect` wrote it in the tick
+that ran the stages, the rule fingerprint of every stage and the tool version (`pipeline`; a
+backfill can't know them, so it is empty). Then one row per version that entered Stage 4:
+
+| Field | Meaning |
+|---|---|
+| `name`, `version`, `published_at`, `publisher`, `previous` | The release; `previous` empty = a new package (shape B) |
+| `watched`, `hook`, `placeholder`, `declared_size` | On the watchlist; declares an install hook; the registry's own stand-in |
+| `s1`, `s1_forwarded` | Stage 1's route: `rules`, `watched`, `new`, `hook`, `grown`, `size-unknown`, `none` |
+| `s2`, `s3` | Stages 2 and 3: `unread`, `no-files` (size cap or fetch error), `clear`, `flagged` |
+| `score`, `forwarded`, `rank` | Stage 4's score and decision; the rank in the run's report (empty: not reported) |
+| `rules` | `rule_id@version:severity` of every finding above INFO |
+| `tarball`, `tarball_size`, `base_tarball`, `base_tarball_size` | SHA-256 and size of the tarballs Stage 2 captured |
+
+A re-scored run (`kitsunox rescore`) is ledgered as the tick scored it (`before-rescore/`); its
+current outputs go to `<run_id>.rescored.jsonl.zst`, used only for a secondary recall figure.
+The ledger streams `correlate.jsonl` a line at a time and is a pure function of the run's files.
+
 ## Data sources
 
 ### Known-bad
