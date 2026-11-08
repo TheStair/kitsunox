@@ -122,6 +122,7 @@ def test_constants_match_collect() -> None:
 def test_stage1_routes() -> None:
     assert L.stage1_route("install hook") == "hook"
     assert L.stage1_route("unpacked size unknown") == "size-unknown"
+    assert L.stage1_route("small update") == "small"
     assert L.stage1_route("something new") == "other"
     assert L.stage1_route("rules: npm.install-hook") == "rules"
 

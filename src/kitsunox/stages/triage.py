@@ -10,9 +10,13 @@ tarball stages. A change is forwarded, in this order of reasons, if:
    version's (`npm.install-script-changed`): a hook can stay word for word the same while the
    file it runs changes. 2.2% of updates on the first VM day, 1,440 of them not forwarded
    before;
-5. its declared unpacked size grew by at least `MIN_GROWTH_BYTES`, or a size is unknown.
+5. its declared unpacked size grew by at least `MIN_GROWTH_BYTES`, or a size is unknown;
+6. it is a small update: at most `SMALL_UPDATE_BYTES` declared (2026-11-08). Payloads in small
+   packages don't grow them by 64 KiB (`@atedone/workspace-context` added its shell start-up
+   persistence in 2.3 KiB), and reading every small update costs little: ~16k versions and
+   ~0.15 GB of tarballs a day (`docs/proposals/prefreeze-recall.md`).
 
-Reasons 3 to 5 route code to Stage 2 that has no metadata signal (the "hybrid" policy chosen
+Reasons 3 to 6 route code to Stage 2 that has no metadata signal (the "hybrid" policy chosen
 on 2026-10-27; numbers in `docs/stages/static.md`). The decision and its reason are recorded on
 the candidate, so per-stage metrics can be computed.
 
@@ -47,6 +51,9 @@ DEFAULT_THRESHOLD: Final = Severity.MEDIUM
 # Payloads are added code: 71% of malicious updates (DataDog, first releases) grew by at least
 # 64 KiB of declared unpacked size, against 8% of benign ones (2026-10-27).
 MIN_GROWTH_BYTES: Final = 64 * 1024
+# Updates this small (declared unpacked size) are read whatever they changed (reason 6).
+SMALL_UPDATE_BYTES: Final = 64 * 1024
+SMALL_UPDATE: Final = "small update"
 RULES_BY_ECOSYSTEM: Final[dict[str, Sequence[Rule]]] = {"npm": NPM_RULES}
 
 
@@ -62,7 +69,7 @@ def triage(
     forward_watched: bool = True,
     route_code: bool = True,
 ) -> Candidate:
-    """`route_code=False` turns off reasons 3 to 5 (Stage 1 measured on its own)."""
+    """`route_code=False` turns off reasons 3 to 6 (Stage 1 measured on its own)."""
     findings = run_rules(RULES_BY_ECOSYSTEM[change.new.ref.ecosystem], change, ctx)
     flagged = sorted({f.rule_id for f in findings if at_least(f.severity, threshold)})
     watched = bool(change.popularity and change.popularity.watched)
@@ -89,6 +96,8 @@ def code_route(change: Change) -> str | None:
         return "unpacked size unknown"
     if new - old >= MIN_GROWTH_BYTES:
         return f"unpacked size grew by {new - old} bytes"
+    if new <= SMALL_UPDATE_BYTES:
+        return SMALL_UPDATE
     return None
 
 

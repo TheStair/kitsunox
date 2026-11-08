@@ -63,7 +63,9 @@ SCORE: Final = re.compile(r"score (-?\d+(?:\.\d+)?)")
 
 Variant = Literal["tick", "rescored"]
 # Stage 1's forward route, from its decision reason (`stages/triage.py`).
-Route = Literal["rules", "watched", "new", "hook", "grown", "size-unknown", "none", "other"]
+Route = Literal[
+    "rules", "watched", "new", "hook", "grown", "size-unknown", "small", "none", "other"
+]
 # Stages 2 and 3: never read, read without files (size cap, fetch error), read and clear,
 # read and flagged.
 Read = Literal["unread", "no-files", "clear", "flagged"]
@@ -216,6 +218,7 @@ def stage1_route(reason: str) -> Route:
         "new package": "new",
         "install hook": "hook",
         "unpacked size unknown": "size-unknown",
+        "small update": "small",
     }
     if reason in routes:
         return routes[reason]

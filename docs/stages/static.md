@@ -21,8 +21,9 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
 ## Input and output
 
 - **Input:** `PackageBatch` from Stage 1 (every version of one package in a run, plus the base).
-  Stage 1 routes a package here if it is flagged, watched, new, or its declared unpacked size
-  grew by 64 KiB or more (see [Routing](#routing-what-stage-2-reads)).
+  Stage 1 routes a package here if it is flagged, watched, new, has an install hook, its
+  declared unpacked size grew by 64 KiB or more, or (since 2026-11-08) it is an update of at
+  most 64 KiB (see [Routing](#routing-what-stage-2-reads)).
 - **Fetch:** each version's tarball and the base's tarball, via `Ecosystem.fetch_artifact`
   (integrity-verified, extracted in memory by `extract_tar_gz`, never executed). Versions that
   declare more than 16 MB unpacked (`MAX_ARTIFACT_BYTES`) are not fetched, or more than 32 MB
@@ -171,8 +172,8 @@ rule can be validated on DataDog data: they guard against evasions the dataset d
 Their cost, measured on benign traffic, is zero.
 
 **Limit:** these rules only see what Stage 2 downloads. An update that understates its growth
-below 64 KiB is never routed here, so the size check catches a lie only on routed versions
-(watched, new, flagged, or still grown). Closing that would need a size signal that doesn't
+below 64 KiB while staying over 64 KiB declared is never routed here, so the size check
+catches a lie only on routed versions (watched, new, flagged, hooked, grown or small). Closing that would need a size signal that doesn't
 come from the publisher, e.g. the tarball's `Content-Length`. That is an open item.
 
 Five rules started at MEDIUM and were downgraded to LOW after the first evaluation, because
@@ -232,7 +233,9 @@ on the saved per-sample results, and are recorded in
 
 - every **new package** (cheap: 4k a day, 0.2 GB);
 - every **update whose declared unpacked size grew by ≥ 64 KiB** (71% of malicious updates,
-  8.3% of benign). Routing *small* updates instead added nothing: payloads make packages bigger;
+  8.3% of benign). Routing *small* updates instead added nothing: payloads make packages bigger
+  (on 2026-11-08 small updates were routed as well, for rules that catch small payloads: see
+  [below](#routing-vs-live-recall-and-the-hook-cap-2026-11-08));
 - watched and flagged packages, as before;
 - **no version over 16 MB declared** (9% of releases, 86% of bytes, mostly binaries).
 
@@ -267,6 +270,12 @@ hooked, all flagged by `stage2-rules`), 1 first release and 2 B follow-ons. Live
 339 more versions a day (173 routed for their hook, 160 watched, 6 flagged), ~2.5 GB of new
 tarballs a day (up to 4.8 GB with bases; today's total is 17.7 GB), and on a sample of 111 of
 them, 2 reported (1.8%, both `npm.install-script-changed`), about 6 benign reports a day.
+
+Later the same day the owner approved routing small updates too, once the two rules below
+existed: Stage 1 now forwards every update of at most 64 KiB declared (`triage.md` reason 6),
+~16,200 versions and ~0.14 GB of tarballs a day; 2 of a 1/10 sample of 4 days (6,436) were
+reported, both look benign; on `vm-day1` it adds 62 B follow-ons that today's rules flag
+([prefreeze-recall](../proposals/prefreeze-recall.md#3-small-updates-to-stage-2)).
 
 ### WhatsApp channel follows (`static.channel-follow`, 2026-11-08)
 

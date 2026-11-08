@@ -82,3 +82,24 @@ sampled). A flat 32 MB cap would cost ~14 GB a day more for the same follow-ons.
 
 Measurements, options and the owner's open questions:
 [stage2-routing-recall](../proposals/stage2-routing-recall.md).
+
+## Addendum (2026-11-08, later): small updates are routed
+
+The owner approved option B of [stage2-routing-recall](../proposals/stage2-routing-recall.md)
+on 2026-11-08, provided it doesn't flood benign reports once the two pre-freeze rules exist
+(`static.shell-startup`, `static.channel-follow`). Stage 1 now also forwards every update that
+declares **at most 64 KiB** (`SMALL_UPDATE_BYTES`, reason `small update`, after the growth
+check; the ledger's route `small`). Payloads in small packages don't grow them by 64 KiB:
+`@atedone/workspace-context` 0.0.12 added its shell start-up persistence in 2.3 KiB, and with
+`static.shell-startup` it is now reported.
+
+Measured on the 4-day run `20261107T163310Z-npm` (405,710 changes, 3.97 days): 64,415
+unrouted updates were ≤ 64 KiB, **~16,200 versions a day**. A deterministic 1/10 sample (6,436,
+by SHA-256 of `name@version`), fetched and run through Stages 2-3 and Stage 4's `decide`:
+0.14 GB/day of new tarballs (0.37 GB/day more if every base is fetched too, an upper bound),
+**2 reported** (0.03%, about 5 a day; `@quecue/notify-core`, a notifier with a user-supplied
+Telegram token, and `parallel-executor`'s `new Function("require", ...)`; both look benign),
+and the two new rules match none of them at MEDIUM. The cost is mainly Stage 2-3 work
+(+~40% of the versions they read) and registry requests, not disk.
+
+Details: [prefreeze-recall](../proposals/prefreeze-recall.md#3-small-updates-to-stage-2).

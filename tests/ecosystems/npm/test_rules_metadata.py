@@ -1,7 +1,7 @@
 """Stage 1 npm metadata rules on hand-written, inert changes."""
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -28,7 +28,14 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     calendar_major,
     calendar_version,
 )
-from kitsunox.stages.triage import MIN_GROWTH_BYTES, batch_forwarded, code_route, triage
+from kitsunox.stages.triage import (
+    MIN_GROWTH_BYTES,
+    SMALL_UPDATE,
+    SMALL_UPDATE_BYTES,
+    batch_forwarded,
+    code_route,
+    triage,
+)
 
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
 CTX = RuleContext(as_of=T0)
@@ -348,8 +355,11 @@ def test_hostile_manifest_types_never_crash(manifest: dict[str, Any]) -> None:
     run_rules(RULES, change(snap("2", manifest)), CTX)
 
 
+BIG: Final = SMALL_UPDATE_BYTES + 1  # an update too large for the small-update route
+
+
 def test_triage_forward_policy() -> None:
-    quiet = change(snap("2"), snap("1"))
+    quiet = change(snap("2", size=BIG), snap("1", size=BIG))
     assert triage(quiet, CTX).history[-1].reason == "no signal"
     assert (
         triage(change(snap("2"), snap("1"), watched=True), CTX).history[-1].reason
@@ -358,7 +368,9 @@ def test_triage_forward_policy() -> None:
     hook = change(snap("2", {"scripts": {"preinstall": "x"}}), snap("1"))
     decision = triage(hook, CTX).history[-1]
     assert decision.forwarded and decision.reason == "rules: npm.install-hook"
-    low_only = change(snap("2", maintainers=("a", "b")), snap("1", maintainers=("a",)))
+    low_only = change(
+        snap("2", size=BIG, maintainers=("a", "b")), snap("1", size=BIG, maintainers=("a",))
+    )
     assert not triage(low_only, CTX).history[-1].forwarded  # LOW findings alone don't forward
 
 
@@ -366,11 +378,18 @@ def test_code_routes_send_quiet_changes_to_stage2() -> None:
     assert code_route(change(snap("1"))) == "new package"
     hooked = change(snap("2", {"scripts": {"postinstall": "node i.js"}}), snap("1"))
     assert code_route(hooked) == "install hook"  # Stage 3 diffs what the hook runs
-    assert code_route(change(snap("2", {"scripts": {"postinstall": " "}}), snap("1"))) is None
+    blank_hook = snap("2", {"scripts": {"postinstall": " "}}, size=BIG)
+    assert code_route(change(blank_hook, snap("1", size=BIG))) is None
     grown = change(snap("2", size=1000 + MIN_GROWTH_BYTES), snap("1"))
     assert code_route(grown) == f"unpacked size grew by {MIN_GROWTH_BYTES} bytes"
-    assert code_route(change(snap("2", size=1000 + MIN_GROWTH_BYTES - 1), snap("1"))) is None
+    unrouted = change(snap("2", size=BIG + MIN_GROWTH_BYTES - 1), snap("1", size=BIG))
+    assert code_route(unrouted) is None
     assert code_route(change(snap("2"), snap("1", size=None))) == "unpacked size unknown"
+    # Small updates are read whatever changed, also when they shrank (2026-11-08).
+    assert code_route(change(snap("2", size=SMALL_UPDATE_BYTES), snap("1", size=BIG))) == (
+        SMALL_UPDATE
+    )
+    assert code_route(change(snap("2", size=900), snap("1"))) == SMALL_UPDATE
     decision = triage(grown, CTX).history[-1]
     assert decision.forwarded and decision.reason.startswith("unpacked size grew")
     assert not triage(grown, CTX, route_code=False).history[-1].forwarded
@@ -394,10 +413,14 @@ def test_batches_keep_every_version_including_a_reverted_malicious_one() -> None
 def test_batches_include_unflagged_siblings_and_drop_quiet_packages() -> None:
     flagged = triage(change(snap("2.0.0", {"scripts": {"preinstall": "x"}}), snap("1.0.0")), CTX)
     sibling = triage(
-        change(snap("2.0.1", published_at=T0 + timedelta(hours=1)), snap("2.0.0")), CTX
+        change(
+            snap("2.0.1", size=BIG, published_at=T0 + timedelta(hours=1)),
+            snap("2.0.0", size=BIG),
+        ),
+        CTX,
     )
     other = PackageVersionRef(ecosystem="npm", name="other", version="2")
-    quiet_change = change(snap("2"), snap("1"))
+    quiet_change = change(snap("2", size=BIG), snap("1", size=BIG))
     quiet = triage(
         quiet_change.model_copy(update={"new": quiet_change.new.model_copy(update={"ref": other})}),
         CTX,

@@ -35,8 +35,14 @@ uv run kitsunox eval run <dataset> --predictor stage1         # full forward pol
      them not forwarded before.
   5. `unpacked size grew by N bytes`: declared `dist.unpackedSize` grew by at least 64 KiB
      (`MIN_GROWTH_BYTES`), or `unpacked size unknown` (6 of 110k updates).
+  6. `small update` (2026-11-08): the update declares at most 64 KiB (`SMALL_UPDATE_BYTES`),
+     whatever changed. A payload in a small package doesn't grow it by 64 KiB
+     (`@atedone/workspace-context` added its shell start-up persistence in 2.3 KiB). About
+     16,200 versions and 0.14 GB of tarballs a day (≤ 0.5 GB with bases); on a 1/10 sample of
+     4 days, 2 of 6,436 were reported, both look benign (~5 a day). Numbers:
+     [prefreeze-recall](../proposals/prefreeze-recall.md#3-small-updates-to-stage-2).
 
-  Reasons 3 and 5 were added on 2026-10-27 (the "hybrid" policy): they don't flag anything,
+  Reasons 3, 5 and 6 route code; 3 and 5 were added on 2026-10-27 (the "hybrid" policy): they don't flag anything,
   they send code that has no metadata signal to Stage 2. LOW findings are kept for scoring
   (Stage 4) but don't forward on their own. See [static.md](static.md#routing-what-stage-2-reads)
   for the numbers behind the routing.
