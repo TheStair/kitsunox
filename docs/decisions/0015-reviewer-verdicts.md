@@ -141,3 +141,14 @@ reviewed by the owner before it is applied; each new record's note starts "Recla
 **Evaluation.** The live matrices count `malicious` and `unwanted` as positives in the headline
 ("flag-worthy") matrix, show a strict malicious-only matrix beside it, and leave `unverified`
 out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), addendum).
+
+## Addendum 2026-11-08 (later): AI-agent skills, hooks and settings
+
+- **The owner, 2026-11-08:** a package built for AI-assisted development that installs its own
+  skills, hooks or agent settings (`~/.claude/skills`, `~/.claude/settings.json` hooks such as
+  `UserPromptSubmit`, `.agents/`, `AGENTS.md`) is **benign**: "developers are aware when
+  installing ai specific packages". This matches the explained-install shape "agent-skill
+  copier" approved for after the freeze (`docs/proposals/precision-round2.md`).
+- Behaviour still decides: a hook or skill that sends data off the machine, fetches and runs
+  code, or plants instructions that work against the user (e.g. telling the agent to hide
+  activity, exfiltrate, or disable safeguards) is judged on that, as anywhere else.
