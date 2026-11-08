@@ -59,8 +59,9 @@ STAGE_ID: Final = "correlate"
 # clearing install-code findings with it exists but is off (`CLEAR_ESTABLISHED`). 10: compared
 # updates carry the previous release's commit (`RepoComparison.history`): `repo.history-match`,
 # `repo.commit-after-release`, `npm.repo.no-new-commits`; clearing with a history match is off
-# too (`CLEAR_HISTORY`). Output without the field is 1.
-STAGE_VERSION: Final = 10
+# too (`CLEAR_HISTORY`). 11: at most `MAX_REPO_COMPARISONS` versions a run are compared,
+# flagged ones first (`plan_comparisons`). Output without the field is 1.
+STAGE_VERSION: Final = 11
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -94,6 +95,15 @@ OUTAGE_MIN: Final = 20
 # Appended to the decision reason of a version whose comparison still failed on the network, so
 # reviewers see it and `repo_network_failures` can count it (like Stage 2's `WILL_RETRY`).
 NETWORK_UNCOMPARED: Final = "; not compared with its repository: network failure"
+# The most versions of one run compared with their repository, and the note on the decision of
+# each version `wants_repo` picked that is over it. An hourly run wants ~500; the 4-day catch-up
+# of 2026-11-07 (405,710 changes) wanted 80,934 (1,745 flagged), and its archives filled the
+# disk to the blob store's floor after 108 GB, so Stage 4 failed, the archives were pruned
+# unreferenced, and the next tick started over. 2,000 is ~4 hours of normal ticks: at most
+# ~30-40 GB of archives (~14 MB each on the first live day, ~20 MB in that run; versions that
+# share a commit share one). Flagged versions come first (`plan_comparisons`).
+MAX_REPO_COMPARISONS: Final = 2_000
+BUDGET_UNCOMPARED: Final = "; not compared with its repository: over the run's comparison budget"
 # Explanation prefix of an INFO finding saying a rule could not be evaluated for part of a
 # version (e.g. a dependency whose registry record failed to load), so that "not checked" is
 # never mistaken for "checked and clean". `correlate.json` counts the versions that have one.
@@ -194,18 +204,56 @@ class RepoLookup(Protocol):
         ...
 
 
+def _flagged(candidate: Candidate) -> bool:
+    return any(
+        d.forwarded and (d.stage != "triage" or d.reason.startswith("rules:"))
+        for d in candidate.history
+    )
+
+
 def wants_repo(candidate: Candidate) -> bool:
     """Which versions get the repository comparison (chosen 2026-10-28): any version an earlier
     stage flagged, and every update of a watched package. About 500 versions an hour, most of
     them watched-package updates, which share archives when a burst or a monorepo shares a
-    commit."""
-    flagged = any(
-        d.forwarded and (d.stage != "triage" or d.reason.startswith("rules:"))
-        for d in candidate.history
-    )
+    commit. A run compares at most `MAX_REPO_COMPARISONS` of them (`plan_comparisons`)."""
     change = candidate.change
     watched = bool(change.popularity and change.popularity.watched)
-    return flagged or (watched and change.previous is not None)
+    return _flagged(candidate) or (watched and change.previous is not None)
+
+
+@dataclass(frozen=True)
+class ComparisonPlan:
+    """Which versions of a run are compared with their repository (indices in triage order),
+    and which `wants_repo` picked but are over the run's budget."""
+
+    compared: frozenset[int]
+    over_budget: frozenset[int]
+    flagged: int
+
+    def counts(self, cap: int) -> dict[str, int]:
+        return {
+            "max_comparisons": cap,
+            "wanted": len(self.compared) + len(self.over_budget),
+            "flagged": self.flagged,
+            "over_budget": len(self.over_budget),
+        }
+
+
+def plan_comparisons(versions: Sequence[Candidate], cap: int) -> ComparisonPlan:
+    """The versions `wants_repo` picks, flagged ones first and then watched-package updates,
+    each in triage order, up to `cap`; decided before any request, so the choice depends only on
+    the run's input. A flagged version is far more likely to matter than a routine update of a
+    watched package, so after a long gap the budget goes to them."""
+    flagged: list[int] = []
+    watched: list[int] = []
+    for i in range(len(versions)):
+        candidate = versions[i]
+        if _flagged(candidate):
+            flagged.append(i)
+        elif wants_repo(candidate):
+            watched.append(i)
+    ordered = flagged + watched
+    return ComparisonPlan(frozenset(ordered[:cap]), frozenset(ordered[cap:]), len(flagged))
 
 
 class CorrelationRule(Protocol):
@@ -251,6 +299,15 @@ def correlate(
     if ctx.repo is not None and ctx.repo.transient:
         decision = decision.model_copy(update={"reason": decision.reason + NETWORK_UNCOMPARED})
     return candidate.model_copy(update={"history": (*candidate.history, decision)})
+
+
+def repo_over_budget(candidates: Iterable[Candidate]) -> int:
+    """How many versions Stage 4 left uncompared because the run was over its budget
+    (`MAX_REPO_COMPARISONS`)."""
+    return sum(
+        c.history[-1].stage == STAGE_ID and c.history[-1].reason.endswith(BUDGET_UNCOMPARED)
+        for c in candidates
+    )
 
 
 def repo_network_failures(candidates: Iterable[Candidate]) -> int:
@@ -366,12 +423,15 @@ def correlate_run(
     report_score: float = REPORT_SCORE,
     workers: int = 8,
     retry_passes: int = RETRY_PASSES,
+    max_comparisons: int = MAX_REPO_COMPARISONS,
 ) -> CandidateFile:
     """Stage 4 over a run Stage 3 has processed. Reads every triaged version
     (`triage.jsonl`), taking Stages 2-3's version of those routed to them (`ast.jsonl`); writes
     `correlate.jsonl` (one Candidate per line, in triage order) and `correlate.json` (which
     outside data and rules were used, and how many repository lookups failed on the network).
-    `repo` compares a version with its repository (`wants_repo` decides which). Lookups that
+    `repo` compares a version with its repository (`wants_repo` decides which, and
+    `plan_comparisons` keeps at most `max_comparisons`; the rest get `BUDGET_UNCOMPARED`, and
+    `correlate.json` counts them under `repo_budget`). Lookups that
     come back `transient` are run again after the first pass, up to `retry_passes` times,
     stopping early when a pass recovers none; no retry pass runs when the first pass looks
     like an outage (`OUTAGE_SHARE`, `OUTAGE_MIN`). `files_transient` lookups are not retried.
@@ -385,12 +445,16 @@ def correlate_run(
     2026-10-30. Only the repository comparisons and dependency records stay in memory. Returns
     the output, read on demand."""
     versions = RunVersions(run_dir / "triage.jsonl", run_dir / "ast.jsonl")
+    plan = (
+        plan_comparisons(versions, max_comparisons)
+        if repo is not None
+        else ComparisonPlan(frozenset(), frozenset(), 0)
+    )
 
     def lookup(i: int) -> RepoComparison | None:
-        if repo is None:
+        if repo is None or i not in plan.compared:
             return None
-        candidate = versions[i]
-        return repo(candidate) if wants_repo(candidate) else None
+        return repo(versions[i])
 
     deps = ctx.dependencies
     indices = range(len(versions))
@@ -401,6 +465,10 @@ def correlate_run(
         candidate = correlate(
             versions[i], replace(ctx, repo=comparison), rules, report_score=report_score
         )
+        if i in plan.over_budget:
+            *earlier, decision = candidate.history
+            noted = decision.model_copy(update={"reason": decision.reason + BUDGET_UNCOMPARED})
+            candidate = candidate.model_copy(update={"history": (*earlier, noted)})
         totals.add(candidate)
         return candidate
 
@@ -446,6 +514,7 @@ def correlate_run(
             "package_files_network": sum(c is not None and c.files_transient for c in comparisons),
             "errors": errors,
         },
+        "repo_budget": plan.counts(max_comparisons),
     }
     if deps is not None:
         stats = dict(deps.stats())

@@ -334,6 +334,8 @@ Key invariants:
   `docs/decisions/0006-scheduled-collection-and-retention.md`. After a long gap a chained run
   reads at most `MAX_RUN_FEED_SPAN` of the feed, so the catch-up is split over several ticks
   (a single 4-day run of 405k changes peaked at 27.6 GB in Stage 0 on the 30 GB VM).
+  Stage 4 compares at most `MAX_REPO_COMPARISONS` versions a run with their repository,
+  flagged ones first (that run's archives filled the disk at 108 GB, decision 0010 addendum).
 - **A full disk crashes the VM** (twice on 2026-11-03). `collect` checks free space between
   steps and the blob store refuses writes below `util/disk.BLOB_FLOOR`; a `DiskSpaceError`
   must never be caught as one package's failure. Side jobs that write gigabytes check

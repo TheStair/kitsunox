@@ -14,6 +14,7 @@ from kitsunox.core.models import (
     Finding,
     PackageBatch,
     PackageVersionRef,
+    Popularity,
     PublishInfo,
     Severity,
     StageDecision,
@@ -21,6 +22,7 @@ from kitsunox.core.models import (
 )
 from kitsunox.stages import correlate as correlate_module
 from kitsunox.stages.correlate import (
+    BUDGET_UNCOMPARED,
     CORRELATE_INFO,
     LOW_CAP,
     NETWORK_UNCOMPARED,
@@ -31,6 +33,7 @@ from kitsunox.stages.correlate import (
     correlate_run,
     decide,
     repo_network_failures,
+    repo_over_budget,
     score,
 )
 from kitsunox.stages.ingest import write_jsonl
@@ -310,6 +313,55 @@ def test_network_failures_are_retried_after_the_first_pass(tmp_path: Path) -> No
         "package_files_network": 0,
         "errors": {"down": "HTTP 503"},  # the last pass's failed requests
     }
+
+
+def watched_update(name: str) -> Candidate:
+    """An update of a watched package that no stage flagged: compared if the budget allows."""
+    plain = candidate(name=name)
+    popularity = Popularity(source="watchlist:t", downloads=10**6, period_days=7, watched=True)
+    previous = plain.change.new.model_copy(
+        update={"ref": PackageVersionRef(ecosystem="npm", name=name, version="1.0.0")}
+    )
+    change = plain.change.model_copy(update={"previous": previous, "popularity": popularity})
+    return plain.model_copy(update={"change": change})
+
+
+def test_a_run_compares_at_most_its_budget_flagged_versions_first(tmp_path: Path) -> None:
+    """The 4-day catch-up of 2026-11-07 wanted 80,934 comparisons and filled the disk."""
+    write_run(
+        tmp_path,
+        watched_update("w1"),
+        flagged("f1"),
+        watched_update("w2"),
+        candidate(name="quiet"),
+        flagged("f2"),
+        watched_update("w3"),
+    )
+    repo = FlakyRepo({}, {})
+    out = list(correlate_run(tmp_path, CTX, [], repo=repo, max_comparisons=3))
+    # Both flagged versions, then the first watched update in triage order.
+    assert set(repo.calls) == {"f1", "f2", "w1"}
+    reasons = {c.change.new.ref.name: c.history[-1].reason for c in out}
+    assert reasons["w2"] == reasons["w3"] == f"score 0{BUDGET_UNCOMPARED}"
+    assert reasons["w1"] == reasons["f1"] == reasons["quiet"] == "score 0"
+    assert repo_over_budget(out) == 2
+    assert repo_network_failures(out) == 0
+    info = json.loads((tmp_path / CORRELATE_INFO).read_text())
+    assert info["repo_budget"] == {
+        "max_comparisons": 3,
+        "wanted": 5,
+        "flagged": 2,
+        "over_budget": 2,
+    }
+    assert info["repo_network"]["lookups"] == 3
+
+
+def test_flagged_versions_over_the_budget_are_noted_too(tmp_path: Path) -> None:
+    write_run(tmp_path, flagged("f1"), flagged("f2"), watched_update("w1"))
+    repo = FlakyRepo({}, {})
+    out = list(correlate_run(tmp_path, CTX, [], repo=repo, max_comparisons=1))
+    assert set(repo.calls) == {"f1"}
+    assert repo_over_budget(out) == 2
 
 
 def test_a_small_outage_costs_one_retry_pass(tmp_path: Path) -> None:

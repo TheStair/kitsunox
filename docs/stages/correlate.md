@@ -35,7 +35,9 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
   those routed to them (`ast.jsonl`). Unrouted versions carry only Stage 1 findings, but those
   can still combine.
 - **Fetches:** for the versions `wants_repo` picks (any stage flagged it, or it updates a
-  watched package): the repository's refs and one source archive per commit. Recorded in
+  watched package), at most `MAX_REPO_COMPARISONS` (2,000) a run, flagged versions first
+  (see [Comparison budget](#comparison-budget)): the repository's refs and one source archive
+  per commit. Recorded in
   `correlate-snapshot.json` and kept by retention like Stage 2's tarballs. The release's own
   files come from the blob store (Stage 2 fetched them). For dependencies a release adds that
   aren't its own, its scope's or watched: their packument (see
@@ -50,6 +52,24 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
   lookups are retried and limited per release; absent means 1), rule
   fingerprint and report score used, `repo_network` (see below) and `dependency_lookups`
   (see [Dependency lookups](#dependency-lookups)).
+
+## Comparison budget
+
+An hourly run wants ~500 comparisons. After a long gap one run can want far more: the 4-day
+catch-up `20261107T163310Z-npm` (405,710 changes) wanted 80,934 (1,745 flagged, 79,189
+watched-package updates). Its archives took 108 GB in 4.4 hours, the blob store refused writes
+at its 10 GB floor, Stage 4 failed without saving its snapshot, the end-of-tick prune deleted
+the archives as unreferenced, and the next tick started over.
+
+So `plan_comparisons` decides, before any request, which versions a run compares: the flagged
+ones, then watched-package updates, each in triage order, up to `MAX_REPO_COMPARISONS` (2,000,
+about 4 hours of normal ticks; the first live day averaged ~14 MB an archive, so at most
+~30 GB). The choice depends only on the run's input, so a replay makes the same one. Each
+version over the budget gets `BUDGET_UNCOMPARED` ("not compared with its repository: over the
+run's comparison budget") on its decision, `collect` logs how many, and `correlate.json`
+counts them under `repo_budget` (`max_comparisons`, `wanted`, `flagged`, `over_budget`).
+Stage version 11. Hourly runs never reach the cap; sliced catch-ups (`MAX_RUN_FEED_SPAN`,
+~95k changes) do, and their routine watched-package updates go uncompared.
 
 ## Network failures
 
@@ -488,6 +508,8 @@ that cover every version: 11 malicious new packages, 0 benign.
   through git, not who wrote it: `gina@0.7.1` is 44 commits by its maintainer. Commit dates
   are the committer's claim, so a forged early date hides `commit-after-release`. The
   previous release's commit is found by tag when it recorded no `gitHead`, and tags can move.
+- **Budget.** After a long gap most watched-package updates are not compared (see
+  [Comparison budget](#comparison-budget)); flagged versions are, up to 2,000 a run.
 - **Volume.** The first live day (`20261027T210847Z-npm`) downloaded 2,142 archives, 31 GB,
   and Stage 4 took ~7.5 hours for 109k versions. Archives can be kept for less time than the
   run (`--keep-repo-days`, decision 0006 addendum).

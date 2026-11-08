@@ -2,6 +2,47 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Stage 4 filled the disk on the 4-day run; a per-run comparison budget
+
+**Stage(s):** Stage 4 correlation (repository comparison), collect
+**Context:** After the blob repair (entry below), the 4-day catch-up run
+(`20261107T163310Z-npm`, 405,710 changes) resumed from Stage 3. Stage 3 finished in about 3
+hours (07:39-10:43Z) without running out of memory. Stage 4 then fetched GitHub archives at
+~620 MB a minute.
+
+### Challenges
+- **Stage 4 can't fit a 4-day run on the disk, and the failure repeats every tick**: the run
+  wanted 80,934 comparisons (1,745 flagged, 79,189 watched-package updates; an hourly run wants
+  ~500). At 15:07Z the blob store refused a write at its 10 GB floor (`DiskSpaceError`).
+  Three things together made it a loop rather than one failure:
+  1. Stage 4 saves `correlate-snapshot.json` only on success, so the 108 GB of archives were
+     referenced by nothing, and the end-of-tick prune deleted them.
+  2. The next tick starts the run's Stage 4 over.
+  3. Catch-ups run before the newest run's stages, and low disk skips the rest of the tick,
+     so the newer runs' Stage 2 (tarball capture) waits behind it.
+  It would have repeated until the run left the 48-hour catch-up window (Nov 9 ~16:33Z).
+  - **Resolution:** `MAX_REPO_COMPARISONS` = 2,000 a run, chosen by `plan_comparisons` before
+    any request: flagged versions first, then watched-package updates, each in triage order.
+    Versions over it carry `BUDGET_UNCOMPARED` on their decision, `collect` logs the count, and
+    `correlate.json` has `repo_budget`. Stage version 11. Decision 0010 addendum.
+  - **Alternatives:**
+    - A byte budget on archives tracks the real limit better, but which versions fit would
+      depend on the order threads finish, so it isn't deterministic.
+    - Running newer runs' Stages 1-2 before older catch-ups was offered; the owner chose the
+      budget alone.
+  - **Why it works:** for this run the cap means all 1,745 flagged versions plus 255 watched
+    updates. That's ~2,000 comparisons, about 4 hours of normal ticks: ~30-40 GB of archives at
+    most, against 111 GB free after the prune. Tests:
+    `test_a_run_compares_at_most_its_budget_flagged_versions_first`,
+    `test_flagged_versions_over_the_budget_are_noted_too`. Not yet proven on the live run.
+
+### Open questions / next steps
+- After a long gap, most watched-package updates go uncompared. A malicious update of a watched
+  package with no other finding can then go unreported. That is the trade for not filling the
+  disk.
+- The resume order (catch-ups before the newest run's Stage 2) is unchanged. If a catch-up
+  fails again for another reason, tarball capture for new runs still waits behind it.
+
 ## 2026-11-08: A VM crash left 211 empty tarball blobs; writes are now synced
 
 **Stage(s):** Shared storage (`util/files.py`, `util/http.py` `BlobStore`); seen in Stage 3

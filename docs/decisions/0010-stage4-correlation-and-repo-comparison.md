@@ -180,3 +180,25 @@ Tests (the review's repros, adapted to the fixed behaviour):
 asserts identical texts), `test_the_outage_guard_counts_requests_not_versions`,
 `test_release_files_failing_on_the_network_are_left_to_stage_2`,
 `test_needs_network_says_whether_get_would_send`.
+
+## Addendum (2026-11-08): a per-run comparison budget
+
+**Context.** The 4-day catch-up run `20261107T163310Z-npm` wanted 80,934 repository comparisons
+(an hourly run wants ~500). Its archives filled the disk to the blob store's floor after 108 GB;
+Stage 4 failed, saved no snapshot, and the prune deleted the archives, so every later tick would
+have repeated it until the run left the 48-hour catch-up window. Catch-ups run before the newest
+run's stages, so those ticks also skipped Stage 2 (tarball capture) of the newer runs.
+
+**Options.** (1) A cap on versions compared per run, flagged first. (2) A byte budget on
+archives: closer to the real limit, but which versions fit would depend on the order threads
+finish, so the output would not be deterministic. (3) Also running newer runs' Stages 1-2 before
+older runs' catch-ups; the owner chose the budget alone for now.
+
+**Decision.** (1): `MAX_REPO_COMPARISONS` = 2,000, chosen by `plan_comparisons` before any
+request; versions over it carry `BUDGET_UNCOMPARED` and `correlate.json` counts them
+(`repo_budget`). Stage version 11. See [the stage page](../stages/correlate.md#comparison-budget).
+
+**Consequences.** Hourly runs are unchanged. After a long gap, routine updates of watched
+packages beyond the budget are not compared with their repository, so a malicious update of a
+watched package with no other finding can go unreported in that run. Flagged versions are
+compared first, up to the same cap.

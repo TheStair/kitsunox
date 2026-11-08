@@ -86,7 +86,7 @@ from kitsunox.sandbox.results import SANDBOX_INFO, prune_sandbox
 from kitsunox.sandbox.select import DEFAULT_CAP
 from kitsunox.sandbox.spool import export_dir, exported_jobs
 from kitsunox.stages.code import run_code_stage
-from kitsunox.stages.correlate import repo_network_failures
+from kitsunox.stages.correlate import repo_network_failures, repo_over_budget
 from kitsunox.stages.review import run_correlate_stage
 from kitsunox.stages.sandbox import OVERDUE_AFTER, run_sandbox_stage
 from kitsunox.stages.static import needs_retry, record_static
@@ -319,9 +319,11 @@ def run_stages(
             for c in versions
         )
         uncompared = repo_network_failures(versions)
+        over_budget = repo_over_budget(versions)
         parts.append(
             f"{compared} compared with their repository"
             + (f", {uncompared} not compared (network)" if uncompared else "")
+            + (f", {over_budget} over the comparison budget" if over_budget else "")
         )
     report = publish_report(data.run_dir(run_id))
     if start <= 4 and (failing := report.dependency_network_failures()[0]):
