@@ -309,3 +309,86 @@ def test_low_matches_never_hide_a_real_one() -> None:
     found = _exfil(text)
     assert found.count(("low", 1.0)) == 3
     assert found[-1] == ("high", 5.0)
+
+
+# Inert stand-ins for a Baileys fork's code: made-up channel ids, nothing that runs.
+_JID = "120363000000000001@newsletter"
+_API = "newsletterFollow: async (jid) => { await newsletterWMexQuery(jid, QueryIds.FOLLOW) },"
+
+
+def _follows(text: str) -> bool:
+    return any(m.rule_id == "static.channel-follow" for m in analyse(text.encode()))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A hard-coded channel followed once the socket opens (`@ubedsockets/baileys`).
+        f"const AUTO = '{_JID}'; ev.on('connection.update', async () => {{"
+        " await newsletterWMexQuery(AUTO, QueryIds.FOLLOW) });",
+        # Base64-hidden ids, FOLLOW through `mexQuery` (`kevinx-baileys`, `@sakataa/baileys`).
+        "const ids = ['MTIwMzYzMDAwMDAwMDAwMDAxQG5ld3NsZXR0ZXI=']; // newsletter\n"
+        "setTimeout(() => mexQuery({ newsletter_id: Buffer.from(ids[0], 'base64').toString() },"
+        " Types.QueryIds.FOLLOW, p), 9000)",
+        # Invite codes resolved and followed (`@gopyr/baileys`).
+        "for (const code of ['0029VaAAAAAAAAAAAAAAAAAA']) { const m = await"
+        " sock.newsletterMetadata('invite', code); await sock.newsletterFollow(m.id) }",
+        # A fetched list (`luna-baileys` copies).
+        "const r = await fetch(LIST); for (const id of await r.json()) { if"
+        " (!id.endsWith('@newsletter')) continue; await executeWMexQuery({ newsletter_id: id },"
+        " QueryIds.FOLLOW, x) }",
+        # Method name and ids from char codes (`felicia-baileys`): "newsletterFollow" and a JID.
+        "const f = c => c.map(v => String.fromCharCode(v)).join(''); // newsletter\n"
+        "sock[f([110,101,119,115,108,101,116,116,101,114,70,111,108,108,111,119])]"
+        "(f([49,50,48,51,54,51,48,48,48,48,48,48,48,48,48,48,48,49,64,110,101,119,115,108,101,"
+        "116,116,101,114]))",
+        # Default-on and disclosed is still unwanted (`@leonoremods/baileys`).
+        f"const autoFollowChannels = cfg.autoFollowChannels ?? ['{_JID}'];\n"
+        "for (const jid of autoFollowChannels) newsletterWMexQuery(jid, QueryIds.FOLLOW)",
+    ],
+)
+def test_channel_follow_fires(text: str) -> None:
+    assert _follows(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _API + f" // e.g. sock.newsletterFollow('{_JID}')",  # the API, documented
+        "async newsletterFollow(jid) { return this.query(jid, QueryIds.FOLLOW) } // newsletter",
+        f"QueryIds['FOLLOW'] = '7871414976211147'; const NEWS = '{_JID}';",  # assignment
+        # Opt-in (`shadowx-baileys`): only when the user turns it on.
+        f"if (opts.autoFollowChannel === true) {{ sock.newsletterFollow('{_JID}') }}",
+        "follow: (ref) => sock.newsletterFollow(toJid(ref)), // newsletter helper",  # no source
+        f"api.follow(Action.FOLLOW, '{_JID[:18]}')",  # not WhatsApp: no "newsletter" text
+        # Byte tables are not hidden strings; a wrapper with no channels of its own.
+        "const t = [10, 20, 300, 40, 50, 60, 70, 80, 90]; // newsletter\n"
+        "export const follow = (sock, id) => sock.newsletterFollow(id)",
+    ],
+)
+def test_channel_follow_ignores_the_api_and_opt_in(text: str) -> None:
+    assert not _follows(text)
+
+
+def test_channel_follow_says_unwanted_not_malware() -> None:
+    (match,) = [
+        m
+        for m in analyse(f"const A = '{_JID}'; newsletterWMexQuery(A, QueryIds.FOLLOW)".encode())
+        if m.rule_id == "static.channel-follow"
+    ]
+    assert match.severity.value == "medium" and match.weight == 3.0
+    assert "Unwanted" in match.explanation and "names channels" in match.explanation
+
+
+def test_channel_follow_is_never_not_new() -> None:
+    """Every release of an auto-following fork is unwanted."""
+    from kitsunox.core.models import Severity
+    from kitsunox.stages.static import ALWAYS_NEW, _demoted, _key
+
+    (follow,) = [
+        m
+        for m in analyse(f"const A = '{_JID}'; newsletterWMexQuery(A, QueryIds.FOLLOW)".encode())
+        if m.rule_id == "static.channel-follow"
+    ]
+    assert follow.rule_id in ALWAYS_NEW
+    assert _demoted(follow, "lib/a.js", frozenset({_key(follow)})).severity is Severity.MEDIUM

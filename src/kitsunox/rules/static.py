@@ -15,7 +15,7 @@ from typing import ClassVar, Final
 
 from kitsunox.core.models import Severity
 from kitsunox.core.rules import FileMatch
-from kitsunox.rules.signatures import KnownSignature
+from kitsunox.rules.signatures import KnownSignature, decoded_strings
 
 MAX_MATCHES_PER_RULE: Final = 3
 SNIPPET_RADIUS: Final = 60
@@ -538,8 +538,125 @@ class Network(RegexRule):
     )
 
 
+class ChannelFollow:
+    """A WhatsApp library (a Baileys fork) that makes the user's account follow channels it
+    chose: a FOLLOW query or `newsletterFollow(...)` call outside the API's own definitions,
+    in a file that also names the channels (a `...@newsletter` id or a `0029V...` invite code,
+    in plain text, base64 or char codes), fetches them, or calls the code an auto-follow or
+    auto-join. A follow behind an explicit opt-in (`if (autoFollow === true)`) does not count.
+
+    The owner's policy (decision 0015 addenda of 2026-11-08): a fork that follows channels with
+    the user's account is *unwanted*, hidden or disclosed; one that follows only when asked is
+    benign. A file rule can't read the README, so the finding says what the code does and
+    claims no malware. MEDIUM, weight 3: a fork that does it is reported. Upstream Baileys
+    defines `newsletterFollow(jid)` and calls nothing itself, so it never matches.
+
+    Added 2026-11-08; the numbers are in `docs/proposals/prefreeze-recall.md`."""
+
+    id: ClassVar[str] = "static.channel-follow"
+    version: ClassVar[int] = 1
+    severity: ClassVar[Severity] = Severity.MEDIUM
+    weight: ClassVar[float] = 3.0
+    title: ClassVar[str] = "Auto-follows WhatsApp channels (unwanted)"
+
+    # A FOLLOW query id used (not assigned: `QueryIds["FOLLOW"] = "..."`), or the follow call.
+    _USE: ClassVar[re.Pattern[str]] = re.compile(
+        r"[\w$\])]\s*+(?:\.\s*+FOLLOW\b|\[\s*+[\"'`]FOLLOW[\"'`]\s*+\])(?!\s*=[^=])"
+        r"|(?<![\w$])newsletterFollow\s*+\("
+    )
+    # The API's own methods (`newsletterFollow: async (jid) => ...`, `async newsletterFollow(jid)
+    # {`), whose bodies run the FOLLOW query on the caller's `jid`.
+    _API: ClassVar[re.Pattern[str]] = re.compile(
+        r"newsletter(?:Follow|Mute|Unfollow|Unmute)\w*\s*[:=]\s*(?:async\s*)?(?:function\s*)?"
+        r"(?:\(\s*[\w$]*\s*(?::\s*\w+)?\s*\)|[\w$]+)\s*(?:=>)?"
+        r"|(?:async\s+)?newsletter(?:Follow|Mute|Unfollow|Unmute)\w*\s*\([^)]{0,40}\)"
+        r"\s*(?::\s*[\w<>]+\s*)?\{"
+    )
+    _DEFINED: ClassVar[re.Pattern[str]] = re.compile(r"(?:async|function)\s+newsletterFollow\s*\(")
+    _OPT_IN: ClassVar[re.Pattern[str]] = re.compile(
+        r"if\s*\(\s*[\w$.?]*(?i:follow)[\w$.?]*\s*===\s*true\s*\)"
+    )
+    _CHANNEL: ClassVar[re.Pattern[str]] = re.compile(
+        r"\b\d{15,22}@newsletter\b|(?<![A-Za-z0-9])0029V[A-Za-z0-9]{18,22}(?![A-Za-z0-9])"
+    )
+    _FETCH: ClassVar[re.Pattern[str]] = re.compile(
+        r"raw\.githubusercontent\.com|(?<![\w$.])fetch\s*\(|axios\s*\.\s*get\s*\(|https?\.get\s*\("
+    )
+    _AUTO: ClassVar[re.Pattern[str]] = re.compile(
+        r"auto_?(?:follow|join)|follow_?list", re.IGNORECASE
+    )
+    _CHAR_CODES: ClassVar[re.Pattern[str]] = re.compile(
+        r"\[\s*+(?:\d{2,3}\s*+,\s*+){7,}\d{2,3}\s*+\]"
+    )
+    API_WINDOW: ClassVar[int] = 220
+    OPT_IN_WINDOW: ClassVar[int] = 600
+
+    def evaluate_text(self, text: str) -> Sequence[FileMatch]:
+        if "newsletter" not in text:
+            return []
+        uses = [m for m in self._USE.finditer(text) if self._invoked(text, m)]
+        hidden = self._char_coded(text)
+        if not uses and not any("newsletterFollow" in s for s in hidden):
+            return []
+        reasons = self._reasons(text, hidden)
+        if not reasons:
+            return []
+        if uses:
+            line, snippet = _line_and_snippet(text, uses[0].start(), uses[0].end())
+        else:
+            line, snippet = 1, "(method name and channels built from char codes)"
+        return [
+            FileMatch(
+                rule_id=self.id,
+                rule_version=self.version,
+                severity=self.severity,
+                weight=self.weight,
+                title=self.title,
+                explanation=(
+                    "Follows WhatsApp channels with the user's account, outside the library's "
+                    f"own follow method; the file {', '.join(reasons)}. Unwanted (account "
+                    "abuse), not by itself a sign of malware."
+                ),
+                line=line,
+                snippet=snippet,
+            )
+        ]
+
+    def _invoked(self, text: str, match: re.Match[str]) -> bool:
+        """A follow the code makes itself: not the API's definition, and not opt-in."""
+        start = match.start()
+        if self._DEFINED.search(text, max(0, start - 15), match.end()):
+            return False
+        if self._API.search(text, max(0, start - self.API_WINDOW), start):
+            return False
+        return not self._OPT_IN.search(text, max(0, start - self.OPT_IN_WINDOW), start)
+
+    def _char_coded(self, text: str) -> list[str]:
+        out = []
+        for match in self._CHAR_CODES.finditer(text):
+            codes = [int(n) for n in re.findall(r"\d+", match.group(0))]
+            if all(32 <= c < 127 for c in codes):
+                out.append("".join(map(chr, codes)))
+        return out
+
+    def _reasons(self, text: str, hidden: list[str]) -> list[str]:
+        reasons = []
+        if self._CHANNEL.search(text):
+            reasons.append("names channels")
+        elif any(self._CHANNEL.search(s) for s in hidden) or any(
+            self._CHANNEL.search(s) for s in decoded_strings(text)
+        ):
+            reasons.append("hides channel ids (base64 or char codes)")
+        if self._FETCH.search(text):
+            reasons.append("fetches over the network")
+        if self._AUTO.search(text):
+            reasons.append("calls it an auto-follow or auto-join")
+        return reasons
+
+
 RULES: Final = (
     KnownSignature(),
+    ChannelFollow(),
     ExfilEndpoint(),
     WebhookPlaceholder(),
     EncodedUrl(),

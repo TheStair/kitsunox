@@ -95,6 +95,7 @@ attributed.
 | `static.npm-publish` | npm token use or `npm publish` from code (worm behaviour) | LOW (v2; was MEDIUM) |
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
+| `static.channel-follow` (2026-11-08) | a WhatsApp library (Baileys fork) following channels with the user's account: a FOLLOW query or `newsletterFollow(...)` call outside the library's own follow method, in a file that also names channels (`...@newsletter`, `0029V...` invite codes, also in base64 or char codes), fetches them, or calls it an auto-follow/auto-join; not behind an `if (... === true)` opt-in. Never demoted as "not new" | MEDIUM (weight 3), "unwanted" |
 
 ### Known-family signatures (`static.known-signature`, `rules/signatures.py`, 2026-11-01)
 
@@ -106,7 +107,7 @@ accounts and wallets, or strings its payload always carries. It fires (HIGH, wei
 of its patterns match the file's text plus the strings its obfuscation hides
 (`decoded_strings`: one-byte-XOR base64 string tables, javascript-obfuscator's base64 arrays in
 files with its `_0x` identifiers, and plain base64 literals of 16+ characters). Unlike other
-Stage 2 matches it is never demoted as "also in the previous version" (`static.ALWAYS_NEW`); a
+Stage 2 matches (but like `static.channel-follow`) it is never demoted as "also in the previous version" (`static.ALWAYS_NEW`); a
 match only in documentation, types or tests is still demoted. `SIGNATURES_VERSION` is the
 rule's version, so changing the set changes the rules fingerprint (and Stage 2's cache).
 
@@ -266,6 +267,43 @@ hooked, all flagged by `stage2-rules`), 1 first release and 2 B follow-ons. Live
 339 more versions a day (173 routed for their hook, 160 watched, 6 flagged), ~2.5 GB of new
 tarballs a day (up to 4.8 GB with bases; today's total is 17.7 GB), and on a sample of 111 of
 them, 2 reported (1.8%, both `npm.install-script-changed`), about 6 benign reports a day.
+
+### WhatsApp channel follows (`static.channel-follow`, 2026-11-08)
+
+Baileys forks that make the user's WhatsApp account follow (and mute) the author's channels
+were 11 of the 48 live misses Stage 2 had no files for, and the signature KX-0008 only matched
+the forms it was taken from (`newsletterWMexQuery` with a plain id): `kevinx-baileys` and
+`@sakataa/baileys` hide the ids in base64 and call `mexQuery(..., QueryIds.FOLLOW, ...)`,
+`@gopyr/baileys` resolves `0029V...` invite codes, `felicia-baileys` builds the method name and
+ids from char codes, the `luna-baileys` copies fetch a list. The rule looks for what they share:
+a FOLLOW query (or `newsletterFollow(...)` call) outside the library's own follow method, in a
+file that names, hides or fetches channels or calls the code an auto-follow. A follow behind
+`if (<...follow...> === true)` is opt-in and doesn't count. The owner's policy (decision 0015
+addenda, 2026-11-08): following channels with the user's account is **unwanted**, hidden or
+disclosed, unless there is evidence of malware; opt-in is benign. So the finding is MEDIUM
+(weight 3: a fork that does it is reported) and says "unwanted", not malware. It is never
+demoted as "not new" (`ALWAYS_NEW`): every release of such a fork follows again (`@sakataa/baileys@2.0.0`, a
+live miss, changed the file but its base already followed: reported only with `ALWAYS_NEW`).
+
+Measured on every Baileys-like package with a verdict and a tarball (the registry, or a
+captured blob), whole package:
+
+| Verdict (at the time) | Versions | `channel-follow` | KX-0008/0009/0011 |
+|---|---|---|---|
+| malicious (now unwanted: hidden auto-follow) | 26 (20 packages) | **26** | 14 |
+| inconclusive (now unwanted: disclosed or default-on) | 6 | 4 (the 4 that follow; not `hyrox`, `baileys-linius`) | 1 |
+| benign (API only, opt-in, or other WhatsApp tools) | 23 | 1: `@yshtxxproject/baileys@0.0.1` | 0 |
+
+`@yshtxxproject/baileys@0.0.1` follows three hard-coded channels on first connect by default,
+the same code as `@dancihuy/baileys@0.0.1` (ruled malicious, then unwanted); its benign verdict
+predates the policy (an owner question). `shadowx-baileys` (opt-in, `=== true`) and upstream
+Baileys' API don't match. Live, over what Stage 2 read in the runs `20261107T163310Z`, `20261107T222723Z` and
+`20261108T073127Z` (4.6 days): it newly reports 11 versions, all forks that follow channels by
+default (`charape` 1.0.15-1.0.19, `@ruthless-imperium/baileys` 1.0.1-1.0.3 on `open`,
+`vamtzy-baileys` and two name variants with `autoJoinChannels !== false`), about 2.4 a day:
+unwanted under the headline reading, none malware. A gap: an opt-in set in *another* file is
+not seen (`lexzymods-baileys` and three name variants, reviewed benign: the option is read in
+`lib/Socket/index.js`, the bundled list followed in `lib/Utils/repan-channels.js`).
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
