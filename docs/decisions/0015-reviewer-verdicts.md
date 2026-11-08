@@ -58,3 +58,22 @@ placeholder or PoC". Decided (the owner: "Yes for both"):
   found.
 - **Alternative rejected:** a fourth verdict, "probe". It would hide whether a probe exfiltrates,
   and a disguised attack would get the mild label.
+
+## Addendum 2026-11-08: the Baileys policy, false disclosures, beacon-only probes
+
+Recorded here because the live confusion matrix (decision 0019) uses reviewer verdicts as its
+primary truth, so the rules reviewers apply must be written down.
+
+- **WhatsApp forks that follow channels (the owner, 2026-10-31; devlog of that day).** A Baileys
+  fork that makes the user's account follow WhatsApp channels is **malicious** when the follow
+  is hidden (not mentioned in the README, not an option), **inconclusive** when it is disclosed
+  or on by default with a documented way to turn it off, and **benign** when it is opt-in.
+- **A disclosure that doesn't exist is no disclosure (the owner, 2026-11-08).** Code comments
+  that claim a README or docs mention which isn't there count as hidden: malicious
+  (`@leonoremods/baileys@1.10.1`, `@dancihuy/baileys@0.0.1`, 4-day run of 2026-11-07).
+- **Beacon-only probes (reviewer interpretation, 2026-11-08, for the owner to confirm).** An
+  install-time request to the researcher's or attacker's host that carries only a per-install
+  marker (no hostname, no environment) still tells that host the package was installed and
+  from which IP. Reviewers have recorded these as **malicious** with the `probe` tag, as for any
+  other identifying beacon (`lane-m-snackager-*`, whose git dependency `laneh-prepare-probe` also
+  has variants that steal GCP and AWS credentials). A probe that only acts locally stays benign.
