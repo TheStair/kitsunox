@@ -698,12 +698,17 @@ for ~1.4 extra benign reports a day.
     `tailwind-kinetics`) or pinning it to the wrapper's own version avoids it, and so does
     publishing a placeholder of the payload first (the campaign already does it for wrappers:
     `fast-deep-thinking@0.0.0-stage`, "Temporary package placeholder for staged publishing");
-    a days-old placeholder from other accounts is `fresh-foreign`'s. A dependency that is not
-    declared at all is never looked up.
-  - **The evaluation pins found packuments, not 404s** (`PinnedFetcher`): a `vm-day1` sample
-    whose dependency is 404 is asked again on every evaluation, so the answer can change if
-    the name is published later. Only `@financials/using-dep-conf@1.0.0` (DataDog, →
-    `@tag/test1234`) is affected today.
+    a days-old placeholder from other accounts is `fresh-foreign`'s. The same sibling test
+    exempts an undeclared name (`npm.undeclared.missing`), so a payload named after its
+    wrapper and loaded without being declared is missed too; one loaded only by a `bin` or
+    postinstall-only file, or inside a function (webpack's module functions included), is
+    never looked up.
+  - **The evaluation pins 404s as well as found packuments** (`PinnedFetcher`, since
+    2026-11-09): a `vm-day1` sample whose dependency was 404 at its first evaluation stays
+    missing in later ones, even once the name is published. Before that a 404 was asked again
+    on every evaluation; only `@financials/using-dep-conf@1.0.0` (DataDog, → `@tag/test1234`)
+    was affected. The first evaluation's answer is the one kept, so an index built after a
+    payload was published sees it as found.
   - **A dependency published after its dependent but before `as_of`** is evaluated; the
     finding says "first published N hours after this release".
   - **Padding.** A release with more than 40 new foreign dependencies is checked on the first

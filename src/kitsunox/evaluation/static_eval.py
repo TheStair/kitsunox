@@ -15,6 +15,7 @@ import threading
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Final, override
 
 from pydantic import Field
@@ -268,8 +269,9 @@ class PinnedFetcher(HttpFetcher):
     """A fetcher that treats every response as immutable: the first successful response to a
     request is kept in its immutable index and served to every later evaluation, even for
     documents that change (packuments). That makes an evaluation re-run offline and stable,
-    as of the first run; a failed request (and a 404, which the index doesn't keep) is asked
-    again."""
+    as of the first run. A 404 is pinned too, so a name the registry lacked at the first run
+    (`npm.dependency.missing`, `npm.undeclared.missing`) stays missing when the payload is
+    published later; any other failed request is asked again."""
 
     @override
     def needs_network(
@@ -282,6 +284,10 @@ class PinnedFetcher(HttpFetcher):
         self, url: str, *, headers: Mapping[str, str] | None = None, immutable: bool = False
     ) -> FetchedResponse:
         return super().get(url, headers=headers, immutable=True)
+
+    @override
+    def _pins(self, response: FetchedResponse) -> bool:
+        return response.ok or response.status == HTTPStatus.NOT_FOUND
 
 
 def _as_of(change: Change) -> datetime:

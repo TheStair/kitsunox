@@ -249,9 +249,13 @@ class HttpFetcher:
         )
         with self._lock:
             self.snapshot.entries[key] = entry
-        if immutable and response.ok:
+        if immutable and self._pins(response):
             self._immutable_store(key, entry)
         return response
+
+    def _pins(self, response: FetchedResponse) -> bool:
+        """Whether an `immutable` response goes into the immutable index: a success only."""
+        return response.ok
 
     def _fetch_with_retry(self, url: str, headers: Mapping[str, str] | None) -> FetchedResponse:
         last_error = "no attempts made"
