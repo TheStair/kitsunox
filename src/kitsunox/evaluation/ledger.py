@@ -27,7 +27,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping
 from compression import zstd
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final, Literal
 
@@ -56,6 +56,9 @@ CORRELATE_INFO: Final = "correlate.json"
 REPORT_JSON: Final = Path("report") / "report.json"
 REPORT_INDEX: Final = Path("report") / "index.md"
 ZSTD_LEVEL: Final = 10
+# A run left unfinished this long after its as_of will not be finished by `collect`
+# (collect.STAGES_CATCH_UP): its versions are an operational loss.
+UNFINISHED_AFTER: Final = timedelta(hours=48)
 SCORE: Final = re.compile(r"score (-?\d+(?:\.\d+)?)")
 
 Variant = Literal["tick", "rescored"]

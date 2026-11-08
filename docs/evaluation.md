@@ -82,6 +82,8 @@ owner's decisions are [0019](decisions/0019-live-evaluation.md).
 uv run kitsunox live ledger                       # backfill: a ledger for every finished run
 uv run kitsunox live eval                         # dataset + matrices -> data/eval/live/reports/
 uv run kitsunox live misses                       # labeled-malicious versions not reported
+uv run kitsunox live sample                       # draw due daily samples, list the newest
+uv run kitsunox live verdict <run_id> <name> <version> benign --by claude   # sampled / missed
 ```
 
 ### The decision ledger (`evaluation/ledger.py`)
@@ -160,6 +162,30 @@ recorded after an OSV record or takedown was public; and the **rule sets** that 
 whether the window is single-version). **Label timing**, per OSV record from its earliest
 capture: publish → capture, capture → OSV `published`, capture → the first of our label sets
 that had it, capture → npm takedown (n, median, p75, max hours).
+
+### The review sample (`evaluation/sample.py`)
+
+External labels only find the misses someone else found. To bound the rest, each finished day
+gets a **label-blind** sample of its unreported versions, written once to
+`data/eval/live/sample/<day>.json` with a Markdown review list. Within each stratum, versions
+are ordered by `sha256("live-sample\n" + day + "\n" + "npm:name@version")` and the first n
+are kept; nothing about labels, verdicts or the clock is read. A day is sampled once no run of
+it can still finish.
+
+| Stratum | Unreported versions | Per day |
+|---|---|---|
+| U1 | score > 0 | 20 |
+| U2 | score 0, a new package or an install hook, not watched | 20 |
+| U3 | everything else | 15 |
+
+A reviewer records verdicts with `kitsunox live verdict RUN_ID NAME VERSION VERDICT`: the same
+`VerdictRecord` as `kitsunox verdict`, built from the ledger row, with **rank 0** (the version is
+in no report). The same command adjudicates the misses `kitsunox live misses` lists. The live
+report then gives, per window (by sample day) and per stratum, the reviewed versions found
+malicious and a 95% upper bound on that share (Wilson; the exact `1 − 0.05^(1/n)` when none
+was), and the population-weighted bound on unlabeled malware among unreported versions. With a
+base rate near 0.02% the sample will usually find nothing: the honest output is a bound, not a
+point estimate.
 
 ## Data sources
 

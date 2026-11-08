@@ -42,8 +42,10 @@ from pydantic import Field
 from kitsunox.core.models import Persisted, Record
 from kitsunox.core.run import RunManifest
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR
+from kitsunox.evaluation.intervals import Rate, wilson
 from kitsunox.evaluation.labels import MalwareLabel
-from kitsunox.evaluation.ledger import Ledger, LedgerRow, ledgers
+from kitsunox.evaluation.ledger import UNFINISHED_AFTER, Ledger, LedgerRow, ledgers
+from kitsunox.evaluation.sample import read_samples, sample_bound
 from kitsunox.reporting.markdown import text
 from kitsunox.reporting.verdicts import VerdictRecord, current, read_verdicts
 from kitsunox.util.files import atomic_write
@@ -52,10 +54,6 @@ from kitsunox.util.hashing import sha256_hex
 DEFAULT_D: Final = 7
 D_SENSITIVITY: Final = (3, 7, 14)
 CATCH_UP_SPAN: Final = timedelta(hours=6)  # capture (the run's as_of) minus publish
-# A run left unfinished this long after its as_of will not be finished by `collect`
-# (collect.STAGES_CATCH_UP); its versions are an operational loss.
-UNFINISHED_AFTER: Final = timedelta(hours=48)
-Z95: Final = 1.959963984540054
 
 Truth = Literal["behaviour", "osv", "osv-only"]
 Cell = Literal["M", "B"]
@@ -478,30 +476,6 @@ def read_live_dataset(path: Path) -> tuple[LiveDatasetHeader, Iterator[LiveSampl
 
 
 # --- the metrics ---------------------------------------------------------------------------
-
-
-class Rate(Record):
-    k: int
-    n: int
-    value: float | None
-    low: float | None
-    high: float | None
-
-
-def wilson(k: int, n: int, z: float = Z95) -> Rate:
-    """A proportion with its Wilson score interval (95% by default)."""
-    if n == 0:
-        return Rate(k=k, n=n, value=None, low=None, high=None)
-    p = k / n
-    denominator = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / denominator
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
-    return Rate(k=k, n=n, value=p, low=max(0.0, centre - half), high=min(1.0, centre + half))
-
-
-def zero_bound(n: int, alpha: float = 0.05) -> float | None:
-    """Exact one-sided upper bound on a rate when none of `n` draws was positive (≈ 3/n)."""
-    return 1 - alpha ** (1 / n) if n else None
 
 
 class Matrix(Record):
@@ -1072,20 +1046,42 @@ def render_live_markdown(report: LiveReport) -> str:
     for label, t in report.timing.items():
         out.append(f"| {label} | {t.n} | {t.median_h} | {t.p75_h} | {t.max_h} |")
     if report.sample_bound:
-        out += [
-            "",
-            "## Review sample (unknown misses)",
-            "",
-            "```",
-            json.dumps(report.sample_bound, indent=2, sort_keys=True),
-            "```",
-        ]
+        out += _sample_lines(report.sample_bound)
     out += [
         "",
         f"{len(report.misses)} labeled-malicious versions were not reported "
         "(`kitsunox live misses` lists them for adjudication).",
     ]
     return "\n".join(out) + "\n"
+
+
+def _sample_lines(bound: Mapping[str, object]) -> list[str]:
+    """The review sample's upper bounds on unlabeled malware (`sample.sample_bound`)."""
+    out = [
+        "",
+        "## Review sample: malware nobody labeled (95% upper bounds)",
+        "",
+        "| Group | Stratum | Population | Sampled | Reviewed | Malicious | Upper bound |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for group, raw in bound.items():
+        if not isinstance(raw, dict) or not raw.get("days"):
+            continue
+        strata = raw.get("strata")
+        for name, b in (strata if isinstance(strata, dict) else {}).items():
+            upper = b.get("upper")
+            out.append(
+                f"| {group} | {name} | {b.get('population', 0):,} | {b.get('sampled', 0)} "
+                f"| {b.get('reviewed', 0)} | {b.get('malicious', 0)} "
+                f"| {'n/a' if upper is None else f'{upper:.2%}'} |"
+            )
+        share = raw.get("upper_share")
+        if isinstance(share, float):
+            out.append(
+                f"| {group} | weighted | | | | | {share:.2%} (≤ {raw.get('upper_versions')} "
+                "versions) |"
+            )
+    return out
 
 
 class LogLine(Record):
@@ -1177,5 +1173,11 @@ def run_live_eval(
     header, path, sha = build_live_dataset(sources, label_set_id=label_set_id)
     _, samples = read_live_dataset(path)
     report = evaluate_live(header, samples, dataset_sha256=sha, windows=windows, d=d)
+    bound = sample_bound(
+        read_samples(sources.live),
+        _verdicts(sources, header.as_of)[0],
+        {w.name: (w.start.date(), w.end.date()) for w in windows},
+    )
+    report = report.model_copy(update={"sample_bound": bound})
     line = write_live_report(sources.live, report, render_live_markdown(report), built_at=built_at)
     return report, line, path

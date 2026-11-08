@@ -10,6 +10,7 @@ from kitsunox.cli import app
 from kitsunox.core.models import Severity
 from kitsunox.evaluation import live as E
 from kitsunox.evaluation.confirmations import Takedown, TakedownLog, takedowns_path
+from kitsunox.evaluation.intervals import wilson, zero_bound
 from kitsunox.evaluation.labels import AffectedRange, LabelSet, MalwareLabel
 from kitsunox.evaluation.ledger import backfill
 from kitsunox.reporting.verdicts import VerdictRecord, append_verdict
@@ -283,12 +284,12 @@ def test_missing_label_set_and_takedowns(data: Path) -> None:
 
 
 def test_wilson_and_zero_bound() -> None:
-    rate = E.wilson(34, 134)
+    rate = wilson(34, 134)
     assert rate.low is not None and rate.high is not None
     assert (round(rate.low, 3), round(rate.high, 3)) == (0.188, 0.334)  # the proposal's numbers
-    assert E.wilson(0, 0).value is None
-    assert E.zero_bound(150) == pytest.approx(0.0198, abs=1e-4)
-    assert E.zero_bound(0) is None
+    assert wilson(0, 0).value is None
+    assert zero_bound(150) == pytest.approx(0.0198, abs=1e-4)
+    assert zero_bound(0) is None
 
 
 def test_stats_and_windows() -> None:

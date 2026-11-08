@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -64,6 +64,7 @@ from kitsunox.evaluation.live import (
     run_live_eval,
 )
 from kitsunox.evaluation.metrics import render_markdown
+from kitsunox.evaluation.sample import find_row, ledger_verdict, read_samples, write_samples
 from kitsunox.githost.github import TOKEN_ENV, is_archive_url
 from kitsunox.notify import (
     WEBHOOK_ENV,
@@ -1014,6 +1015,83 @@ def live_misses(
             f"{verdict}"
         )
     typer.echo(f"{len(report.misses)} missed ({report.dataset})")
+
+
+@live_app.command("sample")
+def live_sample(
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    live_dir: LiveDirOption = None,
+    since: Annotated[
+        str | None, typer.Option(help="Only days from YYYY-MM-DD on (default: every day).")
+    ] = None,
+) -> None:
+    """Draw the daily review sample of unreported versions for every finished day that has
+    none (label-blind, by hash), and list the newest with the verdicts recorded so far."""
+    data = DataDir(data_dir)
+    live, inside = _live(data, live_dir)
+    try:
+        start = date.fromisoformat(since) if since else None
+    except ValueError as exc:
+        typer.echo(f"bad --since: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    with _maybe_locked(data, inside):
+        written = write_samples(data.root / "runs", live, since=start)
+    for sample in written:
+        typer.echo(f"sample {sample.day}: {len(sample.versions)} versions {sample.population}")
+    samples = read_samples(live)
+    if not samples:
+        typer.echo("no sample yet (a day's sample is drawn once its runs are finished)")
+        return
+    newest = samples[-1]
+    verdicts = current(read_verdicts(data.root, NPM))
+    for v in newest.versions:
+        record = verdicts.get((v.name, v.version))
+        typer.echo(
+            f"{v.stratum} {v.run_id} {v.name!r} {v.version!r} score {v.score:g}: "
+            f"{record.verdict if record else 'to review'}"
+        )
+    typer.echo(f"sample {newest.day}: {live}/sample/{newest.day}.md")
+
+
+@live_app.command("verdict")
+def live_verdict(
+    run_id: str,
+    name: str,
+    version: str,
+    verdict: Annotated[str, typer.Argument(help="malicious, inconclusive, benign or reopened.")],
+    note: Annotated[str, typer.Option(help="Why (shown with the verdict).")] = "",
+    by: Annotated[str, typer.Option(help="Who records it (a-z, 0-9, _ and -).")] = OWNER,
+    probe: Annotated[
+        bool, typer.Option("--probe", help="Tag it a security researcher's probe.")
+    ] = False,
+    data_dir: DataDirOption = DEFAULT_DATA_DIR,
+    live_dir: LiveDirOption = None,
+) -> None:
+    """Record a verdict on a version that is in no report (a sampled or a missed one), from its
+    ledger row: the same verdict log as `kitsunox verdict`, with rank 0."""
+    parsed = VERDICTS.get(verdict)
+    if parsed is None:
+        typer.echo("verdict must be malicious, inconclusive, benign or reopened", err=True)
+        raise typer.Exit(code=2)
+    data = DataDir(data_dir)
+    live, _ = _live(data, live_dir)
+    try:
+        header, row = find_row(live, run_id, name, version)
+        record = ledger_verdict(
+            header,
+            row,
+            parsed,
+            by=by,
+            note=note,
+            tags=("probe",) if probe else (),
+            at=datetime.now(UTC),
+        )
+    except (LookupError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    append_verdict(data.root, record)
+    tags = "".join(f" [{t}]" for t in record.tags)
+    typer.echo(f"{record.name}@{record.version}: {parsed}{tags} (by {by}, rank {record.rank})")
 
 
 @data_app.command("prune")

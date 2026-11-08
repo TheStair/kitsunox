@@ -15,6 +15,10 @@ the viewer at once) and is listed on its verdict's page; `reopened` puts it back
   dependency-confusion or bug-bounty test) so counts can tell them from commodity malware. The
   verdict itself follows what the code does, not what it claims (`docs/viewer.md`, "What
   counts as malicious").
+- **Versions in no report** (live evaluation's review sample, or a missed version under
+  adjudication) are recorded from their ledger row with `kitsunox live verdict`, as the same
+  record with **rank 0** (`evaluation/sample.py`, decision 0019). Ranks in a report start at 1,
+  and the viewer links only those.
 - **Package text stays untrusted.** Names, versions and rule ids come from the run's report
   (never from a form), and every renderer escapes them and the note.
 """
