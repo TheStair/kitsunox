@@ -2,6 +2,73 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Undeclared packages the registry lacks; Baileys signatures retired
+
+**Stage(s):** Stage 3 (`npm.undeclared-package` v2, extractor v7), Stage 4
+(`npm.undeclared.missing`, STAGE_VERSION 15), Stage 2 (signatures v3)
+**Context:** Two pre-freeze items. (1) The owner asked to "measure a narrower version" of the
+undeclared-package signal and build it only if benign stays under ~5 reports a day: four
+Tailwind-wrapper misses (`tailwind-animate-engine@1.0.6` and three identical-manifest releases)
+`require` their payload `@unipswap/postcss-animate-units` without declaring it, so Stage 4's
+`npm.dependency.missing` never looked it up. v1 (INFO) fired on 700-1,150 benign versions a
+day. (2) KX-0008/0009/0011 called Baileys channel-follow forks "known malware family" after the
+owner ruled channel follows *unwanted*.
+
+### Decisions
+- **Count only what loading the package runs**: a load at module load (not in a `try`, not
+  deferred inside a function; IIFEs and `.call(this)` count as at load), in the entry files
+  (`exports`, `main`, `module`, string `browser`, default `index.js`) or the package files they
+  load by constant relative path (`ecosystems/npm/entry.py`, reusing `followed_files` with wider
+  limits). On the 29.2 h of unpruned live runs this cut v1's 993 versions to 204 (each filter in
+  [ast.md](stages/ast.md)); reachability did most of it (504 -> 204), because it drops shipped
+  TypeScript sources, templates, tests and examples without a path list. A path filter on top
+  removed nothing more; adding `bin` scripts as entries added 3 versions, none with a missing
+  name, so `bin` stays out (it runs when typed, not when required).
+- **devDependencies are not "declared"**: excluding them (as the earlier measurement did) cut the
+  INFO from 204 to 165 versions but removed no name npm lacks, and an attacker could list a
+  payload there to dodge the rule while npm still wouldn't install it for users.
+- **Reuse Stage 4's lookup, after the declared names**: `NpmDependencyLookup.plan` adds Stage 3's
+  names (minus own scope, watched names and `sibling_reason` siblings, the exemptions
+  `npm.dependency.missing` already uses) after every declared dependency of the run, under the
+  same limits, so the existing rules never lose a lookup. Same request, snapshot and 404-only
+  semantics (decision 0009). The names travel in the Stage 3 finding's evidence (`[name] code`,
+  at most 10), parsed by `undeclared_evidence` next to the rule that writes them.
+- **Built**: 15 of the 29,470 live versions load a name npm lacks, 14 of them only siblings or
+  own-scope names (`@ranujs/*` -> `@ranu/*`, `@gtkx/*`, `chatluna-plugin-*`); one remains
+  (`@ohos-ports/cms-components`, 21 `@smallstack/*` names: a dependency-confusion exposure).
+  ~0.8 benign reports a day, under the ~5 ceiling.
+- **Retire KX-0008/0009/0011 rather than relabel**: every version they match also has a
+  non-demoted `static.channel-follow` match (16/16 corpus and verdict tarballs, 2/2 of 35,544
+  live tarballs, 1/1 in `vm-day1`), so a MEDIUM "unwanted" relabel would only duplicate it on the
+  same file. Reported forks stay reported (HIGH -> MEDIUM, score -6). Decision 0015 addendum.
+
+### Challenges
+- **"Missing now" vs. "missing when Stage 4 asked"**: registry status could only be checked on
+  2026-11-08. A payload published after its wrapper would read as present now.
+  - **Resolution:** for the 18 v2 names that exist and would be looked up, compared npm's
+    `time.created` with the release that loaded them: none was created later. The campaign's own
+    404 is in run `20261102T083824Z`'s Stage 4 snapshot.
+  - **Why it worked:** it bounds the undercount on benign for this window; it says nothing about
+    future campaigns, which is the point of the rule.
+- **`vm-day1` doesn't fit 4 GB**: `pipeline+4` OOMs, and even a per-sample dump OOM'd with 2
+  threads on the malicious slices. Re-ran in 400-sample slices, one thread, with a "started"
+  marker so a sample that kills the process is skipped; only `llm-oracle@1.0.2` was.
+- **The live runs were being pruned during the measurement** (keep-days 1 on the 4-day run): the
+  tarballs of the eight remaining runs were hard-linked into scratch first, then deleted.
+
+### Evaluation snapshot
+- Recall: live `tailwind-animate-engine@1.0.6` now reported (MEDIUM) with three
+  identical-manifest siblings expected the same (tarballs gone; all four unverified);
+  `vm-day1` unchanged (2 malicious get the finding, both reported already). 0 of 56 reviewed
+  positives with a captured tarball change.
+- Benign: live +~0.8 reports a day; `vm-day1` 0 of 1,500. Item 2: no report gained or lost.
+
+### Open questions / next steps
+- `@ohos-ports/cms-components` style re-publishes of another scope's code will report; the owner
+  may want them (dependency confusion) or not.
+- Loads inside bundler module functions (webpack) count as deferred, and a payload required from
+  a `bin` script or a postinstall-only file is missed; revisit with recall data after the freeze.
+
 ## 2026-11-08: Pre-freeze recall: shell start-up files, WhatsApp channel follows, small updates
 
 **Stage(s):** Stage 2 (two rules, `ALWAYS_NEW`), Stage 1 routing (small updates)
