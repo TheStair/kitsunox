@@ -8,7 +8,7 @@ none of those resolves only if something else installs it. The Tailwind-wrapper 
 `tailwind-animate-test`) required its payload, `@unipswap/postcss-animate-units`, without
 declaring it: the payload package was published later, so the wrapper reviewed clean while it
 waited for it. Stage 4's `npm.dependency.missing` covers the declared case, and
-`npm.undeclared-package.missing` asks the registry about the names this rule gives.
+`npm.undeclared.missing` asks the registry about the names this rule gives.
 
 Version 2 counts only what loading the package runs: packages loaded at module load
 (`PackageLoad.at_load`: not in a `try`, not deferred inside a function) by its entry points
