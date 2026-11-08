@@ -2,6 +2,76 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Pre-freeze recall: shell start-up files, WhatsApp channel follows, small updates
+
+**Stage(s):** Stage 2 (two rules, `ALWAYS_NEW`), Stage 1 routing (small updates)
+**Context:** The owner approved three changes before the 2026-11-12 rule freeze, each only if
+it doesn't flood benign reports: a rule for writes to shell start-up files (the live miss
+`@atedone/workspace-context`), a rule for Baileys forks that make the user follow WhatsApp
+channels (KX-0008 missed the base64 + `mexQuery` forms), and routing updates ≤ 64 KiB to
+Stage 2 (option B of [stage2-routing-recall](proposals/stage2-routing-recall.md)). Write-up
+with every number: [prefreeze-recall](proposals/prefreeze-recall.md).
+
+### Decisions
+- **`static.channel-follow`, MEDIUM 3, "unwanted".** A FOLLOW query or `newsletterFollow(...)`
+  call outside the library's own methods, in a file that names, hides (base64, char codes),
+  fetches or "auto-follows" channels; an explicit `=== true` opt-in doesn't count. Owner
+  rulings during the task: channel follows are *unwanted* (positive in the headline matrix,
+  not in the strict one), so the title and explanation claim account abuse, not malware.
+  Put in `ALWAYS_NEW` (never "not new"): every release of such a fork follows again. The
+  alternative, fixing KX-0008, would still be a signature of the forms seen so far.
+- **`static.shell-startup` with per-form severity.** `hook` (an install hook appends to a
+  start-up file) and `inject` (a command-running prompt under `prompt_subst`, or a line
+  sourcing a non-start-up file under `$HOME` next to a start-up file's name) are MEDIUM;
+  `shell` (any redirect into one) and `code` (name + nearby write + `HOME`) are LOW evidence.
+  At MEDIUM the latter two reported ~8 and ~2 benign CLIs a day (completion and PATH
+  installers); the data didn't support a "remote content vs static PATH line" split: nothing
+  wrote fetched content into a start-up file directly.
+- **Small updates routed** (`small update`, Stage 1 reason 6, decision 0008 addendum): +16.2k
+  versions and +0.14 GB a day (≤ 0.5 with bases), ~5 benign reports a day; without it the
+  `@atedone` versions that add the persistence are never read.
+
+### Challenges
+- **`inject` was noisy as first written.** Any `source ~/...` or `PROMPT=$(` reported at
+  least 11 benign versions in 4.6 days: remote-session scripts that reload `~/.profile`,
+  "run `source ~/.zshrc`" advice, an AI prompt in a shell variable.
+  - **Resolution:** a sourced start-up file doesn't count, a source line needs a start-up
+    file's name in the same file, and a prompt needs `prompt_subst`.
+  - **Why it worked:** the same replay then reports 1 benign version (`@heyvamz/carry`, a
+    completion installer) and still reports `@atedone` 0.0.12 and 0.0.18.
+- **The benign replay first read only a third of the files**: 951 of 1,421 candidate versions'
+  tarballs had been pruned (2-day retention) between the scan and the replay, so the first
+  count was an undercount. Rerun fetching the missing ones from the registry as data.
+- **`pipeline+4` doesn't fit the 4 GB cap.** The CLI (8 workers) and then 2 workers were
+  OOM-killed; `load_sample_changes` alone peaked at 3.9 GB by listing the 110k-change run.
+  - **Resolution:** a runner that streams the run's changes (318 MB) with 2 workers, and
+    `pipeline+3`, which decides the same for Stage 2 MEDIUM findings (not `WEAK_ALONE`,
+    clearing off). `pipeline+4` itself stayed over the cap.
+- **Self-matching waits again** (`pgrep -f smallrep.py` inside the loop's own command line):
+  replaced by PID and log-line checks.
+- **A file rule sees one file.** `lexzymods-baileys` (benign, opt-in read in another file) is
+  reported; `@atedone` 0.0.13+ names the start-up file in one file and writes it in another.
+  Left as known limits and an owner question.
+
+### Evaluation snapshot
+- Live misses (97 window-A misses, 30 positive versions of 12 packages): **0 → 4 versions
+  reported** (`@sakataa/baileys@2.0.0`, `@axo_cuy/baileyss@3.0.1`, `@atedone` 0.0.12 and
+  0.0.18), 3 packages; strict (malicious only): 0 of 10.
+- DataDog `vm-day1` `pipeline+3`: B follow-on 606 → 669 of 1,093 (+62 routing, +1
+  `channel-follow`); A 920, A follow-on 393, B 612 unchanged; benign 13 of 1,500 unchanged.
+- Live benign, 4.6 days of Stage 2 reads (190,203 tarballs scanned, 1,421 versions replayed):
+  +11 reports from `channel-follow` (all default-on forks: unwanted), +1 from
+  `shell-startup`; small-update routing ~5 a day (2 of 6,436 sampled).
+- Baileys corpus: `channel-follow` 26 / 26 hidden followers, 4 / 4 disclosed, 1 of 23 benign
+  (`@yshtxxproject/baileys@0.0.1`, which does follow by default).
+
+### Open questions / next steps
+- Owner: KX-0008/0009/0011 say "known malware family" for what is now ruled unwanted; re-record
+  `@yshtxxproject/baileys@0.0.1`; opt-in in another file (`lexzymods`); over-cap forks
+  without a hook (`kevinx-baileys`, `@ubedsockets/baileys`) stay unread.
+- After the freeze: a host/IP field rule (`"host": "150.136.8.159"` in `@atedone` 0.0.23's
+  JSON isn't a URL); `shell` at MEDIUM for files an install hook runs (needs Stage 3's
+  install sources).
 ## 2026-11-08: Undeclared packages: measured, kept as INFO (Stage 3)
 
 **Stage(s):** Stage 3 (extractor v6, `npm.undeclared-package`)
