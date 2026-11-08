@@ -299,7 +299,7 @@ under `data/eval/malware/`, never executed) and, over time, from prospective col
 Report follow-on releases separately (decision 0007).
 Stage 2 is `stages/static.py` with rules in `rules/static.py` and its eval predictors in
 `evaluation/static_eval.py`. The end-to-end predictor is `pipeline`. See `docs/stages/static.md`.
-What Stage 2 reads (new packages, grown updates, watched, flagged; a 16 MB cap) is decision 0008.
+What Stage 2 reads (new packages, grown updates, watched, flagged; a 16 MB cap, 32 MB with an install hook) is decision 0008.
 Stage 3 is `stages/ast.py` (+ npm wiring in `stages/code.py`), parsing JS/TS with tree-sitter
 in `lang/javascript.py`; see `docs/stages/ast.md`. tree-sitter 0.26.0 crashes; it is pinned below.
 Stage 4 is `stages/correlate.py` (+ npm wiring in `stages/review.py`): it reads every triaged
