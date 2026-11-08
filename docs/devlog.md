@@ -2,6 +2,46 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: Verdicts reclassified into the four categories; WhatsApp channel follow is unwanted
+
+**Stage(s):** Review (verdicts, decisions 0015 and 0019)
+**Context:** The owner replaced "inconclusive" with malicious / unwanted / benign / unverified,
+then ruled that WhatsApp channel auto-follow is unwanted, not malicious, unless there is
+evidence that it distributes malware. The code shipped in 64c03fa/1d12f1d. This entry covers
+applying the change to the verdict log.
+
+### Decisions
+- **Reclassified 148 records** (`~/kitsunox-scratch/reclass/`: `propose.py`, `proposal.tsv`,
+  `apply.sh`):
+  - 119 inconclusive became 15 unwanted and 87 unverified (47 obfuscated, 36 gone, 4 remote),
+    with 17 left for a human look.
+  - 29 malicious Baileys forks became 22 unwanted, with 7 left for a human look.
+  - Of the 24 human-look records, 22 became unwanted and 2 benign:
+    - **unwanted:** `@atedone/workspace-context` 0.0.12–0.0.22, which stage a backdoor that
+      sends nothing off the machine until 0.0.23 (malicious from there); `@ifasn` 1.1.6,
+      which ships unwired credential-probe scripts; `@jarvis_1234`, which sends only to
+      127.0.0.1; `dsh-model-pipeline`, which hardcodes the author's model server; and the
+      Baileys forks.
+    - **`charape@1.0.20`:** its postinstall points other Baileys packages in the project at
+      itself through shims, which is hijacker-like, and writes only
+      `.npmrc legacy-peer-deps=true` (checked).
+    - **benign:** `@ohos-ports` analytics (the owner's vendor-telemetry ruling) and
+      `@odintest`.
+- **No `inconclusive` record is left.** Latest verdict per version: 2,931 benign, 59 unwanted,
+  49 malicious, 87 unverified. A reviewer was still recording during the count.
+
+### Challenges
+- **Stale ranks:** my first pass on the 24 human-look records took ranks from the proposal file.
+  Two runs had since been re-scored, which renumbers their reports, so the reclassification
+  landed on `fluxflow-cli@4.44.0` (turning it from benign to unwanted) and on
+  `@next2012/aistudio-runtime@0.3.0` (wrong note).
+  - **Resolution:** both were restored with their earlier notes, and the intended versions
+    (`@jarvis_1234/env-preloader@1.0.6`, now rank 5; `@odintest/astryxdesign-react@0.1.0`,
+    now rank 1) were recorded. A check of every proposal row against the latest verdicts finds
+    0 mismatches.
+  - **Lesson:** look ranks up by name and version in the run's current report. `apply.sh` does;
+    my hand-written pass didn't.
+
 ## 2026-11-08: Four verdict categories replace "inconclusive"
 
 **Stage(s):** Reviewer verdicts (reporting, viewer, CLI, Discord summary); live evaluation
