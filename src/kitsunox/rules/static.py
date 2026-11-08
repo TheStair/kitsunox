@@ -538,6 +538,155 @@ class Network(RegexRule):
     )
 
 
+_RC: Final = (
+    r"(?:\.bashrc|\.bash_profile|\.bash_login|\.zshrc|\.zprofile|\.zshenv|\.zlogin|\.profile"
+    r"|\.cshrc|\.tcshrc|\.kshrc|\.config/fish/config\.fish|config\.fish)"
+)
+_HOME_PREFIX: Final = r"(?:~|\$HOME|\$\{HOME\}|\$\{?ZDOTDIR\}?|%USERPROFILE%)"
+
+
+class ShellStartup:
+    """Code that writes a user's shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`,
+    fish's `config.fish`, the PowerShell profile): whatever it adds runs in every new shell,
+    so it is a way to persist. Four forms, each at most one match per file:
+
+    - `hook`: an install hook in a `package.json` appends to one (`>> ~/.bashrc`), on every
+      `npm install`;
+    - `shell`: a shell command elsewhere does (`echo ... >> "$HOME/.zshrc"`, `tee -a`,
+      `Add-Content $PROFILE`);
+    - `inject`: code that writes files and refers to the home directory, and either sets a
+      prompt that runs a command (`setopt prompt_subst` with `PROMPT="$(...)"`) or, next to a
+      start-up file's name, holds a line sourcing a file under the home directory that isn't
+      itself a start-up file (`@atedone/workspace-context`: `source "$HOME/.config/.../init.zsh"`,
+      later a prompt rendered from a server's reply);
+    - `code`: a start-up file's name as a string, a file write within `NEAR` characters and a
+      home-directory reference, in one file (completion and PATH installers do this too).
+
+    Legitimate CLIs add PATH and completion lines the same way, so the severity per form comes
+    from live benign traffic (2026-11-08, `docs/proposals/prefreeze-recall.md`): over 4.6 days
+    of what Stage 2 read, `hook` and `inject` (MEDIUM, weight 3) newly reported one version, a
+    completion installer (`@heyvamz/carry`); `shell` and `code` stay LOW evidence (weight 1):
+    at MEDIUM they reported about 8 and 2 benign CLIs a day (`backupd`, `westkite`). An
+    `inject` that sourced start-up files themselves (`. "$HOME/.profile"`) or any `PROMPT=`
+    variable reported at least 10 more benign versions before it was narrowed to these."""
+
+    id: ClassVar[str] = "static.shell-startup"
+    version: ClassVar[int] = 1
+    title: ClassVar[str] = "Writes to shell start-up files"
+    SEVERITY: ClassVar[dict[str, tuple[Severity, float]]] = {
+        "hook": (Severity.MEDIUM, 3.0),
+        "inject": (Severity.MEDIUM, 3.0),
+        "shell": (Severity.LOW, 1.0),
+        "code": (Severity.LOW, 1.0),
+    }
+    NEAR: ClassVar[int] = 1000
+
+    _SHELL: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:>>?|\btee\s++(?:-a\s++|--append\s++)?)\s*+[\"'\\]*+"
+        + _HOME_PREFIX
+        + r"[/\\]"
+        + _RC
+        + r"(?![\w.-])"
+        r"|(?:Add-Content|Out-File)\b[^\n;|]{0,40}\$PROFILE\b|>>\s*+\$PROFILE\b"
+    )
+    _HOOK: ClassVar[re.Pattern[str]] = re.compile(
+        r"\"(?:pre|post)?install\"\s*+:\s*+\"((?:[^\"\\]|\\.)*+)\""
+    )
+    _NAME: ClassVar[re.Pattern[str]] = re.compile(
+        r"[\"'`](?:" + _HOME_PREFIX + r"/)?" + _RC + r"[\"'`]|Microsoft\.PowerShell_profile\.ps1"
+    )
+    _WRITE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?<![\w$])(?:appendFileSync|appendFile|writeFileSync|writeFile|createWriteStream"
+        r"|outputFileSync|outputFile)\s*+\("
+    )
+    # A line sourcing a file under the home directory; one that sources a start-up file itself
+    # (`. "$HOME/.profile"`, "run source ~/.zshrc") only reloads the user's own settings.
+    _SOURCE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?<![\w-])(?:source|\.) [\"']?" + _HOME_PREFIX + r"/(?P<path>[\w.-][\w./-]*)"
+    )
+    _STARTUP_FILE: ClassVar[re.Pattern[str]] = re.compile(r"(?:.*/)?" + _RC)
+    _PROMPT: ClassVar[re.Pattern[str]] = re.compile(r"\b(?:PROMPT|PS1)=[\"']?\$\(")
+    # Each form needs one of these words, so the regexes only run on files that have one (a
+    # 9.5 MB CLI bundle that has them: 0.48 s, all Stage 2 rules 2.7 s; 7 MB without: 0.05 s).
+    NAMES: ClassVar[tuple[str, ...]] = (
+        "bashrc", "zshrc", "bash_profile", ".profile", "zprofile", "zshenv", "config.fish",
+        "cshrc", "kshrc", "zlogin", "bash_login", "$PROFILE", "PowerShell_profile",
+    )  # fmt: skip
+    INJECTS: ClassVar[tuple[str, ...]] = (
+        "prompt_subst", "PROMPT=", "PS1=", "source ~/", ". ~/", "source $HOME", ". $HOME",
+        'source "$HOME', '. "$HOME', "source ${HOME", ". ${HOME", 'source "${HOME', '. "${HOME',
+        "source '$HOME", ". '$HOME", "source $ZDOTDIR", "source ${ZDOTDIR",
+    )  # fmt: skip
+    HOMES: ClassVar[tuple[str, ...]] = ("homedir", "HOME", "USERPROFILE", "ZDOTDIR")
+
+    def evaluate_text(self, text: str) -> Sequence[FileMatch]:
+        named = any(word in text for word in self.NAMES)
+        injects = any(word in text for word in self.INJECTS)
+        if not (named or injects):
+            return []
+        found: dict[str, re.Match[str]] = {}
+        if named and '"scripts"' in text:
+            for hook in self._HOOK.finditer(text):
+                if inner := self._SHELL.search(hook.group(1)):
+                    found["hook"] = inner
+                    break
+        if named and "hook" not in found and (shell := self._SHELL.search(text)):
+            found["shell"] = shell
+        writes = (
+            [w.start() for w in self._WRITE.finditer(text)]
+            if any(word in text for word in self.HOMES)
+            else []
+        )
+        names = list(self._NAME.finditer(text)) if writes and named else []
+        if writes and injects and (inject := self._injected(text, bool(names))):
+            found["inject"] = inject
+        for name in names:
+            if any(abs(w - name.start()) <= self.NEAR for w in writes):
+                found["code"] = name
+                break
+        out = []
+        for form, match in found.items():
+            severity, weight = self.SEVERITY[form]
+            if form == "hook":  # `match` is inside the hook's value; place it in the text
+                start = text.find(match.group(0))
+                line, snippet = _line_and_snippet(text, start, start + len(match.group(0)))
+            else:
+                line, snippet = _line_and_snippet(text, match.start(), match.end())
+            out.append(
+                FileMatch(
+                    rule_id=self.id,
+                    rule_version=self.version,
+                    severity=severity,
+                    weight=weight,
+                    title=self.title,
+                    explanation=f"{_SHELL_FORMS[form]} (form `{form}`).",
+                    line=line,
+                    snippet=snippet,
+                )
+            )
+        return out
+
+    def _injected(self, text: str, named: bool) -> re.Match[str] | None:
+        """A prompt that runs a command under `setopt prompt_subst`, or (in a file that names a
+        start-up file) a line sourcing a file under the home directory that isn't one."""
+        if "prompt_subst" in text and (prompt := self._PROMPT.search(text)):
+            return prompt
+        if named:
+            for line in self._SOURCE.finditer(text):
+                if not self._STARTUP_FILE.fullmatch(line.group("path")):
+                    return line
+        return None
+
+
+_SHELL_FORMS: Final = {
+    "hook": "An install hook appends to a shell start-up file: it runs on every `npm install`",
+    "shell": "A shell command writes to a shell start-up file",
+    "inject": "Code writes a shell start-up file with a line that sources a file from the home "
+    "directory or a prompt that runs a command",
+    "code": "Code writes next to a shell start-up file's name and the home directory",
+}
+
+
 class ChannelFollow:
     """A WhatsApp library (a Baileys fork) that makes the user's account follow channels it
     chose: a FOLLOW query or `newsletterFollow(...)` call outside the API's own definitions,
@@ -657,6 +806,7 @@ class ChannelFollow:
 RULES: Final = (
     KnownSignature(),
     ChannelFollow(),
+    ShellStartup(),
     ExfilEndpoint(),
     WebhookPlaceholder(),
     EncodedUrl(),

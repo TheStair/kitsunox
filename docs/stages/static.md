@@ -96,6 +96,7 @@ attributed.
 | `static.npm-publish` | npm token use or `npm publish` from code (worm behaviour) | LOW (v2; was MEDIUM) |
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
+| `static.shell-startup` (2026-11-08) | writes to shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, fish's `config.fish`, the PowerShell profile). Forms: `hook` (an install hook in `package.json` appends to one), `inject` (code that writes files holds a line sourcing a file under `$HOME`, or a prompt that runs a command: `setopt prompt_subst`, `PROMPT="$(...)"`), `shell` (a shell command elsewhere appends to one), `code` (a start-up file's name, a file write within 1,000 characters and a home-directory reference) | MEDIUM (weight 3) for `hook` and `inject`; LOW for `shell` and `code` |
 | `static.channel-follow` (2026-11-08) | a WhatsApp library (Baileys fork) following channels with the user's account: a FOLLOW query or `newsletterFollow(...)` call outside the library's own follow method, in a file that also names channels (`...@newsletter`, `0029V...` invite codes, also in base64 or char codes), fetches them, or calls it an auto-follow/auto-join; not behind an `if (... === true)` opt-in. Never demoted as "not new" | MEDIUM (weight 3), "unwanted" |
 
 ### Known-family signatures (`static.known-signature`, `rules/signatures.py`, 2026-11-01)
@@ -314,6 +315,32 @@ unwanted under the headline reading, none malware. A gap: an opt-in set in *anot
 not seen (`lexzymods-baileys` and three name variants, reviewed benign: the option is read in
 `lib/Socket/index.js`, the bundled list followed in `lib/Utils/repan-channels.js`).
 
+### Shell start-up files (`static.shell-startup`, 2026-11-08)
+
+`@atedone/workspace-context` (14 live versions, never reported) writes a managed block that
+sources a file under the home directory into `~/.zshrc`/`~/.bashrc`, and later sets
+`setopt prompt_subst` with `PROMPT="$(node ...)"`, the prompt rendered from a server's reply.
+Writing start-up files is also what completion and PATH installers do, so the rule
+(`static.shell-startup`) has four forms with their own severity:
+
+| Form | What | Severity | Live, 4.6 days of Stage 2 reads (newly reported) |
+|---|---|---|---|
+| `hook` | an install hook in `package.json` appends to a start-up file | MEDIUM 3 | 0 |
+| `inject` | a file that writes files and refers to `HOME` sets a command-running prompt under `prompt_subst`, or (next to a start-up file's name) holds a line sourcing a non-start-up file under `$HOME` | MEDIUM 3 | 1 (`@heyvamz/carry@0.4.3`, a completion installer) |
+| `shell` | a shell redirect into a start-up file anywhere else | LOW 1 | ~8 a day if MEDIUM (`backupd`, `westkite`, `@ohos-ports/*`) |
+| `code` | a start-up file's name, a file write within 1,000 characters and `HOME` | LOW 1 | ~2 a day if MEDIUM |
+
+"Live" is every version Stage 2 read in the three runs above whose captured tarball has a
+match (1,421 versions; 190,203 of 201,475 tarballs were still on disk to scan), replayed with
+its base and its recorded Stage 1-4 findings through Stage 4's `decide`. A first `inject` that
+counted sourcing a start-up file itself (`. "$HOME/.profile"` in remote-session scripts,
+"run `source ~/.zshrc`" advice) and any `PROMPT=` variable (an AI prompt passed through a
+shell script) newly reported at least 11 benign versions and was narrowed. `@atedone` 0.0.12
+and 0.0.18 are reported (both need small updates routed, `triage.md` reason 6); its other
+releases repeat the previous version's match and are LOW. No reviewed version of any kind is
+reported by the MEDIUM forms that wasn't reported already; DataDog `vm-day1` has no sample it
+changes.
+
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
 v3 requires real-looking webhook ids: a 17-20-digit Discord snowflake (every real webhook in
@@ -520,7 +547,10 @@ the blob. Evaluation tarballs live in their own store and are not pruned.
   flags the added hook HIGH anyway).
 - Routing is not what misses most live malware: of the 24 live misses Stage 2 never read that
   could still be fetched, none is reported when read
-  ([stage2-routing-recall](../proposals/stage2-routing-recall.md)).
+  ([stage2-routing-recall](../proposals/stage2-routing-recall.md)); since small updates are
+  routed, `@atedone/workspace-context` is, through `static.shell-startup`.
+- File rules see one file: an opt-in set in another file (`lexzymods-baileys`) or a start-up
+  file named in one file and written in another (`@atedone` 0.0.13 on) isn't put together.
 - Regular expressions don't understand code: a URL in a comment and one in a `fetch` look the
   same. That is Stage 3's job.
 

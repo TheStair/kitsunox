@@ -380,8 +380,83 @@ def test_channel_follow_says_unwanted_not_malware() -> None:
     assert "Unwanted" in match.explanation and "names channels" in match.explanation
 
 
-def test_channel_follow_is_never_not_new() -> None:
-    """Every release of an auto-following fork is unwanted."""
+def _startup_forms(text: str) -> dict[str, str]:
+    """form -> severity of the `static.shell-startup` matches."""
+    return {
+        m.explanation.rsplit("`", 2)[1]: m.severity.value
+        for m in analyse(text.encode())
+        if m.rule_id == "static.shell-startup"
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "form"),
+    [
+        # Inert stand-ins: the appended lines are placeholders, nothing that runs.
+        ('{"scripts": {"postinstall": "echo PLACEHOLDER >> ~/.bashrc"}}', "hook"),
+        ('{"scripts": {"install": "printf x | tee -a \\"$HOME/.zshrc\\""}}', "hook"),
+        ("echo 'alias x=y' >> \"$HOME/.zshrc\"\n", "shell"),
+        ("Add-Content -Path $PROFILE -Value 'x'", "shell"),
+        (
+            "const line = 'source \"$HOME/.cache/x/init.sh\"';\n"
+            "fs.writeFileSync(path.join(env.HOME, shell === 'bash' ? '.bashrc' : '.zshrc'), line)",
+            "inject",
+        ),
+        (
+            "const s = ['setopt prompt_subst', 'PROMPT=\"$(node r.js)\"'].join('\\n');\n"
+            "fs.writeFileSync(join(os.homedir(), '.cache', 'init.zsh'), s)",
+            "inject",
+        ),
+        ("fs.appendFileSync(path.join(os.homedir(), '.bashrc'), line)", "code"),
+        ("const rc = '~/.config/fish/config.fish'; writeFile(expand(rc, HOME), s)", "code"),
+    ],
+)
+def test_shell_startup_forms(text: str, form: str) -> None:
+    forms = _startup_forms(text)
+    # Install hooks and injected source/prompt lines report; a CLI's own writes are evidence.
+    assert forms.get(form) == ("medium" if form in ("hook", "inject") else "low"), forms
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const s = fs.readFileSync(path.join(os.homedir(), '.bashrc'), 'utf8')",  # read only
+        "// add `export PATH=...` to your ~/.zshrc",  # advice, no write
+        "user.profile = await load(); fs.writeFileSync(out, HOME)",  # a property, not the file
+        "run('make >> build.log')",  # a redirect to something else
+        '{"scripts": {"test": "echo ok"}}',
+        # A hook that writes elsewhere, and a start-up file named only in the description.
+        '{"scripts": {"postinstall": "node setup.js > log.txt"}, "description": "no ~/.bashrc"}',
+        # The name, a write and HOME, but too far apart to belong together.
+        "const rc = '.zshrc';" + " " * 1200 + "fs.writeFileSync(path.join(HOME, 'out.json'), x)",
+    ],
+)
+def test_shell_startup_needs_a_write_to_the_file(text: str) -> None:
+    assert _startup_forms(text) == {}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Reloading the user's own start-up file, and a source line in a file naming none.
+        "const rc = '.zshrc'; exec('. \"$HOME/.profile\"'); fs.writeFileSync(join(HOME, f), x)",
+        "const s = 'source \"$HOME/.cache/x/init.sh\"'; fs.writeFileSync(join(HOME, f), s)",
+        # An AI prompt in a shell variable, not a shell prompt (no `prompt_subst`).
+        "const s = `PROMPT=\"$(cat p.txt)\"`; fs.writeFileSync(join(os.homedir(), 'run.sh'), s)",
+    ],
+)
+def test_shell_startup_inject_needs_a_foreign_source_line_or_a_prompt(text: str) -> None:
+    assert "inject" not in _startup_forms(text)
+
+
+def test_shell_startup_hook_form_is_placed_in_the_manifest() -> None:
+    text = '{\n  "scripts": {\n    "postinstall": "echo PLACEHOLDER >> ~/.profile"\n  }\n}'
+    (match,) = [m for m in analyse(text.encode()) if m.rule_id == "static.shell-startup"]
+    assert match.line == 3 and ">> ~/.profile" in match.snippet
+
+
+def test_channel_follow_is_never_not_new_but_shell_startup_is() -> None:
+    """Every release of an auto-following fork is unwanted; a CLI's PATH line is old news."""
     from kitsunox.core.models import Severity
     from kitsunox.stages.static import ALWAYS_NEW, _demoted, _key
 
@@ -392,3 +467,10 @@ def test_channel_follow_is_never_not_new() -> None:
     ]
     assert follow.rule_id in ALWAYS_NEW
     assert _demoted(follow, "lib/a.js", frozenset({_key(follow)})).severity is Severity.MEDIUM
+    (rc,) = [
+        m
+        for m in analyse(b'{"scripts": {"postinstall": "echo PLACEHOLDER >> ~/.zshrc"}}')
+        if m.rule_id == "static.shell-startup"
+    ]
+    assert rc.severity is Severity.MEDIUM
+    assert _demoted(rc, "package.json", frozenset({_key(rc)})).severity is Severity.LOW
