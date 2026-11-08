@@ -35,7 +35,7 @@ from typing import Final
 from kitsunox.core.models import Persisted, Record
 from kitsunox.core.run import STAGE_SNAPSHOTS, DataDir, RunManifest
 from kitsunox.stages.ingest import changes_file, iter_changes
-from kitsunox.util.files import sync_file
+from kitsunox.util.files import atomic_write, sync_file
 from kitsunox.util.http import Snapshot, SnapshotEntry
 
 COMPRESS_CHUNK: Final = 1 << 20
@@ -122,7 +122,8 @@ def _prune_run(
         os.replace(tmp, packed)
         plain.unlink()
     # Written last: a crash before this point leaves the run unpruned, so it is retried.
-    (run_dir / "retention.json").write_text(marker.model_dump_json(indent=2) + "\n")
+    # Atomic: a torn marker would make every later prune of this data dir fail to load it.
+    atomic_write(run_dir / "retention.json", (marker.model_dump_json(indent=2) + "\n").encode())
     return len(retained)
 
 

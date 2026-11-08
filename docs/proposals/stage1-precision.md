@@ -121,8 +121,14 @@ MEDIUM. No Stage 4 change is needed: `WEAK_ALONE` already applies to any MEDIUM 
 
 ```python
 # ecosystems/npm/rules/metadata.py, after the rule classes, before RULES:
-_DOWNGRADE_COSIGNALS: Final = (InstallHook(), NonRegistryDependency(), DependencyAdded(),
-                               MaintainerAdded(), UnfamiliarPublisher(), SuspiciousVersion())
+_DOWNGRADE_COSIGNALS: Final = (
+    InstallHook(),
+    NonRegistryDependency(),
+    DependencyAdded(),
+    MaintainerAdded(),
+    UnfamiliarPublisher(),
+    SuspiciousVersion(),
+)
 
 # PublishMethodDowngrade (version = 4), after the had/has check:
 with_ = [r.id for r in _DOWNGRADE_COSIGNALS if r.evaluate(change, ctx)]
