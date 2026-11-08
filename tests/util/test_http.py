@@ -152,6 +152,22 @@ def test_an_index_entry_whose_blob_is_gone_is_fetched_again(tmp_path: Path, rout
     assert len(router.requests) == 2  # stored again, so the third run reuses it
 
 
+def test_an_index_entry_whose_blob_is_empty_is_fetched_again(
+    tmp_path: Path, router: Router
+) -> None:
+    """A crash left 211 tarball blobs empty (2026-11-07) while their index entries survived;
+    the rerun served the entries and Stage 3 failed on the empty blobs."""
+    router.add_bytes(URL, b"tarball")
+    make_fetcher(tmp_path, router.client()).get(URL, immutable=True)
+    (blob,) = (tmp_path / "blobs").rglob("*.zst")
+    blob.write_bytes(b"")
+    second = make_fetcher(tmp_path, router.client())
+    assert second.needs_network(URL, immutable=True)
+    assert second.get(URL, immutable=True).body == b"tarball"
+    assert len(router.requests) == 2
+    assert blob.stat().st_size > 0  # rewritten, so the next run reuses it
+
+
 def test_needs_network_says_whether_get_would_send(tmp_path: Path, router: Router) -> None:
     router.add_bytes(URL, b"tarball")
     other = "https://registry.example/other"
@@ -193,6 +209,16 @@ def test_blob_store_detects_corruption(tmp_path: Path) -> None:
     store._path(sha).write_bytes(store._path(other).read_bytes())
     with pytest.raises(FetchError, match="corrupt"):
         store.get(sha)
+
+
+def test_an_empty_blob_is_absent_and_rewritten(tmp_path: Path) -> None:
+    store = BlobStore(tmp_path)
+    sha = store.put(b"content")
+    store._path(sha).write_bytes(b"")
+    assert not store.exists(sha)
+    assert store.put(b"content") == sha
+    assert store.exists(sha)
+    assert store.get(sha) == b"content"
 
 
 def test_min_interval_paces_network_requests_per_host(tmp_path: Path, router: Router) -> None:

@@ -1,5 +1,6 @@
 """atomic_write: whole files only, and never a file whose bytes didn't read back intact."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,28 @@ def test_retries_then_refuses_a_damaged_write(
         atomic_write(target, b"{}")
     assert target.read_bytes() == b"[]"  # the old content stays
     assert [p.name for p in tmp_path.iterdir()] == ["x.json"]
+
+
+def test_the_data_is_synced_before_the_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after an unsynced rename left 211 blobs empty under their final names
+    (2026-11-07)."""
+    events: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd: int) -> None:
+        events.append("fsync")
+        real_fsync(fd)
+
+    def replace(src: Path, dst: Path) -> None:
+        events.append("replace")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    atomic_write(tmp_path / "x.json", b"[]")
+    assert events == ["fsync", "replace"]
 
 
 def test_line_file_reads_non_empty_lines_on_demand(tmp_path: Path) -> None:

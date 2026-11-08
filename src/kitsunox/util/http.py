@@ -104,7 +104,8 @@ class FetchedResponse:
 class BlobStore:
     """Content-addressed store: `<root>/<sha[:2]>/<sha>.zst`, keyed by the SHA-256 of the
     *uncompressed* bytes. zstd keeps packuments (JSON, often megabytes) about 6x smaller. Reads
-    re-verify the digest."""
+    re-verify the digest. An empty file is not a blob (no zstd frame is empty): it is what a
+    crash left of an unsynced write (2026-11-07), so it counts as absent and `put` rewrites it."""
 
     def __init__(self, root: Path, *, level: int = 3, min_free: int = 0) -> None:
         self.root = root
@@ -117,14 +118,17 @@ class BlobStore:
     def put(self, data: bytes) -> str:
         sha = sha256_hex(data)
         path = self._path(sha)
-        if not path.exists():
+        if not self.exists(sha):
             if self.min_free:
                 require_free(self.root, self.min_free, "blob store")
             atomic_write(path, zstd.compress(data, level=self.level))
         return sha
 
     def exists(self, sha: str) -> bool:
-        return self._path(sha).exists()
+        try:
+            return self._path(sha).stat().st_size > 0
+        except FileNotFoundError:
+            return False
 
     def get(self, sha: str) -> bytes:
         data = zstd.decompress(self._path(sha).read_bytes())

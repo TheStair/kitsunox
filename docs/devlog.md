@@ -2,6 +2,49 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-08: A VM crash left 211 empty tarball blobs; writes are now synced
+
+**Stage(s):** Shared storage (`util/files.py`, `util/http.py` `BlobStore`); seen in Stage 3
+**Context:** The four-day catch-up run (`20261107T163310Z-npm`) finished Stages 1 and 2 after
+eight hours, then Stage 3 failed with `ZstdError: Compressed data ended before the end-of-stream
+marker was reached`. Memory was tight (25.3 GB RSS), but this was not the out-of-memory failure
+we were watching for.
+
+### Challenges
+- **Empty blobs that the store believed were whole**: the VM went down on 2026-11-07 at about
+  19:30Z, in the middle of the first Stage 2 attempt on this run. While the owner's host drive
+  was full, the VM's journal ends at 19:30:51Z and the next boot is at 22:22Z. `atomic_write`
+  wrote a temp file and renamed it, but never synced it. The renames reached disk and the data
+  did not, so 211 tarball blobs were left as empty files under their final names; 3 more empty
+  ones date from the 2026-11-03 crash. Their `http-immutable` index entries survived. On the
+  rerun, Stage 2 reused those entries (`_immutable_lookup` only checked that the blob file
+  existed), and `BlobStore.put` would never have rewritten them (also only `exists()`). Stage 3
+  then read them.
+  - **Found by:** a read-only scan of every file written between 17:00Z and the reboot
+    (136,618 blobs decompressed and digest-checked, 32,338 index entries parsed). The only
+    damage was the 211 empty blobs, all `.tgz`, for example
+    `@credo-ts/core@0.8.0-alpha-20261106144819`. No file was truncated partway.
+  - **Repair (data):** blobs are named by the SHA-256 of their content, so each tarball was
+    downloaded again, accepted only if its digest matched the blob's name, and written
+    atomically over the empty file. All 211 matched (none had been unpublished). Afterwards all
+    304,006 blobs the run references verify, and no snapshot or index was edited. Stage 2 had
+    no network retries in `static.jsonl`, so the next tick resumes the run from Stage 3.
+  - **Resolution (code):** `atomic_write` fsyncs the temp file before the rename (0.82 ms a
+    file on the VM, so about 5 minutes over a 400k-blob catch-up). `BlobStore.exists` counts an
+    empty file as absent: no zstd frame is empty. So `put` rewrites the file, and an index entry
+    whose blob is empty becomes a refetch, the same way a deleted blob already did. The
+    directory entry is still not synced: a crash can lose a whole recent file, which every
+    caller already treats as never written.
+  - **Why it works:** `test_the_data_is_synced_before_the_rename`,
+    `test_an_empty_blob_is_absent_and_rewritten` and
+    `test_an_index_entry_whose_blob_is_empty_is_fetched_again`. The three empty blobs from
+    11-03 are not referenced by any run; the next `put` of the same content rewrites them.
+
+### Open questions / next steps
+- Stage 3 on this run peaked at 25.3 GB before the failure. If the resumed run is
+  out-of-memory-killed, Stages 1-3 need to stream their results to disk as Stage 4 already
+  does. That is a stage change and the owner's call.
+
 ## 2026-11-08: Queue review finished (ranks 116-398): three malicious, the downgrade rule is noise
 
 **Stage(s):** Review queue (verdicts), Stage 1 rules (findings only)
