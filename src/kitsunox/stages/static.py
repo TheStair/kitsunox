@@ -40,7 +40,7 @@ from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.rules.signatures import KnownSignature
-from kitsunox.rules.static import CONTEXT_NOTES, RULES, ChannelFollow, HardcodedIp
+from kitsunox.rules.static import CONTEXT_NOTES, RULES, ChannelFollow, HardcodedIp, Obfuscated
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
@@ -181,6 +181,22 @@ def _metadata_url(manifest: bytes, line: int) -> bool:
     return url in urls and not any(isinstance(c, str) and url in c for c in commands)
 
 
+# `static.obfuscated` (2026-11-10, `docs/proposals/precision-round4-D.md` D6): a bundler's
+# content-hashed chunk in an `assets/` directory (`hel_dist/assets/index-C6-GNDFy.js`) is a
+# built web app's browser code, which a site serves; Node never loads it on install or
+# `require`. Obfuscation there is LOW. Not `.html` pages: two `vm-day1` samples are an
+# obfuscated `index.html` and nothing else.
+_ASSETS_DIR: Final = re.compile(r"(?:^|/)assets/[^/]+$")
+ASSET_NOTE: Final = (
+    " Only in a bundler's hashed browser asset (`assets/`), which a site serves and Node never"
+    " loads."
+)
+
+
+def _browser_asset(path: str) -> bool:
+    return _ASSETS_DIR.search(path) is not None and unhashed(path) is not None
+
+
 def _key(match: FileMatch) -> tuple[str, str]:
     """A match's identity across versions: its rule and explanation, numbers aside (`3235
     obfuscator-style identifiers` and `3301 ...` are the same finding), and without a note
@@ -220,6 +236,8 @@ def _demoted(
         and _metadata_url(content, match.line)
     ):
         note = IP_METADATA_NOTE
+    elif match.rule_id == Obfuscated.id and _browser_asset(path):
+        note = ASSET_NOTE
     else:
         return match
     return match.model_copy(

@@ -472,6 +472,33 @@ def test_a_context_note_does_not_make_an_old_match_new(tmp_path: Path) -> None:
     assert finding.explanation.endswith("not new in this release.")
 
 
+def test_obfuscation_in_a_hashed_browser_asset_is_low(tmp_path: Path) -> None:
+    """`static.obfuscated` v2 (round 4, D6): a Vite build's `assets/index-<hash>.js` is
+    served to browsers; the package's own code and an unhashed asset still count."""
+    obfuscated = b"var a=[" + b",".join(b"_0x%04x" % i for i in range(30)) + b"];"
+    paths = (
+        "hel_dist/assets/index-C6-GNDFy.js",
+        "dist/apps/g2/assets/index-BKW-Hu3E.js",
+        "assets/logo.js",  # no content hash
+        "dist/index.js",
+        "index.html",
+    )
+    files = {p: obfuscated + f"// {p}".encode() for p in paths}  # each its own content
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: files if s.ref.version == "1.0.1" else {}, ContentCache(tmp_path, RULES)
+    ).versions
+    found = {f.evidence[0].path: f for f in result.findings if f.rule_id == "static.obfuscated"}
+    assert {p for p, f in found.items() if f.severity is Severity.MEDIUM} == {
+        "assets/logo.js",
+        "dist/index.js",
+        "index.html",
+    }
+    assert found["hel_dist/assets/index-C6-GNDFy.js"].explanation.endswith("Node never loads.")
+
+
 def test_an_ip_in_package_json_metadata_is_low(tmp_path: Path) -> None:
     """F4b: `package.json`'s own repository, homepage and bugs URLs are metadata; the same URL
     in a hook's command, or any other field, still counts."""
