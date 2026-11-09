@@ -241,6 +241,17 @@ dependency's packument.
   whose lookup failed (`test_dependency_network_failure_is_not_evaluated`); one distinct
   output over 20 runs with a name down, one that clears on the retry, a slow one and limits
   that bind, on 1 or 8 workers (`test_dependency_output_does_not_depend_on_thread_timing`).
+- **Prereleases (`fresh-foreign` v3, 2026-11-09, [round 3](../proposals/precision-round3.md)
+  X7):** on a prerelease the finding is LOW, weight 1, with a note, as
+  `npm.publish-method.downgrade` v3 decided for the same reason: npm installs a prerelease only
+  when asked for it by version or tag. Live, real code on all 3,716 verdicted versions (the
+  rule rerun on registry records rebuilt from each finding's evidence, which reproduces all 34
+  recorded findings on the old code): 13 fewer reports, all benign (`@sparkelf/dsh-*`
+  alphas on DeepSeek's new `@deepseek-ai/dsh-*` packages, `@doubao-dev/*` canaries,
+  `@paean-ai/harness-profile` rc, `@hatk/hatk` alpha, ...); `tailwind-animora@2.0.1`
+  (unverified) is a release and stays reported. `vm-day1`: none of the 131 malicious samples
+  it fires on is a prerelease. The rule can't see dist-tags, so a dependency-chain attack
+  published as a prerelease and tagged `latest` needs its other signals.
 
 ## Missing dependencies (`npm.dependency.missing`; stage version 12)
 
@@ -522,7 +533,7 @@ Rules over it:
 | `npm.provenance.githead-dropped` | the previous release recorded `gitHead`, this one doesn't | LOW | 2 |
 | `npm.dependency.known-malware` (v3) | an added (or re-pointed) runtime dependency, or its `npm:` alias target, is malware in every version per an OSV record published by `as_of`. LOW (weight 1) when the specifier only matches npm's empty `0.0.1-security` holding package (`fs: ^0.0.1-security`, what `npm install fs` writes), or when a Unity (UPM) package (`unity` field) depends on a `com.unity.*` built-in module, which Unity resolves from its own registry while the npm names are malware squats (v3) | HIGH | 5 |
 | `npm.combination.revived-with-new-dependency` (v3) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one and no maintainer was added: the package's own maintainer coming back (v2); LOW (weight 1) too when the release carries a provenance attestation (v3) | MEDIUM | 2 |
-| `npm.dependency.fresh-foreign` | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them | MEDIUM | 3 |
+| `npm.dependency.fresh-foreign` (v3) | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them. LOW (weight 1) when this release is a prerelease, which npm installs only when asked for it (v3, [round 3](../proposals/precision-round3.md) X7) | MEDIUM | 3 |
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count) | MEDIUM | 3 |
 | `npm.undeclared.missing` | a package Stage 3's `npm.undeclared-package` names (loaded at module load, not declared; not own scope, watched or a sibling) was 404 when the run looked it up (Undeclared and missing, above). INFO, weight 0, when the lookup failed or was over the limits | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |

@@ -170,6 +170,30 @@ def test_fresh_dependency_from_strangers_fires() -> None:
     assert score([found]) == 3.0
 
 
+@pytest.mark.parametrize("version", ["0.2.2-alpha.2", "0.1.1-rc.27", "0.0.41-canary-883008ec9"])
+def test_a_prerelease_is_low(version: str) -> None:
+    """v3 (round 3, X7): npm installs a prerelease only when asked for it."""
+    candidate = update({"easy-day-js": "^1.11.21"})
+    new = candidate.change.new
+    ref = new.ref.model_copy(update={"version": version})
+    candidate = candidate.model_copy(
+        update={
+            "change": candidate.change.model_copy(
+                update={"new": new.model_copy(update={"ref": ref})}
+            )
+        }
+    )
+    record = packument("easy-day-js", FRESH, maintainers=("sergey2016",), publisher="sergey2016")
+    (found,) = fresh_foreign(candidate, ctx(**{"easy-day-js": record}))
+    assert (found.severity, found.weight) == (Severity.LOW, 1.0)
+    assert found.explanation.endswith("only when asked for it by version or tag.")
+    assert not decide([found]).forwarded
+    # A lookup that failed is still "not evaluated" (INFO), prerelease or not.
+    failed = DependencyRecord(name="easy-day-js", status=DependencyStatus.FAILED)
+    (info,) = fresh_foreign(candidate, ctx(**{"easy-day-js": failed}))
+    assert info.severity is Severity.INFO
+
+
 def test_old_or_shared_or_not_added_does_not_fire() -> None:
     old = packument("helper", OLD)
     assert not fresh_foreign(update({"helper": "^1"}), ctx(helper=old))

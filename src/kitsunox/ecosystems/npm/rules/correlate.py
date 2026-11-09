@@ -277,6 +277,11 @@ def _list(names: Sequence[str]) -> str:
     return shown + (f" (+{len(names) - 10} more)" if len(names) > 10 else "") if names else "none"
 
 
+PRERELEASE_NOTE: Final = (
+    " A prerelease, which npm installs only when asked for it by version or tag."
+)
+
+
 class FreshForeignDependency(BaseRule):
     """The release adds a dependency (`foreign_added_dependencies`) whose first version was
     published less than `FRESH_DAYS` before this release, by accounts that have nothing to do
@@ -300,10 +305,17 @@ class FreshForeignDependency(BaseRule):
 
     The two incidents: `easy-day-js` (119 `@mastra/*` releases) and `plain-crypto-js`
     (`axios@1.14.1`), both ~18 hours old when the dependent was published.
+
+    v3 (2026-11-09, `docs/proposals/precision-round3.md` X7): LOW, weight 1, on a prerelease
+    (`0.2.2-alpha.2`, `0.0.41-canary-…`), which npm installs only when asked for it by version
+    or tag, as `npm.publish-method.downgrade` v3 decided: alphas and release candidates that
+    depend on their ecosystem's newest packages were 13 of the 33 benign live reports this rule
+    carried alone, and none of the `vm-day1` malicious samples it fires on is a prerelease (the
+    campaigns publish releases, which `npm install` picks).
     """
 
     id = "npm.dependency.fresh-foreign"
-    version = 2  # 2: one finding for every dependency over the lookup limits; "N hours after"
+    version = 3  # 2: one finding for every dependency over the lookup limits; "N hours after"
     severity = Severity.MEDIUM
     weight = 3.0
     title = "New dependency, days old, from unrelated accounts"
@@ -316,6 +328,8 @@ class FreshForeignDependency(BaseRule):
         change = candidate.change
         published = change.new.publish.published_at or ctx.as_of
         mine = _accounts(change)
+        version = semver.parse(change.new.ref.version)
+        prerelease = version is not None and version.is_prerelease
         findings = []
         capped = []
         for dep in foreign_added_dependencies(change, ctx.watchlist):
@@ -324,6 +338,14 @@ class FreshForeignDependency(BaseRule):
                 capped.append(dep)
                 continue
             found = self._check(dep, record, published, mine, ctx.as_of)
+            if found is not None and prerelease and found.severity is not Severity.INFO:
+                found = found.model_copy(
+                    update={
+                        "severity": Severity.LOW,
+                        "weight": 1.0,
+                        "explanation": found.explanation + PRERELEASE_NOTE,
+                    }
+                )
             if found is not None:
                 findings.append(found)
         if capped:

@@ -307,7 +307,8 @@ EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     "npm.install-hook": (
         (
             "npm.install-build-tool",
-            " Only a build tool runs, and `binding.gyp` runs no command (npm.install-build-tool).",
+            " Only a build tool runs, and `binding.gyp` runs no command beyond header lookups"
+            " (npm.install-build-tool).",
         ),
         ("npm.install-explained", _SHAPE_NOTE),
     ),
