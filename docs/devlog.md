@@ -2,6 +2,34 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Evening review: system package installs, DSH homes, OSV disagreements upheld
+
+**Stage(s):** evaluation (reviewer verdicts), decision 0015
+**Context:** Queue batches of the 17:41-19:43Z ticks, and a second look at the OSV-labeled
+versions still recorded benign after the morning's withdrawal of benign-by-inference verdicts.
+
+### Decisions
+- **DSH agent homes are user-wide agent locations.** Under "user-wide agent file interactions
+  should be unwanted": `@everywhere-harness/ewh@0.2.13` (new; plugins into `~/.dsh/profiles/web`
+  on every install) recorded unwanted, and three earlier benign verdicts re-recorded unwanted:
+  `huaweicloud-devkit@2.0.0-next.0` (skills into `~/.dsh/skills` when installed as a DSH plugin;
+  the morning's open question), `dsh-yunpa@0.10.1` (registers itself in the `~/.dsh` profile),
+  `blue-crab@1.0.0` (patches the installed `dsh-tui` package's files, writes `~/.dsh-tui`). Left
+  benign: `@yiarce/dsh-chat`, `slumberpavilion` (no install scripts).
+- **The five OSV-labeled versions still recorded benign were upheld** by an independent,
+  label-aware second look (advisory text from the public `api.osv.dev`; `data/labels/` holds
+  ids only): `@emilgroup/discount-sdk@1.14.1-beta.9` (generated SDK only; OSV's CanisterWorm
+  record covers 1.5.1-1.5.3, the betas were added by Amazon Inspector), `filipt` 0.2.1/0.3.0
+  (clean JPEG; the bundled `hello.exe` imports only `MessageBoxW` and, disassembled as data,
+  shows "hello"), `print-hello-world-test-temp@1.0.1` (93-byte hello; the label is
+  publisher-wide, the sibling `txnforge` is the dropper), `@goparrot-dashboard/app@0.0.1`
+  (prints a marker; OSV's own text puts the payload in 0.0.2, recorded malicious on 11-02).
+  Every OSV-labeled miss the behaviour truth clears now rests on code someone read.
+
+### Evaluation snapshot
+- Queue: 17:41Z/18:42Z ticks 13 versions, 12 benign + `streamgrab@1.3.4` unwanted (system
+  package installs); 19:43Z tick 10 versions, 9 benign + `ewh` unwanted.
+
 ## 2026-11-09: Viewer shows live evaluation results; dashboard at `/`, queue at `/queue`
 
 **Stage(s):** local web viewer (`web/`), live evaluation output (`evaluation/live.py`)
