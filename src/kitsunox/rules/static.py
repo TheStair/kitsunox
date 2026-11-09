@@ -121,9 +121,19 @@ class ExfilEndpoint(RegexRule):
     # (`purple-river-1234.trycloudflare.com`) and bare suffixes stay HIGH. Live: 33 benign
     # reports, no positive; none of the 63 `vm-day1` malicious samples at risk lost. Matches
     # on comment lines stay HIGH: that loses `elf-stats-piney-pinecone-203@1.0.0`.
+    # v7 (2026-11-09, `docs/proposals/precision-round3.md` X1-X4): LOW, weight 1, too for
+    # what can't be an endpoint: the one paste core-js cites in a comment
+    # (`pastebin.com/N21QzeQA`, bundled into many builds; a paste can't be rewritten by
+    # someone else); a host pattern (`*.oastify.com`, `*.m.pipedream.net`: a `*` is never a
+    # host one connects to); a host that is a whole entry of a list separated by newlines,
+    # tabs or commas with at least two other domains that are not endpoints (a disposable-mail
+    # list in one string, a public-suffix list; v6's test for quoted entries, for unquoted
+    # ones); and an OAST host whose own label is a placeholder (`YOUR-COLLABORATOR-ID.
+    # oastify.com`, v6's test for tunnel hosts). Real OAST ids and quick-tunnel names, bare
+    # suffixes, `bot${token}` and tables of endpoints stay HIGH.
 
     id = "static.exfil-endpoint"
-    version = 6
+    version = 7
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -152,7 +162,13 @@ class ExfilEndpoint(RegexRule):
             match.string, max(0, match.start() - 64), match.start()
         ):
             return PLACEHOLDER_NOTE
-        if _in_domain_list(match):
+        if _OAST.fullmatch(match.group(0)) and _placeholder_oast(match):
+            return PLACEHOLDER_NOTE
+        if _CORE_JS_PASTE.match(match.string, match.start()):
+            return CORE_JS_NOTE
+        if _host_pattern(match):
+            return PATTERN_NOTE
+        if _in_domain_list(match) or _in_separated_list(match):
             return LIST_NOTE
         return None
 
@@ -174,6 +190,33 @@ _DOMAIN_LITERAL: Final = re.compile(
 )
 LIST_DOMAINS: Final = 2
 LIST_NOTE: Final = " A host in a list of domains, not an endpoint."
+# v7: the OAST services, whose own label is the id a researcher registered.
+_OAST: Final = re.compile(
+    r"oastify\.com|burpcollaborator\.net|interact\.sh|\.oast\.(?:fun|me|pro|site|live|online)",
+    re.IGNORECASE,
+)
+# v7: the paste core-js cites in a comment about a Safari debugger crash; its builds are
+# bundled into many packages. Paste ids are case-sensitive and a paste can't be rewritten by
+# anyone but its author.
+_OAST_PLACEHOLDER: Final = re.compile(
+    r"(?<![\w-])(?:your[-_]?[a-z-]*|x{3,}|examples?|<[a-z_ -]*>)$", re.IGNORECASE
+)
+_CORE_JS_PASTE: Final = re.compile(r"(?i:pastebin\.com)/N21QzeQA(?![\w-])")
+CORE_JS_NOTE: Final = (
+    " The paste core-js cites in a code comment (a Safari debugger crash): not an endpoint."
+)
+PATTERN_NOTE: Final = " A host pattern (`*.`), which nothing connects to: not an endpoint."
+# v7: an entry of a list separated by newlines, tabs or commas, written out or as `\n` / `\t`
+# escapes in a string: `...\nwebclub.infos.st\nwebhook.site\nwebinarmoa.com\n...`.
+_SEPARATOR: Final = re.compile(r"(?:\\[nt]|[\n\t,])[ \t]*$")
+_SEPARATOR_AFTER: Final = re.compile(r"[ \t]*(?:\\[nt]|[\n\t,])")
+_LIST_ENTRY: Final = re.compile(
+    r"(?:\\[nt]|[\n\t,])[ \t]*"
+    r"(?P<host>[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,})"
+    r"""(?=[ \t]*(?:\\[nt]|[\n\t,"'`]|$))""",
+    re.IGNORECASE,
+)
+_QUOTES: Final = "\"'`"
 # What documentation writes after `api.telegram.org/bot` instead of a token.
 _TELEGRAM_PLACEHOLDER: Final = re.compile(r"<|\[|YOUR_|\.\.\.")
 # A whole string literal naming one exfiltration or OAST service, optionally with a subdomain.
@@ -202,6 +245,62 @@ def _whole_literal(match: re.Match[str]) -> tuple[int, int] | None:
     if not quote or quote not in "\"'`" or text[tail : tail + 1] != quote:
         return None
     return start, tail
+
+
+def _host_span(match: re.Match[str]) -> tuple[int, int]:
+    """The host `match` is part of: its labels before the match and, unless the match ends in
+    a path (`api.telegram.org/bot`), after it."""
+    text, start, end = match.string, match.start(), match.end()
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "._-"):
+        if start >= 2 and text[start - 2] == "\\" and text[start - 1] in "nt":
+            break  # `...\nwebhook.site`: the `n` belongs to the escape
+        start -= 1
+    if not match.group(0).lower().endswith("/bot"):
+        while end < len(text) and (text[end].isalnum() or text[end] in "._-"):
+            end += 1
+    return start, end
+
+
+def _placeholder_oast(match: re.Match[str]) -> bool:
+    """An OAST host whose own label (the id a researcher registers) is a written placeholder:
+    `YOUR-COLLABORATOR-ID.oastify.com`, `xxxxxxxxx.oastify.com`, `<id>.oastify.com`. Stricter
+    than the tunnel test: no digit (a registered id has them: `YourServer929w1e5….oastify.com`
+    is a real one with a prefix) and no template (`${id}.oastify.com` is how DNS exfiltration
+    builds its host)."""
+    text, start = match.string, match.start()
+    if start == 0 or text[start - 1] != ".":
+        return False
+    return _OAST_PLACEHOLDER.search(text, max(0, start - 65), start - 1) is not None
+
+
+def _host_pattern(match: re.Match[str]) -> bool:
+    """`*.oastify.com`, `*.m.pipedream.net`: a wildcard host, as allow and deny lists write
+    them (not `**webhook.site**`, Markdown emphasis)."""
+    start, _ = _host_span(match)
+    text = match.string
+    return start > 0 and text[start] == "." and text[start - 1] == "*"
+
+
+def _in_separated_list(match: re.Match[str]) -> bool:
+    """Whether `match` is a host that is a whole entry of a list separated by newlines, tabs or
+    commas (written out, or as `\\n` / `\\t` escapes inside a string), with at least
+    `LIST_DOMAINS` other entries within `DENY_LIST_WINDOW` characters that are domains and not
+    endpoints themselves. One side may be the string's quote (its first or last entry)."""
+    if match.group(0).lower().endswith("/bot"):
+        return False
+    start, end = _host_span(match)
+    text = match.string
+    left = _SEPARATOR.search(text, max(0, start - 8), start) is not None
+    right = _SEPARATOR_AFTER.match(text, end, min(len(text), end + 8)) is not None
+    quoted_left = start > 0 and text[start - 1] in _QUOTES
+    quoted_right = end < len(text) and text[end] in _QUOTES
+    if not (left or right) or not (left or quoted_left) or not (right or quoted_right):
+        return False
+    own = text[start:end].lower()
+    lo = max(0, start - DENY_LIST_WINDOW)
+    hi = min(len(text), end + DENY_LIST_WINDOW)
+    others = {m.group("host").lower() for m in _LIST_ENTRY.finditer(text, lo, hi)}
+    return len({d for d in others - {own} if not ExfilEndpoint.pattern.search(d)}) >= LIST_DOMAINS
 
 
 def _in_domain_list(match: re.Match[str]) -> bool:
@@ -384,8 +483,30 @@ class EnvHarvest(RegexRule):
 # `https://1.1.1.1` and `https://8.8.8.8`). 29 of the 56 MEDIUM `hardcoded-ip` findings on the
 # live queue (2026-10-30), none of the 159 in `vm-day1`'s malicious samples.
 PUBLIC_RESOLVERS: Final = frozenset(
-    {"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112", "208.67.222.222"}
+    {
+        "1.1.1.1",
+        "1.0.0.1",
+        "8.8.8.8",
+        "8.8.4.4",
+        "9.9.9.9",
+        "149.112.112.112",
+        "208.67.222.222",
+        # v4: the secondary OpenDNS address and the big Chinese public resolvers (AliDNS,
+        # DNSPod, 114DNS), written in DoH and proxy configs as `https://223.5.5.5/dns-query`.
+        "208.67.220.220",
+        "223.5.5.5",
+        "223.6.6.6",
+        "119.29.29.29",
+        "114.114.114.114",
+        "114.114.115.115",
+    }
 )
+# v4: addresses documentation writes as an example: counting digits (`1.2.3.4`,
+# `123.45.67.89`) and example.com's long-standing address. LOW, not dropped: still shown.
+EXAMPLE_IPS: Final = frozenset(
+    {"1.2.3.4", "4.3.2.1", "12.34.56.78", "123.45.67.89", "11.22.33.44", "93.184.216.34"}
+)
+EXAMPLE_IP_NOTE: Final = " An address documentation uses as an example."
 
 
 class HardcodedIp(RegexRule):
@@ -393,10 +514,13 @@ class HardcodedIp(RegexRule):
     well-known public DNS resolver (`PUBLIC_RESOLVERS`). v3 (2026-11-08, F4b): LOW in files
     that hold data or tests and in `package.json`'s own repository, homepage and bugs URLs; a
     path test, so it is in Stage 2 (`stages.static.IP_DATA_FILES`, `_metadata_url`). 20 benign
-    live reports, no positive; neither `vm-day1` malicious sample at risk lost."""
+    live reports, no positive; neither `vm-day1` malicious sample at risk lost. v4 (2026-11-09,
+    `docs/proposals/precision-round3.md` X5): more public resolvers (AliDNS, DNSPod, 114DNS,
+    OpenDNS's second address), and LOW, weight 1, for an example address (`EXAMPLE_IPS`:
+    `https://1.2.3.4:8443` as an input placeholder or in a help string)."""
 
     id = "static.hardcoded-ip"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"
@@ -408,6 +532,9 @@ class HardcodedIp(RegexRule):
         except ValueError:
             return False
         return address.is_global and str(address) not in PUBLIC_RESOLVERS
+
+    def lowered(self, match: re.Match[str]) -> str | None:
+        return EXAMPLE_IP_NOTE if match.group(1) in EXAMPLE_IPS else None
 
 
 class EncodedBlob(RegexRule):

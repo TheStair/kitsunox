@@ -83,13 +83,13 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v6) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6) | HIGH |
+| `static.exfil-endpoint` (v7) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor` | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v3) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3) | MEDIUM |
+| `static.hardcoded-ip` (v4) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
 | `static.obfuscated` | many `_0x`-style identifiers (javascript-obfuscator output) | MEDIUM |
@@ -450,6 +450,40 @@ stored snippet and manifest for versions without a tarball, -60 and -20. All ben
 malicious, unwanted or unverified version lost. On all 3,211 with a verdict: -50 (-67) and
 -14 (-22). `vm-day1`: all 65 malicious samples at risk through the two rules (63 and 2) are
 still reported by `pipeline+4` with the v6/v3 code.
+
+### `exfil-endpoint` v7 and `hardcoded-ip` v4: what can't be an endpoint (2026-11-09)
+
+From [precision round 3](../proposals/precision-round3.md) (X1-X5), built before the rule
+freeze. Each lowered match is LOW, weight 1, with a note, like v6's:
+
+- **X1, core-js's paste.** `pastebin.com/N21QzeQA` exactly (`_CORE_JS_PASTE`): core-js's
+  comment about a Safari debugger crash, bundled into editor and polyfill builds
+  (`@mnykj/alleditor*`, `dh-vue-poster`). Only the paste's author can change a paste; any other
+  paste, or this one through `/raw/`, stays HIGH.
+- **X2, host patterns.** A host written as `*.host` (`"*.oastify.com"`, `` `*.m.pipedream.net` ``,
+  `_host_pattern`): allow and deny lists; nothing connects to a `*`. `**webhook.site**`
+  (Markdown) is not a pattern.
+- **X3, separated lists.** v6's list test for unquoted entries (`_in_separated_list`): the host
+  is a whole entry between newlines, tabs or commas, written out or as `\n`/`\t` escapes inside
+  one string (one side may be the string's quote), with at least two other entries within 400
+  characters that are domains and not endpoints themselves: disposable-mail lists in one string
+  (`disposable-check`, `is-temp-email`), the Public Suffix List (`utalis-desk`). A list of
+  nothing but ngrok region hosts stays HIGH (v5).
+- **X4, OAST placeholders.** v6's placeholder-label test applied to OAST hosts too
+  (`YOUR-COLLABORATOR-ID.oastify.com`); a registered id (`94bp9h8f….oastify.com`) stays HIGH.
+- **X5, `hardcoded-ip` v4.** Example addresses (`EXAMPLE_IPS`: `1.2.3.4`, `4.3.2.1`,
+  `12.34.56.78`, `123.45.67.89`, `11.22.33.44`, and `93.184.216.34`, example.com's
+  long-standing address) are LOW: input placeholders, help strings, redaction tests. AliDNS
+  (`223.5.5.5`, `223.6.6.6`), DNSPod (`119.29.29.29`), 114DNS (`114.114.114.114`,
+  `114.114.115.115`) and OpenDNS's second address join `PUBLIC_RESOLVERS` (no finding), as
+  DoH and proxy configs write them (`https://223.5.5.5/dns-query`).
+
+Measured with the real code, Stages 1-4 end to end, on all 3,716 verdicted live versions: X1-X4
+remove 15 benign reports and X5 10 (with Stage 3's X6 and Stage 4's X7, 47 in all; 0
+malicious, unwanted or unverified lost, and no positive's `exfil-endpoint` or `hardcoded-ip`
+finding changes). `vm-day1`: see the proposal's section 5. Kept as they are, with the reasons
+in the proposal: Telegram `bot${token}` (its token is often encoded elsewhere in the
+malicious samples: `github-badge-bot`, `foundry-toolkit`), bare tunnel suffixes, comments.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 
