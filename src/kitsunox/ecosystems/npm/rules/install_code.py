@@ -18,8 +18,9 @@ from typing import Final
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.install import loaded_files
+from kitsunox.ecosystems.npm.rules.install_persistence import code_text
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
-from kitsunox.lang.javascript import Capability, language_for, mask_printed_text
+from kitsunox.lang.javascript import Capability, in_text, language_for, mask_printed_text
 from kitsunox.rules.capabilities import evidence
 from kitsunox.rules.static import Obfuscated
 from kitsunox.stages.ast import CodeChange
@@ -34,10 +35,19 @@ class InstallScriptCode(BaseRule):
     have before count.
 
     v2 (2026-10-30): the install code includes the package files it loads by a constant path
-    (`install.followed_files`): +12 malicious `vm-day1` samples, +1 benign."""
+    (`install.followed_files`): +12 malicious `vm-day1` samples, +1 benign.
+
+    v3 (2026-11-10, round 4): also install code that hides code past the edge of the screen
+    (`hidden_code`: a run of `HIDDEN_RUN`+ spaces or tabs, then code that is not a comment or a
+    message, on one line), in a file that is new or whose previous version had none. Its
+    capabilities can be invisible too: `hauntview@0.2.9` (malicious, 2026-11-09) put an
+    obfuscated loader behind 266 tabs on line 14 of `scripts/postinstall.mjs`; it finds its
+    C2 through an Ethereum transaction and evals what it fetches, and Stage 3 saw only the
+    file's honest `child_process` import. On the 1,710 verdicted live versions with install
+    code and the 18 `vm-day1` samples checked, it fires on that version only."""
 
     id = "npm.install-script-code"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install script runs risky code"
@@ -48,6 +58,25 @@ class InstallScriptCode(BaseRule):
         risky = change.install.capabilities & RISKY
         if change.before is not None:
             risky -= change.install_before.capabilities if change.install_before else frozenset()
+        hidden = _hidden_install_code(change)
+        if hidden:
+            path, line, text = hidden[0]
+            return (
+                self.finding(
+                    f"`npm install` runs {path}, which hides code past the edge of the screen "
+                    f"(line {line}, after {HIDDEN_RUN}+ spaces or tabs)"
+                    + (f" and uses {', '.join(sorted(c.value for c in risky))}" if risky else "")
+                    + ". Only a reader who scrolls sideways sees it.",
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=path,
+                        line_start=line,
+                        line_end=line,
+                        snippet=text,
+                    ),
+                    *evidence(change.install, risky),
+                ),
+            )
         if not risky:
             return ()
         files = ", ".join(sorted({u.path for u in change.install.uses}))
@@ -59,6 +88,53 @@ class InstallScriptCode(BaseRule):
                 *evidence(change.install, risky),
             ),
         )
+
+
+# Code pushed past the edge of the screen: a run of this many spaces or tabs, then code.
+HIDDEN_RUN: Final = 100
+_HIDDEN: Final = re.compile(rf"[ \t]{{{HIDDEN_RUN},}}(?=\S)")
+
+
+def hidden_code(path: str, data: bytes) -> tuple[int, str] | None:
+    """The first line of an install file with code after a run of `HIDDEN_RUN`+ spaces or tabs,
+    as (1-based line, the code that follows), when that code is not a comment or a message
+    (`code_text`): an ASCII-art banner in a `console.log` is not hidden code."""
+    if b"\x00" in data[:8192]:
+        return None
+    raw = data.decode("utf-8", "replace").split("\n")
+    if not any(_HIDDEN.search(line) for line in raw):
+        return None
+    masked = code_text(path, data).split("\n")
+    language = language_for(path)
+    offset = 0
+    for n, line in enumerate(raw):
+        for match in _HIDDEN.finditer(line):
+            after = masked[n][match.end() : match.end() + 1] if n < len(masked) else ""
+            if not after.strip() or after in "\"'`":
+                continue
+            start = offset + len(line[: match.end()].encode())
+            if language is not None and in_text(data, language, start):
+                continue  # a string's or a comment's own spaces
+            return n + 1, " ".join(line[match.end() : match.end() + 160].split())
+        offset += len(line.encode()) + 1
+    return None
+
+
+def _hidden_install_code(change: CodeChange) -> list[tuple[str, int, str]]:
+    """Install files with hidden code (`hidden_code`) that is new: the file is new, or its
+    previous version had none."""
+    before = change.install_files_before or {}
+    found = []
+    for path, data in sorted(change.install_files.items()):
+        if before.get(path) == data:
+            continue
+        if (hit := hidden_code(path, data)) is None:
+            continue
+        old = before.get(path)
+        if old is not None and hidden_code(path, old) is not None:
+            continue
+        found.append((path, *hit))
+    return found
 
 
 MAX_DIFF_LINES: Final = 40  # changed lines shown per file

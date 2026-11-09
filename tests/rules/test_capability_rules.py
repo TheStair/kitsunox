@@ -277,6 +277,29 @@ def test_an_install_file_changing_only_its_printed_messages_is_low() -> None:
         assert found.severity is Severity.MEDIUM, after
 
 
+_PADDED = b"import { execSync } from 'node:child_process';\n" + b"\t" * 266 + b"var z='-c';f(z)\n"
+
+
+def test_install_code_hidden_past_the_screen_edge_is_medium() -> None:
+    """`hauntview@0.2.9` (malicious): an obfuscated loader behind 266 tabs on one line of
+    `scripts/postinstall.mjs`, whose network and eval Stage 3 couldn't see (v3)."""
+    clean = pkg("node p.js", {"p.js": b"import { execSync } from 'node:child_process';\nf(1)\n"})
+    padded = pkg("node p.js", {"p.js": _PADDED})
+    (found,) = InstallScriptCode().evaluate_code(change(padded, clean))
+    assert found.severity is Severity.MEDIUM
+    assert "hides code past the edge of the screen (line 2" in found.explanation
+    assert found.evidence[0].snippet == "var z='-c';f(z)"
+    (new,) = InstallScriptCode().evaluate_code(change(padded, None))  # a new package
+    assert "hides code" in new.explanation and "uses process" in new.explanation
+    assert InstallScriptCode().evaluate_code(change(padded, padded)) == ()  # not new
+    # A banner a message prints, and long indentation inside a string, hide nothing.
+    banner = b'console.log("' + b" " * 120 + b'hauntview")\nconst s = `' + b" " * 120 + b"x`\n"
+    assert install_code.hidden_code("p.js", banner) is None
+    assert (
+        InstallScriptCode().evaluate_code(change(pkg("node p.js", {"p.js": banner}), clean)) == ()
+    )
+
+
 def test_a_loaded_install_file_counts_only_when_it_adds_a_risky_use() -> None:
     """`openyida`: the hook's script imports the library, whose ordinary changes aren't news.
     A loaded file's change counts when it adds a network, process, environment or eval use."""
