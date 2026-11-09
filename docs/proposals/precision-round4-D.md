@@ -1,15 +1,17 @@
 # Proposal: precision, round 4, agent D (Stage 2 content rules)
 
 > **Status:** built 2026-11-10, before the rule freeze (2026-11-12 00:00Z), for the owner's
-> review. Two Stage 2 commits: `2fe6805` (D1-D5: `static.exfil-endpoint` v8,
-> `static.hardcoded-ip` v5, `static.function-require` v2) and `c256721` (D6:
-> `static.obfuscated` v2, kept separate so it can be dropped on its own). **Both are
-> zero-loss as measured. Live, real code: 1,787 → 1,727 reported, all 60 removed versions
-> benign (60 packages); 0 malicious, unwanted or unverified version stops being reported.
+> review. Stage 2 commit `2fe6805` (D1-D5: `static.exfil-endpoint` v8,
+> `static.hardcoded-ip` v5, `static.function-require` v2). **D6 (`static.obfuscated` v2,
+> commit `c256721`) was rejected by the owner on 2026-11-10 and reverted in `3969f9e`:
+> obfuscation in a hashed `assets/` chunk keeps full strength (section 2, D6).**
+> **D1-D5 are zero-loss as measured. Live, real code: 1,787 → 1,733 reported, all 54 removed
+> versions benign (54 packages); 0 malicious, unwanted or unverified version stops being
+> reported.
 > `vm-day1`: of the 1,216 malicious samples on which a touched rule fires at MEDIUM or above,
 > 5 change at the rule level and all 5 are still reported by `pipeline+4`: 2,708 reported
 > before and after.** Precision of a report (malicious + unwanted, unverified left out)
-> 15.42% → 15.97%.
+> 15.42% → 15.92%.
 > **Builds on:** [round 3](precision-round3.md) (method, harness, its rejection of Telegram
 > F3a), [round 2](precision-round2.md) sections 6-8, decision
 > [0015](../decisions/0015-reviewer-verdicts.md) with all addenda.
@@ -31,8 +33,8 @@ notifiers do none of that: they post a message the caller wrote to the caller's 
 | D3 | `exfil-endpoint` v8 | a tunnel's bare suffix (`endsWith(".trycloudflare.com")`, `allowedHosts: [".ngrok-free.app"]`, `https://….trycloudflare.com`) and `api.trycloudflare.com`, in a file that collects nothing | 4 | 0 → 0 | 0 change |
 | D4 | `hardcoded-ip` v5 | a URL on a comment line (`//`, `# `, an open block comment, `<!--`) | 5 | 0 → 0 | 3 change (`awetz@99.9.18`, `byteplus-platform-runtime`, `c-monitor-dashboard`), still reported → 0 |
 | D5 | `function-require` v2 | a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes | 13 | 0 → 0 | 0 of 38 change |
-| D6 | `obfuscated` v2 | obfuscation in a bundler's hashed chunk under `assets/` (stage path test) | 6 | 0 → 0 | no sample's obfuscated finding is in such a path |
-| | **All** | | **60** | **0** | **0** |
+| D6 | `obfuscated` v2, **rejected by the owner, reverted** | obfuscation in a bundler's hashed chunk under `assets/` (stage path test) | (6) | 0 → 0 | no sample's obfuscated finding is in such a path |
+| | **All kept (D1-D5)** | | **54** | **0** | **0** |
 
 "In a file that collects nothing" is `_collects` in `rules/static.py`: none of machine identity
 (`os.hostname()`, `userInfo()`, `networkInterfaces()`, `whoami`, `$(hostname)`, public-IP
@@ -121,7 +123,11 @@ file with no network call and no decoding (`_LOADS_REMOTE`: `fetch(`, `axios`, `
 (`alpha-replicator`, `mongos-api`, `odds-analyzer`, `tw-modern-ui`, `velora-kit`, `@subql/
 common`) fetch or decode in the same file.
 
-### D6. `static.obfuscated` v2: hashed browser assets (separate commit)
+### D6. `static.obfuscated` v2: hashed browser assets (rejected by the owner)
+
+**Owner decision, 2026-11-10: dropped.** Commit `c256721` is reverted by `3969f9e`;
+`static.obfuscated` is v1 again and obfuscation in a hashed `assets/` chunk stays MEDIUM, for
+the recall risk below. What was measured, for the record:
 
 `hel_dist/assets/index-C6-GNDFy.js` (`@melt-js/comps-*` ×5), `dist/apps/even-g2/assets/
 index-BKW-Hu3E.js` (`@amoshydra/oktoso`): Vite build output a site serves; Node never loads it.
@@ -133,11 +139,11 @@ separate commit:** a drainer injected into a CDN-served asset of a UI package (t
 `@amoshydra/oktoso@0.1.0` would go too in production; the replay keeps its recorded finding
 (tarball gone).
 
-## 3. Where the benign reports come from after D1-D6
+## 3. Where the benign reports come from after D1-D5
 
 Decisive for (dropping the rule to LOW unreports), on the 274 versions, before → after:
-`exfil-endpoint` 81 → 46 benign (1 unwanted unchanged), `obfuscated` 61 → 55 (3 malicious, 8
-unverified unchanged), `hardcoded-ip` 38 → 33 (3 malicious), `function-require` 24 → 11 (1
+`exfil-endpoint` 81 → 46 benign (1 unwanted unchanged), `obfuscated` 61 (unchanged: D6 was
+rejected; with it, 55), `hardcoded-ip` 38 → 33 (3 malicious), `function-require` 24 → 11 (1
 malicious). What is left: Telegram and tunnel code in files that collect (agent frameworks'
 bundled `cli.js`, `agouti`), lists and prose that v5-v7's list tests don't see
 (`@ulkoro/skillsentry`, `retrohound`, `shield360`), vendors' own backend IPs in code, vendor-
@@ -149,9 +155,10 @@ obfuscated products, module sandboxes in files that also fetch.
 |---|---|---|---|---|---|---|
 | `round4-base` (round 3's `fix.jsonl`) | 1,787 | 1,486 | 224 | 47 | 30 | 15.42% |
 | D1-D5 (`2fe6805`) | 1,733 | 1,432 | 224 | 47 | 30 | 15.92% |
-| D1-D6 (`c256721`) | 1,727 | 1,426 | 224 | 47 | 30 | 15.97% |
+| D1-D6 (`c256721`, D6 rejected and reverted) | 1,727 | 1,426 | 224 | 47 | 30 | 15.97% |
 
-Removed per fix: D1 30, D2 2, D3 4, D4 5, D5 13, D6 6. No version is newly reported (all 483
+Kept: the D1-D5 row. Removed per fix: D1 30, D2 2, D3 4, D4 5, D5 13 (D6 would have removed 6
+more). No version is newly reported (all 483
 checked); positives whose touched findings changed: only `@phigon/superagent@0.1.0` (unwanted, a
 global-install skill copier), whose Telegram channel adapter is now LOW; it stays reported by
 `npm.install-hook` and `npm.install-script-code`. No unverified version changes at all.
@@ -206,9 +213,8 @@ changed here (`decide` and `LOW_CAP` are E's).
 
 ## 8. Owner questions
 
-1. Keep D1-D5 for the freeze (54 benign, 0 positives, 0 `vm-day1`)?
-2. D6 (6 benign): is a hashed browser asset's obfuscation LOW acceptable, given the CDN
-   drainer risk? It is its own commit.
+1. ~~Keep D1-D5 for the freeze?~~ Kept (owner, 2026-11-10).
+2. ~~D6?~~ Rejected (owner, 2026-11-10): reverted in `3969f9e`.
 3. The v8 note says what the file does *not* do. A stealer that sends from one file and
    collects in another (a `tg.js` helper) gets LOW for the URL; its collecting file still has
    `sensitive-path`/`env-harvest` LOWs and Stage 3's capability findings. Acceptable?

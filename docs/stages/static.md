@@ -489,6 +489,9 @@ malicious samples: `github-badge-bot`, `foundry-toolkit`), bare tunnel suffixes,
 
 From [precision round 4, agent D](../proposals/precision-round4-D.md) (D1-D5), built before
 the rule freeze. Each lowered match is LOW, weight 1, with a note; nothing is dropped.
+The proposal's D6 (`static.obfuscated` LOW in a bundler's hashed `assets/` chunk, 6 benign) was
+rejected by the owner (2026-11-10) and reverted: a drainer injected into a CDN-served asset
+must keep the rule's full strength, so `static.obfuscated` is unchanged (v1).
 
 - **`exfil-endpoint` v8 (D1-D3): what is sent, not only where to.** Round 3 rejected lowering
   Telegram `bot${token}` because the malicious samples often hide the token
