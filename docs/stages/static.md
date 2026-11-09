@@ -506,6 +506,10 @@ the rule freeze. Each lowered match is LOW, weight 1, with a note; nothing is dr
   - **D3** a tunnel's bare suffix (`host.endsWith(".trycloudflare.com")`,
     `allowedHosts: [".ngrok-free.app"]`, `https://….trycloudflare.com` in help text) and
     `api.trycloudflare.com` (the API `cloudflared` registers with); a tunnel's name stays HIGH.
+
+  These notes (and D4's and D5's) depend on the rest of the file, so the "not new" comparison
+  with the previous version leaves them out (`CONTEXT_NOTES`, `_key`), as it leaves out
+  numbers: a URL the base's quiet file already had is not new when the file starts to collect.
 - **`hardcoded-ip` v5 (D4): comment lines.** A URL on a line that is a comment (`//`, `# `,
   a block comment's `/*` or `*` line with no close before the match, `<!--`): commented-out
   base URLs (`// return 'http://47.108.170.69:5401'`), JSDoc alternatives. Not a shebang, not a
