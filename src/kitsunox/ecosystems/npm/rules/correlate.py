@@ -280,6 +280,31 @@ def _list(names: Sequence[str]) -> str:
 PRERELEASE_NOTE: Final = (
     " A prerelease, which npm installs only when asked for it by version or tag."
 )
+ESTABLISHED_SCOPE_NOTE: Final = (
+    " Its scope `{scope}` also holds `{watched}`, a package on the run's watchlist: only the "
+    "scope's owner can publish there."
+)
+
+
+class _WatchedScopes:
+    """`{scope: the first watched package in it}` of one watchlist, built once per watchlist
+    object (like `_PopularNames`)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._built: list[tuple[Watchlist, Mapping[str, str]]] = []  # keeps each list alive
+
+    def of(self, watchlist: Watchlist) -> Mapping[str, str]:
+        with self._lock:
+            for seen, known in self._built:
+                if seen is watchlist:
+                    return known
+            scopes: dict[str, str] = {}
+            for name in sorted(watchlist.entries):
+                if (owner := scope(name)) is not None:
+                    scopes.setdefault(owner, name)
+            self._built = [*self._built[-3:], (watchlist, scopes)]
+            return scopes
 
 
 class FreshForeignDependency(BaseRule):
@@ -312,13 +337,28 @@ class FreshForeignDependency(BaseRule):
     depend on their ecosystem's newest packages were 13 of the 33 benign live reports this rule
     carried alone, and none of the `vm-day1` malicious samples it fires on is a prerelease (the
     campaigns publish releases, which `npm install` picks).
+
+    v4 (2026-11-10, `docs/proposals/precision-round4-C.md` F1): LOW, weight 1, when the fresh
+    dependency is in an npm scope that also holds a package on the run's watchlist
+    (`@earendil-works/pi-schema` beside the watched `@earendil-works/pi-ai`,
+    `@deepseek-ai/dsh-fs-patch`, `@midnightntwrk/zkir-v3`). Only a scope's owner (the user or
+    the organisation's members) can publish into it, so the new package comes from an
+    established, popular publisher: the dependent's maintainers chose a sibling of a package
+    they could already depend on, not a package registered for the attack. 11 of the 20 benign
+    live reports this rule carried alone; every `vm-day1` dependency-chain payload it fires on
+    is unscoped (`easy-day-js`, `plain-crypto-js`, `aethlong`, `elaverse`). Taking this over
+    takes the popular scope's own account, whose new package is then a new package of its own
+    in the feed, read by Stages 1-3 like any other.
     """
 
     id = "npm.dependency.fresh-foreign"
-    version = 3  # 2: one finding for every dependency over the lookup limits; "N hours after"
+    version = 4  # 2: one finding for every dependency over the lookup limits; "N hours after"
     severity = Severity.MEDIUM
     weight = 3.0
     title = "New dependency, days old, from unrelated accounts"
+
+    def __init__(self) -> None:
+        self._scopes = _WatchedScopes()
 
     def evaluate_candidate(
         self, candidate: Candidate, ctx: CorrelationContext
@@ -330,6 +370,7 @@ class FreshForeignDependency(BaseRule):
         mine = _accounts(change)
         version = semver.parse(change.new.ref.version)
         prerelease = version is not None and version.is_prerelease
+        scopes = self._scopes.of(ctx.watchlist) if ctx.watchlist is not None else {}
         findings = []
         capped = []
         for dep in foreign_added_dependencies(change, ctx.watchlist):
@@ -338,14 +379,19 @@ class FreshForeignDependency(BaseRule):
                 capped.append(dep)
                 continue
             found = self._check(dep, record, published, mine, ctx.as_of)
-            if found is not None and prerelease and found.severity is not Severity.INFO:
-                found = found.model_copy(
-                    update={
-                        "severity": Severity.LOW,
-                        "weight": 1.0,
-                        "explanation": found.explanation + PRERELEASE_NOTE,
-                    }
-                )
+            if found is not None and found.severity is not Severity.INFO:
+                notes = PRERELEASE_NOTE if prerelease else ""
+                owner = scope(dep.target)
+                if owner is not None and owner in scopes:
+                    notes += ESTABLISHED_SCOPE_NOTE.format(scope=owner, watched=scopes[owner])
+                if notes:
+                    found = found.model_copy(
+                        update={
+                            "severity": Severity.LOW,
+                            "weight": 1.0,
+                            "explanation": found.explanation + notes,
+                        }
+                    )
             if found is not None:
                 findings.append(found)
         if capped:

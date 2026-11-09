@@ -194,6 +194,46 @@ def test_a_prerelease_is_low(version: str) -> None:
     assert info.severity is Severity.INFO
 
 
+def test_a_fresh_package_in_a_watched_scope_is_low() -> None:
+    """v4 (round 4, F1): `@babel/core` is watched, so `@babel/new` comes from the scope's
+    owner, an established publisher (`@earendil-works/pi-schema` beside `pi-ai`). Another
+    scope, or none, stays MEDIUM; a prerelease gets both notes."""
+
+    def one(target: str, version: str = "0.1.8") -> Finding:
+        candidate = update({target: "^1"})
+        new = candidate.change.new
+        ref = new.ref.model_copy(update={"version": version})
+        candidate = candidate.model_copy(
+            update={
+                "change": candidate.change.model_copy(
+                    update={"new": new.model_copy(update={"ref": ref})}
+                )
+            }
+        )
+        (found,) = fresh_foreign(candidate, ctx(**{target: packument(target, FRESH)}))
+        assert isinstance(found, Finding)
+        return found
+
+    sibling = one("@babel/new")
+    assert (sibling.severity, sibling.weight) == (Severity.LOW, 1.0)
+    assert sibling.explanation.endswith(
+        "Its scope `@babel` also holds `@babel/core`, a package on the run's watchlist: only "
+        "the scope's owner can publish there."
+    )
+    assert one("@babel2/new").severity is Severity.MEDIUM
+    assert one("babel-new").severity is Severity.MEDIUM
+    both = one("@babel/new", "1.0.0-rc.1")
+    assert both.severity is Severity.LOW
+    assert "only when asked for it" in both.explanation and "`@babel/core`" in both.explanation
+    blind = fresh_foreign(
+        update({"@babel/new": "^1"}),
+        CorrelationContext(
+            as_of=AS_OF, dependencies=Lookup({"@babel/new": packument("@babel/new", FRESH)})
+        ),
+    )
+    assert [f.severity for f in blind] == [Severity.MEDIUM]  # no watchlist, no scope to know
+
+
 def test_old_or_shared_or_not_added_does_not_fire() -> None:
     old = packument("helper", OLD)
     assert not fresh_foreign(update({"helper": "^1"}), ctx(helper=old))
