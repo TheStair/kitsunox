@@ -601,6 +601,85 @@ def test_a_gyp_command_or_any_other_hook_keeps_the_hook_unexplained() -> None:
     assert unknown.build_commands == ()
 
 
+GYP_SCANNER = b"""{"targets": [{"target_name": "tree_sitter_x_binding",
+  "include_dirs": ["<!(node -p \\"require('node-addon-api').include\\")", "src"],
+  "sources": ["bindings/node/binding.cc", "src/parser.c",
+              "<!@(node -p \\"fs.existsSync('src/scanner.c') ? 'src/scanner.c' : ''\\")"]}]}"""
+
+
+def _manifest_hooked(
+    manifest: dict[str, object], files: dict[str, bytes] | None = None
+) -> CodeChange:
+    snapshot = SNAP.model_copy(update={"manifest": manifest})
+    tree = dict(PLAIN) | (files or {})
+    return code_change(
+        snapshot, tree, None, CACHE, install_sources, None, build_commands=gyp_commands
+    )
+
+
+def test_build_tool_v3_more_tools_and_tree_sitter_scanner() -> None:
+    """v3 (round 4, B3): `only-allow npm`, Open Collective's banner, `node-gyp-build ||
+    node-gyp rebuild`, `npx @mapbox/node-pre-gyp`, and tree-sitter's scanner test."""
+    rule = InstallBuildTool()
+    for command in (
+        "npx only-allow npm",
+        "npx -y only-allow npm",
+        "bunx only-allow bun",
+        "opencollective-postinstall",
+        "node-gyp-build || node-gyp rebuild",
+        "npx @mapbox/node-pre-gyp install --fallback-to-build",
+    ):
+        assert rule.evaluate_code(_hooked({"postinstall": command})), command
+    (finding,) = rule.evaluate_code(
+        _hooked({"install": "node-gyp-build"}, {"binding.gyp": GYP_SCANNER})
+    )
+    assert "header" in finding.explanation
+    assert header_lookup("node -p \"fs.existsSync('src/scanner.c') ? 'src/scanner.c' : ''\"")
+    assert not header_lookup("node -p \"fs.existsSync('src/scanner.c') ? 'x.c' : ''\"")
+    assert header_lookup("node -p \"fs.existsSync('src/scanner.c')\"")
+    newer = b"""{"targets": [{"target_name": "x", "variables": {
+      "has_scanner": "<!(node -p \\"fs.existsSync('src/scanner.c')\\")"}}]}"""
+    (command,) = gyp_commands({"binding.gyp": newer})
+    assert command == "node -p \"fs.existsSync('src/scanner.c'"  # cut at `)` before the quote
+    assert header_lookup(command)
+    assert rule.evaluate_code(_hooked({"install": "node-gyp-build"}, {"binding.gyp": newer}))
+    assert not header_lookup("node -p \"fs.existsSync('src/scanner.c'), require('x')\"")
+    assert header_lookup("node -p \"require('node-addon-api').targets\"")
+    assert not header_lookup("node -p \"fs.existsSync('src/scanner.c') && require('x')\"")
+
+
+def test_playwright_download_needs_playwright_and_a_tool_the_package_names_is_its_own() -> None:
+    rule = InstallBuildTool()
+    hooks = {"postinstall": "playwright install chromium"}
+    assert rule.evaluate_code(
+        _manifest_hooked({"scripts": hooks, "dependencies": {"@playwright/test": "^1.50.0"}})
+    )
+    assert not rule.evaluate_code(_manifest_hooked({"scripts": hooks}))
+    with_deps = {"postinstall": "playwright install --with-deps chromium"}
+    assert not rule.evaluate_code(
+        _manifest_hooked({"scripts": with_deps, "dependencies": {"playwright": "1"}})
+    )
+    # The package's own bin named like the tool: `husky` is the package's code.
+    assert rule.evaluate_code(_manifest_hooked({"scripts": {"postinstall": "husky"}}))
+    assert not rule.evaluate_code(
+        _manifest_hooked({"scripts": {"postinstall": "husky"}, "bin": {"husky": "x.js"}})
+    )
+    assert not rule.evaluate_code(
+        _manifest_hooked(
+            {"name": "patch-package", "scripts": {"postinstall": "patch-package"}, "bin": "x.js"}
+        )
+    )
+    assert not rule.evaluate_code(
+        _manifest_hooked(
+            {
+                "scripts": hooks,
+                "dependencies": {"playwright": "1"},
+                "bin": {"playwright": "evil.js"},
+            }
+        )
+    )
+
+
 def test_function_constructor_counts_for_new_packages_and_gains() -> None:
     """`txnforge` ran its payload through `globalThis.constructor.constructor` in a new
     package; Stages 2-3 saw neither `eval` nor `Function`."""

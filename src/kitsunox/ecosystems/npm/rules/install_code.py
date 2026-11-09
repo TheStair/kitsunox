@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Sequence
-from typing import Final
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
@@ -654,8 +654,46 @@ BUILD_TOOL_HOOKS: Final = frozenset(
         "npx only-allow yarn",
         "npx only-allow bun",
         "patch-package",
+        # v3: the same check for npm, and its `-y` and `bunx` spellings; Open Collective's
+        # thank-you banner.
+        "npx only-allow npm",
+        "npx -y only-allow npm",
+        "npx -y only-allow pnpm",
+        "bunx only-allow bun",
+        "opencollective-postinstall",
+        "node-gyp-build || node-gyp rebuild",
+        "npx @mapbox/node-pre-gyp install --fallback-to-build",
     }
 )
+# v3: Playwright's browser download, when the package depends on Playwright (so the
+# `playwright` npm runs is Playwright's own) and doesn't name a `playwright` bin itself.
+# `--with-deps` (system packages through `apt-get`, decision 0015) is not on the list.
+PLAYWRIGHT_HOOKS: Final = frozenset(
+    {
+        "playwright install",
+        "playwright install chromium",
+        "npx playwright install",
+        "npx playwright install chromium",
+    }
+)
+PLAYWRIGHT_PACKAGES: Final = frozenset({"playwright", "playwright-core", "@playwright/test"})
+_LAUNCHERS: Final = frozenset({"npx", "bunx", "-y", "||"})
+
+
+def tool_shadowed(manifest: Mapping[str, Any], commands: Iterable[str]) -> list[str]:
+    """Tools the hooks run (`husky`, `patch-package`, `only-allow` after `npx`/`bunx`) that
+    the package's own `bin` also names: npm links a package's bins before its install hooks
+    run, so `"bin": {"husky": "x.js"}` makes `husky` the package's own code."""
+    bin_field = manifest.get("bin")
+    if isinstance(bin_field, Mapping):
+        names = {str(k) for k in bin_field}
+    elif isinstance(bin_field, str):
+        name = manifest.get("name")
+        names = {name.split("/")[-1]} if isinstance(name, str) else set()
+    else:
+        return []
+    shadowed = {w for c in commands for w in c.split() if w not in _LAUNCHERS and w in names}
+    return sorted(shadowed)
 
 
 # v2: what a native add-on's `binding.gyp` asks `node` for so the compiler finds the headers of
@@ -665,13 +703,46 @@ BUILD_TOOL_HOOKS: Final = frozenset(
 # directory of an installed package; any other command, or any gyp action, still counts.
 HEADER_LOOKUP: Final = re.compile(
     r"""node\s+-[ep]\s+"require\(\\?'(?:node-addon-api|nan)\\?'\)?"""
-    r"""(?:\.(?:include|include_dir|gyp))?"?"""
+    r"""(?:\.(?:include|include_dir|gyp|targets))?"?"""
+)
+# v3: tree-sitter's generated `binding.gyp` adds the grammar's external scanner to the
+# sources when the file exists: `<!@(node -p "fs.existsSync('src/scanner.c') ? 'src/scanner.c'
+# : ''")`, or (newer templates) `"has_scanner": "<!(node -p \"fs.existsSync('src/scanner.c')\")"`
+# beside `<!(node -p "require('node-addon-api').targets")` (v3 adds `.targets` above).
+# `gyp_commands` cuts an expansion at its first `)` before a quote, so the newer form arrives
+# as `node -p "fs.existsSync('src/scanner.c'`: that `)` closes the call and the command.
+SCANNER_LOOKUP: Final = re.compile(
+    r"""node\s+-p\s+"fs\.existsSync\(\\?'src/scanner\.(c|cc)\\?'(?:\)"""
+    r"""(?:\s*\?\s*\\?'src/scanner\.\1\\?'\s*:\s*\\?'\\?')?"?)?"""
 )
 
 
 def header_lookup(command: str) -> bool:
-    """Whether a `binding.gyp` command only looks up `node-addon-api`'s or `nan`'s headers."""
-    return HEADER_LOOKUP.fullmatch(command.strip()) is not None
+    """Whether a `binding.gyp` command only looks up `node-addon-api`'s or `nan`'s headers, or
+    (v3) whether tree-sitter's `src/scanner.c` exists."""
+    command = command.strip()
+    return (
+        HEADER_LOOKUP.fullmatch(command) is not None
+        or SCANNER_LOOKUP.fullmatch(command) is not None
+    )
+
+
+def _build_tool(command: str, manifest: Mapping[str, Any]) -> bool:
+    if command in BUILD_TOOL_HOOKS:
+        return True
+    if command not in PLAYWRIGHT_HOOKS:
+        return False
+    declared = {
+        **_mapping(manifest.get("dependencies")),
+        **_mapping(manifest.get("devDependencies")),
+        **_mapping(manifest.get("optionalDependencies")),
+        **_mapping(manifest.get("peerDependencies")),
+    }
+    return any(name in declared for name in PLAYWRIGHT_PACKAGES)
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
 
 
 class InstallBuildTool(BaseRule):
@@ -690,10 +761,17 @@ class InstallBuildTool(BaseRule):
     v2 (2026-11-09, `docs/proposals/precision-round3.md` X6): a `binding.gyp` command that only
     looks up `node-addon-api`'s or `nan`'s headers (`HEADER_LOOKUP`) is not counted: it is how
     most add-ons find them. Any other expansion or gyp action still keeps the hook's
-    severity."""
+    severity.
+
+    v3 (2026-11-10, `docs/proposals/precision-round4-B.md`, B3): `only-allow npm` (and the
+    `-y`/`bunx` spellings), `opencollective-postinstall`, `node-gyp-build || node-gyp rebuild`
+    and `npx @mapbox/node-pre-gyp install --fallback-to-build` join the list; Playwright's
+    browser download (`PLAYWRIGHT_HOOKS`) when the package depends on Playwright; tree-sitter's
+    `src/scanner.c` test in `binding.gyp` counts as a lookup (`SCANNER_LOOKUP`); and a tool the
+    package's own `bin` names (`tool_shadowed`) is the package's code, not the tool."""
 
     id = "npm.install-build-tool"
-    version = 2
+    version = 3
     severity = Severity.INFO
     weight = 0.0
     title = "Install hooks only run a build tool"
@@ -706,7 +784,8 @@ class InstallBuildTool(BaseRule):
         if (
             not hooks
             or not all(header_lookup(command) for command in change.build_commands)
-            or not all(command in BUILD_TOOL_HOOKS for command in hooks.values())
+            or not all(_build_tool(command, change.snapshot.manifest) for command in hooks.values())
+            or tool_shadowed(change.snapshot.manifest, hooks.values())
         ):
             return ()
         gyp = (
@@ -714,6 +793,8 @@ class InstallBuildTool(BaseRule):
             if change.build_commands
             else "runs no command"
         )
+        if any(SCANNER_LOOKUP.fullmatch(c.strip()) for c in change.build_commands):
+            gyp = "only looks up headers and whether tree-sitter's `src/scanner.c` exists"
         return (
             self.finding(
                 "Every install hook only runs a build tool ("
