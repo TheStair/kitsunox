@@ -1,4 +1,7 @@
-"""Loading the package reads the machine's identity, and its loaded code can send (Stage 3, npm).
+"""What loading (or installing) the package does unasked (Stage 3, npm).
+
+`npm.load-fingerprint`: loading it reads the machine's identity, and its loaded code can send.
+`npm.publish-at-load`: loading or installing it runs `npm publish` (below).
 
 A payload that runs when the package is *loaded* (its entry point, or a file the entry loads:
 `CodeChange.load`, `ecosystems.npm.entry.load_sources`) needs no install hook, so the install
@@ -30,6 +33,7 @@ reports in 33.2 h that nothing else made (~3 a day).
 from __future__ import annotations
 
 import posixpath
+import re
 from collections.abc import Mapping, Sequence
 from typing import Final
 
@@ -111,4 +115,73 @@ class LoadFingerprint(BaseRule):
         )
 
 
-RULES: Final = (LoadFingerprint(),)
+# `npm.publish-at-load` (v1, 2026-11-09). Self-propagation is in the threat model (#9), and
+# `static.npm-publish` (Stage 2, LOW) matches the text anywhere: release tooling mentions
+# `npm publish` in scripts, docs and CLIs (350 reviewed benign versions, 0 positives). This
+# rule reads only commands that *run* when the package is loaded or installed
+# (`Profile.commands`, extractor v9: a `child_process`/`execa` call, or a same-file wrapper of
+# one, that runs at load), on the files loading runs (`CodeChange.load`, without the `bin`
+# targets: a CLI's `main` may be its `bin`) and the files the install hooks run
+# (`CodeChange.install`). On an update, only if no file of the previous version did. The 46
+# `*_z3n` spam packages on `vm-day1` (`main` re-publishes the user's project under random
+# names in a loop) were reported by nothing; the `@emilgroup/*` worm runs it from
+# `postinstall`. Measured before building (`docs/stages/ast.md`): `vm-day1` 105 malicious fire,
+# 46 newly reported (the `*_z3n`), 0 of 1,452 benign; live 0 of 37,154 versions in 33.7 h;
+# reviewed benign 0 of 1,434 with a tarball.
+#
+# `npm publish`, `pnpm publish`, `bun publish` (flags may come first: `npm --userconfig=x
+# publish`), `yarn publish`, `yarn npm publish`. `npm run publish` runs a script, not this.
+PUBLISH_COMMAND: Final = re.compile(
+    r"\b(?:npm|pnpm|bun)(?:\.cmd)?\s+(?:--?[\w-]+(?:=\S+)?\s+){0,3}publish\b"
+    r"|\byarn\s+(?:npm\s+)?publish\b"
+)
+
+
+def publishes(where: Profile | None, skip: frozenset[str] = frozenset()) -> tuple[PathUse, ...]:
+    """The commands (`Profile.commands`, run at load) that publish to npm, outside `skip`."""
+    if where is None:
+        return ()
+    return tuple(
+        c for c in where.commands if c.path not in skip and PUBLISH_COMMAND.search(c.use.detail)
+    )
+
+
+class PublishAtLoad(BaseRule):
+    """Loading or installing this version runs `npm publish`."""
+
+    id = "npm.publish-at-load"
+    version = 1
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Loading or installing it publishes to npm"
+
+    def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
+        loaded = publishes(change.load, skip=bin_files(change.snapshot.manifest))
+        installed = publishes(change.install)
+        found = (*loaded, *(c for c in installed if c not in loaded))
+        if not found or (change.before is not None and publishes(change.before)):
+            return ()
+        when = " and ".join(w for w, hit in (("loaded", loaded), ("installed", installed)) if hit)
+        return (
+            self.finding(
+                f"When the package is {when}, its code runs a command that publishes to npm "
+                f"(in {', '.join(sorted({f'`{c.path}`' for c in found}))}), with whatever npm "
+                "credentials the machine has. Release tools run `npm publish` when their "
+                "user asks; code that does it unasked is spreading itself or someone's code: "
+                "self-publishing spam republishes the user's project under new names, a worm "
+                "republishes the user's packages with its payload.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=c.path,
+                        line_start=c.use.line,
+                        line_end=c.use.line,
+                        snippet=f"[{c.use.capability.value}] {c.use.snippet}",
+                    )
+                    for c in found[:MAX_EVIDENCE]
+                ),
+            ),
+        )
+
+
+RULES: Final = (LoadFingerprint(), PublishAtLoad())

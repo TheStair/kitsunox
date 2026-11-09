@@ -31,7 +31,7 @@ import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 
 from kitsunox.core.models import Record
-from kitsunox.lang.at_load import identity_reads
+from kitsunox.lang.at_load import commands, identity_reads
 
 # Bump whenever extraction changes: it keys the on-disk cache (`stages/ast.py`).
 # 2: `eval`, `Function(...)` and `new Function(...)` whose every argument is a short constant
@@ -52,11 +52,15 @@ from kitsunox.lang.at_load import identity_reads
 # 8: the reads of the machine's identity that run when the file is loaded
 #    (`FileCapabilities.identity_at_load`, `lang.at_load`), for `npm.load-fingerprint`
 #    (`archetype-index-sdk@1.0.0`, 2026-11-08: a payload imported by the package's entry).
-EXTRACTOR_VERSION: Final = 8
+# 9: the commands that run when the file is loaded (`FileCapabilities.commands_at_load`,
+#    `lang.at_load.commands`), for `npm.publish-at-load` (the `*_z3n` spam family runs
+#    `npm publish` from its `main`, 2026-11-09).
+EXTRACTOR_VERSION: Final = 9
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
 MAX_EVIDENCE: Final = 3  # per capability and detail, per file
+MAX_COMMANDS: Final = 50  # commands run at load kept per file (distinct texts)
 
 
 class Capability(StrEnum):
@@ -109,6 +113,10 @@ class FileCapabilities(Record):
     # `os.networkInterfaces()`, `os.homedir()`; `lang.at_load.IDENTITY_CALLS`) that run when the
     # file is loaded, as `os-info` uses whose detail is the function's name (MAX_EVIDENCE each).
     identity_at_load: tuple[Use, ...] = ()
+    # Commands that run when the file is loaded (`lang.at_load.commands`), as `process` uses
+    # whose detail is the command's text as written (`""` when it can't be read), each
+    # distinct text once, at most MAX_COMMANDS.
+    commands_at_load: tuple[Use, ...] = ()
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -371,6 +379,7 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
         uses=ordered,
         packages=_packages(content, loads),
         identity_at_load=_identity_at_load(tree.root_node, language, content),
+        commands_at_load=_commands_at_load(tree.root_node, language, content),
     )
 
 
@@ -388,6 +397,24 @@ def _identity_at_load(root: ts.Node, language: str, content: bytes) -> tuple[Use
                     snippet=_snippet(content, node),
                 )
             )
+    return tuple(out)
+
+
+def _commands_at_load(root: ts.Node, language: str, content: bytes) -> tuple[Use, ...]:
+    seen: set[str] = set()
+    out: list[Use] = []
+    for text, node in commands(root, _language(language)[0]):
+        if text in seen or len(out) >= MAX_COMMANDS:
+            continue
+        seen.add(text)
+        out.append(
+            Use(
+                capability=Capability.PROCESS,
+                detail=text,
+                line=node.start_point.row + 1,
+                snippet=_snippet(content, node),
+            )
+        )
     return tuple(out)
 
 

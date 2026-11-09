@@ -19,6 +19,15 @@ runs at load, and a function does when it is
 Class and object methods are never counted. Names are matched within the file, so a function
 called from another file, or through an alias, is not seen; neither is a read through a
 computed name (`os["host" + "name"]()`). Nothing runs: tree-sitter parses the file.
+
+Since extractor v9 the same reach decides which **commands run at load** (`commands`): a call
+to a command runner (`COMMAND_RUNNERS`: `child_process`'s `exec`, `execSync`, `spawn`, ...,
+and `execa`), or to a function of the same file that calls one (`run(cmd)` wrapping
+`execSync(cmd)`), with the command's text: the first argument as written (a string, a
+template, a `+` of those, or a name the file binds to one with `const`/`let`/`var`), plus
+the strings of a following argument list (`spawn("npm", ["publish"])` is `npm publish`).
+The `*_z3n` spam family (DataDog, 2026-10) runs `npm publish --access public` this way from
+its `main`, in a loop started at load.
 """
 
 from __future__ import annotations
@@ -31,6 +40,21 @@ import tree_sitter as ts
 
 IDENTITY_CALLS: Final = frozenset({"hostname", "userInfo", "networkInterfaces", "homedir"})
 TIMERS: Final = frozenset({"setTimeout", "setImmediate", "setInterval", "queueMicrotask"})
+COMMAND_RUNNERS: Final = frozenset(
+    {
+        "exec",
+        "execSync",
+        "execFile",
+        "execFileSync",
+        "spawn",
+        "spawnSync",
+        "execa",
+        "execaSync",
+        "execaCommand",
+        "execaCommandSync",
+    }
+)
+MAX_COMMAND_CHARS: Final = 200
 _FUNCTIONS: Final = frozenset(
     {
         "function_declaration",
@@ -56,6 +80,15 @@ _IDENTITY_QUERY: Final = f"""
   function: [(identifier) @name (member_expression property: (property_identifier) @name)]) @call
  (#any-of? @name {_names(IDENTITY_CALLS)}))
 """
+_RUNNER_QUERY: Final = f"""
+((call_expression
+  function: [(identifier) @name (member_expression property: (property_identifier) @name)]) @call
+ (#any-of? @name {_names(COMMAND_RUNNERS)}))
+"""
+_BINDINGS_QUERY: Final = """
+(variable_declarator name: (identifier) @name value: [(string) (template_string)
+  (binary_expression)] @value)
+"""
 _CALLS_QUERY: Final = """
 (call_expression function: (identifier) @name) @call
 ((call_expression
@@ -67,6 +100,11 @@ _CALLS_QUERY: Final = """
 @cache
 def _queries(language: ts.Language) -> tuple[ts.Query, ts.Query]:
     return ts.Query(language, _IDENTITY_QUERY), ts.Query(language, _CALLS_QUERY)
+
+
+@cache
+def _command_queries(language: ts.Language) -> tuple[ts.Query, ts.Query]:
+    return ts.Query(language, _RUNNER_QUERY), ts.Query(language, _BINDINGS_QUERY)
 
 
 def _text(node: ts.Node | None) -> str:
@@ -183,3 +221,77 @@ def identity_reads(root: ts.Node, language: ts.Language) -> Iterator[tuple[str, 
         call = match["call"][0]
         if reach.runs(call):
             yield _text(match["name"][0]), call
+
+
+def commands(root: ts.Node, language: ts.Language) -> Iterator[tuple[str, ts.Node]]:
+    """Each call that runs a command at load, as (the command's text, call node), in source
+    order: a `COMMAND_RUNNERS` call, or a call by name of a function of this file that makes
+    one. A command whose text can't be read (a parameter, a computed value) is `""`."""
+    runner_query, bindings_query = _command_queries(language)
+    matches = ts.QueryCursor(runner_query).matches(root)
+    if not matches:
+        return
+    reach = _Reach(root, _queries(language)[1])
+    calls = {_key(m[1]["call"][0]): m[1]["call"][0] for m in matches}
+    for call in list(calls.values()):  # one level of wrappers: `function run(cmd) {...}`
+        function = _enclosing_function(call)
+        if function is not None and _passes_first_parameter(function, call):
+            for wrapper in reach._calls_of(_name(function)):
+                calls.setdefault(_key(wrapper), wrapper)
+    bound: dict[str, ts.Node] = {}
+    for _, match in ts.QueryCursor(bindings_query).matches(root):
+        bound.setdefault(_text(match["name"][0]), match["value"][0])
+    for _, call in sorted(calls.items()):
+        if reach.runs(call):
+            yield _command_text(call, bound)[:MAX_COMMAND_CHARS], call
+
+
+def _passes_first_parameter(function: ts.Node, call: ts.Node) -> bool:
+    """Whether the runner call's command is the function's first parameter (`run(cmd)`)."""
+    parameters = function.child_by_field_name("parameters")
+    if parameters is None:
+        parameter = function.child_by_field_name("parameter")  # `cmd => execSync(cmd)`
+    else:
+        parameter = parameters.named_children[0] if parameters.named_children else None
+    if parameter is not None and parameter.type in ("assignment_pattern", "required_parameter"):
+        parameter = parameter.child_by_field_name("left") or parameter.child_by_field_name(
+            "pattern"
+        )
+    arguments = call.child_by_field_name("arguments")
+    first = (
+        arguments.named_children[0] if arguments is not None and arguments.named_children else None
+    )
+    return (
+        parameter is not None
+        and parameter.type == "identifier"
+        and first is not None
+        and first.type == "identifier"
+        and _text(first) == _text(parameter)
+    )
+
+
+def _command_text(call: ts.Node, bound: dict[str, ts.Node]) -> str:
+    arguments = call.child_by_field_name("arguments")
+    values = arguments.named_children if arguments is not None else []
+    if not values:
+        return ""
+    first = values[0]
+    if first.type == "identifier" and _text(first) in bound:
+        first = bound[_text(first)]
+    words = [_literal(first)]
+    if len(values) > 1 and values[1].type == "array":
+        words.extend(_literal(v) for v in values[1].named_children)
+    return " ".join(w for w in words if w)
+
+
+def _literal(node: ts.Node) -> str:
+    """A string's or template's text as written (substitutions kept as `${...}`), a `+` of
+    those (other operands as `…`); `""` for anything else."""
+    if node.type in ("string", "template_string"):
+        return _text(node)[1:-1]
+    if node.type == "parenthesized_expression" and node.named_child_count == 1:
+        return _literal(node.named_children[0])
+    if node.type == "binary_expression" and _text(node.child_by_field_name("operator")) == "+":
+        parts = (node.child_by_field_name("left"), node.child_by_field_name("right"))
+        return "".join(_literal(p) or "…" if p is not None else "" for p in parts)
+    return ""

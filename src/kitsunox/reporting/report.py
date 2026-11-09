@@ -50,6 +50,7 @@ STAGE_OF_RULE: Final = {
     "npm.install-script-obfuscated": "Stage 3: capabilities",
     "npm.undeclared-package": "Stage 3: capabilities",
     "npm.load-fingerprint": "Stage 3: capabilities",
+    "npm.publish-at-load": "Stage 3: capabilities",
     "npm.provenance.": "Stage 4: correlation",
     "npm.dependency.known-malware": "Stage 4: correlation",
     "npm.dependency.fresh-foreign": "Stage 4: correlation",

@@ -58,7 +58,9 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
 - **Profile:** a version's capabilities, the union over its files, with where each is used.
   Since extractor v8 (2026-11-09) also `Profile.identity`: the calls reading the machine's
   identity (`os.hostname()`, `userInfo()`, `networkInterfaces()`, `homedir()`) that run when
-  their file is loaded ([load-time payloads](#load-time-payloads-npmload-fingerprint-extractor-v8)).
+  their file is loaded ([load-time payloads](#load-time-payloads-npmload-fingerprint-extractor-v8)),
+  and since v9 (2026-11-09) `Profile.commands`: the commands that run then
+  ([self-publishing](#self-publishing-at-load-or-install-npmpublish-at-load-extractor-v9)).
   The **install profile** covers only the files its install hooks run (`node setup.js` →
   `setup.js`; `ecosystems/npm/install.py`), and since 2026-10-30 the package files those
   load or run by a constant path (`require("./lib/x")`, `import`, `export ... from`,
@@ -108,6 +110,7 @@ is the malicious set.
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
 | `npm.undeclared-package` (v2) | loading the version (its `exports`/`main`/`module`/`browser` entry, `index.js` by default, and the package files those load by a constant relative path, `ecosystems/npm/entry.py`) loads a package at module load (not in a `try`, not inside a function that isn't called in place; extractor v7) that `dependencies`, `peerDependencies`, `optionalDependencies` and `bundleDependencies` don't list and the tarball doesn't ship (Node's modules, paths and the package's own name don't count; on an update, only names the previous version's code didn't load). One evidence item per package (at most 10), which Stage 4's `npm.undeclared.missing` looks up | INFO (weight 0) | `vm-day1`: 3 of 1,500 (v1: 61), none for a name npm lacks; live: 204 of 29,470 versions in 29.2 h (v1: 993) | `vm-day1`: 131 of 3,443 (v1: 669); live: `tailwind-animate-engine@1.0.6` (with Stage 4's lookup: reported) |
 | `npm.load-fingerprint` (v1) | one file that loading the version runs (`CodeChange.load`) reads two or more of `os.hostname()`, `os.userInfo()`, `os.networkInterfaces()`, `os.homedir()` in code that runs at load (extractor v8, `lang/at_load.py`), and the loaded files use the network; not a `bin` target's file; on an update, only if the previous version's code didn't; [below](#load-time-payloads-npmload-fingerprint-extractor-v8) | MEDIUM | `vm-day1`: 0 of 1,500; live: 4 newly reported in 33.2 h (~3 a day) | `vm-day1`: 310 of 3,444, 42 newly reported (2 new packages, 40 follow-ons); live: `archetype-index-sdk` and 2 others, reported already |
+| `npm.publish-at-load` (v1) | a command that runs at load (extractor v9, `lang.at_load.commands`: an `exec`/`spawn`/`execa` call, or a same-file wrapper of one, reached at load) in a file loading the version runs (not a `bin` target) or a file its install hooks run publishes to npm (`npm`/`pnpm`/`bun publish`, `yarn [npm] publish`); on an update, only if the previous version's code didn't; [below](#self-publishing-at-load-or-install-npmpublish-at-load-extractor-v9) | MEDIUM | `vm-day1`: 0 of 1,452; live: 0 of 37,154 versions in 33.7 h; reviewed: 0 of 1,434 | `vm-day1`: 105 of 3,444, **46 newly reported** (the `*_z3n` spam); live positives: none publishes |
 
 New packages get no `capability-gained` finding: with no previous version everything is
 "gained", and 34% of benign new packages would fire. They are covered by what their install
@@ -397,6 +400,80 @@ reached at load) 50 / 3 / 100; with a network call at load 1 / 1 / 11; with a fi
 is under the bar with a gain, and an "obfuscated loaded file in a new package" rule adds
 nothing: `static.obfuscated` already reports such a file.
 
+### Self-publishing at load or install: `npm.publish-at-load` (extractor v9)
+
+The 46 `*_z3n` samples above (DataDog, `vm-day1`, shape B) are self-publishing spam: `main`
+is `publishScript.js`, which at load starts a loop of timers that rewrites the *current
+directory's* `package.json` (drops `private`, a random version and `<adjective>_<animal>_z3n`
+name) and runs `exec("npm publish --access public")`, with whatever npm credentials the user
+has. Nothing reported 46 of the 47 (one through `npm.dependency.fresh-foreign`).
+Self-propagation is threat #9, and `static.npm-publish` (Stage 2, LOW) only matches the text:
+350 reviewed benign versions, 0 positives (release tooling that mentions `npm publish` in
+scripts, docs and CLIs). Task (2026-11-09): find the malicious code that publishes, where
+that publish runs, and build a narrow rule only if it passes the owner's bar for a MEDIUM
+(under ~5 benign reports a day, a measurable recall gain).
+
+**The population.** Every `vm-day1` sample (4,944; 48 benign have no files), every version
+Stage 3 read in the 13 live runs whose tarballs are captured (feed 2026-11-07 16:49Z to
+11-09 02:31Z, 33.7 h, 37,154 versions), every reviewed version with a tarball (latest
+verdict: 108 positives, 1,434 benign, 16 unverified) and the 35 live misses (`kitsunox live
+misses`, 94) with one, all read in memory. Publish or npm-token text (`npm`/`pnpm`/`yarn`/
+`bun publish`, `libnpmpublish`, `.npmrc`, `NPM_TOKEN`, `_authToken`, the registry with `PUT`)
+is in the loaded or install files of 574 `vm-day1` malicious samples (mostly Shai-Hulud's
+`bundle.js`), of one live positive (`charape@1.0.20`, unwanted, whose postinstall reads
+`.npmrc` and publishes nothing), of no live miss, and of 8 benign `vm-day1` samples, 185 live
+versions and 52 reviewed benign ones (changelogs, help text, release helpers in the library).
+No live positive or miss publishes.
+
+**Where it runs.** With `lang/at_load.py`'s reach (top level, in-place calls, callbacks of
+running calls, functions called by name from running code):
+
+| Shape | `vm-day1` malicious | `vm-day1` benign | live (33.7 h) | reviewed benign |
+|---|---|---|---|---|
+| that text in a loaded or install file | 574 | 8 | 185 (181 unreported) | 52 |
+| a publish string that runs at load or install, any use | 106 | 0 | 2 (help text, a data table) | 5 (a changelog string, CLI help) |
+| **a command runner called at load or install with a publish command** | **105** | **0** | **0** | **0** |
+| an npm token, the registry URL and `PUT`, all at load or install | 0 | 0 | 0 | 0 |
+
+The 105: the 47 `*_z3n` (`main`, `exec` in a timer loop), 28 `@emilgroup/*` releases
+(CanisterWorm: `postinstall: node index.js` finds tokens in `.npmrc` files and runs
+`scripts/deploy.js`, whose `run(cmd)` wraps `execSync`), `@opengov/*`, `@teale.io/eslint-config`,
+`@automagik/genie`, `pgserve`, `@fairwords/*` and 11 others (`execSync` of
+`` `npm publish --userconfig="${rc}"` `` from an install file). The 58 that aren't `*_z3n`
+are reported already through `npm.install-hook` or `npm.install-script-code`. Shai-Hulud's
+`bundle.js` publishes from functions of a minified bundle the parse doesn't see run; its
+install rules report it. Release tooling never matched: its publish runs in a function its
+user calls (an exported `release()`, a CLI command handler), from a `bin` script, or from a
+`scripts` entry that isn't an install hook, none of which is load or install code.
+
+**Extractor v9** records the commands that run when a file is loaded
+(`FileCapabilities.commands_at_load`, carried as `Profile.commands`; `lang.at_load.commands`):
+a call to `exec`, `execSync`, `execFile(Sync)`, `spawn(Sync)` or `execa` (any receiver), or
+to a function of the same file whose first parameter is passed to one (`run(cmd)`), that
+runs at load, with the command as written: a string, a template (`${...}` kept), a `+` of
+those (other operands as `…`), a name the file binds to one, plus a following list of
+strings (`spawn("npm", ["publish"])`). Each distinct text once, at most 50 a file, 200
+characters each.
+
+**Rule.** `npm.publish-at-load` (MEDIUM, weight 3; npm because of `npm publish` and the `bin`
+guard): a command that runs at load in a file loading runs (`CodeChange.load`, without the
+`bin` targets) or in a file the install hooks run (`CodeChange.install`) publishes to npm
+(`npm|pnpm|bun [flags] publish`, `yarn [npm] publish`; not `npm run publish`). On an update,
+only if no file of the previous version did. Measured with the built code:
+
+| | Fires | Newly reported |
+|---|---|---|
+| `vm-day1` malicious | 105 (47 new packages, 28 shape-A updates, 30 follow-ons) | **46**, every one a `*_z3n` new package |
+| `vm-day1` benign (1,452 with files) | 0 | 0 |
+| live, 37,154 versions in 33.7 h | 0 | **0** |
+| live reviewed positives (108 with a tarball), live misses (35 with a tarball) | 0 | 0 |
+| live reviewed benign (1,434 with a tarball) | 0 | 0 |
+
+The `bin` guard removed nothing in any set; it is kept for the shape it guards (a CLI whose
+`main` is its `bin`, as for `npm.load-fingerprint`). Not built: the token-and-PUT form
+(fires on nothing), any publish string at load (help text), and the hook command line itself
+(`"postinstall": "npm publish"`: none in any set).
+
 ### Explained install (S1-S3) and agent configuration
 
 `npm.install-explained` (INFO, weight 0; 2026-11-08,
@@ -633,8 +710,16 @@ download uses (`npx tool@1.2.3`) is volatile too, so moving a pinned tool's vers
   an identity read through a computed name (`os["host" + "name"]()`) is not seen as running,
   and a function handed to any call counts as run even when it is only an event handler.
   Obfuscated payloads that build `hostname` from a string table (the Tavern stealer family)
-  are not seen either; `static.obfuscated` covers those. Only identity reads are followed;
-  process execution and file writes at load were measured and not built.
+  are not seen either; `static.obfuscated` covers those. Only identity reads and (since v9)
+  commands are followed; file writes at load were measured and not built.
+- Commands at load (extractor v9, `npm.publish-at-load`) are the first argument of a known
+  runner (`exec`, `execSync`, `execFile`, `spawn`, `execa`, ... by name, whatever the
+  receiver) or of a same-file function that passes its first parameter to one, one level
+  deep. A runner reached through an alias (`const run = cp.execSync; run(x)`), a minified
+  bundle's renamed helper (Shai-Hulud's `bundle.js`), a command built at run time from
+  values the parse can't read, `libnpmpublish` or a registry `PUT` are not seen (Shai-Hulud
+  is reported by the install rules today). A name bound twice in a file reads the first
+  binding.
 - Install-entry detection reads command lines. `node -e "<code>"` and shell scripts are not
   parsed.
 - **tree-sitter 0.26.0 is excluded** (`pyproject.toml`). Using nodes from query matches

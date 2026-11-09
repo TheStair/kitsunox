@@ -2,6 +2,65 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Self-publishing code: `npm.publish-at-load` and extractor v9
+
+**Stage(s):** Stage 3 (`lang/at_load.py` commands, extractor v9, `npm.publish-at-load` v1)
+**Context:** The entry below left the `*_z3n` family open: 46 malicious `vm-day1` samples that
+no rule reports, whose `main` re-publishes the user's project under random names
+(`exec("npm publish --access public")` in a timer loop started at load). Self-propagation is
+in the threat model (#9), but `static.npm-publish` only matches text and fires on 350
+reviewed benign versions (release tooling). Task: find the malicious code that publishes,
+where its publish runs (load, install, or a `bin`/script the user runs), and build a narrow
+rule only if it passes the owner's bar for a MEDIUM (under ~5 benign reports a day,
+measurable recall gain). Details and tables:
+[stages/ast.md](stages/ast.md#self-publishing-at-load-or-install-npmpublish-at-load-extractor-v9).
+
+### Decisions
+- **Measure the reach, not the text.** A prototype scan (tree-sitter, data only) recorded
+  every publish/token string in the loaded and install files and whether it runs at load
+  (`at_load._Reach`). Publish or token text in those files: 574 `vm-day1` malicious, 8
+  benign, 185 live versions in 33.7 h (181 unreported, ~129 a day), 52 reviewed benign. A
+  publish string that runs, in any use: 106 / 0 / 2 / 5 (the benign ones are help text and a
+  changelog). Only as a command passed to a runner at load or install: **105 / 0 / 0 / 0**.
+- **Release tooling separates by itself.** No benign version in any set runs a publish at
+  load or install: tools publish from an exported function, a CLI command handler, a `bin`
+  script or a `scripts` entry that isn't an install hook. The `bin` guard (copied from
+  `npm.load-fingerprint`) removed nothing; kept for a CLI whose `main` is its `bin`.
+- **Generic extractor, npm rule.** Extractor v9 records every command that runs at load
+  (`FileCapabilities.commands_at_load`: runner calls by name, one level of same-file
+  wrappers whose first parameter is the command, `const` names, `spawn("npm", ["publish"])`
+  lists); `npm.publish-at-load` (MEDIUM 3) matches `npm|pnpm|bun [flags] publish` and
+  `yarn [npm] publish` in the load files (not `bin` targets) and the install code; on updates
+  only if the base didn't.
+- **Not built:** token + registry `PUT` at load or install (fires on nothing: Shai-Hulud's
+  bundle publishes from functions the parse doesn't see run, and is reported by the install
+  rules), any running publish string (help text), the hook command line itself (none seen).
+
+### Challenges
+- **The wrapper over-reached.** The first extractor treated any function containing a runner
+  call as a wrapper, so `go()` in `function go() { execSync(CMD) } go();` became a second,
+  empty command. Found by `test_commands_that_run_at_load`; a wrapper now must pass its first
+  parameter to the runner (`@emilgroup/*`'s `run(cmd)`), which keeps the worm's shape.
+- **Live misses need a live directory.** `kitsunox live misses` reads the newest live report;
+  `kitsunox live eval --live-dir <scratch>` built one without writing to `data/` (94 misses,
+  35 with a tarball, none publishing).
+
+### Evaluation snapshot
+- `vm-day1` recall: +46 malicious reported (every `*_z3n` new package, score 2 → 5; one more
+  was reported already through `npm.dependency.fresh-foreign`). The rule fires on 105, the
+  other 58 (`@emilgroup/*` x28, `@opengov/*`, `@teale.io/eslint-config`, `pgserve`, ...)
+  reported already through the install rules. Benign: 0 of 1,452 fire.
+- Live: 0 of 37,154 versions in 33.7 h fire (0 benign reports a day); reviewed benign 0 of
+  1,434, positives 0 of 108 (none publishes). No live recall gain: no live positive publishes.
+
+### Open questions / next steps
+- Owner: the live sets have no self-publishing positive, so the rule's live precision is
+  unmeasured beyond "never fires"; the rule freeze week will show whether it stays silent.
+- Extractor v9 invalidates the Stage 3 cache (`data/cache/ast/v9`): the first tick after the
+  merge reparses every file, as v8 did.
+- Cross-file reach and aliases (`const run = cp.execSync`) would widen it; nothing measured
+  needs them yet.
+
 ## 2026-11-09: Load-time payloads: `npm.load-fingerprint` and extractor v8
 
 **Stage(s):** Stage 3 (`lang/at_load.py`, extractor v8, `npm.load-fingerprint` v1)
