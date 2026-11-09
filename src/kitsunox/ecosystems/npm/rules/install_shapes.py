@@ -22,12 +22,30 @@ shapes reviewers recognise at a glance (`docs/proposals/precision-round2.md`, S1
   MCP servers); instructions that work against the user (also flagged on their own,
   `agent.hostile-instructions`).
 
+- **S5 inert install code** (v3). The install code uses at most the filesystem and the
+  machine's identity (`INERT`: no network, no process, no native code), loads no package by
+  name, and names neither the user's home directory, an agent directory, a system path
+  (`SYSTEM_PATH`) nor another installed package (`OTHER_PACKAGE`); it is readable (no line over
+  `MAX_READABLE_LINE`, no code pushed off-screen by whitespace); it deletes nothing
+  (`DELETES`), is shipped as a file (not inline `node -e` code), belongs to a package with code
+  besides its install code (`placeholder`), and is not upstream Baileys's
+  `engine-requirements.js`. It can print, or touch files of the project and the package,
+  nothing else.
+  The intrusive installs the owner rules unwanted (user-wide agent writes, shell rc edits,
+  PATH changes, system package installs, beacons) all need one of those.
+
+S2 needs no checksum when every download is named in `package.json` as the package's own
+releases (cargo-dist's `artifactDownloadUrls`, v3): its npm installer checks none, and a
+checksum shipped in the same release proves nothing about its author anyway.
+
 (S4, build-tool-only hooks, is `npm.install-build-tool`.) Every shape also needs: no install
 hook that is shell beyond `node <file>` (`curl`, `| sh`, `$(...)`), no command from
 `binding.gyp`, no whole-environment read, dynamic code or dynamic `require` in the install
 code, and, for an update, no capability the install code didn't have before (a version whose
-install code does something new keeps its findings). A package's name, description or
-keywords never count.
+install code does something new keeps its findings). Since v3 every shape also needs install
+code a reader and the parser can see: plain UTF-8 (`plain_text`), no line over
+`MAX_READABLE_LINE` characters and no code pushed off-screen by whitespace (`unreadable`). A
+package's name, description or keywords never count.
 
 The rule is INFO: an explanation for Stage 4 (`correlate.EXPLAINED`), which makes the install
 MEDIUMs (`npm.install-hook`, `npm.install-script-changed`, `npm.install-script-code`) LOW,
@@ -42,6 +60,7 @@ from typing import Any, Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
+from kitsunox.ecosystems.npm.install import INLINE_PREFIX
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.lang.agent_config import (
     MAX_AGENT_FILES,
@@ -79,6 +98,101 @@ PLATFORM: Final = re.compile(
     r"universal)(?:[-_.]|$)",
     re.IGNORECASE,
 )
+# S5 (round 4): the only capabilities inert install code may have.
+INERT: Final = frozenset({C.FILESYSTEM, C.OS_INFO})
+# A path outside the project and the user's home that install code could write (system
+# directories, the temporary directory, another drive's root): S5 refuses install code naming
+# one. `/tmp` and `tmpdir`: `cesium-native@0.56.0` and `dep-graph-gen@1.0.0` (`vm-day1`
+# malicious, RCE proofs) write their proof to `/tmp`.
+SYSTEM_PATH: Final = re.compile(
+    r"""["'`](?:/(?:etc|usr|bin|sbin|opt|var|tmp|Library|System|Applications|private)"""
+    r"""(?:/|["'`])|[A-Za-z]:(?:\\\\|\\|/))|\btmpdir\b"""
+)
+# Install code that deletes files is not inert, whatever it deletes: `@uselagoon/ui-library@2.0.2`
+# (`vm-day1` malicious) empties the directory it runs in under yarn. Protestware wipers delete.
+DELETES: Final = re.compile(r"\b(?:unlink|unlinkSync|rmdir|rmdirSync|rm|rmSync)\s*\(")
+# Install code that locates another installed package (`require.resolve(...)`) or builds a path
+# into `node_modules` (`path.join(root, "node_modules", ...)`, `"node_modules/x/..."`): it may
+# rewrite another package's code, which is how an install hook tampers with a dependency
+# (decision 0015: tampering with other packages decides a verdict). S5 leaves it alone, even
+# though most such hooks are benign patches (`chmod` of `node-pty`'s spawn helper, a
+# `fastmcp` fix). A test that only asks whether the package sits in `node_modules`
+# (`__dirname.includes("node_modules")`) is fine.
+OTHER_PACKAGE: Final = re.compile(
+    r"""node_modules["'`]\s*,|node_modules[/\\]+[@\w.]|require\.resolve\("""
+)
+# S5 rests on the capability analysis, which reads JavaScript only: every hook must be `node`
+# running a file or inline code (optionally `|| true` / `|| exit 0`), and every install file
+# JavaScript or TypeScript. `dotnet build`, `java -jar`, `npm run x && ...` run code the analysis
+# never sees (`@eisland/windows-startup-helper@26.0.1`'s `dotnet build` had no capability).
+_NODE_HOOK: Final = re.compile(r"\s*node\s+[^;&|`$]+?(?:\s*\|\|\s*(?:true|exit\s+0))?\s*")
+_QUOTED: Final = re.compile(r""""(?:[^"\\]|\\.)*"|'[^']*'""")
+
+
+def node_only(command: str) -> bool:
+    """`command` is `node <file or -e code>`, nothing chained before or after it (quoted
+    inline code may hold anything: it is install code the analysis reads)."""
+    return bool(_NODE_HOOK.fullmatch(_QUOTED.sub('""', command)))
+
+
+# S5 claims the install code does nothing, so it doesn't rest on the capability analysis
+# alone: the text must not name what reaches the network or runs code either. Two reviewed
+# versions showed why: `@openrouter/sdk@1.5.59` passes the global `fetch` as a default
+# parameter (`fetchImpl = fetch`, no call the analysis sees) to read the model list, and
+# `@onescience/onecode@1.19.3-202610291749`'s postinstall is UTF-16, which the parser reads as
+# nothing, while it downloads a binary (both benign, both caught by this test).
+RISKY_TEXT: Final = re.compile(
+    r"""\bfetch\b|\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b|\bimport\s*\("""
+    r"""|["'`](?:node:)?(?:https?|http2|net|tls|dns|dgram|child_process|worker_threads|vm"""
+    r"""|cluster|inspector|module|undici|axios|got|node-fetch)["'`/]"""
+    r"""|\beval\b|\bFunction\s*\(|\bprocess\s*\.\s*(?:binding|dlopen)\b"""
+    r"""|\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\("""
+)
+
+
+def placeholder(change: CodeChange) -> bool:
+    """The package's code is nothing but its install code: the shape of a dependency-confusion
+    placeholder or proof of concept (`wc@1.5.0`, `coldbox@6.7.71`, `pmcrypto@0.1.0`,
+    `grab-service-worker@1.0.1`, all `vm-day1` malicious, each a `postinstall` that prints).
+    S5 explains install code of a package that has more to it."""
+    shipped = [p for p in change.install_files if not p.startswith(INLINE_PREFIX)]
+    return change.after.files_parsed <= len(shipped)
+
+
+def plain_text(content: bytes) -> bool:
+    """UTF-8 text without NUL bytes (what the parser reads as written)."""
+    if b"\x00" in content:
+        return False
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+# S5 is "the code does nothing", which a reader must be able to check: install code with a
+# line longer than this, or code pushed off-screen by a run of whitespace, is not S5.
+# `hauntview@0.2.9` (malicious, 2026-11-09) hides an obfuscated C2 loader on line 14 of its
+# postinstall after 266 tabs (12,699 characters); the capability extractor sees none of what
+# the loader does. The longest line among the reviewed benign S5 versions is 406 characters,
+# the longest padding 31.
+MAX_READABLE_LINE: Final = 1_000
+_PADDING: Final = re.compile(r"(?:^|\S)[ \t]{64,}(?=\S)", re.MULTILINE)
+
+
+def unreadable(text: str) -> bool:
+    """A line over `MAX_READABLE_LINE` characters, or 64+ spaces or tabs before code."""
+    return any(len(line) > MAX_READABLE_LINE for line in text.splitlines()) or bool(
+        _PADDING.search(text)
+    )
+
+
+# Upstream Baileys's `preinstall` (a Node-version check). Inert, but S5 leaves it alone: the
+# WhatsApp forks the owner rules unwanted (channel auto-follow) keep it, and in a follow-on
+# release whose follow code is in an unchanged file Stage 2 doesn't see the follow again, so
+# the hook is what reports them (`kevinx-baileys@1.2.2`, unwanted; `hyrox@0.1.6` and
+# `@lunabotv6/luna-baileys@8.1.0`, unverified).
+BAILEYS_ENGINE_CHECK: Final = re.compile(r"(?:^|/)engine-requirements\.js$")
 MIN_PLATFORM_BUILDS: Final = 2
 MAX_SHOWN: Final = 3
 URL: Final = re.compile(r"""https?://[^\s"'`)<>\\]+""")
@@ -118,10 +232,14 @@ class InstallExplained(BaseRule):
     guards on S3), measured with Stage 4 on the live verdicts and on all 433 `vm-day1`
     malicious samples reported only through the install rules: see `docs/stages/ast.md`.
     v2 (2026-11-09): S3 only for copies into the project (no home-directory reference, no
-    package loaded by name), decision 0015's addendum of that day."""
+    package loaded by name), decision 0015's addendum of that day.
+    v3 (2026-11-10, `docs/proposals/precision-round4-E.md`): S2 also without a checksum when
+    every download is named in `package.json` as the package's own releases (cargo-dist's
+    `artifactDownloadUrls`); and S5, inert install code (`INERT` capabilities only, no package
+    loaded by name, no home, agent or system directory named)."""
 
     id = "npm.install-explained"
-    version = 2
+    version = 3
     severity = Severity.INFO
     weight = 0.0
     title = "Install code has an explained shape"
@@ -156,6 +274,8 @@ def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
         return None
     caps = install.capabilities
     text = "\n".join(c.decode("utf-8", "replace") for c in change.install_files.values())
+    if unreadable(text) or not all(plain_text(c) for c in change.install_files.values()):
+        return None  # v3: code the parser or a reader can't see is never an explained shape
     urls = _urls(text)
     hook_evidence = [
         Evidence(
@@ -199,15 +319,19 @@ def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
         and repo is not None
         and None not in kinds
         and ("own" in kinds or downloads)
-        and checksum is not None
+        and (checksum is not None or downloads)
         and (downloads or not _templated(urls))
     ):
         own = [u for u, k in zip(urls, kinds, strict=True) if k == "own"] or downloads
+        checked = (
+            f"checks a checksum (`{checksum.group(0)}`)"
+            if checksum is not None
+            else "names every download in `package.json` (cargo-dist's `artifactDownloadUrls`)"
+        )
         return (
             f"S2 own-release download: the install code downloads from the package's own "
-            f"repository's GitHub releases ({repo[0]}/{repo[1]}) and checks a checksum "
-            f"(`{checksum.group(0)}`); every URL it names is that, GitHub's asset hosts or the "
-            f"npm registry; it uses {uses}.",
+            f"repository's GitHub releases ({repo[0]}/{repo[1]}) and {checked}; every URL it "
+            f"names is that, GitHub's asset hosts or the npm registry; it uses {uses}.",
             [
                 *hook_evidence,
                 Evidence(kind=EvidenceKind.METADATA, snippet=snippet(", ".join(own[:3]))),
@@ -227,6 +351,29 @@ def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
             f"{copied} agent file(s) it may copy hold no hook command beyond a constant echo "
             "or a plain shipped script, no permission widening and no instruction against "
             "the user.",
+            hook_evidence,
+        )
+    if (
+        caps <= INERT
+        and all(node_only(command) for command in hooks.values())
+        and all(language_for(path) is not None for path in change.install_files)
+        and not install.packages
+        and not names_agent_dir(change.install_files)
+        and not user_wide(change)
+        and not SYSTEM_PATH.search(text)
+        and not OTHER_PACKAGE.search(text)
+        and not RISKY_TEXT.search(text)
+        and not DELETES.search(text)
+        and not placeholder(change)
+        and not any(path.startswith(INLINE_PREFIX) for path in change.install_files)
+        and not any(BAILEYS_ENGINE_CHECK.search(path) for path in change.install_files)
+    ):
+        return (
+            f"S5 inert install code: it uses {uses}: no network, no process, no native code, "
+            "loads no package by name, and names neither the home directory, an agent "
+            "directory, a system path nor another installed package; it is plain, readable "
+            "JavaScript run by `node`, so it can only print or touch files in the project and "
+            "the package.",
             hook_evidence,
         )
     return None

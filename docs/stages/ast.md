@@ -507,9 +507,10 @@ by a package's name, description or keywords:
 | Shape | Condition, on the install files `install_sources` finds |
 |---|---|
 | S1 platform-binary launcher | 2 or more `optionalDependencies` that are the package's own platform builds (same scope, or containing its name, plus an OS or CPU token: `@kx/tool-linux-x64`); no network, or network with every URL literal on `registry.npmjs.org` (GitHub issue/file pages and `example.com` in messages allowed) |
-| S2 own-release download | network; the `repository` is on GitHub; every URL literal (after substituting `const` strings) is that repository's releases (`github.com/<o>/<r>/releases`, `api.github.com/repos/<o>/<r>/releases`), GitHub's release asset hosts, the npm registry or a page link, and one is its own (or cargo-dist's `artifactDownloadUrls` all are); a checksum check (`createHash("sha256"`, `SHA256SUMS`, `checksums.txt`, `.sha256`, `verifyChecksum`); no URL whose host or owner is a variable |
+| S2 own-release download | network; the `repository` is on GitHub; every URL literal (after substituting `const` strings) is that repository's releases (`github.com/<o>/<r>/releases`, `api.github.com/repos/<o>/<r>/releases`), GitHub's release asset hosts, the npm registry or a page link, and one is its own (or cargo-dist's `artifactDownloadUrls` all are); a checksum check (`createHash("sha256"`, `SHA256SUMS`, `checksums.txt`, `.sha256`, `verifyChecksum`), or since v3 cargo-dist's `artifactDownloadUrls` all being its own releases; no URL whose host or owner is a variable |
 | S3 agent-skill copier | no network, no process; the code names an agent directory (`.claude`, `.agents`, `.cursor`, `.codex`, `.gemini`, `.windsurf`, `.opencode`, `SKILL.md`, `AGENTS.md`, `.mcp.json`), and the agent files it may copy pass the three guards below |
-| every shape | an install hook that is not shell (`curl`, `wget`, `sh`, `bash`, `python`, `./x`, `\| sh`, `$(...)`, backticks); no `binding.gyp` command; no `env-all`, `dynamic-code` or `dynamic-require` in the install code; for an update, no capability the install code didn't have before |
+| S5 inert install code (v3) | hooks are plain `node`, install files JavaScript; capabilities only `filesystem` and `os-info`; no package loaded by name; no home, agent, system (`/etc/`, `C:\`, ...) or other-package path (`node_modules`, `require.resolve`); no network- or exec-naming text (`fetch`, `import(`, `"node:https"`, `spawn(`); not upstream Baileys's `engine-requirements.js` |
+| every shape | an install hook that is not shell (`curl`, `wget`, `sh`, `bash`, `python`, `./x`, `\| sh`, `$(...)`, backticks); no `binding.gyp` command; no `env-all`, `dynamic-code` or `dynamic-require` in the install code; for an update, no capability the install code didn't have before; plain UTF-8, no line over 1,000 characters, no whitespace-padded code (v3) |
 
 The **three guards** on S3 (the owner, 2026-11-08: an agent-skill copier is benign as a
 verdict, decision 0015, but the rule may stay quiet only when the code proves the plain shape),
@@ -944,6 +945,63 @@ its base too); a day of live hooked versions (23 runs, 2,044 read): 0 fires; `vm
 (`pipeline+4` on the 103 malicious samples either rule fires on): 100 → 103 reported, 0 lost.
 Only 4 of the 3,444 `vm-day1` malicious samples run an install script at all; the loader
 shapes there are on hook command lines (`curl ... | node`, `bash -i >& /dev/tcp/...`).
+
+#### v3: S5 inert install code, and cargo-dist downloads (2026-11-10, round 4)
+
+Of the benign reports carried only by the install rules, 388 have two or three of them severe at
+once (`install-hook` + `install-script-code`, `install-hook` + `install-script-changed`, ...),
+so no single install rule's demotion can unreport them; an explanation lowers all three
+([proposal](../proposals/precision-round4-E.md)). v3 adds:
+
+- **S5 inert install code.** Every hook is `node` running a shipped file (`|| true` and
+  `|| exit 0` allowed, nothing else chained; no inline `node -e` code), every install file is
+  JavaScript or TypeScript and plain UTF-8, the package has code besides its install code, and
+  the install code:
+  - has only `filesystem` and `os-info` capabilities (`INERT`) and loads no package by name;
+  - names neither the home directory (S3 v2's test), an agent directory, a system path
+    (`SYSTEM_PATH`: `/etc/`, `/usr/`, `/tmp`, `tmpdir`, `/Library/`, `C:\`, ...) nor another
+    installed package
+    (`OTHER_PACKAGE`: `require.resolve(`, a path into `node_modules`): a hook that rewrites a
+    dependency is tampering, which decides a verdict (decision 0015);
+  - has no text that reaches the network or runs code, whatever the analysis saw
+    (`RISKY_TEXT`: `fetch`, `import(`, `"node:https"`, `child_process`, `eval`, `spawn(`, ...):
+    `@openrouter/sdk@1.5.59` passes the global `fetch` as a default parameter, and
+    `@onescience/onecode`'s postinstall is UTF-16, which the parser reads as nothing;
+  - deletes no file (`DELETES`: `unlink`, `rmdir`, `rm`, `rmSync`);
+  - is readable (a guard every shape now has, below);
+  - is not upstream Baileys's `engine-requirements.js` (`BAILEYS_ENGINE_CHECK`): the
+    auto-following fork `kevinx-baileys@1.2.2` (unwanted) is reported only by that hook,
+    because its follow code is in an unchanged file Stage 2 doesn't read again.
+
+  Four guards come from `vm-day1`: the first S5 explained 8 DataDog malicious samples, all
+  reported only by their install hook. A package that is nothing but its install code
+  (`placeholder`) is a dependency-confusion placeholder or proof of concept (`wc@1.5.0`,
+  `coldbox@6.7.71`, `pmcrypto@0.1.0`, `grab-service-worker@1.0.1` print a line;
+  `cesium-native@0.56.0` and `dep-graph-gen@1.0.0` write an "RCE proof" to `/tmp`);
+  `@uselagoon/ui-library@2.0.2` deletes the files of the directory it runs in under yarn; and
+  `shoal-cli@0.4.5`, a follow-on, is reported only through its changed inline `node -e`
+  banner.
+- **S2 without a checksum for cargo-dist.** When every `artifactDownloadUrls` entry is the
+  package's own GitHub releases (and the code is readable), S2 no longer needs a checksum
+  check: cargo-dist's npm installer has none, and a checksum in the same release says nothing
+  about its author.
+- **Every shape: code a reader and the parser can see.** Install files must be plain UTF-8
+  (`plain_text`), with no line over 1,000 characters and no code after 64+ spaces or tabs
+  (`unreadable`). `hauntview@0.2.9` (malicious, 2026-11-09) hides an obfuscated C2 loader
+  after 266 tabs on one 12,699-character line of its postinstall; the analysis sees only the
+  legitimate `child_process` beside it. None of the 140 live versions S1-S3 explained before
+  v3 is refused by this guard.
+
+**Measured** with the real code (round 3's replay of the 3,716 verdicted live versions, against
+round4-base and against `main` at `4cd4e8a`, the same versions either way): **68 fewer reports,
+all benign** (S5 51, S2 17); no malicious, unwanted or unverified version loses a report or
+even a finding; `hauntview@0.2.9` stays reported. `vm-day1`: all 344 malicious samples that
+demoting the three install rules would unreport were re-run with `pipeline+4`: 0 lost. What
+the guards cost, in benign reports kept: the Baileys exclusion 15 (without it S5 loses
+`kevinx-baileys@1.2.2`, unwanted, and the unverified `hyrox@0.1.6` and
+`@lunabotv6/luna-baileys@8.1.0`), `OTHER_PACKAGE` 34 (`node-pty` spawn-helper `chmod`,
+`fastmcp` fixes), the text and hook guards 16 (`dotnet build`, `prisma generate`, shell
+scripts, the two above), the `vm-day1` guards 8 and inline code 12.
 
 ## Evaluation
 

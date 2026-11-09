@@ -95,6 +95,9 @@ def test_s1_platform_binary_launcher() -> None:
     assert shape(change({"install.js": LAUNCHER}, one)) is None
     elsewhere = LAUNCHER_FETCH.replace(b"registry.npmjs.org", b"cdn.example.invalid")
     assert shape(change({"install.js": elsewhere}, manifest)) is None
+    # v3: code hidden after a run of tabs (or on a very long line) is no shape at all.
+    hidden = LAUNCHER + b"\t" * 200 + b'require("child_process").execSync("id");\n'
+    assert shape(change({"install.js": hidden}, manifest)) is None
     assert platform_builds("tool", {"optionalDependencies": {"tool-win32-x64": "1"}}) == [
         "tool-win32-x64"
     ]
@@ -122,6 +125,136 @@ def test_s2_own_release_download_with_a_checksum() -> None:
     assert own_repo({"repository": {"url": 3}}) is None
 
 
+def test_s2_cargo_dist_downloads_need_no_checksum() -> None:
+    """v3 (round 4): cargo-dist's npm installer names its downloads in `package.json`
+    (`artifactDownloadUrls`) and checks no checksum. Every one being the package's own
+    releases is the shape; one elsewhere, or other URLs in the code, is not."""
+    manifest = hook(repository=REPO)
+    dist = (
+        b'const https = require("https");\n'
+        b"// e.g. https://example.com/binary/download.tar.gz\n"
+        b"https.get(pkg.artifactDownloadUrls[0]);\n"
+    )
+    urls = ["https://github.com/kx-org/tool/releases/download/v1/tool.tgz"]
+    found = RULE.evaluate_code(
+        change({"install.js": dist}, manifest | {"artifactDownloadUrls": urls})
+    )
+    assert [f.explanation.split(" ", 1)[0] for f in found] == ["S2"]
+    assert "artifactDownloadUrls" in found[0].explanation
+    elsewhere = [*urls, "https://cdn.example.invalid/tool.tgz"]
+    assert (
+        shape(change({"install.js": dist}, manifest | {"artifactDownloadUrls": elsewhere})) is None
+    )
+    other = dist + b'https.get("https://paste.example.invalid/raw/x");\n'
+    assert shape(change({"install.js": other}, manifest | {"artifactDownloadUrls": urls})) is None
+    # Without `artifactDownloadUrls` a download from the own releases still needs a checksum.
+    unchecked = DOWNLOADER.replace(b'createHash("sha256")', b"x").replace(b"SHA256SUMS", b"")
+    assert shape(change({"install.js": unchecked}, manifest)) is None
+
+
+NOTICE = b"""
+const fs = require("fs"), path = require("path");
+if (!process.env.CI) console.log("Run `kx init` to finish setting up kx.");
+fs.mkdirSync(path.join(__dirname, "..", ".cache"), { recursive: true });
+"""
+
+
+LIB = {"index.js": b"module.exports = () => 1;"}
+
+
+def test_s5_inert_install_code() -> None:
+    """v3 (round 4): install code with no network, process or native code, loading no package
+    by name and naming no home, agent or system directory."""
+    manifest = hook("node scripts/notice.js")
+    found = RULE.evaluate_code(change({**LIB, "scripts/notice.js": NOTICE}, manifest))
+    assert [f.explanation.split(" ", 1)[0] for f in found] == ["S5"]
+    assert shape(change({**LIB, "scripts/notice.js": b'console.log("thanks");'}, manifest)) == "S5"
+    for extra in (
+        b'require("child_process").execSync("kx setup");',  # a process
+        b'require("https").get("https://kx.example.invalid/ping");',  # the network
+        b'require("kx-postinstall").run();',  # a package loaded by name
+        b'fs.writeFileSync(require("os").homedir() + "/.zshrc", "x");',  # the home directory
+        b'fs.appendFileSync("/etc/hosts", "127.0.0.1 kx");',  # a system path
+        b'fs.copyFileSync("bin/kx", "C:\\\\Windows\\\\kx.exe");',
+        b"eval(process.argv[2]);",  # dynamic code (every shape refuses it)
+        b'fs.writeFileSync(path.join("/tmp", "proof.txt"), "x");',  # the temporary directory
+        b'fs.writeFileSync(require("os").tmpdir() + "/x", "x");',
+        b'fs.rmSync("dist", { recursive: true });',  # deleting files
+    ):
+        c = change({**LIB, "scripts/notice.js": NOTICE + extra}, manifest)
+        assert shape(c) is None, extra
+    # Code that may rewrite another installed package is left alone; asking whether the
+    # package itself sits in node_modules is fine.
+    for patch in (
+        b'const p = require.resolve("dep/index.js"); fs.writeFileSync(p, "x");',
+        b'fs.writeFileSync(path.join(root, "node_modules", "dep", "index.js"), "x");',
+        b'fs.chmodSync("node_modules/dep/bin/helper", 0o755);',
+    ):
+        assert shape(change({**LIB, "scripts/notice.js": NOTICE + patch}, manifest)) is None, patch
+    inside = b'if (!__dirname.split(path.sep).includes("node_modules")) process.exit(0);'
+    assert shape(change({**LIB, "scripts/notice.js": NOTICE + inside}, manifest)) == "S5"
+    # Text that names the network or running code is not inert, whatever the analysis saw
+    # (`fetchImpl = fetch` passes the global without calling it); nor is a file the parser
+    # can't read as written (UTF-16).
+    for extra in (
+        b"async function load(fetchImpl = fetch) { return fetchImpl(url); }",
+        b'const { spawn } = await import("node:child_process");',
+        b'const m = "node:https";',
+    ):
+        assert shape(change({**LIB, "scripts/notice.js": NOTICE + extra}, manifest)) is None, extra
+    utf16 = "﻿console.log('hi');".encode("utf-16-le")
+    assert shape(change({**LIB, "scripts/notice.js": utf16}, manifest)) is None
+    # The analysis reads JavaScript only: a hook that runs anything else is not S5.
+    for command in (
+        "dotnet build src/x.csproj",
+        "node scripts/notice.js && make",
+        "npm run setup",
+        "node scripts/notice.js; ./x",
+    ):
+        assert shape(change({**LIB, "scripts/notice.js": NOTICE}, hook(command))) is None, command
+    ok = change({**LIB, "scripts/notice.js": NOTICE}, hook("node scripts/notice.js || true"))
+    assert shape(ok) == "S5"
+    # Inline code in the hook (`node -e "..."`) is not S5: `shoal-cli@0.4.5` (`vm-day1`
+    # malicious, a follow-on) is reported only through its changed inline banner.
+    inline = hook('node -e "console.log(1); process.exit(0)"')
+    assert shape(change({**LIB, "scripts/notice.js": NOTICE}, inline)) is None
+    # Code a reader can't see is not "inert": a padded or very long line (an inert stand-in
+    # for `hauntview@0.2.9`'s loader, hidden after 266 tabs).
+    padded = NOTICE + b"\t" * 266 + b'console.log("hidden");\n'
+    assert shape(change({**LIB, "scripts/notice.js": padded}, manifest)) is None
+    long_line = NOTICE + b"const x = [" + b"0x1," * 400 + b"];\n"
+    assert shape(change({**LIB, "scripts/notice.js": long_line}, manifest)) is None
+    indented = NOTICE + b"        console.log('indented');\n"
+    assert shape(change({**LIB, "scripts/notice.js": indented}, manifest)) == "S5"
+    # A package that is nothing but its install code is a placeholder or proof of concept.
+    assert shape(change({"scripts/notice.js": NOTICE}, manifest)) is None
+    # Upstream Baileys's Node-version check is left to report the forks that keep it.
+    engine = change(
+        {**LIB, "engine-requirements.js": b'console.log("ok");'},
+        hook("node ./engine-requirements.js"),
+    )
+    assert shape(engine) is None
+    # A shell hook is never explained.
+    assert shape(change({**LIB, "scripts/notice.js": NOTICE}, hook("sh -c 'node x.js'"))) is None
+    # An update whose install code gains a capability keeps its findings.
+    gained = change(
+        {**LIB, "scripts/notice.js": NOTICE},
+        manifest,
+        base={**LIB, "scripts/notice.js": b'console.log("thanks");'},
+    )
+    assert shape(gained) is None
+    assert (
+        shape(
+            change(
+                {**LIB, "scripts/notice.js": NOTICE},
+                manifest,
+                base={**LIB, "scripts/notice.js": NOTICE},
+            )
+        )
+        == "S5"
+    )
+
+
 def test_s3_agent_skill_copier() -> None:
     files = {"scripts/install.js": COPIER, "skills/kx/SKILL.md": SKILL}
     manifest = hook("node scripts/install.js")
@@ -131,9 +264,9 @@ def test_s3_agent_skill_copier() -> None:
     # Reaching the network or running a process is not a copier.
     spawning = COPIER + b'\nrequire("child_process").execSync("claude mcp add kx");\n'
     assert shape(change(files | {"scripts/install.js": spawning}, manifest)) is None
-    # Code that names no agent directory is not one either.
+    # Code that names no agent directory is not one either (it is inert install code, S5).
     plain = COPIER.replace(b'".claude", ', b"")
-    assert shape(change(files | {"scripts/install.js": plain}, manifest)) is None
+    assert shape(change(files | LIB | {"scripts/install.js": plain}, manifest)) == "S5"
 
 
 def test_s3_is_only_for_copies_into_the_project() -> None:
