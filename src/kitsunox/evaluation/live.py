@@ -48,7 +48,7 @@ from kitsunox.core.models import Persisted, Record
 from kitsunox.core.retention import HOLD_DAYS, HeldBlob, HoldReason
 from kitsunox.core.run import RunManifest
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR
-from kitsunox.evaluation.intervals import Rate, wilson
+from kitsunox.evaluation.intervals import Rate, percent, wilson
 from kitsunox.evaluation.labels import MalwareLabel
 from kitsunox.evaluation.ledger import UNFINISHED_AFTER, Ledger, LedgerRow, ledgers
 from kitsunox.evaluation.sample import read_samples, sample_bound
@@ -1012,12 +1012,6 @@ def _stats(values: Sequence[float]) -> Timing:
 # --- output --------------------------------------------------------------------------------
 
 
-def _pct(rate: Rate) -> str:
-    if rate.value is None or rate.low is None or rate.high is None:
-        return "n/a"
-    return f"{rate.value:.1%} [{rate.low:.1%}-{rate.high:.1%}]"
-
-
 MATRIX_TITLES: Final = {
     "behaviour": "Flag-worthy, behaviour truth (verdict wins; headline)",
     "behaviour/best": "Flag-worthy, best case (unverified as the pipeline decided)",
@@ -1030,6 +1024,13 @@ MATRIX_TITLES: Final = {
     "behaviour+takedowns": "Behaviour truth + takedowns as weak positives (sensitivity)",
     "behaviour/rescored": "Behaviour truth, flagged = current report after re-scores (recall)",
 }
+HEADLINE: Final = "behaviour"  # the headline matrix
+CONSERVATIVE: Final = "osv"  # the view no reviewer verdict can clear
+
+
+def matrix_title(key: str) -> str:
+    """A matrix's row title (`MATRIX_TITLES`; the D sensitivity rows by their D)."""
+    return MATRIX_TITLES.get(key, key.replace("behaviour/D", "Behaviour truth, D = "))
 
 
 def render_live_markdown(report: LiveReport) -> str:
@@ -1057,11 +1058,11 @@ def render_live_markdown(report: LiveReport) -> str:
             "|---|---|---|---|---|---|---|---|---|",
         ]
         for key, m in window.matrices.items():
-            title = MATRIX_TITLES.get(key, key.replace("behaviour/D", "Behaviour truth, D = "))
+            title = matrix_title(key)
             excluded = ", ".join(f"{k} {v:,}" for k, v in m.excluded.items()) or "-"
             out.append(
                 f"| {title} | {m.tp:,} | {m.fp:,} ({m.fp_unreviewed:,} unreviewed) | {m.fn:,} "
-                f"| {m.tn:,} | {_pct(m.recall)} | {_pct(m.precision)} | {_pct(m.fpr)} "
+                f"| {m.tn:,} | {percent(m.recall)} | {percent(m.precision)} | {percent(m.fpr)} "
                 f"| {excluded} |"
             )
         out += [
@@ -1071,14 +1072,14 @@ def render_live_markdown(report: LiveReport) -> str:
         ]
         for shape, m in window.by_shape.items():
             out.append(
-                f"| {shape} | {m.tp:,} | {m.fp:,} | {m.fn:,} | {m.tn:,} | {_pct(m.recall)} "
-                f"| {_pct(m.precision)} |"
+                f"| {shape} | {m.tp:,} | {m.fp:,} | {m.fn:,} | {m.tn:,} | {percent(m.recall)} "
+                f"| {percent(m.precision)} |"
             )
         out += [
             "",
-            f"Recall by unit: version {_pct(window.matrices['behaviour'].recall)}, "
-            f"OSV record {_pct(window.recall_by_record)}, "
-            f"publisher account {_pct(window.recall_by_account)}.",
+            f"Recall by unit: version {percent(window.matrices['behaviour'].recall)}, "
+            f"OSV record {percent(window.recall_by_record)}, "
+            f"publisher account {percent(window.recall_by_account)}.",
             "Labels later than D days after the release: "
             + ", ".join(f"{k} {v}" for k, v in window.late_labels.items())
             + f". Verdicts recorded after a confirmation was public: "

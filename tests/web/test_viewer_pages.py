@@ -6,22 +6,20 @@ every package string tries to break out of the page."""
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timedelta
-from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
 
-from conftest import REPORT_AS_OF, make_report, report_entry, run_manifest
+from conftest import REPORT_AS_OF, assert_inert, make_report, report_entry, run_manifest
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.run import DataDir
 from kitsunox.reporting.markdown import write_markdown
 from kitsunox.reporting.queue import build_queue, write_queue
 from kitsunox.reporting.report import Links, Report, ReportEntry, ScoreTerm, write_report
-from kitsunox.util.text import safe_url, strip_hidden
+from kitsunox.util.text import safe_url
 from kitsunox.web import library as library_module
-from kitsunox.web import pages
+from kitsunox.web import pages, results
 from kitsunox.web.html import block, clean, esc, link, page, plain, removed, when
 from kitsunox.web.library import Library, LoadError
 
@@ -154,57 +152,6 @@ def check_html(document: str) -> None:
 
 # --------------------------------------------------------------------------- inertness
 
-ALLOWED_TAGS = frozenset(
-    {
-        *("html", "head", "meta", "title", "link", "body", "header", "nav", "main", "footer"),
-        *("a", "p", "h1", "h2", "h3", "h4", "code", "strong", "span", "pre", "div"),
-        *("table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td", "ul", "ol", "li"),
-        *("section", "details", "summary"),
-    }
-)
-ALLOWED_ATTRS = frozenset(
-    {"lang", "charset", "name", "content", "rel", "href", "class", "aria-label", "role"}
-    | {"scope", "colspan"}
-)
-INTERNAL_HREF = re.compile(
-    r"/(?:runs(?:/[0-9]{8}T[0-9]{6}Z-[a-z0-9]+(?:/entries/[0-9]+)?)?"
-    r"|runs/page/[0-9]+|static/style\.css|verdicts/(?:malicious|unwanted|benign|unverified))?"
-)
-
-
-class _Tags(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.tags: list[tuple[str, list[tuple[str, str | None]]]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.tags.append((tag, attrs))
-
-
-def assert_inert(document: str) -> None:
-    """The document is only our own markup: known tags and attributes, no script, no style,
-    no event handlers, links only to the viewer or to safe https URLs, no hidden characters."""
-    assert document.startswith("<!DOCTYPE html>\n")
-    assert strip_hidden(document) == (document, 0)
-    parser = _Tags()
-    parser.feed(document)
-    parser.close()
-    for tag, attrs in parser.tags:
-        assert tag in ALLOWED_TAGS, tag
-        names = {name for name, _ in attrs}
-        assert names <= ALLOWED_ATTRS, (tag, names)
-        values = dict(attrs)
-        if tag == "a":
-            href = values["href"] or ""
-            if href.startswith("/"):
-                assert INTERNAL_HREF.fullmatch(href), href
-                assert "rel" not in values
-            else:
-                assert safe_url(href) == href, href
-                assert values["rel"] == "noopener noreferrer nofollow"
-        if tag == "link":
-            assert values == {"rel": "stylesheet", "href": "/static/style.css"}
-
 
 def html_of(page: pages.Page | None) -> str:
     assert page is not None
@@ -214,8 +161,12 @@ def html_of(page: pages.Page | None) -> str:
 
 def every_page(library: Library) -> list[str]:
     documents = [
+        html_of(results.dashboard_page(library)),
         html_of(pages.queue_page(library)),
         html_of(pages.runs_page(library)),
+        html_of(pages.verdicts_index(library)),
+        html_of(results.results_page(library)),
+        html_of(results.sample_page(library)),
     ]
     for run_id in library.run_ids():
         documents.append(html_of(pages.run_page(library, run_id)))

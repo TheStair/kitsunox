@@ -8,11 +8,13 @@ import hashlib
 import io
 import json
 import os
+import re
 import tarfile
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ from kitsunox.ecosystems.npm.registry import (
 from kitsunox.reporting.report import Links, Report, ReportEntry, ScoreTerm
 from kitsunox.util import disk
 from kitsunox.util.http import HttpFetcher, Snapshot, SnapshotEntry
+from kitsunox.util.text import safe_url, strip_hidden
 
 # Fuzz tests are deterministic by default (fixed seed derivation), matching the project's
 # reproducibility rule. `HYPOTHESIS_PROFILE=deep` runs many more examples for a validation pass.
@@ -394,3 +397,64 @@ def write_live_run(
                 )
     Snapshot(entries=entries_snap).save(run_dir / "static-snapshot.json")
     return run_dir
+
+
+# ----------------------------------------------------------------- viewer pages
+# Shared by tests/web: a page is only the viewer's own markup.
+
+ALLOWED_TAGS = frozenset(
+    {
+        *("html", "head", "meta", "title", "link", "body", "header", "nav", "main", "footer"),
+        *("a", "p", "h1", "h2", "h3", "h4", "code", "strong", "span", "pre", "div"),
+        *("table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td", "ul", "ol", "li"),
+        *("section", "details", "summary"),
+        # the results page's trend chart (inline SVG, coloured by the stylesheet)
+        *("svg", "g", "line", "polyline", "circle", "rect", "text"),
+    }
+)
+ALLOWED_ATTRS = frozenset(
+    {"lang", "charset", "name", "content", "rel", "href", "class", "aria-label", "role"}
+    | {"scope", "colspan"}
+    | {"viewbox", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "width", "height"}
+    | {"points", "text-anchor"}
+)
+INTERNAL_HREF = re.compile(
+    r"/(?:runs(?:/[0-9]{8}T[0-9]{6}Z-[a-z0-9]+(?:/entries/[0-9]+)?)?"
+    r"|runs/page/[0-9]+|static/style\.css|queue"
+    r"|verdicts(?:/(?:malicious|unwanted|benign|unverified))?"
+    r"|results(?:/live-[0-9]{8}T[0-9]{6}Z|/sample(?:/[0-9]{4}-[0-9]{2}-[0-9]{2})?)?)?"
+)
+
+
+class _Tags(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tags: list[tuple[str, list[tuple[str, str | None]]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.tags.append((tag, attrs))
+
+
+def assert_inert(document: str) -> None:
+    """The document is only our own markup: known tags and attributes, no script, no style,
+    no event handlers, links only to the viewer or to safe https URLs, no hidden characters."""
+    assert document.startswith("<!DOCTYPE html>\n")
+    assert strip_hidden(document) == (document, 0)
+    parser = _Tags()
+    parser.feed(document)
+    parser.close()
+    for tag, attrs in parser.tags:
+        assert tag in ALLOWED_TAGS, tag
+        names = {name for name, _ in attrs}
+        assert names <= ALLOWED_ATTRS, (tag, names)
+        values = dict(attrs)
+        if tag == "a":
+            href = values["href"] or ""
+            if href.startswith("/"):
+                assert INTERNAL_HREF.fullmatch(href), href
+                assert "rel" not in values
+            else:
+                assert safe_url(href) == href, href
+                assert values["rel"] == "noopener noreferrer nofollow"
+        if tag == "link":
+            assert values == {"rel": "stylesheet", "href": "/static/style.css"}

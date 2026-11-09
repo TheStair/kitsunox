@@ -62,8 +62,9 @@ from kitsunox.reporting.verdicts import (
     verdict_record,
 )
 from kitsunox.web.html import STYLESHEET
-from kitsunox.web.library import RUN_ID, Library
+from kitsunox.web.library import LIVE_ID, RUN_ID, SAMPLE_DAY, Library
 from kitsunox.web.pages import (
+    QUEUE,
     Page,
     entry_page,
     failure,
@@ -71,8 +72,10 @@ from kitsunox.web.pages import (
     queue_page,
     run_page,
     runs_page,
+    verdicts_index,
     verdicts_page,
 )
+from kitsunox.web.results import dashboard_page, results_page, sample_page
 
 SECURITY_HEADERS: Final = (
     (
@@ -99,7 +102,7 @@ MAX_ENTRIES: Final = 50  # versions one form may give a verdict (`pages.package_
 _ENTRY: Final = re.compile(r"([0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}):([1-9][0-9]{0,8})")
 FORM_TYPE: Final = "application/x-www-form-urlencoded"
 _BACK: Final = re.compile(
-    r"/(?:runs/[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}/entries/[1-9][0-9]{0,8}"
+    r"/(?:queue|runs/[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}/entries/[1-9][0-9]{0,8}"
     r"|verdicts/(?:malicious|unwanted|benign|unverified))?"
 )
 
@@ -172,7 +175,19 @@ def route(
 def _page(library: Library, parts: list[str], token: str | None = None) -> Page | None:
     match parts:
         case [""]:
+            return dashboard_page(library)
+        case ["queue"]:
             return queue_page(library, token)
+        case ["results"]:
+            return results_page(library)
+        case ["results", "sample"]:
+            return sample_page(library)
+        case ["results", "sample", day] if SAMPLE_DAY.fullmatch(day):
+            return sample_page(library, day)
+        case ["results", dataset] if LIVE_ID.fullmatch(dataset):
+            return results_page(library, dataset)
+        case ["verdicts"]:
+            return verdicts_index(library)
         case ["verdicts", kind]:
             return verdicts_page(library, kind, token)
         case ["runs"]:
@@ -277,9 +292,9 @@ def _post_verdict(library: Library, token: str, form: Form | None) -> Response:
     except OSError as exc:
         message = f"The verdict could not be written ({type(exc).__name__})."
         return _html(failure(500, "Not saved", message))
-    back = one("back") or "/"
+    back = one("back") or QUEUE
     if not _BACK.fullmatch(back):
-        back = "/"
+        back = QUEUE
     return Response(303, HTML, b"", (("Location", back),))
 
 

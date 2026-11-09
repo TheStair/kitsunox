@@ -142,7 +142,7 @@ def test_repeated_fields_and_foreign_back_links(library: Library) -> None:
     status, location = post(
         library, {"run": RUN, "rank": "1", "verdict": "benign", "back": "https://evil.example/"}
     )
-    assert (status, location) == (303, "/")
+    assert (status, location) == (303, "/queue")
 
 
 def test_a_read_only_viewer_has_no_forms_and_refuses_posts(library: Library) -> None:
@@ -179,7 +179,7 @@ def test_live_a_form_post_from_the_page_is_recorded(live: ViewerServer) -> None:
     form = {"Content-Type": "application/x-www-form-urlencoded", "Origin": f"http://{host}"}
     body = urlencode({"token": live.token, "run": RUN, "rank": "1", "verdict": "malicious"})
     response = send(live, body.encode(), {**form, "Sec-Fetch-Site": "same-origin"})
-    assert response.status == 303 and response.getheader("Location") == "/"
+    assert response.status == 303 and response.getheader("Location") == "/queue"
     foreign = send(live, body.encode(), {**form, "Origin": "http://evil.example"})
     assert foreign.status == 403
     cross = send(live, body.encode(), {**form, "Sec-Fetch-Site": "cross-site"})
@@ -269,7 +269,9 @@ def test_unwanted_and_unverified_verdicts_with_their_reason(library: Library) ->
     for value in ("malicious", "unwanted", "benign", *(f"unverified:{r}" for r in REASONS)):
         assert f'name="verdict" value="{value}"' in entry.html
     assert 'value="unverified"' not in entry.html and "<script" not in entry.html
-    assert 'href="/verdicts/unwanted"' in entry.html and 'href="/verdicts/unverified"' in entry.html
+    assert 'href="/verdicts"' in entry.html  # the header; the index links every category
+    index = pages.verdicts_index(library).html
+    assert 'href="/verdicts/unwanted"' in index and 'href="/verdicts/unverified"' in index
     back = f"/runs/{RUN}/entries/1"
     status, location = post(
         library, {"run": RUN, "rank": "1", "verdict": "unverified:remote", "back": back}

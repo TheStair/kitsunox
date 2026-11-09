@@ -1,4 +1,5 @@
-"""Access to a data directory's reports, review queue and reviewer verdicts. Everything is
+"""Access to a data directory's reports, review queue, reviewer verdicts and live evaluation
+(`eval/live`: the reports, the results log and the daily review samples). Everything is
 read-only except the verdict log, which `record_verdict` appends to (`reporting.verdicts`).
 
 Request paths never reach the filesystem: a run id from a URL is matched against `RUN_ID` and
@@ -9,8 +10,10 @@ never an exception or a traceback in the page.
 
 Parsed files are cached by (inode, size, mtime), so a page reloads only what `collect` has
 rewritten since (it replaces files atomically, which gives a new inode). The report cache is
-bounded by the total size of the cached files (`REPORT_CACHE_BYTES`), and a file over
-`MAX_FILE_BYTES` is not parsed at all.
+bounded by the total size of the cached files (`REPORT_CACHE_BYTES`), the live-evaluation
+caches by a count (`LIVE_CACHE_FILES`), and a file over `MAX_FILE_BYTES` is not parsed at all.
+Live evaluation's datasets (`eval/live/datasets/`, hundreds of thousands of rows) are never
+read: the reports already hold what the pages show.
 """
 
 from __future__ import annotations
@@ -19,12 +22,15 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Final
 
 from kitsunox.core.models import Persisted
+from kitsunox.evaluation.live import LiveReport, LogLine
+from kitsunox.evaluation.sample import SAMPLE_DIR, DailySample
 from kitsunox.reporting.queue import QUEUE_DIR, Queue
 from kitsunox.reporting.report import REPORT_DIR, Report
 from kitsunox.reporting.verdicts import (
@@ -37,6 +43,10 @@ from kitsunox.reporting.verdicts import (
 from kitsunox.util.schema import SchemaVersionError
 
 RUN_ID: Final = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-z0-9]{1,32}")
+LIVE_ID: Final = re.compile(r"live-[0-9]{8}T[0-9]{6}Z")  # a live report (its dataset's name)
+SAMPLE_DAY: Final = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+LIVE_DIR: Final = ("eval", "live")
+LIVE_CACHE_FILES: Final = 16  # parsed live reports and samples kept, each
 MAX_FILE_BYTES: Final = 256 * 2**20
 REPORT_CACHE_BYTES: Final = 128 * 2**20  # file sizes; the parsed models take several times more
 _MAX_MESSAGE: Final = 300
@@ -85,6 +95,14 @@ class RunSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveLog:
+    """The live results log (`eval/live/log.jsonl`): one line per build, oldest first."""
+
+    lines: tuple[LogLine, ...]
+    unreadable: int  # lines that didn't parse (damaged, or another build's format)
+
+
+@dataclass(frozen=True, slots=True)
 class Verdicts:
     log: tuple[VerdictRecord, ...]  # oldest first
     now: dict[tuple[str, str], VerdictRecord]  # (name, version) -> its verdict, if any
@@ -103,6 +121,9 @@ class Library:
         self._summaries: dict[Path, tuple[_Signature, RunSummary | LoadError]] = {}
         self._queue: tuple[_Signature, Queue | LoadError] | None = None
         self._verdicts: dict[str, tuple[_Signature, Verdicts]] = {}
+        self._live: OrderedDict[Path, tuple[_Signature, LiveReport | LoadError]] = OrderedDict()
+        self._samples: OrderedDict[Path, tuple[_Signature, DailySample | LoadError]] = OrderedDict()
+        self._log: tuple[_Signature, LiveLog | LoadError] | None = None
 
     @property
     def queue_path(self) -> Path:
@@ -183,6 +204,47 @@ class Library:
     def record_verdict(self, record: VerdictRecord) -> None:
         append_verdict(self.root, record)
 
+    # ------------------------------------------------------------------- live evaluation
+
+    @property
+    def live_dir(self) -> Path:
+        return self.root.joinpath(*LIVE_DIR)
+
+    def live_ids(self) -> tuple[str, ...]:
+        """Live reports (`eval/live/reports/live-<labels>.json`), newest first."""
+        return _listed(self.live_dir / "reports", LIVE_ID, ".json")
+
+    def live_report(self, dataset: str) -> LiveReport | LoadError | None:
+        """The live report of `dataset`; None if there is no such report."""
+        if dataset not in self.live_ids():
+            return None
+        path = self.live_dir / "reports" / f"{dataset}.json"
+        return _cached(self._lock, self._live, path, lambda: _load(LiveReport, path))
+
+    def sample_days(self) -> tuple[str, ...]:
+        """Days with a review sample (`eval/live/sample/<day>.json`), newest first."""
+        return _listed(self.live_dir / SAMPLE_DIR, SAMPLE_DAY, ".json")
+
+    def sample(self, day: str) -> DailySample | LoadError | None:
+        if day not in self.sample_days():
+            return None
+        path = self.live_dir / SAMPLE_DIR / f"{day}.json"
+        return _cached(self._lock, self._samples, path, lambda: _load(DailySample, path))
+
+    def live_log(self) -> LiveLog | LoadError | None:
+        """The results log; None if no build has written one."""
+        path = self.live_dir / "log.jsonl"
+        if not path.is_file():
+            return None
+        signature = _signature(path)
+        with self._lock:
+            if self._log is not None and self._log[0] == signature:
+                return self._log[1]
+        loaded = _load_log(path)
+        with self._lock:
+            self._log = (signature, loaded)
+        return loaded
+
     def _report_at(self, path: Path) -> Report | LoadError:
         signature = _signature(path)
         with self._lock:
@@ -209,6 +271,68 @@ class Library:
 
     def _report_path(self, listed: str) -> Path:
         return self.root / "runs" / listed / REPORT_DIR / "report.json"
+
+
+def _listed(directory: Path, pattern: re.Pattern[str], suffix: str) -> tuple[str, ...]:
+    """Stems of the files in `directory` named `<pattern><suffix>`, newest (highest) first.
+    Only names actually listed are ever used to build a path."""
+    try:
+        names = [entry.name for entry in directory.iterdir()]
+    except OSError:
+        return ()
+    stems = (n.removesuffix(suffix) for n in names if n.endswith(suffix))
+    return tuple(
+        sorted(
+            (s for s in stems if pattern.fullmatch(s) and (directory / f"{s}{suffix}").is_file()),
+            reverse=True,
+        )
+    )
+
+
+def _cached[T](
+    lock: threading.Lock,
+    cache: OrderedDict[Path, tuple[_Signature, T]],
+    path: Path,
+    load: Callable[[], T],
+) -> T:
+    """`load()` unless `cache` has `path` at its current signature; at most
+    `LIVE_CACHE_FILES` entries, least recently used dropped first."""
+    signature = _signature(path)
+    with lock:
+        cached = cache.get(path)
+        if cached is not None and cached[0] == signature:
+            cache.move_to_end(path)
+            return cached[1]
+    loaded = load()
+    with lock:
+        cache[path] = (signature, loaded)
+        cache.move_to_end(path)
+        while len(cache) > LIVE_CACHE_FILES:
+            cache.popitem(last=False)
+    return loaded
+
+
+def _load_log(path: Path) -> LiveLog | LoadError:
+    """Every line that parses as a `LogLine`; the others are counted, never quoted."""
+    shown = f"{path.parent.name}/{path.name}"
+    try:
+        with path.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > MAX_FILE_BYTES:
+                return LoadError(shown, f"too large to show ({size / 2**20:,.0f} MB).")
+            data = handle.read(MAX_FILE_BYTES)
+    except OSError as exc:
+        return LoadError(shown, f"could not be read ({type(exc).__name__}).")
+    lines: list[LogLine] = []
+    unreadable = 0
+    for raw in data.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            lines.append(LogLine.model_validate_json(raw))
+        except ValueError, RecursionError:
+            unreadable += 1
+    return LiveLog(tuple(lines), unreadable)
 
 
 def _signature(path: Path) -> _Signature:

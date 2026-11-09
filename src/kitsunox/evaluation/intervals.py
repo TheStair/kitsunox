@@ -32,3 +32,11 @@ def wilson(k: int, n: int, z: float = Z95) -> Rate:
 def zero_bound(n: int, alpha: float = 0.05) -> float | None:
     """Exact one-sided upper bound on a rate when none of `n` draws was positive (≈ 3/n)."""
     return 1 - alpha ** (1 / n) if n else None
+
+
+def percent(rate: Rate) -> str:
+    """`76.4% [69.6%-82.1%]`, or `n/a` with no denominator: how the live report's Markdown and
+    the viewer show a rate."""
+    if rate.value is None or rate.low is None or rate.high is None:
+        return "n/a"
+    return f"{rate.value:.1%} [{rate.low:.1%}-{rate.high:.1%}]"

@@ -3,15 +3,19 @@
 > **Status:** implemented 2026-10-29 (`src/kitsunox/web/`, roadmap Phase 11). It reads the
 > same `report.json` and `queue.json` that the Markdown views come from, and since 2026-10-30
 > records reviewers' verdicts ([decision 0015](decisions/0015-reviewer-verdicts.md)). No new
-> dependencies: the server is the standard library's `http.server`.
+> dependencies: the server is the standard library's `http.server`. Since 2026-11-09 it also
+> shows live evaluation's results (`/results`, `/results/sample`) and opens on a dashboard;
+> the review queue moved from `/` to `/queue`.
 
 ## Purpose
 
 The Markdown queue and pages (see [stages/report.md](stages/report.md)) work in an editor, but
 moving between the queue, a run and one version's evidence means opening files by hand. The
 viewer serves the same data as linked pages in a browser on the collection machine, and lets
-the reviewer record what each version is. It never fetches and never runs package code; the
-only thing it writes is the verdict log.
+the reviewer record what each version is. It also shows the live evaluation's confusion
+matrices, misses, trend and review sample ([evaluation.md](evaluation.md#live-evaluation-phase-9)),
+read from the same files `kitsunox live eval` writes. It never fetches and never runs package
+code; the only thing it writes is the verdict log.
 
 ## Reviewing
 
@@ -124,17 +128,24 @@ can read every report, so prefer the SSH tunnel.
 
 | Path | What |
 |---|---|
-| `/` | The review queue (`data/queue/queue.json`, without versions that have a verdict now): the verdict tally, then packages ranked by score, then severity, then name. Each row has the score, severity, every reported version (newest first, each linking to its entry in the run that reported it most strongly, with verdict buttons), the rules with the number of versions they fired on, watched, and last publish time. Unreadable reports the queue left out are listed with links to their runs. |
+| `/` | The dashboard: the newest live report's headline (flag-worthy recall and precision of window `all`, with their Wilson intervals and k of n) with the strict and OSV-truth matrices beside it, the number of misses, the verdict tally, the queue's size, the newest sample day's progress, and the newest run (as of, versions, reported). How old the labels and the queue are is measured against the newest run's `as_of`, not the clock. Until 2026-11-09 `/` was the queue; old bookmarks land here, one click from it. |
+| `/queue` | The review queue (`data/queue/queue.json`, without versions that have a verdict now): the verdict tally, then packages ranked by score, then severity, then name. Each row has the score, severity, every reported version (newest first, each linking to its entry in the run that reported it most strongly, with verdict buttons), the rules with the number of versions they fired on, watched, and last publish time. Unreadable reports the queue left out are listed with links to their runs. |
+| `/results` | The newest live report (`data/eval/live/reports/live-*.json`); see [Results](#results). |
+| `/results/<dataset>` | Any live report on disk, by its dataset id (`live-YYYYMMDDTHHMMSSZ`, the label set's id). |
+| `/results/sample` | The newest day's label-blind review sample (`data/eval/live/sample/<day>.json`); see [Results](#results). |
+| `/results/sample/<day>` | One day's sample (`YYYY-MM-DD`). |
+| `/verdicts` | The verdict tally and a link to each category. |
 | `/verdicts/<kind>` | Every version whose verdict is `malicious`, `unwanted`, `benign` or `unverified` now (see [Reviewing](#reviewing)). |
-| `POST /verdict` | Records a verdict from a form, then redirects back (303). See the security table. |
+| `POST /verdict` | Records a verdict from a form, then redirects back (303): to the page that sent it, `/queue` for the queue's forms and for a missing or foreign `back`. See the security table. |
 | `/runs` | Runs with a `report/report.json`, newest first, 50 per page (`/runs/page/N`): release window, versions analysed, how many to review, counts by severity, and a note when Stage 4 couldn't compare versions with their repository because of the network. |
 | `/runs/<run_id>` | One run's report: summary, the network warning, the versions to review (rank, package, score, severity, top three rules, watched), and Stage 4's settings (`correlate.json`) in a collapsed block. |
 | `/runs/<run_id>/entries/<rank>` | One version: score and Stage 4's reason; what changed (previous version, publish time and publisher, popularity); where to look (npm, the file browser, npmdiff, the repository and the repository at the compared commit); how the score adds up (each rule once, with its weight and number of findings, and the total); and every finding grouped by stage and rule, with its explanation and evidence (file and lines, the snippet, before/after side by side). Links go to the previous and next entries. |
 | `/static/style.css` | The one stylesheet. |
 
-Anything else is a 404.
+Anything else is a 404. The header links Dashboard, Queue, Results, Sample, Runs and Verdicts.
 
-- **No queue yet** or **no run with a report** is a short message, not an error.
+- **No queue yet**, **no run with a report**, **no live evaluation** ("run `kitsunox live
+  eval`") and **no review sample** are short messages, not errors.
 - **An unreadable file** (damaged, not JSON, written with another schema version, or with
   fields this build doesn't know) is an error box naming the file and the kind of problem
   (for a schema mismatch, which version it has and which this build reads). Pydantic's own
@@ -146,10 +157,14 @@ Anything else is a 404.
 - **Long evidence** is cut for display: 50 evidence items per rule, 20,000 characters per
   snippet, with a note that the rest is in `report.json`.
 
-Rendering is a pure function of the files: no clock and fixed order (the reports' and the
+Rendering is a pure function of the files: no clock (the dashboard's "how old" is relative to
+the newest run, the rule-freeze status to the live report's own `as_of`) and fixed order (the reports' and the
 queue's ranks, runs by id), so the same files give the same bytes
-(`test_rendering_is_byte_stable`). Parsed files are cached by inode, size and modification time
-and reloaded when `collect` replaces them. The report cache is bounded by the total size of the
+(`test_rendering_is_byte_stable`, and `test_rendering_is_byte_stable_and_writes_nothing` for
+the dashboard and results). Parsed files are cached by inode, size and modification time
+and reloaded when `collect` replaces them; at most 16 live reports and 16 samples are kept
+parsed. The live datasets (`eval/live/datasets/*.jsonl.zst`, hundreds of thousands of rows)
+are never read: the reports hold every number the pages show. The report cache is bounded by the total size of the
 cached `report.json` files (128 MB; the parsed models take several times that), dropping the
 least recently used; the newest is kept even if it alone is larger.
 
@@ -159,6 +174,64 @@ least recently used; the newest is kept even if it alone is larger.
   (RecursionError)". Both are ordinary `LoadError`s, cached like the rest, so the run list
   stays a 200 page with one error row (`test_deeply_nested_json_is_an_unreadable_row`,
   `test_files_over_the_cap_are_not_read`).
+
+## Results
+
+`/results` mirrors the Markdown report `kitsunox live eval` writes beside it
+(`live-<id>.md`): the same row titles (`live.matrix_title`) and the same number format
+(`intervals.percent`: value and Wilson 95% interval), so a figure on a slide can be checked
+against either. Definitions are in [evaluation.md](evaluation.md#live-evaluation-phase-9) and
+[decision 0019](decisions/0019-live-evaluation.md).
+
+- **Facts:** dataset and its SHA-256 prefix, labels as of (and whether that is before, during
+  or after the rule freeze, window B, 2026-11-12 to 2026-11-19), label set, headline D,
+  versions (window `all`, and `catch-up` counted apart), flag-worthy versions and misses,
+  operational loss (runs that never finished, with their changes) and pending runs. A
+  collapsed "How to read the matrices" explains the cells.
+- **Per window**, `all` first, then the report's own (A, B, catch-up); a window with no
+  versions says so. The headline matrix as a 2x2 grid (reported / not reported against
+  flag-worthy / benign; FP with how many are unreviewed), then every matrix:
+
+  | Row | What it is |
+  |---|---|
+  | Flag-worthy, behaviour truth (**headline**) | A verdict wins (malicious and unwanted positive, benign negative, unverified left out), then an OSV record. |
+  | Best / worst case | The headline with the unverified versions put back as the pipeline decided / the opposite: the true value lies between. |
+  | Strict (and its best / worst) | Malware only: unwanted is a negative. |
+  | OSV truth (**conservative**) | An OSV record wins over any verdict, so no reviewer can clear a labeled version. |
+  | OSV only | Verdicts ignored. |
+  | + takedowns | npm takedowns without an OSV record count as positives (sensitivity). |
+  | Current report after re-scores | Flagged = the report after re-scores (recall only). |
+  | D = 3, D = 14 | The headline with another benign delay. |
+
+  Each with TP, FP (unreviewed), FN, TN, recall, precision and FP rate (each with its Wilson
+  interval and k/n) and the excluded versions by reason. Then the headline by shape (A update,
+  B new package), recall by version, OSV record and publisher account, late labels, verdicts
+  per category and unverified reasons, the funnel for malicious and benign versions, why the
+  misses were missed, every rule that fired on a reported version with its TP, FP and
+  precision (most FP first), and the rule sets.
+- **Label timing** and the **review sample's upper bounds**, as in the Markdown.
+- **Misses:** every flag-worthy version that wasn't reported (name, version, run, cause,
+  shape, OSV ids, verdict at the labels' time, tarball, score). Package text is escaped like
+  every other page. A miss has no entry page of its own (it wasn't reported); it links to the
+  entry its current verdict was recorded on, if any, and to its run while the run's report is
+  on disk.
+- **Trend:** every build in `log.jsonl`, newest first (built, dataset, versions, flag-worthy
+  recall with k/n and precision, strict reported/total, unverified, newly labeled and how many
+  of those were reported, sample versions unreviewed), and from two builds on an inline SVG
+  line chart of recall (solid, circles) and precision (dashed, squares). The chart has no
+  script and no `style=`: the stylesheet colours it by class, each point carries a native
+  `<title>` tooltip, and the table holds the numbers. Lines of the log that don't parse are
+  counted in a warning.
+- **All reports** on disk, each linked.
+
+`/results/sample` shows one day's sample: progress (how many sampled versions have a verdict,
+how many of those saw the behaviour, how many are unverified, how many are not reviewed), the
+strata (population, sampled, reviewed, flag-worthy, unverified, not reviewed), each sampled
+version with its stratum, run, score, traits (new, hook, watched), rules, tarball and its
+verdict now from the verdict log (or "not reviewed"), and every sampled day with its progress.
+The page is read-only: sampled versions are in no report, so verdicts on them are recorded
+with `kitsunox live verdict` (rank 0), as the page says. Its verdicts are the log's current
+ones; a live report counts only those recorded by its labels' `as_of`, so the two can differ.
 
 ## Security properties
 
@@ -173,7 +246,7 @@ before/after values, URLs, even keys in `by_severity`. The viewer treats it all 
 | Only safe links | `util.text.safe_url`, also used by the Markdown reports: an external link is emitted only for an ASCII `https://` URL with a plain host name (no user info, so `https://www.npmjs.com@evil.example/` is not a link), an optional port, and no spaces, controls, quotes, angle brackets, backticks or backslashes; with `rel="noopener noreferrer nofollow"`. `javascript:`, `data:`, `http:`, protocol-relative URLs and non-ASCII (homoglyph) host names are shown as text, marked "(not linked)". | `test_unsafe_urls_are_never_links`, `test_plain_https_urls_are_links` |
 | No script at all, no inline style | The pages contain no JavaScript. Every response carries `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, so even an escaping bug could not run script or load images, and a form could only post to the viewer itself. | `test_live_pages_carry_the_security_headers` |
 | Other headers | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (and a `<meta name="referrer">`, so following a link to npm or GitHub doesn't leak the local URL), `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store`. The `Server` header doesn't name the Python version. | same |
-| No path traversal | Request paths are never percent-decoded or joined onto the data directory. The path is split on `/` and matched against fixed names and regexes (`RUN_ID` is `YYYYMMDDTHHMMSSZ-<ecosystem>`; ranks and page numbers are positive integers). A run id is then looked up among the directories actually listed in `runs/`, and only that listed name is used to build a path. `..`, `%2e%2e`, `%2f`, `%5c`, NUL, `//`, absolute-form targets and paths to real files (`manifest.json`, `report.json`) all get 404 or 400. | `test_traversal_and_unknown_ids_are_404`, `test_non_path_targets_are_400` |
+| No path traversal | Request paths are never percent-decoded or joined onto the data directory. The path is split on `/` and matched against fixed names and regexes (`RUN_ID` is `YYYYMMDDTHHMMSSZ-<ecosystem>`; `LIVE_ID` is `live-YYYYMMDDTHHMMSSZ`; a sample day is `YYYY-MM-DD`; ranks and page numbers are positive integers). A run id is then looked up among the directories actually listed in `runs/` (a live report or sample day among the files listed in `eval/live/reports/` and `eval/live/sample/`), and only that listed name is used to build a path. `..`, `%2e%2e`, `%2f`, `%5c`, NUL, `//`, absolute-form targets and paths to real files (`manifest.json`, `report.json`) all get 404 or 400. | `test_traversal_and_unknown_ids_are_404`, `test_non_path_targets_are_400`, `test_unknown_or_malformed_ids_are_404` |
 | DNS-rebinding defence | A hostile page that rebinds its own name to 127.0.0.1 still sends that name in `Host`. Requests must carry exactly one `Host` header naming `localhost`, `127.0.0.1`, `[::1]` or the bound address (any port); anything else gets 400. | `test_host_header_check`, `test_live_foreign_host_headers_are_refused`, `test_live_missing_or_repeated_host_is_refused` |
 | Loopback by default | See [Listening on another address](#listening-on-another-address). | `test_other_hosts_are_refused_by_default`, `test_every_interface_is_refused_even_when_allowed`, `test_names_that_bind_every_interface_are_refused`, `test_a_loopback_name_bound_elsewhere_is_refused` |
 | One write, from its own pages only | GET and HEAD, plus `POST /verdict` (others get 405). The POST needs the token the server made at start with `secrets` (in every form it serves; a page on another site can't read it), an `Origin` naming the viewer when the browser sends one and `Sec-Fetch-Site: same-origin` when sent (403 otherwise), an urlencoded body of at most 16 KiB (413) and each field once. The package and version are taken from the run's report on disk by run id and rank, never from the form; the redirect target must be one of the viewer's own pages. The record is one `O_APPEND` write under `flock`; nothing else is written, and the viewer takes no `DataDir` lock, so it is safe beside a running `collect`. A server on a non-loopback address (`--allow-remote`: no login) or started `--read-only` has no token: no forms, every POST refused. | `test_bad_posts_record_nothing`, `test_live_a_form_post_from_the_page_is_recorded`, `test_a_read_only_viewer_has_no_forms_and_refuses_posts`, `test_rendering_never_writes_to_the_data_dir`, `test_live_writes_are_refused` |
@@ -204,3 +277,6 @@ before/after values, URLs, even keys in `by_severity`. The viewer treats it all 
 - **The 30-second deadline is per connection,** so a page that takes longer than that to
   render (a report near the 256 MB cap) is cut off. Reports are far smaller in practice.
 - **Report text is truncated for display only.** `report.json` keeps everything.
+- **Results are as built, not live.** `/results` shows what the last `kitsunox live eval` (or
+  `collect`'s daily build) wrote; a verdict recorded since moves no number until the next
+  build. The sample page and the dashboard's tally do read the verdict log as it is now.

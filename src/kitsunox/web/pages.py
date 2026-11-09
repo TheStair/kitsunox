@@ -43,6 +43,7 @@ from kitsunox.web.html import (
 )
 from kitsunox.web.library import RUN_ID, Library, LoadError, RunSummary, Verdicts
 
+QUEUE: Final = "/queue"  # the review queue's page (`/` is the dashboard since 2026-11-09)
 RUNS_PER_PAGE: Final = 50
 MAX_EVIDENCE_PER_GROUP: Final = 50
 TOP_RULES: Final = 3
@@ -69,13 +70,13 @@ def entry_href(run_id: str, rank: int) -> str | None:
 
 def not_found(what: str = "This page does not exist.") -> Page:
     body = f"<h1>Not found</h1>\n{error_box(what)}"
-    return Page(404, page("Not found", body, [("/", "Review queue")]))
+    return Page(404, page("Not found", body, [("/", "Dashboard")]))
 
 
 def failure(status: int, title: str, message: str) -> Page:
     """An error page; `title` and `message` are plain text."""
     body = f"<h1>{esc(title)}</h1>\n{error_box(esc(message))}"
-    return Page(status, page(title, body, [("/", "Review queue")]))
+    return Page(status, page(title, body, [("/", "Dashboard")]))
 
 
 # ----------------------------------------------------------------------------- queue
@@ -138,7 +139,7 @@ def _tag_boxes() -> str:
     )
 
 
-def _tags(record: VerdictRecord) -> str:
+def verdict_tags(record: VerdictRecord) -> str:
     """An unverified verdict's reason (a legacy one has none), then its tags."""
     reason = (
         [REASON_LABELS[record.reason] if record.reason else NO_REASON]
@@ -152,7 +153,7 @@ def _tags(record: VerdictRecord) -> str:
 def package_form(token: str, entry: QueueEntry) -> str:
     """One verdict on every listed version of a queue entry's package (each `entry` field is
     `run:rank`; the server checks they are all this package)."""
-    fields = [("token", token), ("back", "/")] + [
+    fields = [("token", token), ("back", QUEUE)] + [
         ("entry", f"{v.run_id}:{v.rank}") for v in entry.versions[:MAX_PACKAGE_VERSIONS]
     ]
     hidden = "".join(
@@ -181,10 +182,16 @@ def reopen_form(token: str, record: VerdictRecord, back: str) -> str:
     )
 
 
-def _tally(verdicts: Verdicts) -> str:
-    counts = {kind: 0 for kind in KINDS}
+def verdict_counts(verdicts: Verdicts) -> dict[str, int]:
+    """Versions per verdict now, in `KINDS` order."""
+    counts: dict[str, int] = dict.fromkeys(KINDS, 0)
     for record in verdicts.now.values():
         counts[record.verdict] = counts.get(record.verdict, 0) + 1
+    return counts
+
+
+def tally(verdicts: Verdicts) -> str:
+    counts = verdict_counts(verdicts)
     items = ", ".join(
         f"{internal(f'/verdicts/{kind}', VERDICT_LABELS[kind])}: {counts[kind]}" for kind in KINDS
     )
@@ -201,7 +208,7 @@ def _tally(verdicts: Verdicts) -> str:
 
 def queue_page(library: Library, token: str | None = None) -> Page:
     queue = library.queue()
-    crumbs: Crumbs = [(None, "Review queue")]
+    crumbs: Crumbs = [("/", "Dashboard"), (None, "Review queue")]
     if queue is None:
         body = (
             "<h1>Review queue</h1>\n"
@@ -211,13 +218,13 @@ def queue_page(library: Library, token: str | None = None) -> Page:
         )
         return Page(200, page("Review queue", body, crumbs))
     if isinstance(queue, LoadError):
-        return Page(200, page("Review queue", _load_error("Review queue", queue), crumbs))
+        return Page(200, page("Review queue", load_error("Review queue", queue), crumbs))
     verdicts = library.verdicts(queue.ecosystem)
-    body = _queue_body(_unreviewed(queue, verdicts), verdicts, token, _confirmed_section(queue))
+    body = _queue_body(unreviewed(queue, verdicts), verdicts, token, _confirmed_section(queue))
     return Page(200, page(f"Review queue ({queue.ecosystem})", body, crumbs))
 
 
-def _unreviewed(queue: Queue, verdicts: Verdicts) -> Queue:
+def unreviewed(queue: Queue, verdicts: Verdicts) -> Queue:
     """The queue without versions that have a verdict now (recorded since `collect` built
     it); a package with none left is dropped. Ranks stay the queue's."""
     entries = []
@@ -285,7 +292,7 @@ def _confirmed_section(queue: Queue) -> str:
 def _queue_body(queue: Queue, verdicts: Verdicts, token: str | None, confirmed: str = "") -> str:
     parts = [
         f"<h1>Review queue ({esc(queue.ecosystem)})</h1>",
-        _tally(verdicts),
+        tally(verdicts),
         *([confirmed] if confirmed else []),
         f"<p>Reports from {when(queue.since)} to {when(queue.as_of)} ({len(queue.runs)} runs): "
         f"<strong>{queue.packages} packages to review</strong> ({queue.versions} versions), "
@@ -295,7 +302,7 @@ def _queue_body(queue: Queue, verdicts: Verdicts, token: str | None, confirmed: 
     if queue.by_severity:
         parts.append(f"<p>Packages by highest severity: {_severity_counts(queue.by_severity)}.</p>")
     if queue.skipped:
-        runs = ", ".join(_run_link(r) for r in queue.skipped)
+        runs = ", ".join(run_link(r) for r in queue.skipped)
         parts.append(warning_box(f"Unreadable reports, left out of the queue: {runs}."))
     if not queue.entries:
         parts.append("<p>Nothing to review.</p>")
@@ -318,7 +325,7 @@ def _queue_row(entry: QueueEntry, token: str | None = None) -> str:
         label = esc(v.version)
         href = entry_href(v.run_id, v.rank)
         shown = internal(href, label) if href else label
-        form = verdict_form(token, v.run_id, v.rank, "/", note=False) if token and href else ""
+        form = verdict_form(token, v.run_id, v.rank, QUEUE, note=False) if token and href else ""
         flag = _confirmation(v.confirmed) + (
             f' <span class="note">like {esc(v.like)}, which you cleared</span>' if v.like else ""
         )
@@ -344,7 +351,7 @@ def runs_page(library: Library, number: int = 1) -> Page | None:
     pages = max(1, -(-len(run_ids) // RUNS_PER_PAGE))
     if not 1 <= number <= pages:
         return None
-    crumbs: Crumbs = [("/", "Review queue"), (None, "Runs")]
+    crumbs: Crumbs = [("/", "Dashboard"), (None, "Runs")]
     if not run_ids:
         body = (
             "<h1>Runs</h1>\n<p>No run has a report yet. <code>kitsunox collect</code> writes "
@@ -377,7 +384,7 @@ def runs_page(library: Library, number: int = 1) -> Page | None:
 
 
 def _run_row(run_id: str, summary: RunSummary | LoadError) -> str:
-    run = _run_link(run_id)
+    run = run_link(run_id)
     if isinstance(summary, LoadError):
         return (
             f'<tr><td>{run}</td><td colspan="5" class="bad">report.json '
@@ -410,9 +417,9 @@ def run_page(library: Library, run_id: str) -> Page | None:
     report = library.report(run_id)
     if report is None:
         return None
-    crumbs: Crumbs = [("/", "Review queue"), ("/runs", "Runs"), (None, esc(run_id))]
+    crumbs: Crumbs = [("/", "Dashboard"), ("/runs", "Runs"), (None, esc(run_id))]
     if isinstance(report, LoadError):
-        return Page(200, page(f"Run {run_id}", _load_error(f"Run {run_id}", report), crumbs))
+        return Page(200, page(f"Run {run_id}", load_error(f"Run {run_id}", report), crumbs))
     return Page(200, page(f"Run {report.run_id}", _report_body(run_id, report), crumbs))
 
 
@@ -470,10 +477,10 @@ def entry_page(library: Library, run_id: str, rank: int, token: str | None = Non
     if report is None:
         return None
     run_crumb = (f"/runs/{run_id}", esc(run_id))
-    crumbs: Crumbs = [("/", "Review queue"), ("/runs", "Runs"), run_crumb]
+    crumbs: Crumbs = [(QUEUE, "Review queue"), ("/runs", "Runs"), run_crumb]
     if isinstance(report, LoadError):
         title = f"Run {run_id}, entry {rank}"
-        return Page(200, page(title, _load_error(title, report), [*crumbs, (None, f"#{rank}")]))
+        return Page(200, page(title, load_error(title, report), [*crumbs, (None, f"#{rank}")]))
     ranked = sorted(report.entries, key=lambda e: e.rank)
     index = next((i for i, e in enumerate(ranked) if e.rank == rank), None)
     if index is None:
@@ -508,7 +515,7 @@ def _review(
     if now is not None:
         parts.append(
             f'<p class="verdict-now v-{now.verdict}"><strong>{VERDICT_LABELS[now.verdict]}</strong>'
-            f"{_tags(now)} ({esc(now.by)}, {when(now.at)}). Not in the review queue.</p>"
+            f"{verdict_tags(now)} ({esc(now.by)}, {when(now.at)}). Not in the review queue.</p>"
         )
     else:
         parts.append("<p>No verdict yet: this version is in the review queue.</p>")
@@ -521,7 +528,7 @@ def _review(
     history = verdicts.history(entry.name, entry.version)
     if history:
         items = "".join(
-            f"<li>{when(r.at)}: {VERDICT_LABELS[r.verdict]}{_tags(r)} ({esc(r.by)})"
+            f"<li>{when(r.at)}: {VERDICT_LABELS[r.verdict]}{verdict_tags(r)} ({esc(r.by)})"
             + (f"<br>{esc(r.note)}" if r.note else "")
             + "</li>"
             for r in reversed(history)
@@ -544,8 +551,8 @@ def verdicts_page(library: Library, kind: str, token: str | None = None) -> Page
         reverse=True,
     )
     label = VERDICT_LABELS[kind]
-    crumbs: Crumbs = [("/", "Review queue"), (None, label)]
-    parts = [f"<h1>{label} ({len(records)})</h1>", _tally(verdicts)]
+    crumbs: Crumbs = [("/", "Dashboard"), ("/verdicts", "Verdicts"), (None, label)]
+    parts = [f"<h1>{label} ({len(records)})</h1>", tally(verdicts)]
     if not records:
         parts.append("<p>None yet.</p>")
         return Page(200, page(label, "\n".join(parts), crumbs))
@@ -562,6 +569,22 @@ def verdicts_page(library: Library, kind: str, token: str | None = None) -> Page
         f"</tr></thead>\n<tbody>\n{rows}\n</tbody>\n</table>"
     )
     return Page(200, page(label, "\n".join(parts), crumbs))
+
+
+def verdicts_index(library: Library) -> Page:
+    """`/verdicts`: the tally, and a link to each category's page."""
+    verdicts = library.verdicts()
+    counts = verdict_counts(verdicts)
+    items = "".join(
+        f"<li>{internal(f'/verdicts/{kind}', VERDICT_LABELS[kind])}: {counts[kind]:,}</li>"
+        for kind in KINDS
+    )
+    body = (
+        f"<h1>Verdicts</h1>\n{tally(verdicts)}\n<ul>{items}</ul>\n"
+        f'<p class="note">{len(verdicts.log):,} records in the verdict log; the last one for a '
+        "version is its verdict.</p>"
+    )
+    return Page(200, page("Verdicts", body, [("/", "Dashboard"), (None, "Verdicts")]))
 
 
 def _verdict_row(
@@ -587,7 +610,7 @@ def _verdict_row(
         f'<td><ul class="flat">{rules}</ul></td>'
         f"<td>{when(record.published_at)} by {esc(record.publisher or 'unknown')}</td>"
         f"<td>{when(record.at)} ({esc(record.by)})</td>"
-        f"<td>{esc(record.note)}{_tags(record)}{_confirmation(confirmed)}</td>"
+        f"<td>{esc(record.note)}{verdict_tags(record)}{_confirmation(confirmed)}</td>"
         f"<td>{reopen}</td></tr>"
     )
 
@@ -706,13 +729,13 @@ def _evidence(evidence: Evidence) -> str:
 # ----------------------------------------------------------------------------- shared
 
 
-def _load_error(title: str, error: LoadError) -> str:
+def load_error(title: str, error: LoadError) -> str:
     return f"<h1>{esc(title)}</h1>\n" + error_box(
         f"<code>{esc(error.path)}</code> {esc(error.message)}"
     )
 
 
-def _run_link(run_id: str) -> str:
+def run_link(run_id: str) -> str:
     href = run_href(run_id)
     return internal(href, esc(run_id)) if href else esc(run_id)
 

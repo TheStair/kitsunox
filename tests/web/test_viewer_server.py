@@ -61,6 +61,10 @@ def library(tmp_path: Path) -> Library:
     "target",
     [
         "/",
+        "/queue",
+        "/results",
+        "/results/sample",
+        "/verdicts",
         "/runs",
         "/runs/",
         f"/runs/{RUN}",

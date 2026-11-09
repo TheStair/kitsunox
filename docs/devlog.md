@@ -2,6 +2,64 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Viewer shows live evaluation results; dashboard at `/`, queue at `/queue`
+
+**Stage(s):** local web viewer (`web/`), live evaluation output (`evaluation/live.py`)
+**Context:** The owner opened `kitsunox view` and saw no current results: the viewer only
+knew the review queue, runs and verdicts, while the confusion matrices the presentation is
+built on (TP/FP/FN/TN, decision 0019) lived in `data/eval/live/reports/*.md`. The viewer now
+reads the live reports, the results log and the daily review samples.
+
+### Decisions
+- **New pages:** `/results` (newest live report) and `/results/<dataset>`, `/results/sample`
+  and `/results/sample/<day>`, a `/verdicts` index, and a dashboard at `/` (headline recall
+  and precision with intervals, strict and OSV truth beside it, misses, tally, queue size,
+  sample progress, newest run). See [viewer.md](viewer.md#results).
+- **The queue moved to `/queue`; `/` is the dashboard.** Alternatives: keep the queue at `/`
+  and add the dashboard elsewhere (the owner would still land on a page without results), or
+  redirect `/` to `/queue` (old bookmarks keep working either way). The dashboard won because
+  the results are what the owner asked to see first. Every verdict form on the queue now sends
+  `back=/queue`, a missing or foreign `back` returns to `/queue`, and `/` stays an accepted
+  `back` so forms in tabs opened before the change still work.
+- **One formatter for both outputs.** `live._pct` became `intervals.percent` and the row
+  titles `live.matrix_title`; the Markdown and the web page call the same two functions.
+  Checked the Markdown is unchanged: re-rendering both real reports
+  (`live-20261108T151126Z`, `live-20261109T113623Z`) gives their `.md` files byte for byte.
+- **No clock.** "How old" on the dashboard is relative to the newest run's `as_of`; the
+  rule-freeze status (before / during / after window B) is taken from the report's own
+  `as_of` and window B's bounds in the report (falling back to `DEFAULT_WINDOWS`).
+- **The datasets are never read**: the reports (~60 KB each) hold every number. Live reports
+  and samples are cached by file signature like the run reports, at most 16 of each.
+- **Trend chart as inline SVG without script or `style=`** (the CSP forbids inline style):
+  coloured by classes in the stylesheet, recall solid with circles, precision dashed with
+  squares (not colour alone), a native `<title>` tooltip per point, and the table beside it.
+- **Misses link where they can.** A miss wasn't reported, so it has no entry page of its own;
+  it links to the entry its current verdict was recorded on (if any) and to its run while the
+  run's report is on disk.
+
+### Challenges
+- **The page-inertness checker lived in one test module.** The new results tests needed it,
+  so `assert_inert` and its allowlists moved to `tests/conftest.py`, extended with the SVG
+  elements and attributes of the chart and the new internal links (`/queue`, `/results...`,
+  `/verdicts`).
+  - **Resolution:** every page, including the dashboard, results and sample pages with a
+    crafted name in a miss and a sampled version, passes the same check
+    (`test_every_page_is_inert`, `test_untrusted_fields_cannot_break_any_page`).
+- **The header no longer links each verdict category** (six top-level links instead of
+  nine); `test_unwanted_and_unverified_verdicts_with_their_reason` now finds them on
+  `/verdicts`.
+
+### Evaluation snapshot
+- No metric changed: this is presentation only. Checked against the real data with a
+  read-only viewer on another port: `/results` shows window all at 133 TP / 2,186 FP (758
+  unreviewed) / 41 FN / 292,485 TN, recall 76.4% [69.6%-82.1%], precision 5.7%
+  [4.9%-6.8%], as in `live-20261109T113623Z.md`; every page rendered in under 0.12 s.
+
+### Open questions / next steps
+- The sample page is read-only: sampled versions are in no report, so a form would need a
+  route keyed by run, name and version from the ledger rather than by rank. Worth it only if
+  the owner reviews samples in the browser.
+
 ## 2026-11-09: Why live recall jumped from 28% to 76%; benign-by-inference verdicts withdrawn
 
 **Stage(s):** evaluation (live matrices, reviewer verdicts)

@@ -614,9 +614,9 @@ def view_cmd(
         bool, typer.Option("--read-only", help="Show no verdict forms and record nothing.")
     ] = False,
 ) -> None:
-    """Browse the review queue and run reports in a local web page, and record reviewers'
-    verdicts (malicious, unwanted, benign, unverified). Safe to run beside `collect`: it takes
-    no lock and writes only the verdict log. Ctrl-C stops it."""
+    """Browse the dashboard, live evaluation results, the review queue and run reports in a local
+    web page, and record reviewers' verdicts (malicious, unwanted, benign, unverified). Safe to run
+    beside `collect`: it takes no lock and writes only the verdict log. Ctrl-C stops it."""
     from kitsunox.web import RemoteBindRefusedError, serve  # http.server only when needed
 
     try:
