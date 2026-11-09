@@ -2,6 +2,50 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Queue review of the first ticks on the pre-freeze rules; evaluation pins 404s
+
+**Stage(s):** Review (verdicts), evaluation harness (`PinnedFetcher`)
+**Context:** The first ticks with every pre-freeze rule live (22:30 to 00:30 UTC) left 13
+versions in the review queue; the undeclared-package work (entry above) was merged as
+`83b09f2` + `c75a72b` (a docstring that named the Stage 4 rule wrongly).
+
+### Decisions
+- **`PinnedFetcher` keeps 404s** (`2edf8e6`): the evaluation fetcher pinned found packuments
+  only, so a dependency or undeclared name that was 404 at an evaluation's first run was asked
+  again every run and could turn "found" once the payload was published. Now a 404 is pinned
+  like a success (other failures are still asked again; `HttpFetcher._pins`, overridden).
+  Collection is unchanged: its fetcher still never pins a 404. Tests:
+  `tests/evaluation/test_pinned_fetcher.py`.
+
+### Challenges
+- **A load-time dropper reported on obfuscation alone**: `archetype-index-sdk@1.0.0` (new
+  package, no install hook) imports `telemetry-info.mjs` from `dist/index.js`; base64 + XOR
+  0x4e strings; it sends hostname, user name, cwd, home, MAC address and the names of set env
+  variables to `cdn.node-js.dev/report/...`, then writes `~/.cache/build-cache/helper.cjs` and
+  spawns it detached. Score 5: two `static.obfuscated` MEDIUMs plus LOWs; Stage 3 saw nothing
+  (the module names are hidden). Reported, but one obfuscation finding fewer and it would not
+  have been.
+  - **Resolution:** none yet; recorded as a recall risk for load-time payloads in new packages.
+
+### Evaluation snapshot
+- Queue review, 13 versions (runs `20261108T213001Z` to `T233023Z`): 2 malicious
+  (`archetype-index-sdk@1.0.0`; `@gsas/gsas-sdk@99.99.99`, probe: preinstall DNS lookup of
+  `<hostname>.<username>.<marker host>`), 3 unwanted (`@axelkalcer/baileys@1.0.3` and
+  `@zaiinlin/bails@1.0.2` channel follows, the latter from a base64-hidden list;
+  `@promethea-research/sundial@0.2.3` launchers in every writable PATH directory and shell
+  start-up edits), 8 benign. Benign clusters: `npm.install-script-changed` on own-binary
+  downloaders verified by checksum (`@depot/cli`, `statuz-cli`, `stacklit`) and a print-only
+  postinstall (`totemlayer`); new packages with harmless hooks (`@litterthanlit/vyo`, a
+  Homebridge fork pip-installing pinned upstream, `claudecode-ms-teams`: AI-plugin ruling).
+- Over all reviewed versions, `npm.install-script-changed` fired on 714 benign, 27
+  unverified, 6 malicious and 3 unwanted: the largest benign cluster. A measurement of
+  narrower shapes (guards: new host, risky use, unverified fetched exec) is running before the
+  freeze; it is built only if no reviewed positive stops being reported.
+
+### Open questions / next steps
+- Owner: should re-publishes of another scope's code (`@ohos-ports/cms-components`, 21
+  `@smallstack/*` names npm lacks) be reported?
+
 ## 2026-11-08: Undeclared packages the registry lacks; Baileys signatures retired
 
 **Stage(s):** Stage 3 (`npm.undeclared-package` v2, extractor v7), Stage 4
