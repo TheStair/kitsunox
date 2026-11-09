@@ -19,8 +19,15 @@ from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.install import loaded_files
 from kitsunox.ecosystems.npm.rules.install_persistence import code_text
+from kitsunox.ecosystems.npm.rules.install_shapes import user_wide
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
-from kitsunox.lang.javascript import Capability, in_text, language_for, mask_printed_text
+from kitsunox.lang.agent_config import HOME_REFERENCE, names_agent_dir
+from kitsunox.lang.javascript import (
+    Capability,
+    in_text,
+    language_for,
+    mask_printed_text,
+)
 from kitsunox.rules.capabilities import evidence
 from kitsunox.rules.static import Obfuscated
 from kitsunox.stages.ast import CodeChange
@@ -169,10 +176,19 @@ class InstallScriptChanged(BaseRule):
     build date; a newly run, binary or too-long file, or one with any other change, keeps the
     MEDIUM. Of the 422 reviewed benign versions this rule alone reported, v4 no longer reports
     64 (50 volatile strings, 14 printed text); it loses no malicious, unwanted or unverified
-    version and no `vm-day1` malicious sample (`docs/stages/ast.md`)."""
+    version and no `vm-day1` malicious sample (`docs/stages/ast.md`).
+
+    v5 (2026-11-09, round 4, `docs/proposals/precision-round4-A.md`): content-aware. The
+    finding stays MEDIUM only when the change touches what an attack needs (`touched`): a
+    changed or added line, outside comments and messages, that runs a process, reaches the
+    network, names a URL, IP address or host, holds encoded data or decodes it, names a
+    credential or token, the home directory, a shell or package-manager command, the whole
+    environment or dynamic code; a newly run file that does any of that; a binary; a file too
+    long to diff that gains such a match. Otherwise (a refactor, an option, error handling, a
+    template's text) it is LOW, weight 1, and says so; the diff stays in the evidence."""
 
     id = "npm.install-script-changed"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Code an install script runs changed"
@@ -205,18 +221,193 @@ class InstallScriptChanged(BaseRule):
         minor = all(
             _unremarkable(path, before.get(path), change.install_files[path]) for path in changed
         )
+        kinds = set() if minor else touched(change, changed)
+        if not minor and not kinds and names_agent_dir(change.install_files) and user_wide(change):
+            kinds.add(AGENT_USER_WIDE)  # where such code writes can't be told from the diff
+        if minor:
+            note = MINOR_NOTE
+        elif kinds:
+            note = TOUCHES.format(", ".join(sorted(kinds)))
+        else:
+            note = INERT_NOTE
         return (
             self.finding(
-                f"`npm install` runs code that changed{since}: {', '.join(parts)}."
-                + (MINOR_NOTE if minor else ""),
+                f"`npm install` runs code that changed{since}: {', '.join(parts)}." + note,
                 *(
                     _diff_evidence(path, before.get(path), change.install_files[path])
                     for path in changed[:MAX_FILES_SHOWN]
                 ),
-                severity=Severity.LOW if minor else None,
-                weight=1.0 if minor else None,
+                severity=None if kinds else Severity.LOW,
+                weight=None if kinds else 1.0,
             ),
         )
+
+
+TOUCHES: Final = " The change touches {}."
+# Install code that names an AI agent's directory and the home directory
+# (`npm.install-agent-user-wide`'s test) may write agent configuration user-wide through code
+# the diff doesn't show; a change to it keeps the MEDIUM (`@aweray/aweshell-cli@0.4.25`,
+# `@easyhaloo/afk-opencode@1.2.1`, `@mobileaidev/ai-app-bridge`: unwanted, inert diffs).
+AGENT_USER_WIDE: Final = "install code that names an AI agent's directory and the home directory"
+INERT_NOTE: Final = (
+    " The changed lines run no process, reach no network, URL or host, hold no encoded data,"
+    " credential, home-directory path, shell or package-manager command, whole environment or"
+    " dynamic code: nothing an attack needs (comments and messages aside)."
+)
+# What install code an attack changes touches, by kind, on code text with comments and
+# messages masked (`code_text`). Stage 3's risky uses (`RISKY`) on those lines count as well.
+TOUCHED: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
+    (
+        "processes",
+        re.compile(
+            r"(?<![\w$.])(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork|execa"
+            r"|execaSync|execaCommand|execaCommandSync)\s*\(|child_process|\bBun\.spawn"
+        ),
+    ),
+    (
+        "the network",
+        re.compile(
+            r"\bhttps?\.(?:get|request)\s*\(|(?<![\w$.])fetch\s*\(|\baxios\b|(?<![\w$.])got\s*\("
+            r"|\bWebSocket\b|\bnet\.(?:connect|createConnection|Socket)\b|\bdns\.\w+\s*\("
+            r"|XMLHttpRequest|\bundici\b|[\"'`](?:node:)?(?:https?|net|dns|tls|dgram)[\"'`]"
+        ),
+    ),
+    (
+        "URLs or hosts",
+        re.compile(
+            r"[a-z][a-z0-9+.-]*://[^\s\"'`)<>\\]+|(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])"
+            r"|[\"'`@](?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|app|xyz|top|site|online|ru|cn|me"
+            r"|co|cc|tk|pw|link|live|info|biz|cloud|tech|pro|club|vip|shop|icu|ws|su|in)[\"'`/:]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "encoded data",
+        re.compile(
+            r"[A-Za-z0-9+/]{100,}={0,2}|(?:[0-9a-fA-F]{2}){50,}|\batob\s*\(|fromCharCode"
+            r"|Buffer\.from\([^)]{0,200}[\"'`](?:base64|hex)[\"'`]|(?:\\x[0-9a-fA-F]{2}){4}"
+        ),
+    ),
+    (
+        "credentials",
+        re.compile(
+            r"\.npmrc|\.ssh\b|id_rsa|id_ed25519|\.aws\b|\.git-credentials|\.docker/config"
+            r"|\.kube/config|Login Data|Local State|keychain|wallet|/etc/(?:shadow|passwd)"
+            r"|npm\s+publish|_authToken|registry\.npmjs\.org/-/|(?<![\w$])\.env\b(?![.\w])"
+            r"|\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY)\b",
+        ),
+    ),
+    ("the home directory", re.compile(HOME_REFERENCE.pattern + r"|getUserHome|\bHOME\b")),
+    (
+        "shell commands",
+        re.compile(
+            r"\b(?:curl|wget|powershell|pwsh|sudo|crontab|systemctl|launchctl|schtasks|setx|iex"
+            r"|Invoke-WebRequest|Invoke-Expression|Invoke-RestMethod|certutil|bitsadmin|mshta"
+            r"|rundll32|regsvr32|osascript)\b|\breg(?:\.exe)?\s+add\b|\b(?:ba|z)?sh\s+-c\b"
+            r"|\|\s*(?:ba|z)?sh\b|\bchmod\s+[+0-7]"
+        ),
+    ),
+    (
+        "package-manager commands",
+        re.compile(
+            r"\b(?:npx|bunx|pnpx)\s|\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|exec|dlx|x)\b"
+            r"|\bpip3?\s+install\b|\bcargo\s+install\b|\bgo\s+install\b"
+        ),
+    ),
+    ("the whole environment", re.compile(r"process\.env(?!\s*(?:\.|\[|\?\.))")),
+    (
+        "dynamic code",
+        re.compile(
+            r"(?<![\w$.])eval\s*\(|\bFunction\s*\(|\bvm\.(?:run\w*|Script|compileFunction)\b"
+            r"|\bimport\(\s*(?![\s'\"`])|\brequire\(\s*(?![\s'\"`])"
+        ),
+    ),
+)
+HIDDEN_KIND: Final = "code hidden past the edge of the screen"
+# A string literal in code of `LONG_STRING`+ characters: a packed payload or string table
+# (`hauntview@0.2.9`'s loader starts with one) that no other kind need name.
+LONG_KIND: Final = "a string literal of 4 KB or more"
+LONG_STRING: Final = 4096
+LONG_LITERAL: Final = re.compile(rf"""(["'`])(?:(?!\1)[^\\\n]|\\.){{{LONG_STRING},}}+\1""")
+_USE_KIND: Final = {
+    C.NETWORK: "the network",
+    C.PROCESS: "processes",
+    C.ENV_ALL: "the whole environment",
+    C.DYNAMIC_CODE: "dynamic code",
+    C.DYNAMIC_REQUIRE: "dynamic code",
+}
+
+
+def touched(change: CodeChange, paths: Sequence[str]) -> set[str]:
+    """What the change to `paths` (install files that changed) touches, by kind (`TOUCHED`,
+    and Stage 3's risky uses): on the changed and added lines of a diffable file; anywhere in
+    a newly run file; for a file too long to diff, the matches it has that its previous
+    version didn't. A binary file is "binary code"."""
+    before = change.install_files_before or {}
+    kinds: set[str] = set()
+    for path in paths:
+        new, old = _lf(change.install_files[path]), before.get(path)
+        if b"\x00" in new[:8192] or (old is not None and b"\x00" in old[:8192]):
+            kinds.add("binary code")
+            continue
+        text = code_text(path, new)
+        uses = {
+            u.use.line: _USE_KIND[u.use.capability]
+            for u in (change.install.uses if change.install else ())
+            if u.path == path and u.use.capability in RISKY
+        }
+        if old is None:
+            kinds |= _kinds(text) | set(uses.values())
+            if hidden_code(path, new) is not None:
+                kinds.add(HIDDEN_KIND)
+            if LONG_LITERAL.search(text):
+                kinds.add(LONG_KIND)
+            continue
+        old = _lf(old)
+        a, b = (
+            old.decode("utf-8", "replace").split("\n"),
+            new.decode("utf-8", "replace").split("\n"),
+        )
+        if not _diffable(a, b):
+            before_text = code_text(path, old)
+            kinds |= {kind for kind, _ in _matches(text) - _matches(before_text)}
+            if hidden_code(path, new) is not None and hidden_code(path, old) is None:
+                kinds.add(HIDDEN_KIND)
+            if _long_literals(text) - _long_literals(before_text):
+                kinds.add(LONG_KIND)
+            continue
+        masked = text.split("\n")
+        matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        added = {
+            n
+            for tag, _, _, j1, j2 in matcher.get_opcodes()
+            if tag in ("replace", "insert")
+            for n in range(j1, j2)
+        }
+        kinds |= _kinds("\n".join(masked[n] for n in sorted(added) if n < len(masked)))
+        if (hidden := hidden_code(path, new)) is not None and hidden[0] - 1 in added:
+            kinds.add(HIDDEN_KIND)
+        if any(n < len(masked) and LONG_LITERAL.search(masked[n]) for n in added):
+            kinds.add(LONG_KIND)
+        kinds |= {kind for line, kind in uses.items() if line - 1 in added}
+    return kinds
+
+
+def _long_literals(text: str) -> set[str]:
+    return {m.group(0) for m in LONG_LITERAL.finditer(text)}
+
+
+def _kinds(text: str) -> set[str]:
+    return {kind for kind, pattern in TOUCHED if pattern.search(text)}
+
+
+def _matches(text: str) -> set[tuple[str, str]]:
+    """Every `TOUCHED` match of `text`, with volatile strings (`VOLATILE`) masked."""
+    return {
+        (kind, VOLATILE.sub("\x00", m.group(0)))
+        for kind, pattern in TOUCHED
+        for m in pattern.finditer(text)
+    }
 
 
 def _same(old: bytes | None, new: bytes, old_version: bytes, new_version: bytes) -> bool:
@@ -290,12 +481,17 @@ def _adds_risky(change: CodeChange, path: str, old: bytes | None, new: bytes) ->
         for u in (change.install.uses if change.install else ())
         if u.path == path and u.use.capability in RISKY
     }
-    if not lines:
-        return False
+    hidden = hidden_code(path, new)
+    if hidden is not None and (old is None or hidden_code(path, old) is None):
+        return True  # v5: code pushed off-screen hides its uses (`hauntview@0.2.9`)
     a = (old or b"").decode("utf-8", "replace").split("\n")
     b = new.decode("utf-8", "replace").split("\n")
+    if not lines and not any(len(line) >= LONG_STRING for line in b):
+        return False
     if not _diffable(a, b):
-        return True
+        return bool(lines) or bool(
+            _long_literals(code_text(path, new)) - _long_literals(code_text(path, old or b""))
+        )
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     added = {
         n + 1
@@ -303,7 +499,10 @@ def _adds_risky(change: CodeChange, path: str, old: bytes | None, new: bytes) ->
         if tag in ("replace", "insert")
         for n in range(j1, j2)
     }
-    return bool(lines & added)
+    if lines & added:
+        return True
+    masked = code_text(path, new).split("\n")
+    return any(n <= len(masked) and LONG_LITERAL.search(masked[n - 1]) for n in added)
 
 
 def _lf(data: bytes) -> bytes:

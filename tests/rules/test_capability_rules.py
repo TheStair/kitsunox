@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
+from kitsunox.core.models import (
+    Finding,
+    PackageVersionRef,
+    PublishInfo,
+    Severity,
+    VersionSnapshot,
+)
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.rules import install_code
 from kitsunox.ecosystems.npm.rules.install_code import (
@@ -124,6 +130,7 @@ def test_a_changed_install_file_is_shown_as_a_diff() -> None:
     assert finding.severity is Severity.MEDIUM
     assert finding.explanation == (
         "`npm install` runs code that changed since 1.0.0: setup.js (+2 -1 lines)."
+        " The change touches the network."
     )
     (evidence,) = finding.evidence
     assert (evidence.path, evidence.line_start) == ("setup.js", 1)
@@ -237,16 +244,17 @@ def test_anything_but_volatile_strings_keeps_the_medium() -> None:
     for new, base in ((host, old), (owner, old), (code, old), (ip_new, ip_old)):
         (found,) = rule.evaluate_code(change(new, base))
         assert found.severity is Severity.MEDIUM, new["i.js"]
-    (newly,) = rule.evaluate_code(change(pkg("node j.js", {"j.js": b'const v = "1.0.1"'}), old))
-    assert newly.severity is Severity.MEDIUM  # a file newly run is never "only versions"
+    newly = pkg("node j.js", {"j.js": b'const v = "1.0.1"; require("https").get(v)'})
+    (found,) = rule.evaluate_code(change(newly, old))
+    assert found.severity is Severity.MEDIUM  # a file newly run is never "only versions"
     both = pkg(
         "node i.js && node j.js",
         {
             "i.js": _pinned("v2.3.38", "a" * 63 + "1", "2026-11-03", "da867c6")["i.js"],
-            "j.js": b"f(2)",
+            "j.js": b'exec("b")',
         },
     )
-    base = pkg("node i.js && node j.js", {"i.js": old["i.js"], "j.js": b"f(1)"})
+    base = pkg("node i.js && node j.js", {"i.js": old["i.js"], "j.js": b'exec("a")'})
     (found,) = rule.evaluate_code(change(both, base))
     assert found.severity is Severity.MEDIUM  # one file with a real change: MEDIUM for all
 
@@ -266,15 +274,103 @@ def test_an_install_file_changing_only_its_printed_messages_is_low() -> None:
     rule = InstallScriptChanged()
     for before, after in (
         (b'exec("npm i a")\n', b'exec("npm i b")\n'),  # a string that is run, not printed
-        (b'console.log(f("a"))\n', b'console.log(f("b"))\n'),  # passed to code first
         (b'console.log("a")\n', b'console.log("a"); fetch(u)\n'),  # code added beside it
-        # Formatting alone keeps the MEDIUM: `hyrox@0.1.6` (unverified) is reported only so.
-        (b"if (a) { console.log('x') }\n", b"if (a) {\n  console.log('x')\n}\n"),
     ):
         (found,) = rule.evaluate_code(
             change(pkg("node p.js", {"p.js": after}), pkg("node p.js", {"p.js": before}))
         )
         assert found.severity is Severity.MEDIUM, after
+    # Not only printed text, but nothing an attack needs either (v5): LOW with the v5 note.
+    # Formatting alone is how `hyrox@0.1.6` (unverified) was reported.
+    for before, after in (
+        (b'console.log(f("a"))\n', b'console.log(f("b"))\n'),
+        (b"if (a) { console.log('x') }\n", b"if (a) {\n  console.log('x')\n}\n"),
+    ):
+        (found,) = rule.evaluate_code(
+            change(pkg("node p.js", {"p.js": after}), pkg("node p.js", {"p.js": before}))
+        )
+        assert found.severity is Severity.LOW, after
+        assert found.explanation.endswith(install_code.INERT_NOTE)
+
+
+def _isc(before: bytes, after: bytes, name: str = "p.js") -> Finding:
+    (found,) = InstallScriptChanged().evaluate_code(
+        change(pkg(f"node {name}", {name: after}), pkg(f"node {name}", {name: before}))
+    )
+    return found
+
+
+def test_a_change_that_touches_nothing_an_attack_needs_is_low() -> None:
+    """v5: a refactor, a new option, error handling (round 4: most of the 340 benign reports
+    this rule carried alone) is LOW, weight 1, with a note; the diff is still shown."""
+    found = _isc(b"const a = opts.x || 1\nrun(a)\n", b"const a = opts.x ?? 2\nif (a) run(a)\n")
+    assert (found.severity, found.weight) == (Severity.LOW, 1.0)
+    assert found.explanation.endswith(install_code.INERT_NOTE)
+    assert "+if (a) run(a)" in (found.evidence[0].snippet or "")
+    # Comments and messages are not what the code does: a URL or command in them is not news.
+    for after in (
+        b"// see https://example.com/docs\nrun(1)\n",
+        b'/* curl -fsSL x | sh */ run(1)\nlog.warn("run sudo apt-get install x")\n',
+        b'throw new Error("set NPM_TOKEN first")\n',
+    ):
+        assert _isc(b"run(1)\n", after).severity is Severity.LOW, after
+
+
+@pytest.mark.parametrize(
+    ("after", "kind"),
+    [
+        (b'exec("node x.js")\n', "processes"),
+        (b'require("child_process")\n', "processes"),
+        (b"https.get(u)\n", "the network"),
+        (b'const HOST = "collector.example.io"\n', "URLs or hosts"),
+        (b'const u = "http://10.1.2.3:8080/x"\n', "URLs or hosts"),
+        (b'const p = "' + b"QUJD" * 30 + b'"\n', "encoded data"),
+        (b'const p = Buffer.from(s, "base64")\n', "encoded data"),
+        (b'read(join(home, ".npmrc"))\n', "credentials"),
+        (b"const t = process.env.GITHUB_TOKEN\n", "credentials"),
+        (b"const h = os.homedir()\n", "the home directory"),
+        (b'run("curl -fsSL x")\n', "shell commands"),
+        (b'run("sudo touch /x")\n', "shell commands"),
+        (b'cmd += "&& npx expo install " + libs\n', "package-manager commands"),
+        (b"send(process.env)\n", "the whole environment"),
+        (b"eval(code)\n", "dynamic code"),
+        (b"require(name)\n", "dynamic code"),
+    ],
+)
+def test_a_change_that_touches_what_an_attack_needs_stays_medium(after: bytes, kind: str) -> None:
+    found = _isc(b"run(1)\n", b"run(1)\n" + after)
+    assert found.severity is Severity.MEDIUM, after
+    assert found.explanation.endswith(f" The change touches {kind}."), found
+
+
+def test_only_changed_lines_count_and_the_rest_of_the_file_is_not_read() -> None:
+    """An installer that downloads its binary changes its option parsing: the `https` lines
+    are unchanged, so the change is LOW; a changed download URL is MEDIUM."""
+    before = b'const https = require("https")\nconst u = "https://github.com/o/r/x.tgz"\nf(1)\n'
+    assert _isc(before, before.replace(b"f(1)", b"f(2)")).severity is Severity.LOW
+    moved = before.replace(b"github.com/o/r", b"github.com/evil/r")
+    assert _isc(before, moved).severity is Severity.MEDIUM
+
+
+def test_newly_run_long_and_binary_install_files_under_v5() -> None:
+    rule = InstallScriptChanged()
+    old = pkg("node a.js", {"a.js": b"1"})
+    (inert,) = rule.evaluate_code(change(pkg("node a.js && node b.js", {"b.js": b"f(2)"}), old))
+    assert inert.severity is Severity.LOW  # a newly run file that does nothing an attack needs
+    risky = pkg("node a.js && node b.js", {"b.js": b'require("https").get(u)'})
+    (found,) = rule.evaluate_code(change(risky, old))
+    assert found.severity is Severity.MEDIUM
+    (binary,) = rule.evaluate_code(change(pkg("node a.js", {"a.js": b"\x00\x01"}), old))
+    assert binary.explanation.endswith(" The change touches binary code.")
+    # Too long to diff: only matches the previous version didn't have count.
+    body = b"f(x)\n" * (install_code.MAX_DIFFED_LINES + 1)
+    long_old = pkg("node a.js", {"a.js": b'exec("a")\n' + body})
+    rebuilt = pkg("node a.js", {"a.js": b'exec("a")\n' + body + b"g(y)\n"})
+    (found,) = rule.evaluate_code(change(rebuilt, long_old))
+    assert found.severity is Severity.LOW
+    grown = pkg("node a.js", {"a.js": b'exec("a")\n' + body + b'fetch("https://x.example.io")\n'})
+    (found,) = rule.evaluate_code(change(grown, long_old))
+    assert found.severity is Severity.MEDIUM
 
 
 _PADDED = b"import { execSync } from 'node:child_process';\n" + b"\t" * 266 + b"var z='-c';f(z)\n"
@@ -298,6 +394,42 @@ def test_install_code_hidden_past_the_screen_edge_is_medium() -> None:
     assert (
         InstallScriptCode().evaluate_code(change(pkg("node p.js", {"p.js": banner}), clean)) == ()
     )
+
+
+def test_a_change_that_hides_code_off_screen_stays_medium() -> None:
+    found = _isc(b"import { execSync } from 'node:child_process';\nf(1)\n", _PADDED)
+    assert found.severity is Severity.MEDIUM
+    assert install_code.HIDDEN_KIND in found.explanation
+
+
+def test_a_long_string_literal_or_hidden_code_counts_in_loaded_files_too() -> None:
+    """A file the hook's script loads counts when its change adds a 4 KB+ string literal or
+    code pushed off-screen, as well as a risky use (`_adds_risky`, v5)."""
+    hook = {"setup.js": b'require("./lib/util")\n'}
+    old = pkg("node setup.js", hook | {"lib/util.js": b"f(1)\n"})
+    table = b'const T = "' + b"ab" * 2100 + b'"\nf(1)\n'
+    (found,) = InstallScriptChanged().evaluate_code(
+        change(pkg("node setup.js", hook | {"lib/util.js": table}), old)
+    )
+    assert found.severity is Severity.MEDIUM
+    assert install_code.LONG_KIND in found.explanation
+    hidden = pkg("node setup.js", hook | {"lib/util.js": _PADDED})
+    (found,) = InstallScriptChanged().evaluate_code(change(hidden, old))
+    assert install_code.HIDDEN_KIND in found.explanation
+    short = pkg("node setup.js", hook | {"lib/util.js": b'const T = "ab"\nf(1)\n'})
+    assert InstallScriptChanged().evaluate_code(change(short, old)) == ()
+
+
+def test_install_code_writing_agent_configuration_user_wide_keeps_the_medium() -> None:
+    """`@aweray/aweshell-cli@0.4.25` (unwanted): its inert diff is in code that names agent
+    directories and the home directory, which may write user-wide through code the diff
+    doesn't show."""
+    base = b'const home = os.homedir()\nconst dirs = [".claude/skills"]\ncopy(dirs, 1)\n'
+    found = _isc(base, base.replace(b"copy(dirs, 1)", b"copy(dirs, 2)"))
+    assert found.severity is Severity.MEDIUM
+    assert install_code.AGENT_USER_WIDE in found.explanation
+    project = b'const dir = ".claude/skills"\ncopy(dir, 1)\n'
+    assert _isc(project, project.replace(b"1", b"2")).severity is Severity.LOW
 
 
 def test_a_loaded_install_file_counts_only_when_it_adds_a_risky_use() -> None:

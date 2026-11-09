@@ -794,6 +794,42 @@ change is reformatting: an owner decision), and the vendor-host download (the `h
 publisher's own claim). Known limit: a version pinned by a string that something other than a
 download uses (`npx tool@1.2.3`) is volatile too, so moving a pinned tool's version is LOW.
 
+`npm.install-script-changed` v5 (2026-11-09, round 4; [precision-round4-A](../proposals/precision-round4-A.md))
+is **content-aware**: the finding stays MEDIUM only when the change touches what an attack
+needs, and says what (`TOUCHED`, on the code with comments and messages masked, plus Stage 3's
+risky uses on those lines): processes (`exec`, `spawn`, `child_process`, ...), the network
+(`https.get`, `fetch`, `net`, `dns`, ...), URLs, IP addresses or host names, encoded data or
+decoding (100+ base64 or hex characters, `atob`, `Buffer.from(.., "base64")`, `\x` runs),
+credentials and tokens (`.npmrc`, `.ssh`, `.aws`, `npm publish`, `_authToken`, `*_TOKEN`), the
+home directory, shell commands (`curl`, `wget`, `sudo`, `powershell`, `| sh`, `chmod +x`, ...),
+package-manager commands (`npx`, `npm install`, `pip install`, ...), the whole environment, or
+dynamic code. For a diffable file that is the changed and added lines; a newly run file counts
+as a whole; for a file too long to diff, the matches it has that its previous version didn't; a
+binary always counts, and so do code hidden past the edge of the screen (`hidden_code`, as
+`npm.install-script-code` v3) and a string literal of 4 KB or more (`LONG_LITERAL`): both
+also make a loaded file's change count (`_adds_risky`), since neither shows its uses to Stage 3
+(`hauntview@0.2.9`: 266 tabs, then a loader that builds `Function` from a computed key; on the
+live versions the two additions change no finding). Install code that names an agent directory and the home directory
+(`npm.install-agent-user-wide`'s test) keeps the MEDIUM on any change: it may write
+user-wide through code the diff doesn't show (`@aweray/aweshell-cli@0.4.25`,
+`@easyhaloo/afk-opencode@1.2.1`, `@mobileaidev/ai-app-bridge`, unwanted, whose diffs are
+inert). Anything else, a refactor, an option, error handling, a template's text, is LOW,
+weight 1, with the note "nothing an attack needs"; the diff stays in the evidence. With
+`npm.install-persistence` and `static.channel-tagging` naming the behaviour of the positives that
+relied on this rule (of its 65 unwanted live reports, 51 are now caught by the persistence rule,
+2 by channel tagging, 8 keep v5's MEDIUM), v5 removes **188 benign reports** (153 packages) of
+the 3,716 verdicted live versions and loses **4 unwanted** (`@ornexus/neocortex@4.60.77`,
+`@ziniao-open/cli@0.1.0-beta.175`, `anolisa-tokenless@0.9.3`, `tmailcli@0.1.5`: their
+persistence is in a script or binary the install code spawns, which no rule reads), **1
+unverified** (`hyrox@0.1.6`, a reformatted Node-version check) and **6 `esoftplay`
+follow-ons on `vm-day1`** (0.0.142-m, 0.0.143-w, 0.0.183, 0.0.185, 0.0.256, 0.0.262: build
+configuration edits in `bin/build.js`; the Telegram code that makes the family malicious is in
+`bin/cli.js`, unchanged, a CLI command). A trade-off, the owner's call
+([precision-round4-A](../proposals/precision-round4-A.md)). Known
+limits: a change that only edits a value another line runs (a bare command name, a path
+without a lexicon word) or that removes a guard is LOW; install code a hook starts through a
+spawned shell script or a binary is not read at all.
+
 ## Evaluation
 
 `day1` (sha256 `d99626981ae6`), 2026-10-28:
