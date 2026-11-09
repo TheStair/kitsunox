@@ -53,6 +53,7 @@ STAGE_OF_RULE: Final = {
     "npm.load-fingerprint": "Stage 3: capabilities",
     "npm.publish-at-load": "Stage 3: capabilities",
     "npm.install-agent-user-wide": "Stage 3: capabilities",
+    "npm.install-persistence": "Stage 3: capabilities",
     "npm.install-explained": "Stage 3: capabilities",
     "npm.install-build-tool": "Stage 3: capabilities",
     "npm.provenance.": "Stage 4: correlation",

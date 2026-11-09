@@ -902,6 +902,82 @@ def mask_printed_text(content: bytes, language: str) -> bytes | None:
     return bytes(out + content[position:])
 
 
+# Besides `PRINTING_CALLS`: the methods loggers and spinners print through (`log.warn(...)`,
+# `spinner.fail(...)`, `p.note(...)`), and the errors a message is thrown in. Never `write`:
+# a stream's `write` may write a file.
+MESSAGE_METHODS: Final = frozenset(
+    {"log", "info", "warn", "warning", "error", "debug", "trace", "fail", "succeed", "note"}
+)
+MESSAGE_ERRORS: Final = frozenset({"Error", "TypeError", "RangeError"})
+
+
+def mask_comments_and_messages(content: bytes, language: str) -> bytes:
+    """`content` with every comment, and the text of every string that is only a message for a
+    person, blanked: each byte becomes a space, newlines stay, so offsets and line numbers are
+    those of `content`. A message is a string argument of a printing call (`PRINTING_CALLS`), of
+    a logging method of any object (`MESSAGE_METHODS`) or of a new error (`MESSAGE_ERRORS`),
+    directly or through `+` and parentheses, as in `mask_printed_text`. A file with parse
+    errors is still masked where the parse is sure; one over `MAX_SOURCE_BYTES` is returned
+    as it is."""
+    if len(content) > MAX_SOURCE_BYTES:
+        return content
+    parser, _ = _parser(language)
+    stack = [parser.parse(content).root_node]
+    out = bytearray(content)
+    while stack:
+        node = stack.pop()
+        if node.type == "comment" or (
+            node.type in ("string_fragment", "escape_sequence") and _message(node)
+        ):
+            for i in range(node.start_byte, node.end_byte):
+                if out[i] != 0x0A:
+                    out[i] = 0x20
+            continue
+        stack.extend(node.children)
+    return bytes(out)
+
+
+_TEXT_NODES: Final = frozenset({"string", "template_string", "comment", "regex"})
+
+
+def in_text(content: bytes, language: str, offset: int) -> bool:
+    """Whether the byte at `offset` is inside a string, template, regex or comment."""
+    parser, _ = _parser(language)
+    node: ts.Node | None = parser.parse(content).root_node.descendant_for_byte_range(
+        offset, offset + 1
+    )
+    while node is not None:
+        if node.type in _TEXT_NODES:
+            return True
+        node = node.parent
+    return False
+
+
+def _message(node: ts.Node) -> bool:
+    parent = node.parent
+    while parent is not None and parent.type in _PRINTED_PATH:
+        if (
+            parent.type == "binary_expression"
+            and _text(parent.child_by_field_name("operator")) != "+"
+        ):
+            return False
+        node, parent = parent, parent.parent
+    if parent is None or node.type != "arguments":
+        return False
+    if parent.type == "new_expression":
+        return _text(parent.child_by_field_name("constructor")) in MESSAGE_ERRORS
+    if parent.type != "call_expression":
+        return False
+    function = parent.child_by_field_name("function")
+    if _text(function) in PRINTING_CALLS:
+        return True
+    return (
+        function is not None
+        and function.type == "member_expression"
+        and _text(function.child_by_field_name("property")) in MESSAGE_METHODS
+    )
+
+
 def _printed(node: ts.Node) -> bool:
     parent = node.parent
     while parent is not None and parent.type in _PRINTED_PATH:

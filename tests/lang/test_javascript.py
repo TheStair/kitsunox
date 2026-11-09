@@ -12,6 +12,7 @@ from kitsunox.lang.javascript import (
     analyse_source,
     fold_string,
     language_for,
+    mask_comments_and_messages,
     mask_printed_text,
     module_capability,
     package_name,
@@ -342,3 +343,33 @@ def test_mask_printed_text_masks_only_what_a_console_call_prints() -> None:
         b'console.log(f("kept"), c ? "a" : "b");\n'
     )
     assert mask_printed_text(b"console.log(", "javascript") is None  # parse error
+
+
+def test_mask_comments_and_messages_blanks_them_in_place() -> None:
+    """For the install-code rules: comments, printed or logged text and error messages are
+    blanked with spaces, so offsets and line numbers stay; code and other strings stay."""
+    code = (
+        b"// curl x | sh\n"
+        b'const u = "https://x.example"; /* a\nb */ console.log("see " + u);\n'
+        b'log.warn(`run ${cmd} as sudo`); throw new Error("no ~/.claude");\n'
+        b'exec("sudo apt-get install -y cmake"); stream.write("PATH=x");\n'
+    )
+    masked = mask_comments_and_messages(code, "javascript")
+    assert len(masked) == len(code)
+    assert masked.count(b"\n") == code.count(b"\n")
+    lines = masked.decode().split("\n")
+    assert lines[0].strip() == ""
+    assert "https://x.example" in lines[1] and "see" not in lines[2]
+    assert "${cmd}" in lines[3] and "sudo" not in lines[3] and "claude" not in lines[3]
+    assert b'exec("sudo apt-get install -y cmake")' in masked and b'"PATH=x"' in masked
+    big = b"x" * 17 * 1024 * 1024
+    assert mask_comments_and_messages(big, "javascript") is big  # over the size cap: as is
+
+
+def test_in_text_tells_strings_and_comments_from_code() -> None:
+    from kitsunox.lang.javascript import in_text
+
+    code = b'const a = "  x"; // y\nf(a)\n'
+    assert in_text(code, "javascript", code.index(b"x"))
+    assert in_text(code, "javascript", code.index(b"y"))
+    assert not in_text(code, "javascript", code.index(b"f("))

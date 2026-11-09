@@ -106,6 +106,7 @@ is the malicious set.
 | `npm.install-build-tool` (v2) | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...), and `binding.gyp` runs no command but `node-addon-api`/`nan` header lookups (v2). An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
 | `npm.install-explained` (v2) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
+| `npm.install-persistence` (v1) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
@@ -657,6 +658,51 @@ findings with the explanation undone from `ast.jsonl`):
 - **The note** fires on 311 of the 479 live versions whose install code names an agent
   directory (65%; most are not reported) and on 148 of the 202 reviewed ones. INFO, weight 0:
   it changes no score and no decision.
+
+#### Install code that changes the machine beyond the project (`npm.install-persistence`, 2026-11-09)
+
+The owner's rulings of 2026-11-09 (decision 0015 addenda) make four install-time behaviours
+**unwanted**, harmless as what they install may be: writing an AI agent's configuration
+**user-wide** (skills, hooks, settings, MCP servers under `~/.claude`, `~/.codex`, `~/.cursor`,
+`~/.agents`, `~/.config/opencode`, Claude Desktop's config, ...), editing the user's **shell
+start-up files**, changing **PATH persistently**, and installing **system packages**. Until
+round 4 the pipeline caught most of them only because their install files had changed
+(`npm.install-script-changed`); `npm.install-agent-user-wide` (INFO) says only that the install
+code names an agent directory and the home directory somewhere, which is true of 55% positives
+and 45% benign versions. `npm.install-persistence` (MEDIUM, weight 3; `ecosystems/npm/rules/
+install_persistence.py`) names the behaviour itself, in four forms, on the install code (the
+files the hooks run and those they load, plus the hook command lines) with comments and
+messages masked (`lang.javascript.mask_comments_and_messages`: comments, and strings only
+printed, logged or put in an error; for shell, PowerShell and batch files, comment and `echo`
+lines; other files the hooks name, such as a README, are data):
+
+- **`agent`**: a path under the home directory to an agent's configuration, written out
+  (`"~/.claude/skills"`, `$HOME/.codex`, `%USERPROFILE%\.cursor`, `` `${os.homedir()}/.agents` ``)
+  or joined to a home expression (`join(os.homedir(), ".claude", ...)`, also minified
+  `l.join(e, ".claude", "settings.json")` after `let e = l.homedir()`, a variable or function
+  result named for home, a choice `join(homedir(), t ? ".codex" : ".agents")`, a caller's
+  override `join(options.home ?? homedir(), ".workbuddy")`), the XDG config home joined to
+  `opencode`/`crush`/`goose`, `~/.claude.json`, Claude Desktop's `claude_desktop_config.json`,
+  or an agent's own config-dir variable read in code (`env.CLAUDE_CONFIG_DIR`, `CODEX_HOME`; not
+  the name in a help text). Agent homes include DSH's `~/.dsh` (the owner's 2026-11-09 ruling),
+  `~/.hermes`, `~/.workbuddy`, `~/.zcode`. A path is matched, not the write itself, so code that
+  only reads an agent's files there fires too (`aicp-tracker`'s session-log reader);
+- **`shell-rc`**: `static.shell-startup`'s four forms on the install code;
+- **`path`**: `SetEnvironmentVariable("Path", ..., "User"|"Machine")`, `setx PATH`,
+  `reg add HKCU\Environment`, `/etc/paths.d/`, `/etc/profile.d/`, `launchctl setenv PATH`;
+- **`system-package`**: a package manager's install command where a command starts (the start
+  of a string or shell line, after `&&`, `||`, `;`, `|`, `$(`), with or without `sudo`: `apt-get`,
+  `apt`, `dnf`, `yum`, `zypper`, `apk`, `pacman -S`, `brew`, `port`, `winget`, `choco`, `scoop`,
+  `snap`. "Install it with: brew install x" doesn't start a command.
+
+It fires only when the install code is new or changed since the previous version
+(`ONLY_WHEN_CHANGED`), where the install rules already look: it names what that code does and
+adds no report for an installer that is the same as in the version before. Two variants were
+measured and not built: a write call within a few lines of the path (loses 35-53 of 87
+unwanted user-wide writers: the path is computed in one helper and written in another), and
+skipping install code that asks the user (`readline`, `prompts`, `inquirer`): it loses 20 of 80
+unwanted, whose installers ask something else and write anyway. Measured in
+[precision-round4-A](../proposals/precision-round4-A.md).
 
 **`npm.install-script-obfuscated`** (HIGH, weight 4; 2026-10-31, at the owner's request) flags
 install code nobody can review by reading it: what it does at install is a question only Stage 5
