@@ -2,6 +2,92 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Precision round 3: seven narrow shapes, measured end to end
+
+**Stage(s):** Stage 2 (`static.exfil-endpoint` v7, `static.hardcoded-ip` v4), Stage 3
+(`npm.install-build-tool` v2), Stage 4 (`npm.dependency.fresh-foreign` v3)
+**Context:** The owner: "keep improving the rules to reduce false positives", and "do whatever
+preserves accuracy while reducing false positives". The bar: no malicious or unwanted live
+verdict and no `vm-day1` DataDog sample stops being reported (unless another rule still
+catches it), and a measured benign reduction. Two days before the rule freeze, so only small,
+local changes. Proposal: [precision-round3.md](proposals/precision-round3.md).
+
+### Decisions
+- **Measure with the real code end to end, not a simulation.** Rounds 1-2 recomputed the
+  changed rules on stored findings. This round replays Stages 1-4 with a given `src/` tree on
+  every verdicted version (3,716; 2,975 recomputed on their tarballs, from the runs' blobs or
+  the registry through a scratch fetch store), baseline `main` vs the branch through the same
+  harness; and runs the real `pipeline+4` predictor on all 3,444 `vm-day1` malicious samples,
+  one process per sample (the whole-set run had been OOM-killed twice in round 2). Baseline
+  today: 1,834 reported (1,533 benign, 224 unwanted, 47 malicious, 30 unverified).
+- **Seven fixes, each naming something that can't be what the rule looks for:** core-js's
+  cited paste `pastebin.com/N21QzeQA` (X1, 8 benign), `*.host` patterns (X2, 3), entries of
+  separated domain lists (X3, 3), OAST placeholder labels (X4, 1), example IPs and more public
+  resolvers (X5, 10), `binding.gyp` header lookups (X6, 9), prereleases for `fresh-foreign`
+  (X7, 13, the downgrade rule's precedent). Together -47 benign (46 packages), 0 positives
+  lost; no positive's finding for these rules even changes.
+- **Stopped at the shapes the owner has ruled on.** The big remaining sources are rejected
+  classes: install-script-changed (340 benign, and 65 unwanted user-wide installers rely on it
+  alone), hooks without a recognised shape (125 `node <file>`), vendor obfuscation, own-owner
+  git dependencies.
+
+### Challenges
+- **X4's first version lowered a real collaborator id.** On `vm-day1`,
+  `@frontend-clients/core@99.0.8` (malicious) posts to
+  `YourServer929w1e528by00hxp38ah5mh1asgj4bs0.oastify.com`: the tunnel placeholder test
+  (`your[-_]?[\w-]*`) took the whole label for a placeholder. Found by diffing every changed
+  finding on the DataDog samples, not only the decisions (it stayed reported through other
+  HIGH matches).
+  - **Resolution:** OAST hosts get a stricter test: a written word (`your-…`, `xxx`,
+    `example`, `<…>`) with no digit and no template (`${id}.oastify.com` is how DNS
+    exfiltration builds a host).
+  - **Why it worked:** the sample's match is HIGH again (test pinned); the live benign case
+    (`YOUR-COLLABORATOR-ID`) and the DataDog placeholders (`your-collab-domain`,
+    `xxxxxxxxx`) stay LOW. Re-measured with the final code (numbers above).
+- **A stale Stage 2 cache hid that fix at first.** The second DataDog run still showed the
+  lowered match: the scratch data directory's `ContentCache` is keyed by the rules'
+  fingerprint (ids and versions), and v7 had changed without a version bump between the two
+  runs, so the first run's results came back. The cache is right for the pipeline (a rule
+  change bumps its version); for iterating on an unreleased rule, a measurement needs a fresh
+  cache directory.
+  - **Resolution:** the scratch cache for v7's fingerprint was deleted and the 1,312 samples
+    run again (the live replay keeps its Stage 2 cache in memory, so it was not affected).
+- **`fresh-foreign` needs dependency records the replay doesn't have.** The rule is rerun on
+  records rebuilt from each recorded finding's evidence (first version, time, accounts); on the
+  baseline code it reproduces all 34 recorded findings exactly, so the fix side's difference is
+  the code's.
+- **Replay fidelity.** On the 239 verdicted versions of runs scored with today's Stage 4 rules,
+  the replay matches the run's decision on 234; the other 5 (benign) the run reported and the
+  replay doesn't (in-batch diff bases). The same harness on both sides cancels it.
+
+### Removed / abandoned
+- **Telegram templated tokens without a token literal (a guarded F3a):** 49 of the 50 benign
+  Telegram reports have no literal token, but `github-badge-bot` (XOR+base64 in another file),
+  `foundry-toolkit@1.0.12` (base64) and `@eooce/sbx` (env) on `vm-day1` don't write theirs out
+  either; a "no base64 decode" guard keeps them by coincidence and halves the gain.
+- **Echo-only install hooks:** 5 benign, but 4 DataDog dependency-confusion PoCs
+  (`echo "code injection possible by golu"`, `echo "takeover poc"`) are reported only by
+  their hook.
+- **Downgrade co-signal only for a foreign, unwatched new dependency:** 26 benign, loses
+  `@hithink-tech/hithink-finance-cli@0.2.0` (unwanted, score exactly 6, adds the watched
+  `openid-client`).
+- **Revived with only popular dependencies:** 34 benign, loses `xrpl@2.14.2` (reported by
+  that rule alone). With "no maintainer added" too, 10 benign and `xrpl` kept: left for the
+  owner after the freeze.
+
+### Evaluation snapshot
+- Live (3,716 verdicted versions, real code): reported 1,834 → 1,787; benign 1,533 → 1,486;
+  malicious 47, unwanted 224, unverified 30 unchanged; precision 15.02% → 15.42%.
+- `vm-day1`: 2,708 of 3,444 malicious samples reported (repository comparison off); the 1,312
+  a fix could affect: 1,309 reported before and after, 0 lost.
+
+### Open questions / next steps
+- Owner: keep X7 (a prerelease's fresh dependency LOW; the rule can't see dist-tags)?
+- After the freeze: revived with popular deps and no maintainer added (+10); test-named files
+  as non-executing for every Stage 2 rule (+4); v6's tunnel placeholder test also accepts
+  templates and digits before `.oast.*` hosts (`${x}.oast.fun`), which X4 avoided for the
+  other OAST hosts: worth tightening, with a measurement.
+
 ## 2026-11-09: Evening review: system package installs, DSH homes, OSV disagreements upheld
 
 **Stage(s):** evaluation (reviewer verdicts), decision 0015
