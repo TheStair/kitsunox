@@ -56,6 +56,9 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
   narrowing to Stage 2's flags would repeat the recall loss measured in
   [0008](../decisions/0008-stage2-routing-and-tarball-capture.md).
 - **Profile:** a version's capabilities, the union over its files, with where each is used.
+  Since extractor v8 (2026-11-09) also `Profile.identity`: the calls reading the machine's
+  identity (`os.hostname()`, `userInfo()`, `networkInterfaces()`, `homedir()`) that run when
+  their file is loaded ([load-time payloads](#load-time-payloads-npmload-fingerprint-extractor-v8)).
   The **install profile** covers only the files its install hooks run (`node setup.js` →
   `setup.js`; `ecosystems/npm/install.py`), and since 2026-10-30 the package files those
   load or run by a constant path (`require("./lib/x")`, `import`, `export ... from`,
@@ -104,6 +107,7 @@ is the malicious set.
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
 | `npm.undeclared-package` (v2) | loading the version (its `exports`/`main`/`module`/`browser` entry, `index.js` by default, and the package files those load by a constant relative path, `ecosystems/npm/entry.py`) loads a package at module load (not in a `try`, not inside a function that isn't called in place; extractor v7) that `dependencies`, `peerDependencies`, `optionalDependencies` and `bundleDependencies` don't list and the tarball doesn't ship (Node's modules, paths and the package's own name don't count; on an update, only names the previous version's code didn't load). One evidence item per package (at most 10), which Stage 4's `npm.undeclared.missing` looks up | INFO (weight 0) | `vm-day1`: 3 of 1,500 (v1: 61), none for a name npm lacks; live: 204 of 29,470 versions in 29.2 h (v1: 993) | `vm-day1`: 131 of 3,443 (v1: 669); live: `tailwind-animate-engine@1.0.6` (with Stage 4's lookup: reported) |
+| `npm.load-fingerprint` (v1) | one file that loading the version runs (`CodeChange.load`) reads two or more of `os.hostname()`, `os.userInfo()`, `os.networkInterfaces()`, `os.homedir()` in code that runs at load (extractor v8, `lang/at_load.py`), and the loaded files use the network; not a `bin` target's file; on an update, only if the previous version's code didn't; [below](#load-time-payloads-npmload-fingerprint-extractor-v8) | MEDIUM | `vm-day1`: 0 of 1,500; live: 4 newly reported in 33.2 h (~3 a day) | `vm-day1`: 310 of 3,444, 42 newly reported (2 new packages, 40 follow-ons); live: `archetype-index-sdk` and 2 others, reported already |
 
 New packages get no `capability-gained` finding: with no previous version everything is
 "gained", and 34% of benign new packages would fire. They are covered by what their install
@@ -322,6 +326,76 @@ is not counted) v2 fires on 3 of the 1,046 routed benign samples (`react`, `expo
 `ember-*`, `rc-logger-abstract-transport` from `rc-logger`), and the other 2
 (`react-tmedia@2.1.4`, `tailwind-state@1.0.3` -> `bingo-logger-abstract-transport`, the
 wrapper-and-payload shape again) are reported already.
+
+### Load-time payloads: `npm.load-fingerprint` (extractor v8)
+
+`archetype-index-sdk@1.0.0` (2026-11-08, malicious) has no install hook: `dist/index.js`
+imports `telemetry-info.mjs`, which collects the host name, user name, home directory, MAC
+address and the names of set environment variables, sends them to an outside host, writes a
+helper under `~/.cache` and spawns it detached. It was reported at score 5 on two
+`static.obfuscated` findings alone; Stage 3 said nothing (a new package has no capability
+delta, and no install code). Measured before building (task: find the load-time population,
+build only what passes the owner's bar for a MEDIUM, under ~5 benign reports a day with a
+measurable recall gain):
+
+**The population.** Malicious versions with no `preinstall`/`install`/`postinstall`, whose
+harm must run when the package (or a command it ships) is used:
+
+| Set | No install hook | Reported | Missed |
+|---|---|---|---|
+| `vm-day1` malicious, routed to Stages 2-3 | 880 of 3,117 | 420 with today's code (358 on the 2026-10-31 dump; today's routing and Stage 2 rules add 62 follow-ons) | 460 (279 new packages, 14 updates, 167 follow-ons) |
+| `vm-day1` malicious, not routed | (not read) | 27 of 327 | 300: no Stage 3 rule sees them |
+| live reviewed positives (malicious, unwanted) with a tarball, captured or downloaded again as data | 53 of 108 | 26 (when reviewed) | 27: 14 `@atedone/workspace-context` releases (process and file names built from split strings), 7 Baileys forks, 3 loader tests, `txnforge`, `mock-datas-lib`, a payload in a dependency |
+| live OSV misses with a tarball | 8 of 8 | 0 | 8: payload in a dependency, or exported functions only |
+
+What the missed `vm-day1` ones load (the entry points and the files they load):
+no JavaScript at all 195 (HTML, binaries, a `bin`-only payload), code with no capability 94,
+process execution only 67, **two or more host-identity reads with network 63** (32
+`blocks-nextjs` follow-ons), dynamic code 35, network with process or the whole environment
+24, network only 23. The reported ones carry the same shapes, mostly through
+`static.exfil-endpoint`, `static.encoded-url`, `static.obfuscated` and
+`static.hardcoded-ip`. The identity-and-network shape is the dependency-confusion probe moved
+from `preinstall` into `index.js` (`seznam-diskuze`: `os.homedir()`, `os.hostname()`,
+`os.userInfo().username` in a JSON body POSTed to an `oastify.com` host at module load).
+
+**At load, not merely in a loaded file.** The text form ("a loaded file calls two of
+`hostname(`, `userInfo(`, `networkInterfaces(`, `homedir(` and the load profile uses the
+network") fires on 1 of 1,500 benign `vm-day1` samples but on 46-101 unreported live
+versions in 33.2 h (33-73 a day; the range is updates whose base wasn't captured): CLIs
+(`litmus-cli`'s `connect` command, `create-mastra`), playwright's bundled `utilsBundle.js`,
+agent plugins. Their reads sit in functions that run when called.
+Extractor v8 (`lang/at_load.py`) records only the reads that run when the file is loaded
+(`FileCapabilities.identity_at_load`, carried as `Profile.identity`): top-level code,
+functions called in place, functions passed to a call that runs or a `new Promise` executor,
+and functions the running code calls by name. Class and object methods never count, nor
+names reached across files or through an alias. Built, it keeps 310 of the 335 `vm-day1`
+malicious samples the text form fires on, and of the 46-101 live versions it leaves 4.
+
+**Rule.** `npm.load-fingerprint` (MEDIUM, weight 3): one loaded file reads at least two of the
+four facts at load, and the loaded files use the network. Not counted: a file that is one of
+the package's `bin` targets (a CLI that `main` points at: `codeam-cli`, `@mearl/native-host`,
+6 of the 7 reviewed benign versions it fired on, all reported already), and on an update
+anything the previous version's code already did. Measured with the built code:
+
+| | Fires | Newly reported |
+|---|---|---|
+| `vm-day1` benign (1,500) | 0 | 0 |
+| `vm-day1` malicious | 310 (149 new packages, 161 follow-ons; 0 shape-A updates) | **42**: 2 new packages (`@twilio-client/twilio-client@0.0.1`, `safe-chain-test@1.0.0`), 40 follow-ons (32 `blocks-nextjs`, `overstock-*`, `seznam-diskuze` x2, `@zentrafinance/*`, ...) |
+| live reviewed positives with a tarball | 3 (`archetype-index-sdk`, `@pcb-dp/qa-commons`, `service-roles-registry`), all reported already: score +3 | 0 |
+| live reviewed benign with a tarball (1,428 of 3,218) | 1 (`filedrawer@0.2.0`, an Electron app's main), reported already | 0 |
+| live, every version Stage 3 read in the 12 runs whose tarballs are all captured (2026-11-07 16:18Z to 11-09 01:31Z, 33.2 h, 35,734 versions) | 5: `archetype-index-sdk` (reported already) and 4 others | **4** (~2.9 a day): `dsh-session-gallery@0.1.0` (a plugin registering its host), `@saccolabs/questrade-mcp@2.0.1` and `@saccolabs/wave-mcp@1.0.1` (MCP servers whose `main` loads their CLI), `chatbotx-mcp@1.20.0` (an update; the CommonJS twin of its `bin`); unreviewed, they look benign |
+
+The bin guard costs one follow-on (`@sentry-browser-sdk/profiling-node@1.0.4`, whose
+`cli.js` is both `main` and `bin`). Vendor telemetry (benign by the owner's ruling) did not
+appear among the live hits; an SDK that reads two identity facts at import and phones its
+vendor would be reported.
+
+Not built, with numbers (`vm-day1` new packages newly reported / `vm-day1` benign that fire /
+unreported live versions in the same 33.2 h): a command run at load (`exec`/`spawn`
+reached at load) 50 / 3 / 100; with a network call at load 1 / 1 / 11; with a file write (the
+46 `*_z3n` self-publishing spam packages) 46 / 1 / 76; a detached spawn 1 / 0 / 58. None
+is under the bar with a gain, and an "obfuscated loaded file in a new package" rule adds
+nothing: `static.obfuscated` already reports such a file.
 
 ### Explained install (S1-S3) and agent configuration
 
@@ -553,6 +627,14 @@ download uses (`npx tool@1.2.3`) is volatile too, so moving a pinned tool's vers
   payload required from a `bin` script, a postinstall-only file or a file reached through a
   computed path is missed, and a load inside a bundler's module function (webpack's
   `__webpack_modules__`) counts as deferred.
+- "Runs at load" (extractor v8, `npm.load-fingerprint`) is decided within one file and by
+  name: a function called from another file (`index.js` calling `state.initialize()`, as
+  `@atedone/workspace-context` does), through an alias (`const run = main`), as a method, or
+  an identity read through a computed name (`os["host" + "name"]()`) is not seen as running,
+  and a function handed to any call counts as run even when it is only an event handler.
+  Obfuscated payloads that build `hostname` from a string table (the Tavern stealer family)
+  are not seen either; `static.obfuscated` covers those. Only identity reads are followed;
+  process execution and file writes at load were measured and not built.
 - Install-entry detection reads command lines. `node -e "<code>"` and shell scripts are not
   parsed.
 - **tree-sitter 0.26.0 is excluded** (`pyproject.toml`). Using nodes from query matches

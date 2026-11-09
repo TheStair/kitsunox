@@ -2,6 +2,69 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Load-time payloads: `npm.load-fingerprint` and extractor v8
+
+**Stage(s):** Stage 3 (`lang/at_load.py`, extractor v8, `npm.load-fingerprint` v1)
+**Context:** `archetype-index-sdk@1.0.0` (entry above) was reported on obfuscation alone: a
+payload its entry imports, no install hook, nothing from Stage 3. Task: find how many
+malicious packages do their harm when loaded, what their load profile (`CodeChange.load`)
+shows, and build a narrow rule only if it passes the owner's bar for a MEDIUM (under ~5
+benign reports a day, measurable recall gain). Details and tables:
+[stages/ast.md](stages/ast.md#load-time-payloads-npmload-fingerprint-extractor-v8).
+
+### Decisions
+- **Population first.** `vm-day1`, every sample scanned (archives read in memory): 880 of the
+  3,117 routed malicious samples have no install hook; 420 are reported with today's code
+  (per-sample `pipeline+4` for the 548 the 2026-10-31 dump missed), 460 missed (279 new
+  packages). Their loaded code: no JavaScript 195, no capability 94, process only 67,
+  **two host-identity reads plus network 63**, dynamic code 35. Live: 53 of the 108 reviewed
+  positives with a tarball have no hook, 27 of them missed when reviewed (mostly
+  `@atedone/workspace-context`, whose names are built from split strings, and Baileys forks).
+- **At load, not in a loaded file.** The text form of the identity shape fired on 1 of 1,500
+  benign `vm-day1` samples but on 33-73 unreported live versions a day (CLI commands, bundled
+  playwright, agent plugins: reads inside functions). Extractor v8 follows what runs when a
+  file is loaded within the file (top level, in-place calls, callbacks of running calls,
+  functions called by name from running code) and records only identity reads there. A
+  Python prototype first, then the extractor; the built rule reproduced the prototype's
+  `vm-day1` numbers exactly.
+- **Built `npm.load-fingerprint` (MEDIUM 3)**: one loaded file reads two of `os.hostname()`,
+  `userInfo()`, `networkInterfaces()`, `homedir()` at load and the loaded files use the
+  network; not a `bin` target's file; on updates only when the base didn't. npm-specific
+  (in `ecosystems/npm/rules/`) because of the `bin` guard; the extractor part is generic.
+- **The `bin` guard**: 6 of the 7 reviewed benign versions it fired on were CLIs whose
+  `main` is their `bin` (`codeam-cli`, `@mearl/native-host` x5). It costs one `vm-day1`
+  follow-on (`@sentry-browser-sdk/profiling-node@1.0.4`).
+- **Not built**: a command at load (50 new `vm-day1` packages, but 3 benign samples and 100
+  unreported live versions in 33.2 h), with network (1 / 1 / 11), with a file write (46,
+  all the `*_z3n` self-publishing spam family / 1 / 76), a detached spawn (1 / 0 / 58), and
+  "obfuscated loaded file in a new package" (`static.obfuscated` already reports those).
+
+### Challenges
+- **The live scan was slow** (35,734 versions, tarballs from the blob store): ~1 version a
+  second while three `vm-day1` scans shared the 4 vCPUs. A byte prefilter on the gunzipped
+  tarball (no trigger word, no parse) skipped 19,327 of them.
+- **The live reviewed positives were mostly pruned**: 69 of 191 positives and OSV misses had a
+  captured tarball; 47 more were downloaded again from npm as data (read in memory), the rest
+  are gone from npm.
+
+### Evaluation snapshot
+- `vm-day1`: +42 malicious reported (2 new packages: `@twilio-client/twilio-client@0.0.1`,
+  `safe-chain-test@1.0.0`; 40 follow-ons, 32 of them `blocks-nextjs`); fires on 310, 268 of
+  them reported already. Benign: 0 of 1,500 fire.
+- Live, 12 fully captured runs (33.2 h): 4 new reports (~2.9 a day), unreviewed and
+  benign-looking (`dsh-session-gallery`, `@saccolabs/questrade-mcp`, `@saccolabs/wave-mcp`,
+  `chatbotx-mcp`); `archetype-index-sdk` score 5 → 8. Reviewed: 3 positives and 1 benign
+  (`filedrawer`) fire, all reported already; 0 reviewed benign newly reported.
+
+### Open questions / next steps
+- Owner: vendor telemetry that reads two identity facts at import would be reported; none
+  was seen live. If one appears, a guard for the package's own homepage host would need the
+  same trust question as round 2's S2-homepage proposal.
+- Owner: the `*_z3n` self-publishing spam (46 `vm-day1` samples, `npm publish` in a loop at
+  load) is caught by nothing; a rule for "runs `npm publish` at load" was not measured.
+- Cross-file reach (`index.js` calling another file's exported function at load) would see
+  `@atedone/workspace-context`, but its names are built from split strings anyway.
+
 ## 2026-11-09: `npm.install-script-changed` v4, version strings and printed text
 
 **Stage(s):** Stage 3 (`npm.install-script-changed` v4, `lang.javascript.mask_printed_text`)

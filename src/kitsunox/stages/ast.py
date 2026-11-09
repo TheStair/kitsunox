@@ -87,14 +87,16 @@ class PathPackage(Record):
 
 class Profile(Record):
     """Capabilities of one version's code, with where each is used (paths sorted); the
-    packages its own files load by name (not files under `node_modules/`), and the packages
-    it ships under `node_modules/`."""
+    packages its own files load by name (not files under `node_modules/`), the packages
+    it ships under `node_modules/`, and the reads of the machine's identity that run when a
+    file is loaded (`FileCapabilities.identity_at_load`)."""
 
     uses: tuple[PathUse, ...] = ()
     files_parsed: int = 0
     files_with_errors: int = 0
     packages: tuple[PathPackage, ...] = ()
     bundled: frozenset[str] = frozenset()
+    identity: tuple[PathUse, ...] = ()
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -107,6 +109,7 @@ class Profile(Record):
 def profile(tree: Tree, cache: CapabilityCache, *, paths: frozenset[str] | None = None) -> Profile:
     """The profile of `tree`, or of only `paths` within it (e.g. an install script's files)."""
     uses: list[PathUse] = []
+    identity: list[PathUse] = []
     packages: list[PathPackage] = []
     bundled: set[str] = set()
     parsed = errors = 0
@@ -123,6 +126,7 @@ def profile(tree: Tree, cache: CapabilityCache, *, paths: frozenset[str] | None 
         parsed += 1
         errors += result.parse_errors
         uses.extend(PathUse(path=path, use=use) for use in result.uses)
+        identity.extend(PathUse(path=path, use=use) for use in result.identity_at_load)
         if vendored is None:
             packages.extend(PathPackage(path=path, load=load) for load in result.packages)
     return Profile(
@@ -131,6 +135,7 @@ def profile(tree: Tree, cache: CapabilityCache, *, paths: frozenset[str] | None 
         files_with_errors=errors,
         packages=tuple(packages),
         bundled=frozenset(bundled),
+        identity=tuple(identity),
     )
 
 

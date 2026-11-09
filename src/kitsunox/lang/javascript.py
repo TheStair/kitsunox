@@ -31,6 +31,7 @@ import tree_sitter_javascript as tsjs
 import tree_sitter_typescript as tsts
 
 from kitsunox.core.models import Record
+from kitsunox.lang.at_load import identity_reads
 
 # Bump whenever extraction changes: it keys the on-disk cache (`stages/ast.py`).
 # 2: `eval`, `Function(...)` and `new Function(...)` whose every argument is a short constant
@@ -48,7 +49,10 @@ from kitsunox.core.models import Record
 # 7: whether a package load is deferred, inside a function that isn't called where it is
 #    defined (`PackageLoad.deferred`): only a load at module load fails, or runs a payload, the
 #    moment the package is required (`tailwind-animate-engine@1.0.6`, 2026-11-02).
-EXTRACTOR_VERSION: Final = 7
+# 8: the reads of the machine's identity that run when the file is loaded
+#    (`FileCapabilities.identity_at_load`, `lang.at_load`), for `npm.load-fingerprint`
+#    (`archetype-index-sdk@1.0.0`, 2026-11-08: a payload imported by the package's entry).
+EXTRACTOR_VERSION: Final = 8
 MAX_CONSTANT_CODE: Final = 120  # characters of constant code `_constant_code` lets through
 MAX_SOURCE_BYTES: Final = 16 * 1024 * 1024  # same as Stage 2's file limit
 SNIPPET_CHARS: Final = 160
@@ -101,6 +105,10 @@ class FileCapabilities(Record):
     uses: tuple[Use, ...]
     # Each package once, at its most direct load: at module load, else deferred, else guarded.
     packages: tuple[PackageLoad, ...] = ()
+    # Calls reading the machine's identity (`os.hostname()`, `os.userInfo()`,
+    # `os.networkInterfaces()`, `os.homedir()`; `lang.at_load.IDENTITY_CALLS`) that run when the
+    # file is loaded, as `os-info` uses whose detail is the function's name (MAX_EVIDENCE each).
+    identity_at_load: tuple[Use, ...] = ()
 
     @property
     def capabilities(self) -> frozenset[Capability]:
@@ -362,7 +370,25 @@ def analyse_source(content: bytes, language: str) -> FileCapabilities:
         parse_errors=tree.root_node.has_error,
         uses=ordered,
         packages=_packages(content, loads),
+        identity_at_load=_identity_at_load(tree.root_node, language, content),
     )
+
+
+def _identity_at_load(root: ts.Node, language: str, content: bytes) -> tuple[Use, ...]:
+    kept: dict[str, int] = {}
+    out = []
+    for name, node in identity_reads(root, _language(language)[0]):
+        if kept.get(name, 0) < MAX_EVIDENCE:
+            kept[name] = kept.get(name, 0) + 1
+            out.append(
+                Use(
+                    capability=Capability.OS_INFO,
+                    detail=name,
+                    line=node.start_point.row + 1,
+                    snippet=_snippet(content, node),
+                )
+            )
+    return tuple(out)
 
 
 def package_name(specifier: str) -> str | None:
