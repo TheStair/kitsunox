@@ -12,6 +12,7 @@ from kitsunox.lang.javascript import (
     analyse_source,
     fold_string,
     language_for,
+    mask_printed_text,
     module_capability,
     package_name,
 )
@@ -324,3 +325,20 @@ function w() { require("twice-deferred") } function v() { require("twice-deferre
 )
 def test_package_name(specifier: str, name: str | None) -> None:
     assert package_name(specifier) == name
+
+
+def test_mask_printed_text_masks_only_what_a_console_call_prints() -> None:
+    code = (
+        b'console.log("installed " + v);\n'
+        b"process.stderr.write(`failed: ${err}\\n`);\n"
+        b'exec("rm -rf x");\n'
+        b'console.log(f("kept"), c ? "a" : "b");\n'
+    )
+    masked = mask_printed_text(code, "javascript")
+    assert masked == (
+        b'console.log("\x00" + v);\n'
+        b"process.stderr.write(`\x00${err}\x00`);\n"
+        b'exec("rm -rf x");\n'
+        b'console.log(f("kept"), c ? "a" : "b");\n'
+    )
+    assert mask_printed_text(b"console.log(", "javascript") is None  # parse error

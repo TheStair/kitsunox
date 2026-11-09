@@ -19,7 +19,7 @@ from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.install import loaded_files
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
-from kitsunox.lang.javascript import Capability
+from kitsunox.lang.javascript import Capability, language_for, mask_printed_text
 from kitsunox.rules.capabilities import evidence
 from kitsunox.rules.static import Obfuscated
 from kitsunox.stages.ast import CodeChange
@@ -84,10 +84,19 @@ class InstallScriptChanged(BaseRule):
     ones) counts only when its change adds a risky use (`_adds_risky`). Library code a hook
     imports changes with most releases: 7 of the first 120 re-scored live reports were that
     alone, all benign (6 add no risky use). `vm-day1`: 2,503 malicious reported (was 2,506:
-    three `aicp-tracker` versions, a family still reported through 1.0.7), 20 benign (was 21)."""
+    three `aicp-tracker` versions, a family still reported through 1.0.7), 20 benign (was 21).
+
+    v4 (2026-11-09): LOW, weight 1, when every changed file is the same code but for volatile
+    strings (`VOLATILE`: versions in any form, dates and build stamps, digests and commit
+    hashes, integrity values; same URL hosts) or for the text of messages it prints
+    (`mask_printed_text`). Generated installers pin the release they download, a digest and a
+    build date; a newly run, binary or too-long file, or one with any other change, keeps the
+    MEDIUM. Of the 422 reviewed benign versions this rule alone reported, v4 no longer reports
+    64 (50 volatile strings, 14 printed text); it loses no malicious, unwanted or unverified
+    version and no `vm-day1` malicious sample (`docs/stages/ast.md`)."""
 
     id = "npm.install-script-changed"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Code an install script runs changed"
@@ -117,13 +126,19 @@ class InstallScriptChanged(BaseRule):
                 parts.append(f"{path} (too long to diff)")
             else:
                 parts.append(f"{path} (+{counted[0]} -{counted[1]} lines)")
+        minor = all(
+            _unremarkable(path, before.get(path), change.install_files[path]) for path in changed
+        )
         return (
             self.finding(
-                f"`npm install` runs code that changed{since}: {', '.join(parts)}.",
+                f"`npm install` runs code that changed{since}: {', '.join(parts)}."
+                + (MINOR_NOTE if minor else ""),
                 *(
                     _diff_evidence(path, before.get(path), change.install_files[path])
                     for path in changed[:MAX_FILES_SHOWN]
                 ),
+                severity=Severity.LOW if minor else None,
+                weight=1.0 if minor else None,
             ),
         )
 
@@ -139,6 +154,55 @@ def _same(old: bytes | None, new: bytes, old_version: bytes, new_version: bytes)
     return old == new or (
         bool(old_version) and old_version in old and old.replace(old_version, new_version) == new
     )
+
+
+# Strings a generated install script embeds that change with each release while the code stays
+# the same: a version in any form (`1.2.3`, `v1.2.3-canary.4+b5`; not part of a dotted quad, so
+# an IP address is never one), a date or build stamp (`2026-11-04`, `20261104`,
+# `202611041730`), a digest or commit hash (7-12, 32, 40, 64, 96 or 128 hex digits with a
+# letter and a digit), an integrity value (`sha512-...`).
+_HEX: Final = (
+    r"(?:[0-9a-f]{7,12}|[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{96}|[0-9a-f]{128})"
+)
+VOLATILE: Final = re.compile(
+    r"sha(?:256|384|512)-[A-Za-z0-9+/]{43,86}={0,2}"
+    r"|(?<![\w.])v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?(?![\w.]*\.\d)"
+    r"|\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?\b"
+    rf"|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d){_HEX}\b"
+    r"|\b20\d{6}(?:\d{2,6})?\b"
+)
+URL_HOST: Final = re.compile(r"""https?://([^\s"'`)<>\\/:]+)""", re.IGNORECASE)
+MINOR_NOTE: Final = (
+    " Only version strings, digests, dates or printed messages changed, so the code it runs"
+    " is the same."
+)
+
+
+def _unremarkable(path: str, old: bytes | None, new: bytes) -> bool:
+    """`new` is `old` but for volatile strings (`VOLATILE`, with the same URL hosts), the text
+    of the messages it prints (`mask_printed_text`, JavaScript only), or both. A newly run or
+    binary file never is."""
+    if old is None or b"\x00" in new[:8192] or b"\x00" in old[:8192]:
+        return False
+    old, new = _lf(old), _lf(new)
+    if _same_but_volatile(old, new):
+        return True
+    language = language_for(path)
+    if language is None:
+        return False
+    masked_old, masked_new = mask_printed_text(old, language), mask_printed_text(new, language)
+    return (
+        masked_old is not None
+        and masked_new is not None
+        and _same_but_volatile(masked_old, masked_new)
+    )
+
+
+def _same_but_volatile(old: bytes, new: bytes) -> bool:
+    a, b = old.decode("utf-8", "replace"), new.decode("utf-8", "replace")
+    return VOLATILE.sub("\x00", a) == VOLATILE.sub("\x00", b) and sorted(
+        {h.lower() for h in URL_HOST.findall(a)}
+    ) == sorted({h.lower() for h in URL_HOST.findall(b)})
 
 
 def _adds_risky(change: CodeChange, path: str, old: bytes | None, new: bytes) -> bool:

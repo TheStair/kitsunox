@@ -459,6 +459,60 @@ reported through a loaded file alone, all benign (`openyida`'s auth library, `wa
 tool descriptions); 6 of them add no risky line. `vm-day1`: 3 malicious lost, all
 `aicp-tracker` (the family is still reported through 1.0.7, which adds one), 1 benign.
 
+`npm.install-script-changed` v4 (2026-11-09) is LOW, weight 1, when every changed file is the
+same code but for **volatile strings** or for **printed text**; the diff stays in the evidence,
+with a note. Volatile strings (`VOLATILE`) are versions in any form (`v2.3.38`,
+`1.4.4-canary.20261030.1+f7607a3`, never part of a dotted quad, so an IP address is not one),
+dates and build stamps, digests and commit hashes (7-12, 32, 40, 64, 96 or 128 hex digits with a
+letter and a digit) and integrity values; the URL hosts must stay the same. Printed text is a
+string that is an argument of `console.*` or `process.std{out,err}.write` (directly, or through
+`+` and parentheses: not through a function call, a ternary or a template's `${...}`), masked by
+`lang.javascript.mask_printed_text` on a clean parse. A newly run, binary or too-long file, or
+any other change in any file, keeps the MEDIUM: a new host or repository owner, a changed IP
+address, a changed command string, added code beside a message, formatting.
+
+Measured before building, on the latest verdict of the 750 reviewed versions the rule fired on
+(benign 714, unverified 27, malicious 6, unwanted 3; both tarballs for 742, 371 of them
+downloaded again from npm as data) with today's other findings (round 2's groups, the
+explained-install shapes recomputed on the tarballs) and Stage 4's real `explained` and
+`decide`. 422 benign versions are reported only through this rule. Their changed install
+files, by tree-sitter tokens (comments aside):
+
+| Shape of the change | Reported benign |
+|---|---|
+| ordinary code changes (refactors, new options, error handling) | 283 |
+| only versions, digests, dates (generated installers: `workerd`, `bun` canaries, `@depot/cli`, `@ejfkdev/*`, `onpod`, `statuz-cli`) | 52 |
+| only string literals: printed messages (14), but also download URLs, shell lines, file names | 27 |
+| shell, Python or PowerShell install files | 21 |
+| a file newly run (with or without other changes) | 30 |
+| only comments or formatting | 8 (and `hyrox@0.1.6`, unverified) |
+| a binary | 1 |
+
+Of the 422, 113 download with a checksum but are not S2 (another host, a templated URL, a
+whole-environment read); 90 download without one; 219 use no network at all. The proposals,
+each as LOW (none touches a malicious, unwanted or unverified version unless said):
+
+| Proposal | Benign reports removed | Positives / unverified lost | `vm-day1` malicious touched / lost |
+|---|---|---|---|
+| **volatile strings only** (built) | 50 | 0 / 0 | 0 / 0 |
+| **printed text only** (built) | 14 | 0 / 0 | 0 / 0 (a line-based estimate matched `shoal-cli@0.4.5`, reported by `npm.install-hook` HIGH anyway; the built masking doesn't) |
+| comments or formatting only | 8 | 0 / 1 (`hyrox@0.1.6`) | 0 / 0 |
+| install code with no capability at all | 7 | 0 / 1 (`hyrox@0.1.6`) | 1 / 0 |
+| any string-literal-only change | 27 | 0 / 0 | 8 / **8** (`esoftplay` ×4, `@emilgroup/*` ×3, `fooobar@1.0.14`) |
+| S2 for a checksum-verified download from the `homepage`'s domain | 17 (5 packages; 2 beyond the built shapes) | 0 / 0 | not measured |
+
+As built (v4 on the same versions): **64 fewer reports (27 packages), all benign; 0 malicious,
+unwanted or unverified lost**; 74 benign findings LOW. On `vm-day1`, v4 was run on every
+malicious update whose manifest has an install hook (the encrypted zips read in memory, the base
+from a copy of the evaluation's tarball cache; 1,203 have no base npm still serves, so the rule
+can't fire on them): v3 fires on 629, and **all 629 stay MEDIUM**, so no sample's report
+changes. Not built: string-literal-only
+(strings carry behaviour: the 8 malicious samples change template code or commands in strings),
+comments-only and no-capability code (both lose `hyrox@0.1.6`, unverified, whose only install
+change is reformatting: an owner decision), and the vendor-host download (the `homepage` is the
+publisher's own claim). Known limit: a version pinned by a string that something other than a
+download uses (`npx tool@1.2.3`) is volatile too, so moving a pinned tool's version is LOW.
+
 ## Evaluation
 
 `day1` (sha256 `d99626981ae6`), 2026-10-28:

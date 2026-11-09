@@ -2,6 +2,64 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: `npm.install-script-changed` v4, version strings and printed text
+
+**Stage(s):** Stage 3 (`npm.install-script-changed` v4, `lang.javascript.mask_printed_text`)
+**Context:** The rule is the largest benign cluster among reviewed reports (latest verdicts with
+it: benign 714, unverified 27, malicious 6, unwanted 3). Reviewers kept clearing generated
+installers whose diff was only the pinned release, its digest and a date, and postinstalls
+whose only change was a message. Task: characterise, measure narrow fixes against every
+positive, every unverified version and `vm-day1`, build only the ones that lose nothing.
+
+### Decisions
+- **Measure on today's findings, not the stored ones.** Baseline = round 2's recomputed groups
+  plus the explained-install shapes recomputed on the tarballs (371 missing tarballs were
+  downloaded again from npm, as data, read in memory); Stage 4's real `explained` and `decide`.
+  This moved the "reported only through this rule" set from 457 to 422 benign: 35 were already
+  explained by S1-S3 once their tarballs were present.
+- **Shapes of the 422** (tree-sitter tokens, comments aside): code changes 283, newly run file 30,
+  versions/digests/dates only 52, string literals only 27, shell/Python install files 21,
+  comments/formatting only 8, binary 1. 113 download with a checksum but are not S2.
+- **Built: LOW when every changed file is the same but for volatile strings or printed text.**
+  Volatile = versions in any form (never inside a dotted quad, so a changed IP address stays
+  MEDIUM), dates and build stamps, 7-12/32/40/64/96/128-hex digests and commits, SRI values,
+  with the same URL hosts. Printed = a string argument of `console.*` or
+  `process.std{out,err}.write`, directly or through `+`/parentheses, on a clean parse.
+  Textual normalisation matched the token-level measurement exactly (52 = 52), so the version
+  part needs no parser. LOW rather than "unchanged": the diff stays in front of a reviewer and
+  in the score.
+- **Not built, with numbers.** Any string-literal-only change (−27 benign) loses 8 `vm-day1`
+  samples (`esoftplay` ×4, `@emilgroup/*` ×3, `fooobar@1.0.14`: strings there are code
+  templates and commands). Comments/formatting only (−8) and capability-free install code (−7)
+  both lose `hyrox@0.1.6` (unverified; its only install change is reformatting, its reason is an
+  obfuscated dependency): owner's call, as round 2's F1 was. S2 for a checksum-verified
+  download from the `homepage`'s domain (−17, 5 packages, only `topaz-lang` ×2 beyond v4) trusts
+  a field the publisher writes.
+
+### Challenges
+- **The first token pass stalled** on `difflib` over 100k-token minified files. Capped the token
+  diff at 12k tokens (larger files only get the equal / strings-only test) and made the pass
+  resumable.
+- **`vm-day1` took ~10 s a sample** (ZipCrypto in Python). First the 612 samples the
+  2026-10-31 dump has the rule on, then every other malicious update whose manifest has an
+  install hook (a first full pass over 261 samples had found 4 firing outside the dump, which
+  only held Stage 3 results for routed samples): 629 fire with today's code.
+- **A line-based "log-only" proxy matched `shoal-cli@0.4.5`** (malicious; reported by
+  `npm.install-hook` HIGH anyway); the AST masking does not, because its changed line does more
+  than print.
+
+### Evaluation snapshot
+- Live, the 750 reviewed versions: reported 655 → 591, all 64 benign (27 packages: `workerd`,
+  `bun` canaries, `@depot/cli`, `@ejfkdev/*`, `onpod`, `statuz-cli`, `tunlion`, ...); 0 of 6
+  malicious, 3 unwanted, 27 unverified lost. Unreviewed live versions with the rule: 2, neither
+  reported.
+- `vm-day1`: all 629 malicious samples where the rule fires stay MEDIUM; no report changes.
+
+### Open questions / next steps
+- Owner: comments/formatting-only changes as LOW (−8 benign, loses unverified `hyrox@0.1.6`).
+- The remaining 283 code-change reports have no narrow shape; a "no new capability, URL,
+  credential path or blob in the added lines" test is round 2's F1, still the owner's decision.
+
 ## 2026-11-09: Queue review of the first ticks on the pre-freeze rules; evaluation pins 404s
 
 **Stage(s):** Review (verdicts), evaluation harness (`PinnedFetcher`)

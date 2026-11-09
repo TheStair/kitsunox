@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.rules import install_code
@@ -178,6 +180,100 @@ def test_an_install_file_that_changed_only_its_line_endings_is_unchanged() -> No
     edited = pkg("node i.js", {"i.js": b"const a = 2;\nrun(a);\n"})
     (found,) = InstallScriptChanged().evaluate_code(change(edited, old))
     assert "i.js (+1 -1 lines)" in found.explanation
+
+
+def _pinned(tag: str, sha: str, built: str, commit: str) -> dict[str, bytes]:
+    """A generated installer pinning a release tag, its sha256, a build date and a commit."""
+    code = (
+        f'const TAG = "{tag}";\n'
+        f'const SHA = "{sha}";\n'
+        f"// built {built} from {commit}\n"
+        "download(`https://github.com/o/r/releases/download/${TAG}/r-${TAG}.tgz`, SHA);\n"
+    )
+    return pkg("node i.js", {"i.js": code.encode()})
+
+
+def test_an_install_file_changing_only_volatile_strings_is_low() -> None:
+    """v4: generated installers (`workerd`, `bun` canaries, `@depot/cli`, `onpod`) pin the
+    release they fetch, its digest and a build date; the code is the same."""
+    old = _pinned("v2.3.22", "a" * 63 + "1", "2026-11-03", "da867c6")
+    new = _pinned("v2.3.38", "b" * 63 + "2", "2026-11-08", "f7607a3")
+    (found,) = InstallScriptChanged().evaluate_code(change(new, old))
+    assert (found.severity, found.weight) == (Severity.LOW, 1.0)
+    assert found.explanation.endswith(install_code.MINOR_NOTE)
+    assert '+const TAG = "v2.3.38";' in (found.evidence[0].snippet or "")  # still shown
+
+
+@pytest.mark.parametrize(
+    ("text", "volatile"),
+    [
+        ("1.2.3", True),
+        ("v1.4.4-canary.20261030.1+f7607a3", True),
+        ("2026-11-04T17:30:00Z", True),
+        ("20261104", True),
+        ("da867c6", True),
+        ("sha512-" + "A" * 86 + "==", True),
+        ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", True),
+        ("10.0.0.1", False),  # an IP address is not a version
+        ("1.2", False),
+        ("deadbeefcafe", False),  # hex needs a digit and a letter
+        ("1234567", False),
+        ("evil.example", False),
+    ],
+)
+def test_volatile_strings(text: str, volatile: bool) -> None:
+    assert (install_code.VOLATILE.fullmatch(text) is not None) is volatile
+
+
+def test_anything_but_volatile_strings_keeps_the_medium() -> None:
+    old = _pinned("v2.3.22", "a" * 63 + "1", "2026-11-03", "da867c6")
+    rule = InstallScriptChanged()
+    host = pkg("node i.js", {"i.js": old["i.js"].replace(b"github.com/o/r", b"evil.example/o/r")})
+    owner = pkg("node i.js", {"i.js": old["i.js"].replace(b"github.com/o/r", b"github.com/x/r")})
+    code = pkg("node i.js", {"i.js": old["i.js"] + b"require('child_process').exec(SHA)\n"})
+    ip_old = pkg("node i.js", {"i.js": b'net.connect(443, "10.0.0.1")\n'})
+    ip_new = pkg("node i.js", {"i.js": b'net.connect(443, "10.0.0.2")\n'})
+    for new, base in ((host, old), (owner, old), (code, old), (ip_new, ip_old)):
+        (found,) = rule.evaluate_code(change(new, base))
+        assert found.severity is Severity.MEDIUM, new["i.js"]
+    (newly,) = rule.evaluate_code(change(pkg("node j.js", {"j.js": b'const v = "1.0.1"'}), old))
+    assert newly.severity is Severity.MEDIUM  # a file newly run is never "only versions"
+    both = pkg(
+        "node i.js && node j.js",
+        {
+            "i.js": _pinned("v2.3.38", "a" * 63 + "1", "2026-11-03", "da867c6")["i.js"],
+            "j.js": b"f(2)",
+        },
+    )
+    base = pkg("node i.js && node j.js", {"i.js": old["i.js"], "j.js": b"f(1)"})
+    (found,) = rule.evaluate_code(change(both, base))
+    assert found.severity is Severity.MEDIUM  # one file with a real change: MEDIUM for all
+
+
+def test_an_install_file_changing_only_its_printed_messages_is_low() -> None:
+    """v4: `tunlion`'s error text, `@hsusulist/luc`'s hint, a postinstall banner."""
+    old = pkg(
+        "node p.js",
+        {"p.js": b'try { run() } catch (e) { console.error("install failed - " + e) }\n'},
+    )
+    new = pkg(
+        "node p.js",
+        {"p.js": b'try { run() } catch (e) { console.error("install failed: " + e) }\n'},
+    )
+    (found,) = InstallScriptChanged().evaluate_code(change(new, old))
+    assert found.severity is Severity.LOW
+    rule = InstallScriptChanged()
+    for before, after in (
+        (b'exec("npm i a")\n', b'exec("npm i b")\n'),  # a string that is run, not printed
+        (b'console.log(f("a"))\n', b'console.log(f("b"))\n'),  # passed to code first
+        (b'console.log("a")\n', b'console.log("a"); fetch(u)\n'),  # code added beside it
+        # Formatting alone keeps the MEDIUM: `hyrox@0.1.6` (unverified) is reported only so.
+        (b"if (a) { console.log('x') }\n", b"if (a) {\n  console.log('x')\n}\n"),
+    ):
+        (found,) = rule.evaluate_code(
+            change(pkg("node p.js", {"p.js": after}), pkg("node p.js", {"p.js": before}))
+        )
+        assert found.severity is Severity.MEDIUM, after
 
 
 def test_a_loaded_install_file_counts_only_when_it_adds_a_risky_use() -> None:

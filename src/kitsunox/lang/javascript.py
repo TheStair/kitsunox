@@ -802,6 +802,70 @@ def _whole_env(node: ts.Node) -> bool:
     return parent.type not in ("binary_expression", "unary_expression")
 
 
+# Calls whose string arguments are only printed: changing their text changes no behaviour.
+PRINTING_CALLS: Final = frozenset(
+    {
+        "console.log",
+        "console.info",
+        "console.warn",
+        "console.error",
+        "console.debug",
+        "process.stdout.write",
+        "process.stderr.write",
+    }
+)
+# What may stand between a string's text and the printing call's argument list.
+_PRINTED_PATH: Final = frozenset(
+    {"string", "template_string", "binary_expression", "parenthesized_expression", "arguments"}
+)
+
+
+def mask_printed_text(content: bytes, language: str) -> bytes | None:
+    """`content` with the text of every string it only prints (`PRINTING_CALLS`) replaced by a
+    NUL byte, everything else as it is; None if it doesn't parse without errors. Two versions
+    with equal results differ only in the messages they print. A string counts when it is an
+    argument of the call itself, or a `+` or parenthesis of such: `console.log("a" + b)`, not
+    `console.log(f("a"))` or `console.log(c ? "a" : "b")`; a template's `${...}` is code."""
+    if len(content) > MAX_SOURCE_BYTES:
+        return None
+    parser, _ = _parser(language)
+    root = parser.parse(content).root_node
+    if root.has_error:
+        return None
+    spans = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type in ("string_fragment", "escape_sequence"):
+            if _printed(node):
+                spans.append((node.start_byte, node.end_byte))
+            continue
+        stack.extend(node.children)
+    out = bytearray()
+    position = 0
+    for start, end in sorted(spans):
+        out += content[position:start] + b"\x00"
+        position = end
+    return bytes(out + content[position:])
+
+
+def _printed(node: ts.Node) -> bool:
+    parent = node.parent
+    while parent is not None and parent.type in _PRINTED_PATH:
+        if (
+            parent.type == "binary_expression"
+            and _text(parent.child_by_field_name("operator")) != "+"
+        ):
+            return False
+        node, parent = parent, parent.parent
+    return (
+        parent is not None
+        and parent.type == "call_expression"
+        and node.type == "arguments"
+        and _text(parent.child_by_field_name("function")) in PRINTING_CALLS
+    )
+
+
 def _text(node: ts.Node | None) -> str:
     if node is None or node.text is None:
         return ""
