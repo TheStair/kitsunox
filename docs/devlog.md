@@ -2,6 +2,67 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: S3 explains only copies into the project (`npm.install-explained` v2)
+
+**Stage(s):** Stage 3 (`npm.install-explained` v2, new INFO `npm.install-agent-user-wide`,
+`lang/agent_config.home_references`); Stage 4 reads the shape as before.
+**Context:** The owner ruled today (decision 0015, addendum 2026-11-09) that install code
+silently writing skills, hooks, agent settings or MCP registrations into user-wide agent
+locations (`~/.claude/`, `~/.agents/`, `~/.codex/`, ...) is **unwanted**, a positive;
+project-scoped writes stay benign. `sino-bc-cli` (20 versions decoded offline) is being
+re-labelled. S3 ("agent-skill copier", 2026-11-08) explained user-wide and project copies
+alike, so it now hides positives. Measured first, then narrowed. Details:
+[stages/ast.md](stages/ast.md#s3-v2-copies-into-the-project-only-2026-11-09).
+
+### Decisions
+- **Project-scoped means "no home reference" in the install code or hook line.** Text over
+  the whole install code: `os.homedir()`/`homedir` imports, `process.env.HOME`/`USERPROFILE`/
+  `APPDATA`/`XDG_CONFIG_HOME`, agents' `CLAUDE_CONFIG_DIR`/`CODEX_HOME`, `$HOME`, `~/`,
+  `path.join("~", ...)`. Alternatives: data flow from the home path to the write call (not
+  available: tree-sitter gives syntax only) or requiring a positive project anchor
+  (`INIT_CWD`, `process.cwd()`), which would also drop `@inizioevoke/veeva-astroclm-core`
+  (a `projectRoot` from `__dirname`) and `@revikornmann/muka-ui` (only mentions `.claude/`).
+  Text over-matches comments and messages; that only keeps a version reported.
+- **"Undetermined" is install code that loads a package by name.** Where a dependency writes
+  can't be seen (`@doist/todoist-cli` refreshes installed skills through `@doist/cli-core`).
+  On the measured sets this condition alone removes only `todoist-cli` (3 live versions).
+- **A cheap INFO note, no new MEDIUM.** `npm.install-agent-user-wide` (weight 0) shows the
+  reviewer where the install code refers to the home directory, so a reported user-wide
+  copier says why it isn't explained. It changes no score or decision.
+- **No STAGE_VERSION or extractor bump:** only Stage 3's rule set changes (rule version 2 and
+  a new rule); Stage 4's code and contract are unchanged.
+
+### Challenges
+- **A quoted tilde is not a path.** The first pattern took `"~"` anywhere: `@abblor/agent-os`
+  help text (`"+"/"="/"~" lines`) counted as user-wide. Now only `"~",` as an argument
+  (`path.join("~", ...)`) counts; a test pins the help-text form.
+- **The keys pass collapsed versions seen in two runs**, so the first per-run totals were 19
+  short; counts are per unique version (`tools/by_version.py`).
+
+### Evaluation snapshot
+- Live, 17 fully captured runs (38 h): today's S3 explains 30 versions (14 packages); v2
+  keeps 11, 17 user-wide and 2 undetermined lose it; **0 reports added back** (S3 only lowers
+  install findings, and these have none: mostly updates with an unchanged hook). The 4-day catch-up run (partly captured): 39 → 12 kept,
+  **+7 reports**, all reviewed benign. About 0 to 2 a day.
+- Reviewed: **16 benign versions S3 explains today write (or mention) user-wide** and are
+  reported again; 14 are user-wide copiers by hand-reading (the `sino-bc-cli` shape, to be
+  relabelled unwanted), 2 only mention home (`@draig/lexis-two`, `opencode-blocker-diverter`).
+  No reviewed positive was S3 (22 unwanted + 1 unverified agent-dir versions all have
+  network, process or obfuscation), so recall under today's labels is unchanged and becomes
+  +14 positives once relabelled.
+- `vm-day1`, all 433 malicious samples reported only through the install rules (each read
+  in memory from the encrypted zip): S3 explains 0 before and after (v2 can only explain
+  less); the note fires on 1, `aicp-tracker@1.0.7` (`os.homedir()` for a LaunchAgent; it
+  reaches the network and runs processes, reported as before). No decision changes.
+
+### Open questions / next steps
+- Owner: relabel the 14 user-wide copiers listed in ast.md (3 of them only on a global
+  install, `npm_config_global`); confirm that a global-install-only copy is unwanted too.
+- Comments: stripping comments before the home test would return `@draig/lexis-two` and
+  `claude-spotter` (a comment about removed behaviour) to S3; not worth a parser now.
+- `npm.install-explained` and `npm.install-build-tool` are labelled "Stage 1" in reports
+  (`STAGE_OF_RULE` lacks them); the new rule is listed.
+
 ## 2026-11-09: Self-publishing code: `npm.publish-at-load` and extractor v9
 
 **Stage(s):** Stage 3 (`lang/at_load.py` commands, extractor v9, `npm.publish-at-load` v1)

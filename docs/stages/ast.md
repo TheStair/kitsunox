@@ -104,7 +104,8 @@ is the malicious set.
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 | `npm.install-build-tool` | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...), and `binding.gyp` runs no command. An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
-| `npm.install-explained` | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
+| `npm.install-explained` (v2) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
+| `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
@@ -574,6 +575,75 @@ More than 300 agent files is "too many to check" and not explained.
   agent directory) it fires on none. The shapes fire on 845 of them (S1 599, S2 176, S3 70),
   68 of which Stage 4 reported.
 
+#### S3 v2: copies into the project only (2026-11-09)
+
+The owner ruled (decision 0015, addendum 2026-11-09) that install code silently writing a
+package's skills, hooks, agent settings or MCP registrations into **user-wide** agent locations
+(`~/.claude/`, `~/.agents/`, `~/.codex/`, `~/.cursor/`, `~/.gemini/`) is **unwanted**, a
+positive; writes into the project (`INIT_CWD`, `process.cwd()`, the project's `.claude/`,
+`AGENTS.md`) stay benign. S3 explained both, so it now costs recall. `npm.install-explained`
+v2 keeps S3 only for install code that:
+
+- refers nowhere to the user's home directory (`agent_config.home_references`, over the install
+  code and the install hooks' command lines): `os.homedir()`, a `homedir` import,
+  `userInfo().homedir`, `process.env.HOME`/`USERPROFILE`/`HOMEPATH`/`APPDATA`/`LOCALAPPDATA`/
+  `XDG_CONFIG_HOME`/`XDG_DATA_HOME`, an agent's own `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, ...,
+  `const { HOME } = process.env`, `$HOME`/`${HOME}`/`%USERPROFILE%` in shell, `"~/..."` and
+  `path.join("~", ...)` paths, the `os-homedir`/`user-home`/`xdg-basedir`/`env-paths` packages;
+- loads no package by name (`Profile.packages`): where a dependency writes can't be seen
+  (`@doist/todoist-cli` refreshes installed skills through `@doist/cli-core`), so the target
+  is undetermined.
+
+Everything else about S3 (no network, no process, the three guards) is unchanged; S1 and S2
+are untouched, and nothing new is explained. A version refused for its home reference gets
+**`npm.install-agent-user-wide`** (INFO, weight 0; Stage 3), a note for the reviewer that names
+where the install code refers to the home directory (up to three file:line spans), so a
+reported user-wide copier says why it is not an explained install. It fires whenever install
+code names an agent directory and refers to the home directory, whatever else the code does.
+No STAGE_VERSION or extractor change: Stage 4 reads the shape finding as before, and the rule
+set id changes with the new rule and version.
+
+**Measured** with the real code (`~/kitsunox-scratch/wt-s3/tools/measure.py`: tarballs in
+memory, today's S3 vs v2, Stage 4's real `explained` + `decide` on each version's stored
+findings with the explanation undone from `ast.jsonl`):
+
+| Set | Today's S3 | User-wide | Undetermined | Kept (project) | Reports added back |
+|---|---|---|---|---|---|
+| Live, 17 fully captured runs (2026-11-07 16:33Z to 11-09 06:33Z, 38 h; 2,368 hooked versions, 1,699 with a tarball) | 30 (14 packages) | 17 | 2 (`@doist/todoist-cli`) | 11 | **0** |
+| Live, the 4-day catch-up run before them (11-03 15:48Z to 11-07 16:33Z; 2,868 of 9,574 hooked tarballs still held) | 39 (22) | 26 | 1 | 12 | 7, all reviewed benign |
+| Reviewed, latest verdicts (912 hooked versions with a tarball) | 25 (22 packages, all benign) | 16 | 0 | 9 | 16 benign |
+| `vm-day1`, the 433 malicious samples reported only through the install rules (each read in memory from the encrypted zip) | 0 | - | - | - | 0 (the note fires on `aicp-tracker@1.0.7` only) |
+
+- **Live: about 0 to 2 reports a day added back.** S3 only lowers install findings, and most
+  versions it explains have none to lower: with no network and no process there is no
+  `install-script-code` finding, and an update whose hook and install code didn't change has
+  no `install-hook` or `install-script-changed` either (`@lingjingai/scriptctl@0.79.8`: only
+  LOW Stage 2 findings, score 3). In the 38 fully captured hours none of the 19 versions that
+  lose S3 changes its decision (`@lingjingai/scriptctl` x7, `pi-gauntlet` x4, `vit`,
+  `codebaseiq`, `claude-spotter`, `@aweray/hsk-cli`, `skill-port-cli`,
+  `@herjarsa/omo-meta-governor`, `@doist/todoist-cli` x2). The 7 added back are all in the catch-up run (4 days, ~1.7 a day there)
+  and all reviewed benign: `@easyhaloo/afk-opencode` 1.2.0 and 1.2.1, `@gabrielahn/gtfs-tools`,
+  `enlighten-agent-tool@1.0.9`, `install-anything-skill`, `mxcad-skill`, `@draig/lexis-two`.
+  Nothing is removed. Today's computed S3 agrees with the stored `npm.install-explained` on
+  every version of the S3-era runs, and the recomputed decisions match the stored ones.
+- **Reviewed: 16 benign versions S3 explains today are user-wide by this test**, and are
+  reported again: `@aweray/aweshell-cli@0.4.25`, `@easyhaloo/afk-opencode` 1.2.0 and 1.2.1,
+  `@gabrielahn/gtfs-tools@1.5.4`, `@josetra/wacon@0.4.0`, `@linkquejs/card-craft@0.1.7`*,
+  `enlighten-agent-tool@1.0.9`, `ha-integration-skill@0.1.0`, `install-anything-skill@1.0.0`,
+  `join-com-cli@0.0.0`*, `mxcad-skill@1.0.0`, `novita-sandbox-cli@2.1.2`*, `omnishpilot@0.0.6`,
+  `weaver-e9-builder-cli@1.5.13` (14, read by hand: their install code writes skills under the
+  home directory; * only on a global install, `npm_config_global`), and two whose install code
+  writes into the project and only *mentions* home: `@draig/lexis-two@1.5.0` (a comment on
+  OpenCode's plugin cache) and `opencode-blocker-diverter@0.3.1` (compares `INIT_CWD` with
+  OpenCode's global directory). The 14 are the `sino-bc-cli` shape the addendum re-labels
+  unwanted: once relabelled they are true positives S3 would have hidden. No reviewed positive
+  changes: the 22 unwanted and 1 unverified versions whose install code names an agent
+  directory all refer to the home directory and none was S3 (network, process or
+  obfuscation), so recall under today's labels is unchanged.
+- **The note** fires on 311 of the 479 live versions whose install code names an agent
+  directory (65%; most are not reported) and on 148 of the 202 reviewed ones. INFO, weight 0:
+  it changes no score and no decision.
+
 **`npm.install-script-obfuscated`** (HIGH, weight 4; 2026-10-31, at the owner's request) flags
 install code nobody can review by reading it: what it does at install is a question only Stage 5
 can answer, and HIGH puts it in front of Stage 5's per-run cap of 30 and of the queue. Five
@@ -689,6 +759,15 @@ download uses (`npx tool@1.2.3`) is volatile too, so moving a pinned tool's vers
   script is matched by file name. A templated hook command (`node ${hookPath}`) is not
   plain even when the template is a shipped path. Instructions can be phrased in ways the
   patterns don't know; guard 3 catches the plain forms only.
+- S3's scope test (v2, `agent_config.home_references`) is text matching over the whole
+  install code, not data flow to the write: a `~/` in a comment or a message, or
+  `os.homedir()` used for something else, keeps a project-scoped copier from S3
+  (`@draig/lexis-two@1.5.0`: a comment; `opencode-blocker-diverter@0.3.1`: compares
+  `INIT_CWD` with OpenCode's global directory). The reverse miss needs code we can't read:
+  a home path built from a string table, a computed `process.env[name]`, or a copy done by a
+  package loaded by name, which is why such install code is not S3 either. A copier that
+  writes into the project on a local install and into the home directory on a global one
+  (`npm_config_global`) counts as user-wide.
 - Tree-sitter gives syntax, not data flow. `const m = "child_process"; require(m)` is a
   `dynamic-require`, not `process`, and a capability reached through a dependency is invisible.
 - The Function constructor through `constructor` (extractor v5) follows one variable only when

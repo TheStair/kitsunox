@@ -153,6 +153,24 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   code, or plants instructions that work against the user (e.g. telling the agent to hide
   activity, exfiltrate, or disable safeguards) is judged on that, as anywhere else.
 
+## Addendum 2026-11-09: user-wide agent installs are unwanted
+
+- **The owner, 2026-11-09**, narrowing the addendum above: install code that silently writes a
+  package's skills (and, by the same reasoning, hooks, agent settings or MCP registrations)
+  into **user-wide** agent locations (`~/.claude/`, `~/.agents/`, `~/.codex/`, `~/.cursor/`,
+  `~/.gemini/`, ...), so that every agent session in every project loads them, is
+  **unwanted**: intrusive and persistent beyond the project the user installed into. Code
+  obfuscation that hides it makes it covert as well ("the obfuscation is a big part too",
+  `sino-bc-cli`, 20 versions decoded offline: same program, no network at install, recorded
+  unwanted).
+- Still **benign**: writes into the project (`INIT_CWD`, the project's `.claude/`, `AGENTS.md`),
+  and user-wide writes the user starts themselves (an `init`/`install-skills` command run by
+  hand, not by an install hook).
+- Still **malicious**, on behaviour: a skill or hook that sends data off the machine, fetches and
+  runs code, or plants instructions against the user, wherever it is written.
+- Consequence for the rules: `npm.install-explained`'s S3 shape (agent-skill copier) must not
+  explain user-wide copies, since those are now positives.
+
 ## Addendum 2026-11-08 (later): the Baileys signatures are retired
 
 The Stage 2 signatures KX-0008, KX-0009 and KX-0011 ("known malware family") were taken from

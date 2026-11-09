@@ -9,8 +9,14 @@ shapes reviewers recognise at a glance (`docs/proposals/precision-round2.md`, S1
 - **S2 own-release download.** The install code downloads a binary from the package's own
   GitHub repository's releases and checks its checksum, and fetches nothing else.
 - **S3 agent-skill copier.** The install code copies the package's skills, hooks or agent
-  settings into an AI coding agent's directory (`.claude`, `.agents`, ...), and reaches neither
-  the network nor other processes. What gets copied is checked too
+  settings into an AI coding agent's directory (`.claude`, `.agents`, ...) in the project, and
+  reaches neither the network nor other processes. Install code (or an install hook's command
+  line) that refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`,
+  `$HOME`; `agent_config.home_references`) may write user-wide, which the owner rules
+  unwanted (decision 0015, addendum 2026-11-09): it is not explained, and
+  `npm.install-agent-user-wide` (INFO) says so. Neither is install code that loads a package
+  by name (`Profile.packages`): where that package writes can't be seen. What gets copied is
+  checked too
   (`kitsunox.lang.agent_config`): hook commands that are more than a constant `echo` or a
   shipped, plain script; permission widening (allow-lists beyond reading, bypass modes, remote
   MCP servers); instructions that work against the user (also flagged on their own,
@@ -40,6 +46,7 @@ from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snipp
 from kitsunox.lang.agent_config import (
     MAX_AGENT_FILES,
     TEXT_SUFFIXES,
+    home_references,
     hook_commands,
     hostile_instructions,
     names_agent_dir,
@@ -73,6 +80,7 @@ PLATFORM: Final = re.compile(
     re.IGNORECASE,
 )
 MIN_PLATFORM_BUILDS: Final = 2
+MAX_SHOWN: Final = 3
 URL: Final = re.compile(r"""https?://[^\s"'`)<>\\]+""")
 CHECKSUM: Final = re.compile(
     r"""createHash\(\s*['"`]sha(?:256|384|512)|sha256sums|checksums?\.txt|\.sha256\b|"""
@@ -108,9 +116,12 @@ class InstallExplained(BaseRule):
 
     Added 2026-11-08 (`docs/proposals/precision-round2.md`, S1-S3, with the owner's three
     guards on S3), measured with Stage 4 on the live verdicts and on all 433 `vm-day1`
-    malicious samples reported only through the install rules: see `docs/stages/ast.md`."""
+    malicious samples reported only through the install rules: see `docs/stages/ast.md`.
+    v2 (2026-11-09): S3 only for copies into the project (no home-directory reference, no
+    package loaded by name), decision 0015's addendum of that day."""
 
     id = "npm.install-explained"
+    version = 2
     severity = Severity.INFO
     weight = 0.0
     title = "Install code has an explained shape"
@@ -202,17 +213,73 @@ def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
                 Evidence(kind=EvidenceKind.METADATA, snippet=snippet(", ".join(own[:3]))),
             ],
         )
-    if not caps & {C.NETWORK, C.PROCESS} and names_agent_dir(change.install_files):
+    if (
+        not caps & {C.NETWORK, C.PROCESS}
+        and names_agent_dir(change.install_files)
+        and not user_wide(change)
+        and not install.packages
+    ):
         copied = len(change.agent_files)
         return (
             "S3 agent-skill copier: the install code writes to an AI agent's configuration "
-            f"(it names an agent directory) and uses {uses}: no network, no process. The "
+            "in the project (it names an agent directory, never the home directory, and loads "
+            f"no package by name) and uses {uses}: no network, no process. The "
             f"{copied} agent file(s) it may copy hold no hook command beyond a constant echo "
             "or a plain shipped script, no permission widening and no instruction against "
             "the user.",
             hook_evidence,
         )
     return None
+
+
+class InstallAgentUserWide(BaseRule):
+    """The install code names an AI agent's configuration directory and refers to the user's
+    home directory: it may install skills, hooks or settings user-wide, for every project,
+    which the owner rules unwanted when an install hook does it (decision 0015, addendum
+    2026-11-09). A note for the reviewer (INFO, weight 0): such install code is never S3, so
+    it keeps its install findings, and this says why. Added 2026-11-09, measured in
+    `docs/stages/ast.md`."""
+
+    id = "npm.install-agent-user-wide"
+    severity = Severity.INFO
+    weight = 0.0
+    title = "Install code may write agent configuration user-wide"
+
+    def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
+        if change.install is None or not names_agent_dir(change.install_files):
+            return ()
+        found = user_wide(change)
+        if not found:
+            return ()
+        return (
+            self.finding(
+                "The install code names an AI agent's configuration directory and refers to "
+                f"the user's home directory ({', '.join(p for p, _, _ in found[:MAX_SHOWN])}): "
+                "it may install skills, hooks or agent settings user-wide, for every project "
+                "(unwanted when an install hook does it unasked, decision 0015). Not an "
+                "explained install: S3 is for copies into the project.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=path,
+                        line_start=line,
+                        line_end=line,
+                        snippet=text,
+                    )
+                    for path, line, text in found[:MAX_SHOWN]
+                ),
+            ),
+        )
+
+
+def user_wide(change: CodeChange) -> list[tuple[str, int, str]]:
+    """References to the user's home directory (`home_references`) in the install code and in
+    the install hooks' command lines (`$HOME`, `~/`), as (path, line, text)."""
+    hooks = {
+        f"package.json:scripts.{hook}": command
+        for hook, command in _hooks(change.snapshot.manifest).items()
+    }
+    return [*home_references(change.install_files), *home_references(hooks)]
 
 
 def agent_concerns(change: CodeChange) -> list[str]:
@@ -333,4 +400,4 @@ def _own_download_urls(manifest: Mapping[str, Any], repo: tuple[str, str] | None
     return []
 
 
-RULES: Final = (InstallExplained(),)
+RULES: Final = (InstallExplained(), InstallAgentUserWide())

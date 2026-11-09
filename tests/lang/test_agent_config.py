@@ -5,6 +5,7 @@ import json
 from kitsunox.lang.agent_config import (
     MAX_AGENT_FILES,
     agent_files,
+    home_references,
     hook_commands,
     hostile_instructions,
     is_agent_file,
@@ -29,6 +30,37 @@ def test_install_code_that_names_an_agent_directory() -> None:
     assert names_agent_dir({"x.js": b'write("AGENTS.md")'})
     assert not names_agent_dir({"x.js": b'require("./agents/list")'})
     assert not names_agent_dir({"x.js": b'path.join(home, ".claude-backup-tool")'})
+
+
+def test_home_references_are_where_user_wide_configuration_lives() -> None:
+    """Decision 0015, addendum 2026-11-09: user-wide agent installs are unwanted."""
+    for code in (
+        b'const dest = path.join(os.homedir(), ".claude")',
+        b'import { homedir } from "node:os";',
+        b"const home = require('os').userInfo().homedir;",
+        b"const dir = process.env.HOME + '/.codex';",
+        b'const dir = process.env["USERPROFILE"];',
+        b"const { HOME, PATH } = process.env;",
+        b'const base = process.env.XDG_CONFIG_HOME || ".config";',
+        b"const codex = process.env.CODEX_HOME;",
+        b'copy(src, "~/.claude/skills/kx");',
+        b'path.join("~", ".cursor")',
+        b"cp -r skills $HOME/.claude/skills",
+        b"cp -r skills ${HOME}/.agents",
+        b"xcopy skills %USERPROFILE%\\.claude\\skills",
+    ):
+        ((path, line, text),) = home_references({"x.js": b"// copy\n" + code})
+        assert (path, line) == ("x.js", 2), code
+        assert text
+    for code in (
+        b'const dest = path.join(process.env.INIT_CWD || process.cwd(), ".claude");',
+        b'const url = pkg.homepage; const HOMEPAGE = "x"; const KEY_HOME = 1;',
+        b'"dependencies": {"a": "~1.2.3"}',
+        b"const flags = ~mask; x = a~/2/;",
+        b'const help = `Suppress per-file "+"/"~" lines`;',  # a quoted tilde, not a path
+    ):
+        assert home_references({"x.js": code}) == [], code
+    assert home_references({"a": "~/x", "b": "cwd"}) == [("a", 1, "~/x")]
 
 
 def test_agent_files_are_the_configuration_an_agent_reads() -> None:

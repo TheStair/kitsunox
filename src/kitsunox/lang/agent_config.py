@@ -113,6 +113,38 @@ def agent_files(tree: Mapping[str, bytes], install_code: Mapping[str, bytes]) ->
     return found
 
 
+# --- where the copy goes: the user's home directory ----------------------------------------
+
+# References to the user's home directory, where agents keep their user-wide configuration
+# (`~/.claude/`, `~/.codex/`, `%APPDATA%`): `os.homedir()` (also `{ homedir }` imports,
+# `userInfo().homedir`, the `os-homedir` package) and packages that name per-user directories,
+# the home and per-user config variables from the environment (`process.env.HOME`, `$HOME`,
+# `${HOME}`, `%USERPROFILE%`, `XDG_CONFIG_HOME`, an agent's `CLAUDE_CONFIG_DIR` or
+# `CODEX_HOME`), and `~`
+# paths (`"~/.claude"`, `path.join("~", ...)`). Install code with none of them can only
+# write where it runs (`INIT_CWD`, `process.cwd()`, the package's own directory): the
+# project (decision 0015, addendum 2026-11-09).
+HOME_REFERENCE: Final = re.compile(
+    r"\bhomedir\b|\b(?:user-home|xdg-basedir|env-paths)\b"
+    r"|\b(?:USERPROFILE|HOMEPATH|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME|XDG_DATA_HOME)\b"
+    r"|\b(?:CLAUDE|CODEX|GEMINI|GEMINI_CLI|CURSOR|OPENCODE)_(?:HOME|CONFIG_DIR)\b"
+    r"""|(?:\benv\s*\.\s*|\benv\s*\[\s*["'`]|\$\{?|["'`])HOME\b"""
+    r"|\{[^{}]{0,200}\bHOME\b[^{}]{0,200}\}\s*=\s*process\.env"
+    r"""|(?<![\w~])~[/\\]|["'`]~["'`]\s*,"""
+)
+
+
+def home_references(code: Mapping[str, str | bytes]) -> list[tuple[str, int, str]]:
+    """The first reference to the user's home directory (`HOME_REFERENCE`) in each file of
+    `code`, as (path, 1-based line, the text around it)."""
+    found = []
+    for path, content in sorted(code.items()):
+        text = content if isinstance(content, str) else content.decode("utf-8", "replace")
+        if match := HOME_REFERENCE.search(text):
+            found.append((path, _line(text, match.start()), _around(text, match)[:200]))
+    return found
+
+
 # --- 1. hook and MCP server commands -----------------------------------------------------
 
 # A `command` value in JavaScript or JSON (`command: "node x.js"`, `"command": "..."`), and in

@@ -6,6 +6,7 @@ from typing import Any
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.rules.install_shapes import (
+    InstallAgentUserWide,
     InstallExplained,
     own_repo,
     platform_builds,
@@ -37,10 +38,11 @@ https.get(url, (res) => {
 });
 """
 COPIER = b"""
-const fs = require("fs"), path = require("path"), os = require("os");
-const dest = path.join(os.homedir(), ".claude", "skills", "kx");
+const fs = require("fs"), path = require("path");
+const dest = path.join(process.env.INIT_CWD || process.cwd(), ".claude", "skills", "kx");
 fs.cpSync(path.join(__dirname, "..", "skills", "kx"), dest, { recursive: true });
 """
+HOME_COPIER = COPIER.replace(b"process.env.INIT_CWD || process.cwd()", b'require("os").homedir()')
 SKILL = b"---\nname: kx\ndescription: Use the kx CLI.\n---\nRun `kx check` before committing.\n"
 
 
@@ -132,6 +134,43 @@ def test_s3_agent_skill_copier() -> None:
     # Code that names no agent directory is not one either.
     plain = COPIER.replace(b'".claude", ', b"")
     assert shape(change(files | {"scripts/install.js": plain}, manifest)) is None
+
+
+def test_s3_is_only_for_copies_into_the_project() -> None:
+    """Decision 0015, addendum 2026-11-09: install code that may write agent configuration
+    user-wide is not explained, and the INFO note says why."""
+    files = {"scripts/install.js": COPIER, "skills/kx/SKILL.md": SKILL}
+    manifest = hook("node scripts/install.js")
+    project = change(files, manifest)
+    assert shape(project) == "S3"
+    assert InstallAgentUserWide().evaluate_code(project) == ()
+    for code in (
+        HOME_COPIER,
+        COPIER.replace(b"process.env.INIT_CWD || process.cwd()", b"process.env.HOME"),
+        COPIER.replace(b"process.env.INIT_CWD || process.cwd()", b'"~"'),
+        COPIER + b'\nconsole.log("Copy skills/ to ~/.claude/skills by hand.");\n',
+    ):
+        c = change(files | {"scripts/install.js": code}, manifest)
+        assert shape(c) is None, code
+        (note,) = InstallAgentUserWide().evaluate_code(c)
+        assert note.severity is Severity.INFO and note.weight == 0
+        assert note.evidence[0].path == "scripts/install.js"
+        assert "user-wide" in note.explanation
+    # Where a package loaded by name writes can't be seen: undetermined, not explained.
+    helper = COPIER + b'\nrequire("@kx/skills-core").refresh(dest);\n'
+    c = change(files | {"scripts/install.js": helper}, manifest)
+    assert shape(c) is None
+    assert InstallAgentUserWide().evaluate_code(c) == ()
+    # The install hook's command line counts too.
+    shell = change(files, hook("node scripts/install.js --dest $HOME/.claude"))
+    assert shape(shell) is None
+    (note,) = InstallAgentUserWide().evaluate_code(shell)
+    assert note.evidence[0].path == "package.json:scripts.postinstall"
+    # No note without install code naming an agent directory.
+    elsewhere = HOME_COPIER.replace(b'".claude", ', b"")
+    c = change(files | {"scripts/install.js": elsewhere}, manifest)
+    assert InstallAgentUserWide().evaluate_code(c) == ()
+    assert InstallAgentUserWide().evaluate_code(change({}, hook("node $HOME/x.js"))) == ()
 
 
 def settings(command: str) -> bytes:

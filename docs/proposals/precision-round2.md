@@ -28,6 +28,9 @@
 > real code on the 3,244 reported verdicts: -85 (S1 36, S2 34, S3 15), all benign, 0 positives
 > lost. Narrowed from the table below: S1 network only to the registry, no `dynamic-require`,
 > nothing new in an update's install code. See [ast.md](../stages/ast.md#explained-install-s1-s3-and-agent-configuration).
+> **S3 narrowed 2026-11-09** (owner: user-wide agent installs are unwanted, decision 0015):
+> v2 explains only copies into the project; live +0 reports in 38 fully captured hours, +7 in
+> the 4-day catch-up run; 16 reviewed benign versions reported again (14 user-wide copiers).
 > Owner decisions are in [section 8](#8-owner-questions). Fixes marked **pre-freeze** are small
 > and local enough to build before the rule freeze (2026-11-12 00:00Z); the rest should wait and
 > be validated afterwards on window B's held tarballs.
@@ -378,6 +381,12 @@ install MEDIUMs (`install-hook`, `install-script-changed`, `install-script-code`
      allow-lists, bypass/"dangerously skip permissions" modes) or add a remote MCP server stay
      reported (the 2025 nx compromise ran users' AI CLIs with permission-bypass flags to search
      for secrets).
+  **Narrowed 2026-11-09 (owner):** a copy into the *user-wide* agent locations (`~/.claude/`,
+  `~/.agents/`, `~/.codex/`, ...) by an install hook is **unwanted** (decision 0015, addendum
+  2026-11-09), so S3 now explains only copies into the project: `npm.install-explained` v2
+  refuses install code that refers to the home directory or loads a package by name, and
+  the INFO note `npm.install-agent-user-wide` says why. Measured in
+  [ast.md](../stages/ast.md#s3-v2-copies-into-the-project-only-2026-11-09).
   3. **Instructions aimed at the agent are flagged.** Installed skills or `AGENTS.md` text telling
      the agent to hide activity, read credentials (`~/.ssh`, `.env`) and send them, or ignore
      prior instructions makes the release reported.

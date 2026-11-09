@@ -161,6 +161,7 @@ def test_stage_of_rules() -> None:
     assert stage_of("npm.install-script-code") == "Stage 3: capabilities"
     assert stage_of("npm.load-fingerprint") == "Stage 3: capabilities"
     assert stage_of("npm.publish-at-load") == "Stage 3: capabilities"
+    assert stage_of("npm.install-agent-user-wide") == "Stage 3: capabilities"
     assert stage_of("npm.dependency.known-malware") == "Stage 4: correlation"
     assert stage_of("npm.dependency.fresh-foreign") == "Stage 4: correlation"
     assert stage_of("npm.dependency.name-embeds-popular") == "Stage 4: correlation"
