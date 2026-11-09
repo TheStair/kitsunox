@@ -1114,9 +1114,60 @@ CONTEXT_NOTES: Final = (
 )
 
 
+class ChannelTagging:
+    """A WhatsApp library (a Baileys fork) that attaches a channel it chose to the messages the
+    user sends: a newsletter JID written into the code (`newsletterJid: "1203...@newsletter"`,
+    also as the fallback of an environment variable) in a file that builds the forwarded-
+    newsletter context WhatsApp shows on a message (`ForwardedNewsletterMessageInfo`). Every
+    image or message the user's account sends then advertises the author's channel.
+
+    The owner's ruling (decision 0015, addendum 2026-11-09, "Baileys media tagging"): covert
+    channel promotion, **unwanted**, like an auto-follow (`@codexverified/baileys` 2.19.18 and
+    2.19.19). Upstream Baileys only defines the protobuf field and writes no JID. MEDIUM,
+    weight 3, as `static.channel-follow`. Added 2026-11-09 (round 4,
+    `docs/proposals/precision-round4-A.md`): before, those two versions were reported only
+    because a Node-version check their `preinstall` runs had changed."""
+
+    id: ClassVar[str] = "static.channel-tagging"
+    version: ClassVar[int] = 1
+    severity: ClassVar[Severity] = Severity.MEDIUM
+    weight: ClassVar[float] = 3.0
+    title: ClassVar[str] = "Tags the user's WhatsApp messages with a channel (unwanted)"
+
+    _JID: ClassVar[re.Pattern[str]] = re.compile(
+        r"\bnewsletterJid\s*+:\s*+(?:[\w$.]+\s*+(?:\|\||\?\?)\s*+)?[\"'`]\d{15,22}@newsletter[\"'`]"
+    )
+    _CONTEXT: ClassVar[re.Pattern[str]] = re.compile(r"(?i:forwardedNewsletterMessageInfo)")
+
+    def evaluate_text(self, text: str) -> Sequence[FileMatch]:
+        if "@newsletter" not in text or not self._CONTEXT.search(text):
+            return []
+        match = self._JID.search(text)
+        if match is None:
+            return []
+        line, snippet = _line_and_snippet(text, match.start(), match.end())
+        return [
+            FileMatch(
+                rule_id=self.id,
+                rule_version=self.version,
+                severity=self.severity,
+                weight=self.weight,
+                title=self.title,
+                explanation=(
+                    "Writes a fixed WhatsApp channel into the forwarded-newsletter context of "
+                    "messages: what the user's account sends advertises that channel. Unwanted "
+                    "(covert channel promotion), not by itself a sign of malware."
+                ),
+                line=line,
+                snippet=snippet,
+            )
+        ]
+
+
 RULES: Final = (
     KnownSignature(),
     ChannelFollow(),
+    ChannelTagging(),
     ShellStartup(),
     ExfilEndpoint(),
     WebhookPlaceholder(),

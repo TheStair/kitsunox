@@ -98,6 +98,7 @@ attributed.
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
 | `static.shell-startup` (2026-11-08) | writes to shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, fish's `config.fish`, the PowerShell profile). Forms: `hook` (an install hook in `package.json` appends to one), `inject` (code that writes files holds a line sourcing a file under `$HOME`, or a prompt that runs a command: `setopt prompt_subst`, `PROMPT="$(...)"`), `shell` (a shell command elsewhere appends to one), `code` (a start-up file's name, a file write within 1,000 characters and a home-directory reference) | MEDIUM (weight 3) for `hook` and `inject`; LOW for `shell` and `code` |
 | `static.channel-follow` (2026-11-08) | a WhatsApp library (Baileys fork) following channels with the user's account: a FOLLOW query or `newsletterFollow(...)` call outside the library's own follow method, in a file that also names channels (`...@newsletter`, `0029V...` invite codes, also in base64 or char codes), fetches them, or calls it an auto-follow/auto-join; not behind an `if (... === true)` opt-in. Never demoted as "not new" | MEDIUM (weight 3), "unwanted" |
+| `static.channel-tagging` (2026-11-09) | a WhatsApp library (Baileys fork) tagging the user's messages with a channel: a fixed `...@newsletter` JID written as `newsletterJid` in a file that builds the forwarded-newsletter context (`forwardedNewsletterMessageInfo`). Never demoted as "not new"; [below](#whatsapp-channel-tagging-staticchannel-tagging-2026-11-09) | MEDIUM (weight 3), "unwanted" |
 
 ### Known-family signatures (`static.known-signature`, `rules/signatures.py`, 2026-11-01)
 
@@ -332,6 +333,23 @@ default (`charape` 1.0.15-1.0.19, `@ruthless-imperium/baileys` 1.0.1-1.0.3 on `o
 unwanted under the headline reading, none malware. A gap: an opt-in set in *another* file is
 not seen (`lexzymods-baileys` and three name variants, reviewed benign: the option is read in
 `lib/Socket/index.js`, the bundled list followed in `lib/Utils/repan-channels.js`).
+
+### WhatsApp channel tagging (`static.channel-tagging`, 2026-11-09)
+
+The owner's ruling of 2026-11-09 (decision 0015, "Baileys media tagging"): a fork that attaches
+the author's channel (newsletter) annotation to the messages the user sends, without following
+anything, is covert channel promotion, **unwanted** like an auto-follow
+(`@codexverified/baileys` 2.19.18 and 2.19.19: `lib/Utils/channel-policy.js` writes
+`newsletterJid: process.env.NEWSLETTER_ID || '120363402922206865@newsletter'` into the
+`ForwardedNewsletterMessageInfo` of every image or video upload). No rule named it: the two
+versions were reported only because the Node-version check their `preinstall` runs had changed
+(`npm.install-script-changed`), which round 4's v5 of that rule makes LOW. The rule fires on a
+file that writes a fixed `\d{15,22}@newsletter` JID as `newsletterJid` (also as the fallback of
+a variable) and builds the forwarded-newsletter context (`forwardedNewsletterMessageInfo`).
+Upstream Baileys defines the protobuf field and takes the caller's JID, so it doesn't match.
+MEDIUM, weight 3, "unwanted", never demoted as "not new" (`ALWAYS_NEW`), as
+`static.channel-follow`. Measured on every verdicted version's whole tarball in
+[precision-round4-A](../proposals/precision-round4-A.md).
 
 ### Shell start-up files (`static.shell-startup`, 2026-11-08)
 

@@ -598,6 +598,49 @@ def test_channel_follow_says_unwanted_not_malware() -> None:
     assert "Unwanted" in match.explanation and "names channels" in match.explanation
 
 
+def _tags(text: str) -> list[str]:
+    return [
+        m.severity.value for m in analyse(text.encode()) if m.rule_id == "static.channel-tagging"
+    ]
+
+
+_CONTEXT = "contentType: proto.ContextInfo.ForwardedNewsletterMessageInfo.ContentType.UPDATE"
+
+
+@pytest.mark.parametrize(
+    "jid",
+    [
+        f"process.env.NEWSLETTER_ID || '{_JID}'",  # `@codexverified/baileys` 2.19.18
+        f"'{_JID}'",  # `@lunabotv6/luna-baileys@8.1.0`
+        f"cfg.channel ?? `{_JID}`",
+    ],
+)
+def test_channel_tagging_fires_on_a_fixed_channel_in_the_forwarded_context(jid: str) -> None:
+    text = f"newsletter: {{ newsletterJid: {jid}, newsletterName: 'x', {_CONTEXT} }}"
+    assert _tags(text) == ["medium"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Upstream: the protobuf field and a caller's own JID.
+        "optional string newsletterJid = 1; // ForwardedNewsletterMessageInfo",
+        f"forwardedNewsletterMessageInfo: {{ newsletterJid: jid, {_CONTEXT} }}",
+        # A fixed JID without the forwarded context (a follow is `static.channel-follow`'s).
+        f"const n = {{ newsletterJid: '{_JID}' }}",
+    ],
+)
+def test_channel_tagging_ignores_the_field_and_callers_jids(text: str) -> None:
+    assert _tags(text) == []
+
+
+def test_channel_tagging_is_never_not_new() -> None:
+    """Like a follow: every release of a fork that tags the user's messages does it again."""
+    from kitsunox.stages.static import ALWAYS_NEW
+
+    assert "static.channel-tagging" in ALWAYS_NEW
+
+
 def _startup_forms(text: str) -> dict[str, str]:
     """form -> severity of the `static.shell-startup` matches."""
     return {

@@ -40,7 +40,7 @@ from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.rules.signatures import KnownSignature
-from kitsunox.rules.static import CONTEXT_NOTES, RULES, ChannelFollow, HardcodedIp
+from kitsunox.rules.static import CONTEXT_NOTES, RULES, ChannelFollow, ChannelTagging, HardcodedIp
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
@@ -195,8 +195,10 @@ def _key(match: FileMatch) -> tuple[str, str]:
 # Never "not new": a known family's payload in the previous version too is still the payload,
 # and a fork that auto-follows WhatsApp channels does so in every release, each one unwanted
 # under the owner's policy (2026-11-08: the live miss `@sakataa/baileys@2.0.0` changed the file,
-# but its base already followed, so it was reported only with this).
-ALWAYS_NEW: Final = frozenset({KnownSignature.id, ChannelFollow.id})
+# but its base already followed, so it was reported only with this). A fork that tags the
+# user's messages with its channel (`static.channel-tagging`, 2026-11-09) does so in every
+# release too.
+ALWAYS_NEW: Final = frozenset({KnownSignature.id, ChannelFollow.id, ChannelTagging.id})
 
 
 def _demoted(
