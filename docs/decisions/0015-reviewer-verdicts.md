@@ -171,6 +171,28 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
 - Consequence for the rules: `npm.install-explained`'s S3 shape (agent-skill copier) must not
   explain user-wide copies, since those are now positives.
 
+## Addendum 2026-11-09 (later): prompt telemetry, and the user-wide rule stays a note
+
+- **Prompt telemetry is unwanted (the owner, 2026-11-09).** An install hook that silently sets
+  user-wide coding-agent telemetry, so that every later session sends the user's prompts (and
+  responses, tool details) to the vendor's own service, is **unwanted**, not malicious: vendor
+  telemetry plus a user-wide settings write, with no credential harvesting
+  (`@ciandt-flow/flow-ai-obs`, 7 versions, `~/.claude/settings.json` `env` pointing OTEL at
+  `flow.ciandt.com`; `toga-ai` 1.0.1318/1319, `otel.togaiq.com` with a hardcoded bearer token).
+  Sending them anywhere but the vendor's own service stays malicious.
+- **`npm.install-agent-user-wide` stays INFO, weight 0 (the owner, 2026-11-09).** Measured on
+  today's 9 runs: it fired on 67 versions (~58 distinct); all 58 now have a verdict: 30
+  unwanted, 25 benign, 3 unverified (55% of the decided ones), and as a scoring rule it would
+  add dozens of reports a day, far over the owner's bar of ~5 benign a day. The user-wide
+  installers it does not report are counted as false negatives in the live matrices, and the
+  write-up says so. Narrowing ideas for after the freeze (home reference and agent directory in
+  one path expression; no comments or help text; skip writes only reachable behind an
+  interactive prompt) are in the devlog.
+- **Interactive opt-in (reviewers' default, pending the owner).** A global install that asks
+  which agents to configure, and writes only what the user picks, is recorded as a write the
+  user starts: **benign** (`common-context-mcp`, `@gleapai/kai-bridge`); notes start
+  "Interactive opt-in:" so they can be flipped together.
+
 ## Addendum 2026-11-08 (later): the Baileys signatures are retired
 
 The Stage 2 signatures KX-0008, KX-0009 and KX-0011 ("known malware family") were taken from

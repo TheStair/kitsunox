@@ -2,6 +2,61 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Afternoon review; the user-wide rule measured and left a note
+
+**Stage(s):** evaluation (verdicts, live sample), Stage 3 (`npm.install-agent-user-wide`)
+**Context:** Clearing the queue of the 14:39-16:40Z ticks (43 versions), reviewing the
+2026-11-08 live sample (55 unreported versions), and the first daily live-eval with the
+four-category verdicts and the 2026-11-09 rulings.
+
+### Decisions
+- **`npm.install-agent-user-wide` stays INFO, weight 0** (owner): see the evaluation snapshot.
+  Scoring it would add dozens of reports a day; the user-wide installers it doesn't report are
+  counted as false negatives instead, and the write-up says so (decision 0015 addendum
+  2026-11-09, later).
+- **Prompt telemetry is unwanted** (owner): `@ciandt-flow/flow-ai-obs` (7 versions; the 6 older
+  betas, recorded benign under the 2026-11-08 ruling, were reclassified after checking each has
+  the same unconditional `dist/setup.js`) and `toga-ai` 1.0.1318/1319 (the reviewer had said
+  malicious; re-recorded unwanted for consistency, then confirmed by the owner).
+- **Baileys media tagging recorded unwanted, pending the owner:** `@codexverified/baileys`
+  2.19.18/19 attach the author's newsletter id to every image or video sent (no follow).
+
+### Challenges
+- **Verdict ranks move when an old run's report is rebuilt.** Re-recording flow-ai-obs at the
+  ranks stored in its 2026-10-30 verdicts hit other packages' pages (rank 3 had become 0.16.0-
+  beta.122, rank 4 `@tollbit/tollbit-cli`).
+  - **Resolution:** the loop checked each page's name@version before recording and refused the
+    three mismatches; they were recorded at the current ranks (2, 3, 7).
+  - **Why it worked:** the check is the same one the reviewers run; nothing was mis-recorded.
+- **`peek.py` shows only the first 6,000 characters a file**, so a grep can miss matches deep in
+  bundles. A reviewer's in-memory full-text search (`review10/tools/srch.py`) is now in the brief.
+- **Disk falls ~4 GB an hour** (106 GB free at 17:05Z) while retention keeps two days; the next
+  run prune is due ~11-10 13:00Z. `data/cache/` is 81 GB and never pruned: AST v1-v8 (~38 GB)
+  and 12 stale Stage 2 fingerprints (~40 GB; live: `a650824fea376f88`). Cleanup handed to the
+  owner (removals are theirs); a cache-retention fix is for after the freeze.
+
+### Evaluation snapshot
+- Live eval `live-20261109T113623Z`, window "all", headline (flag-worthy, behaviour truth):
+  recall 28.2% -> 76.4% (133 of 174), precision 1.9% -> 5.7%; with the current rules re-scored
+  79.9% / 8.9%. The jump mixes four changes not yet separated: unwanted counted positive (90
+  verdicts), miss adjudication, 107 new OSV labels, and the 11-09 rules.
+- Queue (43): 39 benign, 4 unwanted. Live sample 2026-11-08 (55): 54 benign, 1 unwanted miss
+  (`@aswless_854771076/ai_short_studio_cli@0.1.236`, skills into `~/.codex/skills` on every
+  install, score 0).
+- `npm.install-agent-user-wide` on today's 9 runs: 67 fires (58 distinct versions). Of the 45
+  without a verdict, reviewed label-aware: 21 unwanted (15 silent, 6 global-only), 19 benign
+  (11 print/help/comment, 4 user command, 3 interactive opt-in, 1 unrelated), 3 unverified
+  (`wkappbot-code`, runs a fetched `install.sh`), 2 `toga-ai`. With the 13 earlier verdicts:
+  30 unwanted, 25 benign, 3 unverified, 55% precision on the decided versions. None of the 45 was reported: they are misses.
+
+### Open questions / next steps
+- After the freeze: narrow the rule (home reference and agent directory in one path
+  expression; skip comments and help text; skip writes only behind an interactive prompt;
+  evidence on the write itself). Reviewer estimate ~87% precision, unmeasured.
+- Separate the live-eval jump by cause before it goes on a slide.
+- Owner calls still open: global-install-only, interactive opt-in, publish-at-load severity,
+  shell-rc edits (`@xfe-repo/cli`), Baileys media tagging.
+
 ## 2026-11-09: User-wide agent installs relabelled unwanted (verdicts)
 
 **Stage(s):** evaluation (reviewer verdicts), decision 0015
