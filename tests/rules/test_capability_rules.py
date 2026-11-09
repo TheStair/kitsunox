@@ -12,6 +12,7 @@ from kitsunox.ecosystems.npm.rules.install_code import (
     InstallScriptChanged,
     InstallScriptCode,
     InstallScriptObfuscated,
+    header_lookup,
 )
 from kitsunox.rules.capabilities import CapabilityGained, FunctionConstructor
 from kitsunox.stages.ast import CapabilityCache, CodeChange, code_change
@@ -355,7 +356,12 @@ def _hooked(scripts: dict[str, str], files: dict[str, bytes] | None = None) -> C
 GYP_ACTION = b"""{'targets': [{'target_name': 'x', 'actions': [{'action_name': 'a',
   'inputs': [], 'outputs': ['o'], 'action': ['node', 'scripts/write-state.js']}]}]}"""
 GYP_EXPANSION = b"""{"targets": [{"target_name": "x",
-  "include_dirs": ["<!(node -p \\"require('node-addon-api').include\\")"]}]}"""
+  "include_dirs": ["<!(node scripts/sources.mjs zint)"]}]}"""
+GYP_HEADERS = b"""{"targets": [{"target_name": "x",
+  "include_dirs": ["<!(node -p \\"require('node-addon-api').include\\")",
+                   "<!(node -p \\"require('node-addon-api').include_dir\\")",
+                   "<!(node -e \\"require('nan')\\")", "<!(node -e \\"require(\\'nan\\')\\")"],
+  "dependencies": ["<!@(node -p \\"require('node-addon-api').gyp\\")"]}]}"""
 GYP_PLAIN = b"""{"targets": [{"target_name": "x", "sources": ["src/x.cc"]}]}"""
 
 
@@ -383,10 +389,38 @@ def test_build_tool_hooks_are_explained_when_binding_gyp_runs_nothing() -> None:
     ]
 
 
+def test_header_lookups_in_binding_gyp_are_no_command() -> None:
+    """v2 (round 3, X6): `node -p "require('node-addon-api').include"` and `require('nan')`
+    only print where an installed package's headers are."""
+    rule = InstallBuildTool()
+    hooked = _hooked({"install": "node-gyp rebuild"}, {"binding.gyp": GYP_HEADERS})
+    assert len(hooked.build_commands) == 5
+    (finding,) = rule.evaluate_code(hooked)
+    assert finding.explanation.endswith(
+        "and `binding.gyp` only looks up `node-addon-api` or `nan` headers."
+    )
+    mixed = GYP_HEADERS.replace(b'"dependencies"', b'"sources": ["<!(node gen.js)"], "x"')
+    assert not rule.evaluate_code(_hooked({"install": "node-gyp rebuild"}, {"binding.gyp": mixed}))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "node -p \"require('node-addon-api').include\" && curl x",
+        "node -p \"require('evil').include\"",
+        "node -e \"require('nan'); require('child_process').exec('x')\"",
+        "node -p \"console.log(require.resolve('node-addon-api'))\"",
+        "node scripts/write-state.js",
+    ],
+)
+def test_other_gyp_commands_are_not_header_lookups(command: str) -> None:
+    assert not header_lookup(command)
+
+
 def test_a_gyp_command_or_any_other_hook_keeps_the_hook_unexplained() -> None:
     """`@atedone/workspace-bootstrap@0.0.1` ran its payload from a gyp action; a command
-    expansion is a command too. A hook beside the build tool, or a longer command line, is
-    not a build tool."""
+    expansion other than a header lookup is a command too. A hook beside the build tool, or a
+    longer command line, is not a build tool."""
     rule = InstallBuildTool()
     for gyp in (GYP_ACTION, GYP_EXPANSION):
         assert not rule.evaluate_code(

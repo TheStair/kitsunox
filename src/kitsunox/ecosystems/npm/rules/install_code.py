@@ -372,6 +372,22 @@ BUILD_TOOL_HOOKS: Final = frozenset(
 )
 
 
+# v2: what a native add-on's `binding.gyp` asks `node` for so the compiler finds the headers of
+# `node-addon-api` or `nan`: `<!(node -p "require('node-addon-api').include")`,
+# `<!@(node -p "require('node-addon-api').gyp")`, `<!(node -e "require('nan')")` (as
+# `install.gyp_commands` extracts them, up to the first `)` before a quote). It only prints a
+# directory of an installed package; any other command, or any gyp action, still counts.
+HEADER_LOOKUP: Final = re.compile(
+    r"""node\s+-[ep]\s+"require\(\\?'(?:node-addon-api|nan)\\?'\)?"""
+    r"""(?:\.(?:include|include_dir|gyp))?"?"""
+)
+
+
+def header_lookup(command: str) -> bool:
+    """Whether a `binding.gyp` command only looks up `node-addon-api`'s or `nan`'s headers."""
+    return HEADER_LOOKUP.fullmatch(command.strip()) is not None
+
+
 class InstallBuildTool(BaseRule):
     """Every install hook of the version runs only a build tool (`BUILD_TOOL_HOOKS`), and its
     `binding.gyp` runs no command (`CodeChange.build_commands`, from `install.gyp_commands`).
@@ -383,9 +399,15 @@ class InstallBuildTool(BaseRule):
 
     Added 2026-11-08 (`docs/proposals/precision-round2.md`, F2): 12 benign live reports, no
     positive; none of the 433 `vm-day1` malicious samples reported only through the install
-    rules has build-tool-only hooks."""
+    rules has build-tool-only hooks.
+
+    v2 (2026-11-09, `docs/proposals/precision-round3.md` X6): a `binding.gyp` command that only
+    looks up `node-addon-api`'s or `nan`'s headers (`HEADER_LOOKUP`) is not counted: it is how
+    most add-ons find them. Any other expansion or gyp action still keeps the hook's
+    severity."""
 
     id = "npm.install-build-tool"
+    version = 2
     severity = Severity.INFO
     weight = 0.0
     title = "Install hooks only run a build tool"
@@ -397,15 +419,20 @@ class InstallBuildTool(BaseRule):
         }
         if (
             not hooks
-            or change.build_commands
+            or not all(header_lookup(command) for command in change.build_commands)
             or not all(command in BUILD_TOOL_HOOKS for command in hooks.values())
         ):
             return ()
+        gyp = (
+            "only looks up `node-addon-api` or `nan` headers"
+            if change.build_commands
+            else "runs no command"
+        )
         return (
             self.finding(
                 "Every install hook only runs a build tool ("
                 + ", ".join(f"`{hook}`: `{command}`" for hook, command in hooks.items())
-                + "), and `binding.gyp` runs no command.",
+                + f"), and `binding.gyp` {gyp}.",
                 *(
                     Evidence(
                         kind=EvidenceKind.MANIFEST_FIELD,
