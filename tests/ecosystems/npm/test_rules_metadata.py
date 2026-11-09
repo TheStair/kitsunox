@@ -8,6 +8,7 @@ import pytest
 from kitsunox.core.models import (
     ArtifactRef,
     Change,
+    Finding,
     PackageVersionRef,
     Popularity,
     PublishInfo,
@@ -27,6 +28,7 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     UnfamiliarPublisher,
     calendar_major,
     calendar_version,
+    dependency_source,
 )
 from kitsunox.stages.triage import (
     MIN_GROWTH_BYTES,
@@ -177,6 +179,125 @@ def test_sheetjs_cdn_is_the_vendors_registry(spec: str, low: bool) -> None:
         (Severity.LOW, 1.0) if low else (Severity.MEDIUM, 3.0)
     )
     assert finding.explanation.endswith("only there.") is low
+
+
+@pytest.mark.parametrize(
+    ("spec", "source"),
+    [
+        ("github:uNetworking/uWebSockets.js#v20.71.0", ("github.com", "unetworking", False)),
+        ("uNetworking/uWebSockets.js#v20.71.0", ("github.com", "unetworking", False)),
+        ("gitlab:Group/repo#main", ("gitlab.com", "group", False)),
+        (
+            "git+https://github.com/x/y.git#a879d11c741caf75e5f33f1d1933f6c587cfc3ee",
+            ("github.com", "x", True),
+        ),
+        ("git+https://github.com/x/y.git#a879d11", ("github.com", "x", True)),
+        ("git+ssh://git@github.com/x/y.git#refs/pull/12/head", ("github.com", "x", True)),
+        ("git+ssh://git@github.com:x/y.git#v1", ("github.com", "x", False)),
+        ("git@github.com:x/y.git", ("github.com", "x", False)),
+        (
+            "git+https://user:tok@gitlab.example.vn/grp/sub/y.git#v2",
+            ("gitlab.example.vn", "grp", False),
+        ),
+        ("https://codeload.github.com/x/y/tar.gz/v0.20.6", ("github.com", "x", False)),
+        ("https://codeload.github.com/x/y/tar.gz/273c2af0a9abe702", ("github.com", "x", True)),
+        (
+            "https://github.com/x/y/archive/f0e7a3292f6f4293107c17d069b2a659a1cde720.tar.gz",
+            ("github.com", "x", True),
+        ),
+        (
+            "https://github.com/x/y/releases/download/v1.0.0+a8e7d0b1/y.tgz",
+            ("github.com", "x", False),
+        ),
+        ("https://raw.githubusercontent.com/x/y/refs/heads/main/y.tgz", ("github.com", "x", False)),
+        ("https://pkg.pr.new/x/y/@s/y@8600e36", ("pkg.pr.new", "x", True)),
+        (
+            "https://storage.googleapis.com/bucket/y-0.68.0.tgz",
+            ("storage.googleapis.com", "bucket", False),
+        ),
+        ("http://54.173.15.59:8080/npm/jpd", ("54.173.15.59", "npm", False)),
+    ],
+)
+def test_dependency_source(spec: str, source: tuple[str, str, bool]) -> None:
+    found = dependency_source(spec)
+    assert found is not None and (found.host, found.owner, found.forkable) == source
+
+
+@pytest.mark.parametrize(
+    "spec", ["^1.2.3", "npm:x@1", "file:../x", "@s/x@1.0.0", "gist:abc", "https://example.com"]
+)
+def test_no_dependency_source(spec: str) -> None:
+    assert dependency_source(spec) is None
+
+
+def nr(new_dep: str, old_dep: str | None = None, *, repository: Any = None) -> Finding:
+    old_manifest: dict[str, Any] = {"dependencies": {"dep": old_dep} if old_dep else {}}
+    if repository is not None:
+        old_manifest["repository"] = repository
+    new = snap("1.0.1", {"dependencies": {"dep": new_dep}})
+    (finding,) = NonRegistryDependency().evaluate(change(new, snap("1.0.0", old_manifest)), CTX)
+    return finding
+
+
+def test_a_dependency_moved_within_the_same_account_is_low() -> None:
+    """v5 (round 4, N1): the previous release took it from the same account; only the tag or
+    release changed (`@activeledger/*`: uWebSockets.js `#v20.67.0` -> `#v20.71.0`)."""
+    moved = nr(
+        "github:uNetworking/uWebSockets.js#v20.71.0", "github:uNetworking/uWebSockets.js#v20.67.0"
+    )
+    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 5)
+    assert "The previous release took it from the same account (github.com/unetworking)" in (
+        moved.explanation
+    )
+    release = "https://github.com/Signet-AI/signetai/releases/download/v{}/s.tgz"
+    assert nr(release.format("1.0.0"), release.format("0.240.2")).severity is Severity.LOW
+    # git URL before, codeload tag after: the same GitHub account
+    assert (
+        nr(
+            "https://codeload.github.com/o/r/tar.gz/v2", "git+https://github.com/o/r.git#v1"
+        ).severity
+        is Severity.LOW
+    )
+    for new, old in (
+        # a commit (or pull request) could be a fork's: `lane-m-snackager-probe@1.0.1`, unwanted
+        (
+            "git+https://github.com/chimz-max/p.git#594fbaa18ae92fa954be30fb17e39674aa31a70d",
+            "git+https://github.com/chimz-max/p.git#a879d11c741caf75e5f33f1d1933f6c587cfc3ee",
+        ),
+        ("github:o/r#refs/pull/7/head", "github:o/r#v1"),
+        ("github:chatbridgegit/libsignal-node", "github:realvare/libsignal"),  # another account
+        ("github:o/r#v2", "^1.0.0"),  # from the registry before
+        ("https://evil.example/o/r.tgz", "https://other.example/o/r.tgz"),
+    ):
+        assert nr(new, old).severity is Severity.MEDIUM, new
+
+
+def test_a_dependency_from_the_previous_release_s_repository_owner_is_low() -> None:
+    """v5 (N1): the previous release names `github.com/aimuzov/kaiten-mcp`; a tag of the same
+    account's `infra-mcp-kit` takes write access there. A commit in the package's own
+    repository is the `@opensearch-project/opensearch` attack and stays MEDIUM."""
+    repo = {"type": "git", "url": "git+https://github.com/aimuzov/kaiten-mcp.git"}
+    own = nr("github:aimuzov/infra-mcp-kit#v3.4.1", repository=repo)
+    assert (own.severity, own.weight) == (Severity.LOW, 1.0)
+    assert "the account of the repository the previous release names" in own.explanation
+    assert nr("aimuzov/infra-mcp-kit", repository="aimuzov/kaiten-mcp").severity is Severity.LOW
+    opensearch = "github:opensearch-project/opensearch-js#d446803f4c3bc116263faa3499a1d3f95b2825de"
+    os_repo = "https://github.com/opensearch-project/opensearch-js.git"
+    assert nr(opensearch, repository=os_repo).severity is Severity.MEDIUM
+    assert nr("github:other/kit#v1", repository=repo).severity is Severity.MEDIUM
+    assert nr("https://gitlab.com/aimuzov/kit.tgz", repository=repo).severity is Severity.MEDIUM
+
+
+def test_only_the_previous_release_vouches() -> None:
+    """A new package has no earlier release; the new release's own `repository` is written by
+    whoever publishes it."""
+    spec = "github:attacker/payload#main"
+    fresh = snap("1.0.0", {"dependencies": {"dep": spec}, "repository": "attacker/x"})
+    (finding,) = NonRegistryDependency().evaluate(change(fresh), CTX)
+    assert finding.severity is Severity.MEDIUM
+    claimed = snap("1.0.1", {"dependencies": {"dep": spec}, "repository": "attacker/x"})
+    (finding,) = NonRegistryDependency().evaluate(change(claimed, snap("1.0.0")), CTX)
+    assert finding.severity is Severity.MEDIUM
 
 
 def test_unchanged_non_registry_dependency_is_not_new() -> None:

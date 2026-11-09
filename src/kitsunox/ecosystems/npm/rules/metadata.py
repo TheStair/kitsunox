@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Final
 
 from kitsunox.core.models import Change, Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule, Rule, RuleContext
 from kitsunox.ecosystems.npm import semver
+from kitsunox.ecosystems.npm.packument import normalize_repository_url
 
 # Lifecycle scripts npm runs when a package is installed from the registry. `prepare` is left
 # out: it runs for git dependencies and `npm pack`, not for registry installs.
@@ -175,6 +177,102 @@ def fetches_nothing(spec: str) -> bool:
     return protocol is not None and protocol.group(0)[:-1].lower() not in _FETCHED_PROTOCOLS
 
 
+# Hosts whose first path segment is an account (user or organisation) that alone can write
+# there, and GitHub's own download hosts, which serve the same `<owner>/<repo>` namespace.
+_GITHUB_HOSTS: Final = frozenset(
+    {"github.com", "www.github.com", "codeload.github.com", "raw.githubusercontent.com"}
+)
+_SHORTCUTS: Final = {"github": "github.com", "gitlab": "gitlab.com", "bitbucket": "bitbucket.org"}
+_SHORTCUT: Final = re.compile(
+    r"^(?P<host>github|gitlab|bitbucket):(?P<owner>[^/#\s]+)/[^#\s]+(?:#(?P<ref>.*))?$", re.I
+)
+# `owner/repo` with no protocol is GitHub to npm; a leading `@`, `.`, `/` or `~` is not.
+_BARE: Final = re.compile(r"^(?P<owner>[^/#:@.~\s][^/#:@\s]*)/[^/#\s]+(?:#(?P<ref>.*))?$")
+# scp-like git remotes: `git@github.com:owner/repo.git#ref`, `git+ssh://git@host:owner/repo`.
+_SCP: Final = re.compile(
+    r"^(?:git\+)?(?:ssh://)?[^@/\s]+@(?P<host>[^:/\s]+):(?P<owner>[^/\s]+)/[^#\s]+"
+    r"(?:#(?P<ref>.*))?$",
+    re.I,
+)
+_URL: Final = re.compile(
+    r"^(?:git\+)?(?P<scheme>[a-z]+)://(?:[^@/\s]*@)?(?P<host>[^/:#?\s]+)(?::\d+)?"
+    r"(?P<path>/[^#?\s]*)?(?:\?[^#\s]*)?(?:#(?P<ref>.*))?$",
+    re.I,
+)
+# A commit id (git's 40 hex digits, or abbreviated; 64 for SHA-256 repositories) or a
+# pull/merge-request ref. GitHub serves a commit pushed to *any fork* through the parent
+# repository's URLs (`github:owner/repo#<commit>`, codeload and archive URLs), and every
+# pull request from a fork gets a `refs/pull/N/head` there. Tags, branches and release
+# assets can only be created by someone with write access to the repository itself.
+_FORKABLE_TOKEN: Final = re.compile(r"[0-9a-f]{7,64}|pull|merge-requests", re.I)
+
+
+@dataclass(frozen=True)
+class DependencySource:
+    """Where a non-registry dependency comes from: a host, the account on it that owns what
+    is fetched (a GitHub/GitLab owner, a bucket, the first path segment), and whether the
+    reference could have been planted from a fork (`_FORKABLE_TOKEN`)."""
+
+    host: str
+    owner: str
+    forkable: bool
+
+
+def dependency_source(spec: str) -> DependencySource | None:
+    """The source of a git, GitHub-shorthand or URL dependency spec; None for anything else
+    (registry specs, local paths, `gist:`) and for a URL without an owner segment."""
+    text = spec.strip()
+    host: str
+    if (match := _SHORTCUT.match(text)) is not None:
+        host, owner, rest = _SHORTCUTS[match["host"].lower()], match["owner"], match["ref"]
+    elif not _PROTOCOL.match(text) and (match := _BARE.match(text)) is not None:
+        host, owner, rest = "github.com", match["owner"], match["ref"]
+    elif (match := _SCP.match(text)) is not None and "://" not in text.split("@", 1)[1]:
+        host, owner, rest = match["host"], match["owner"], match["ref"]
+    elif (match := _URL.match(text)) is not None and match["scheme"].lower() in (
+        "git",
+        "ssh",
+        "http",
+        "https",
+    ):
+        segments = [s for s in (match["path"] or "").split("/") if s]
+        if not segments:
+            return None
+        host, owner = match["host"], segments[0]
+        rest = "/".join(segments[1:]) + "#" + (match["ref"] or "")
+        if host.lower() in _GITHUB_HOSTS and segments[2:4] == ["releases", "download"]:
+            rest = ""  # a release asset: its tag lives in this repository, not a fork's
+    else:
+        return None
+    host = host.lower()
+    if host in _GITHUB_HOSTS:
+        host = "github.com"
+    tokens = re.split(r"[/#@:.+]", rest or "")
+    return DependencySource(
+        host=host,
+        owner=owner.lower(),
+        forkable=any(_FORKABLE_TOKEN.fullmatch(t) for t in tokens),
+    )
+
+
+def previous_repository_owner(change: Change) -> tuple[str, str] | None:
+    """`("github.com", owner)` of the GitHub repository the *previous* release's manifest
+    names; None for a new package, another host, or no repository. The previous release's
+    value, not this one's: whoever publishes this release also writes its `repository`."""
+    if change.previous is None:
+        return None
+    repo = change.previous.manifest.get("repository")
+    if isinstance(repo, Mapping):
+        repo = repo.get("url")
+    if not isinstance(repo, str):
+        return None
+    url = normalize_repository_url(repo)
+    if url is None or not url.startswith("https://github.com/"):
+        return None
+    source = dependency_source(url)
+    return None if source is None else (source.host, source.owner)
+
+
 class NonRegistryDependency(BaseRule):
     """A new dependency resolved from a URL, git repository, GitHub shorthand or local path
     instead of the registry: it bypasses registry-side malware takedowns and is often used to
@@ -198,10 +296,23 @@ class NonRegistryDependency(BaseRule):
     (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`): 50 benign live reports (11
     packages), no positive, and none of the rule's 15 at-risk `vm-day1` malicious samples uses
     it. One literal origin, not a pattern; other vendors' hosts are each an owner decision
-    (`docs/proposals/precision-round2.md`, F6b)."""
+    (`docs/proposals/precision-round2.md`, F6b).
+
+    v5 (2026-11-10, `docs/proposals/precision-round4-C.md` N1): on an update, LOW, weight 1,
+    when the source was already trusted by the *previous* release and the new reference can't
+    have been planted from a fork (`trusted_move`): the previous release took this same
+    dependency from the same account (a tag bumped from `#v20.67.0` to `#v20.71.0`, the next
+    GitHub release asset), or the previous release's `repository` is on GitHub under the
+    account the dependency now comes from. A commit id or pull-request ref stays MEDIUM:
+    GitHub serves a commit pushed to any fork through the parent repository's URLs, which is
+    how every git-dependency attack on `vm-day1` pulled its payload
+    (`github:opensearch-project/opensearch-js#d446803f…`, `github:antvis/G2#1916faa3…`,
+    `github:tanstack/router#79ac49ee…`); a tag, branch or release asset needs write access
+    to that account's repository. A new package has no earlier release to vouch for anything
+    and keeps MEDIUM, as does a dependency from another account than before."""
 
     id = "npm.dependency.non-registry"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -218,17 +329,49 @@ class NonRegistryDependency(BaseRule):
                 continue
             local = spec.strip().startswith(_LOCAL)
             vendor = spec.strip().startswith(VENDOR_REGISTRIES)
+            moved = None if local or vendor else trusted_move(change, name, spec)
+            low = local or vendor or moved is not None
             findings.append(
                 self.finding(
                     f"Dependency `{name}` comes from `{snippet(spec)}`."
                     + (" A local path: nothing is fetched." if local else "")
-                    + (VENDOR_NOTE if vendor else ""),
+                    + (VENDOR_NOTE if vendor else "")
+                    + (moved or ""),
                     _field(f"dependencies.{name}", after=spec, before=old.get(name)),
-                    severity=Severity.LOW if local or vendor else None,
-                    weight=1.0 if local or vendor else None,
+                    severity=Severity.LOW if low else None,
+                    weight=1.0 if low else None,
                 )
             )
         return findings
+
+
+MOVED_NOTE: Final = (
+    " The previous release took it from the same account ({source}); only the tag, branch "
+    "or release changed, which takes write access there."
+)
+OWN_REPOSITORY_NOTE: Final = (
+    " From {source}, the account of the repository the previous release names, at a tag, "
+    "branch or release, which takes write access there."
+)
+
+
+def trusted_move(change: Change, name: str, spec: str) -> str | None:
+    """Why the previous release vouches for this non-registry dependency (a note for the
+    finding), or None: see `NonRegistryDependency` v5."""
+    if change.previous is None:
+        return None
+    source = dependency_source(spec)
+    if source is None or source.forkable:
+        return None
+    account = (source.host, source.owner)
+    before = runtime_dependencies(change.previous.manifest).get(name)
+    earlier = dependency_source(before) if before is not None else None
+    where = f"{source.host}/{source.owner}"
+    if earlier is not None and (earlier.host, earlier.owner) == account:
+        return MOVED_NOTE.format(source=where)
+    if previous_repository_owner(change) == account:
+        return OWN_REPOSITORY_NOTE.format(source=where)
+    return None
 
 
 class DependencyAdded(BaseRule):
