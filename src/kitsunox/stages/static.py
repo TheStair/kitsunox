@@ -40,7 +40,7 @@ from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.rules.signatures import KnownSignature
-from kitsunox.rules.static import RULES, ChannelFollow, HardcodedIp
+from kitsunox.rules.static import CONTEXT_NOTES, RULES, ChannelFollow, HardcodedIp
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
@@ -183,8 +183,13 @@ def _metadata_url(manifest: bytes, line: int) -> bool:
 
 def _key(match: FileMatch) -> tuple[str, str]:
     """A match's identity across versions: its rule and explanation, numbers aside (`3235
-    obfuscator-style identifiers` and `3301 ...` are the same finding)."""
-    return (match.rule_id, _NUMBER.sub("#", match.explanation))
+    obfuscator-style identifiers` and `3301 ...` are the same finding), and without a note
+    that depends on the rest of the file (`CONTEXT_NOTES`, round 4): the previous version's
+    quiet notifier file and this version's collecting one hold the same Telegram URL."""
+    explanation = match.explanation
+    for note in CONTEXT_NOTES:
+        explanation = explanation.replace(note, "")
+    return (match.rule_id, _NUMBER.sub("#", explanation))
 
 
 # Never "not new": a known family's payload in the previous version too is still the payload,

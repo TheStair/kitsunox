@@ -83,13 +83,13 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v7) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7) | HIGH |
+| `static.exfil-endpoint` (v8) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
-| `static.function-require` | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor` | MEDIUM (weight 3) |
+| `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v4) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4) | MEDIUM |
+| `static.hardcoded-ip` (v5) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
 | `static.obfuscated` | many `_0x`-style identifiers (javascript-obfuscator output) | MEDIUM |
@@ -484,6 +484,44 @@ malicious, unwanted or unverified lost, and no positive's `exfil-endpoint` or `h
 finding changes). `vm-day1`: see the proposal's section 5. Kept as they are, with the reasons
 in the proposal: Telegram `bot${token}` (its token is often encoded elsewhere in the
 malicious samples: `github-badge-bot`, `foundry-toolkit`), bare tunnel suffixes, comments.
+
+### Round 4: what is sent, comments, module wrappers (2026-11-10)
+
+From [precision round 4, agent D](../proposals/precision-round4-D.md) (D1-D5), built before
+the rule freeze. Each lowered match is LOW, weight 1, with a note; nothing is dropped.
+
+- **`exfil-endpoint` v8 (D1-D3): what is sent, not only where to.** Round 3 rejected lowering
+  Telegram `bot${token}` because the malicious samples often hide the token
+  (`github-badge-bot`, `foundry-toolkit`, `@eooce/sbx`). Looking at what those samples
+  *send* separates them: every one of them, in the same file, reads the hostname, runs
+  commands, walks directories or uploads files (`sendDocument`), names a credential store or
+  wallet secret, or writes a token literal. v8 lowers three shapes only in a file that does
+  none of that (`_collects`: `_COLLECT_PARTS` plus `SensitivePath` and `EnvHarvest`'s
+  patterns) and not on an install hook's line:
+  - **D1** a Telegram bot API URL whose token the code is handed (`bot${config.botToken}`,
+    `"…/bot" + token`, `bot{{TOKEN}}`, PHP `'…/bot'.$t`); a literal token (`bot7123…:AA…`) or a
+    shell `bot$TOKEN` stays HIGH;
+  - **D2** a `webhook.site` mention with no bin id (a UUID) within 300 characters and no
+    subdomain; `hostname: 'webhook.site', path: '/<uuid>'` stays HIGH;
+  - **D3** a tunnel's bare suffix (`host.endsWith(".trycloudflare.com")`,
+    `allowedHosts: [".ngrok-free.app"]`, `https://….trycloudflare.com` in help text) and
+    `api.trycloudflare.com` (the API `cloudflared` registers with); a tunnel's name stays HIGH.
+- **`hardcoded-ip` v5 (D4): comment lines.** A URL on a line that is a comment (`//`, `# `,
+  a block comment's `/*` or `*` line with no close before the match, `<!--`): commented-out
+  base URLs (`// return 'http://47.108.170.69:5401'`), JSDoc alternatives. Not a shebang, not a
+  CSS `#id`, not code after `/*! … */` on the same line.
+- **`function-require` v2 (D5): module wrappers.** `Function("require", "module", "exports",
+  code)` in a file that neither fetches nor decodes anything (`_LOADS_REMOTE`): config loaders
+  and test or template sandboxes evaluating code the package compiled from local files. The
+  `vm-day1` loaders pass `require` alone (`chai-as-*`, `aes-decode-runner-pro`) or fetch what
+  they run (`alpha-replicator`), and stay MEDIUM.
+
+Measured with the real code end to end on all 3,716 verdicted live versions and, for every
+`vm-day1` malicious sample on which a touched rule fires at MEDIUM or above, with the rule
+itself and then `pipeline+4`: see the proposal for the numbers. **Recall risk:** a stealer
+that splits collection and sending into two files (the Telegram call alone in a helper) or
+that sends nothing but what the code was given gets LOW for the URL; its collecting file still
+carries `sensitive-path`, `env-harvest` and Stage 3's capability findings.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 

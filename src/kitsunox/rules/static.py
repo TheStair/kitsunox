@@ -8,6 +8,7 @@ behind each are in `docs/stages/static.md`.
 from __future__ import annotations
 
 import base64
+import functools
 import ipaddress
 import re
 from collections.abc import Sequence
@@ -131,9 +132,20 @@ class ExfilEndpoint(RegexRule):
     # ones); and an OAST host whose own label is a placeholder (`YOUR-COLLABORATOR-ID.
     # oastify.com`, v6's test for tunnel hosts). Real OAST ids and quick-tunnel names, bare
     # suffixes, `bot${token}` and tables of endpoints stay HIGH.
+    # v8 (2026-11-10, `docs/proposals/precision-round4-D.md` D1, D2): what is sent, not only
+    # where to. LOW, weight 1, for a Telegram bot API URL whose token the code is handed
+    # (`bot${config.botToken}`, `"bot" + token`, `bot{{TOKEN}}`), and for a `webhook.site`
+    # URL with no token id (a UUID) within `TOKEN_WINDOW` characters, both only in a file that
+    # collects nothing to send (`_collects`: no machine identity, environment dump, directory
+    # walk or file upload, process, credential store or Telegram token literal) and not on an
+    # install hook's line. A notifier for the user's own bot, a usage example. Telegram calls
+    # in a file that also reads the hostname, runs commands or uploads files stay HIGH
+    # (`@eooce/sbx`, `foundry-toolkit`, `github-badge-bot` on `vm-day1`), as does any literal
+    # token (`bot7123…:AA…`), a shell `bot$TOKEN` and a `webhook.site` host near a UUID
+    # (`hostname: 'webhook.site', path: '/89403f83-…'`).
 
     id = "static.exfil-endpoint"
-    version = 7
+    version = 8
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -170,7 +182,7 @@ class ExfilEndpoint(RegexRule):
             return PATTERN_NOTE
         if _in_domain_list(match) or _in_separated_list(match):
             return LIST_NOTE
-        return None
+        return _sends_nothing(match)
 
 
 # A placeholder written as a tunnel host's own label, ending right before `.ngrok.io`,
@@ -336,6 +348,104 @@ def _in_deny_list(match: re.Match[str]) -> bool:
     return len(services) >= DENY_LIST_SERVICES
 
 
+# v8: a Telegram bot token the code is handed, right after `api.telegram.org/bot`: a template
+# (`${token}`, `{{TOKEN}}`, Python's `{token}` / `%s`) or the end of a string joined to an
+# expression (`"…/bot" + token`, PHP's `'…/bot'.$token`). Not a shell `bot$TOKEN`: hooks and
+# scripts write that.
+_HANDED_TOKEN: Final = re.compile(r"""\$\{|\{\{|\{[A-Za-z_]|%s|["'`]\s*[+.]""")
+# A Telegram bot token written out: `123456789:AA` and 33 more characters.
+_TOKEN_LITERAL: Final = re.compile(r"(?<!\d)\d{8,10}:AA[A-Za-z0-9_-]{30,}")
+# A webhook.site token: the UUID that names a bin (`/89403f83-77bf-4ccb-8ba0-e5a652841e0a`),
+# often written apart from the host (`hostname: 'webhook.site', path: '/<uuid>'`).
+_UUID: Final = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+TOKEN_WINDOW: Final = 300
+# An install hook's line in a `package.json`: never lowered.
+_HOOK_LINE: Final = re.compile(r'"(?:preinstall|install|postinstall|prepare)"\s*:')
+# What a file collects to send, besides the environment (`EnvHarvest`) and credential stores
+# (`SensitivePath`): machine identity (hostname, user, interfaces, public IP), a directory
+# walk or a file upload, a process, a wallet secret, a Telegram token literal.
+_COLLECT_PARTS: Final = (
+    r"\bos\.(?:hostname|userInfo|networkInterfaces)\s*\(|\b(?:hostname|userInfo"
+    r"|networkInterfaces)\(\)|\bwhoami\b|\$\(\s*(?:hostname|id|uname)\b|ipify|ifconfig\.me"
+    r"|ipinfo\.io|ip-api\.com|icanhazip|checkip\.amazonaws|socket\.gethostname|getpass\.getuser",
+    r"readdirSync|\breaddir\(|opendirSync|createReadStream|os\.walk|os\.listdir"
+    r"|send(?:Document|Photo|Audio|Video|MediaGroup)\b",
+    r"child_process|\b(?:execSync|execFileSync|spawnSync)\b|shell_exec|proc_open|subprocess"
+    r"|os\.system|\bpopen\(",
+    r"(?i:mnemonic|seed ?phrase|private ?key|wallet\.dat|keystore)",
+    _TOKEN_LITERAL.pattern,
+)
+TELEGRAM_NOTE: Final = (
+    " A Telegram bot API URL with a token the code is handed, in a file that collects nothing"
+    " to send (no machine identity, environment, directory walk or upload, process,"
+    " credential store or token literal): a notifier for the user's own bot."
+)
+# v8: a tunnel's domain suffix written bare (`host.endsWith(".trycloudflare.com")`,
+# `allowedHosts: [".ngrok-free.app"]`, `https://….trycloudflare.com` in help text), and the
+# API `cloudflared` registers quick tunnels with (`api.trycloudflare.com`): no tunnel's name.
+_TUNNEL_SUFFIXES: Final = frozenset(
+    {
+        ".ngrok.io",
+        ".ngrok.app",
+        ".ngrok-free.io",
+        ".ngrok-free.app",
+        ".trycloudflare.com",
+        ".serveo.net",
+    }
+)
+_CF_API: Final = re.compile(r"(?<![\w.-])api$", re.IGNORECASE)
+_HOST_END: Final = re.compile(r"(?![\w.-])")
+TUNNEL_SUFFIX_NOTE: Final = (
+    " A tunnel's bare domain suffix (a host check, an allowed-hosts list, help text), in a file"
+    " that collects nothing to send: no tunnel's name, not an endpoint."
+)
+WEBHOOK_SITE_NOTE: Final = (
+    " `webhook.site` with no token id near it, in a file that collects nothing to send (no"
+    " machine identity, environment, directory walk or upload, process, credential store or"
+    " token literal): a mention, not an endpoint."
+)
+
+
+@functools.cache
+def _collect_pattern() -> re.Pattern[str]:
+    return re.compile(
+        "|".join((*_COLLECT_PARTS, SensitivePath.pattern.pattern, EnvHarvest.pattern.pattern))
+    )
+
+
+@functools.lru_cache(maxsize=4)
+def _collects(text: str) -> bool:
+    """Whether `text` (a whole file) collects something to send: `_COLLECT_PARTS`, a
+    credential store (`SensitivePath`) or the whole environment (`EnvHarvest`). Cached: a
+    file's matches all ask about the same text."""
+    return _collect_pattern().search(text) is not None
+
+
+def _sends_nothing(match: re.Match[str]) -> str | None:
+    """v8: the note for a match that names a service but no endpoint on it, in a file that
+    collects nothing (`_collects`) and not on an install hook's line: a Telegram bot API URL
+    with a handed token (`TELEGRAM_NOTE`), a `webhook.site` mention with no token id within
+    `TOKEN_WINDOW` characters and no subdomain (`WEBHOOK_SITE_NOTE`), a tunnel's bare domain
+    suffix or Cloudflare's own `api.trycloudflare.com` (`TUNNEL_SUFFIX_NOTE`). None otherwise."""
+    text, start, end = match.string, match.start(), match.end()
+    found = match.group(0).lower()
+    before = text[start - 1] if start > 0 else ""
+    if found.endswith("/bot"):
+        note = TELEGRAM_NOTE if _HANDED_TOKEN.match(text, end) else None
+    elif found == "webhook.site":
+        near = _UUID.search(text, max(0, start - TOKEN_WINDOW), end + TOKEN_WINDOW)
+        note = None if near or before.isalnum() or before in "-." else WEBHOOK_SITE_NOTE
+    elif found in _TUNNEL_SUFFIXES:
+        bare = not (before.isalnum() or before in "-_") or _CF_API.search(text, 0, start)
+        note = TUNNEL_SUFFIX_NOTE if bare and _HOST_END.match(text, end) else None
+    else:
+        note = None
+    line_start = text.rfind("\n", 0, start) + 1
+    if note is None or _HOOK_LINE.search(text, line_start, start) or _collects(text):
+        return None
+    return note
+
+
 def _placeholder_id(webhook_id: str) -> bool:
     """`000000000000000000`, `T00000000/B00000000`, `123456789012345678`: a documentation
     example, not a webhook someone created."""
@@ -431,9 +541,19 @@ class FunctionRequire(RegexRule):
     string is handed the module loader, so whatever the string turns out to be (typically a
     response just downloaded) can load `child_process`, `fs` or `https` itself. A loader for
     a second stage needs exactly this; bundlers and template engines compile code without
-    giving it `require`."""
+    giving it `require`.
+
+    v2 (2026-11-10, `docs/proposals/precision-round4-D.md` D5): LOW, weight 1, for a module
+    wrapper (`Function("require", "module", "exports", code)`: the code gets its own `module`
+    and `exports`, as a CommonJS loader gives a file) in a file that neither fetches nor
+    decodes anything (`_LOADS_REMOTE`): a config loader, a template or test sandbox evaluating
+    code the package just compiled from local files. The second-stage loaders on `vm-day1`
+    either pass `require` alone (`Function("require", runnable)`, the `chai-as-*` family) or
+    fetch what they run (`alpha-replicator`'s module wrapper evaluates `data.credits` from a
+    `fetch`), and stay MEDIUM."""
 
     id = "static.function-require"
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Compiles code at runtime and hands it `require`"
@@ -443,6 +563,32 @@ class FunctionRequire(RegexRule):
         # (32k spaces took 0.44 s; a 16 MB file of them would stall Stage 2).
         r"""(?<![\w$])Function(?:\s*+\.\s*+constructor)?\s*+\)?\s*+\(\s*+["'`]require["'`]\s*+,"""
     )
+
+    def lowered(self, match: re.Match[str]) -> str | None:
+        if not _MODULE_WRAPPER.match(match.string, match.end()):
+            return None
+        return None if _loads_remote(match.string) else MODULE_WRAPPER_NOTE
+
+
+# v2: the rest of a module wrapper's parameter list, after `require,`: string literals up to
+# one naming `module` or `exports`.
+_MODULE_WRAPPER: Final = re.compile(
+    r"""\s*+(?:["'`]\w+["'`]\s*+,\s*+)*?["'`](?:module|exports)["'`]"""
+)
+# v2: a file that fetches or decodes something, so the code it compiles may not be its own.
+_LOADS_REMOTE: Final = re.compile(
+    r"\bfetch\s*\(|axios|\bhttps?\.(?:get|request)\b|XMLHttpRequest|\bgot\s*\(|WebSocket"
+    r"|\bnet\.connect|\.json\(\)|\bresponse\b|(?i:base64|atob\(|decrypt|decipher|fromCharCode)"
+)
+MODULE_WRAPPER_NOTE: Final = (
+    " A module wrapper (`module`/`exports`) in a file that neither fetches nor decodes"
+    " anything: code the package compiled itself, as a loader or sandbox."
+)
+
+
+@functools.lru_cache(maxsize=4)
+def _loads_remote(text: str) -> bool:
+    return _LOADS_REMOTE.search(text) is not None
 
 
 class SensitivePath(RegexRule):
@@ -517,10 +663,14 @@ class HardcodedIp(RegexRule):
     live reports, no positive; neither `vm-day1` malicious sample at risk lost. v4 (2026-11-09,
     `docs/proposals/precision-round3.md` X5): more public resolvers (AliDNS, DNSPod, 114DNS,
     OpenDNS's second address), and LOW, weight 1, for an example address (`EXAMPLE_IPS`:
-    `https://1.2.3.4:8443` as an input placeholder or in a help string)."""
+    `https://1.2.3.4:8443` as an input placeholder or in a help string). v5 (2026-11-10,
+    `docs/proposals/precision-round4-D.md` D4): LOW, weight 1, on a comment line (`//`, `#`,
+    a block comment's `/*` or `*` line, `<!--`): a commented-out base URL or a documented
+    alternative, which nothing connects to as written. Not a URL after a block comment closes
+    on the same line (`/*! v1 */ fetch("http://…")`)."""
 
     id = "static.hardcoded-ip"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"
@@ -534,7 +684,28 @@ class HardcodedIp(RegexRule):
         return address.is_global and str(address) not in PUBLIC_RESOLVERS
 
     def lowered(self, match: re.Match[str]) -> str | None:
-        return EXAMPLE_IP_NOTE if match.group(1) in EXAMPLE_IPS else None
+        if match.group(1) in EXAMPLE_IPS:
+            return EXAMPLE_IP_NOTE
+        return IP_COMMENT_NOTE if _on_comment_line(match) else None
+
+
+# v5: a line that is a comment where the match is: `//`, `# ` (not a shebang or a CSS `#id`
+# selector), or inside a block comment opened on the line (`/*`) or continued from an earlier
+# one (`*`), or HTML's `<!--`, with no close before the match.
+_COMMENT_LEAD: Final = re.compile(r"[ \t]*(?P<lead>//|#(?=[ \t#])|/\*|\*(?!/)|<!--)")
+_COMMENT_CLOSE: Final = {"/*": "*/", "*": "*/", "<!--": "-->"}
+IP_COMMENT_NOTE: Final = " On a comment line: a commented-out or documented URL, not code."
+
+
+def _on_comment_line(match: re.Match[str]) -> bool:
+    """Whether `match` is on a comment line (`_COMMENT_LEAD`) whose comment is still open."""
+    text, start = match.string, match.start()
+    line_start = text.rfind("\n", 0, start) + 1
+    lead = _COMMENT_LEAD.match(text, line_start, start)
+    if lead is None:
+        return False
+    close = _COMMENT_CLOSE.get(lead.group("lead"))
+    return close is None or close not in text[lead.end() : start]
 
 
 class EncodedBlob(RegexRule):
@@ -928,6 +1099,19 @@ class ChannelFollow:
         if self._AUTO.search(text):
             reasons.append("calls it an auto-follow or auto-join")
         return reasons
+
+
+# Round 4: notes for LOW that depend on the rest of the file (what it collects, fetches or
+# decodes), so the same match can be LOW in one version and not in the next. Stage 2 compares
+# a match with the previous version's without them (`stages.static._key`): a Telegram URL the
+# base already had is "not new" whether or not its file now collects.
+CONTEXT_NOTES: Final = (
+    TELEGRAM_NOTE,
+    WEBHOOK_SITE_NOTE,
+    TUNNEL_SUFFIX_NOTE,
+    IP_COMMENT_NOTE,
+    MODULE_WRAPPER_NOTE,
+)
 
 
 RULES: Final = (

