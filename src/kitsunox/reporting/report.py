@@ -39,6 +39,7 @@ STAGE_NAMES: Final = {
     "npm.": "Stage 1: metadata",
     "static.": "Stage 2: static",
     "code.": "Stage 3: capabilities",
+    "agent.": "Stage 3: capabilities",
     "repo.": "Stage 4: repository",
     "sandbox.": "Stage 5: sandbox",
 }
@@ -52,6 +53,8 @@ STAGE_OF_RULE: Final = {
     "npm.load-fingerprint": "Stage 3: capabilities",
     "npm.publish-at-load": "Stage 3: capabilities",
     "npm.install-agent-user-wide": "Stage 3: capabilities",
+    "npm.install-explained": "Stage 3: capabilities",
+    "npm.install-build-tool": "Stage 3: capabilities",
     "npm.provenance.": "Stage 4: correlation",
     "npm.dependency.known-malware": "Stage 4: correlation",
     "npm.dependency.fresh-foreign": "Stage 4: correlation",
