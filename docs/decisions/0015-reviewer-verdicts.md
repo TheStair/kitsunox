@@ -188,10 +188,34 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   write-up says so. Narrowing ideas for after the freeze (home reference and agent directory in
   one path expression; no comments or help text; skip writes only reachable behind an
   interactive prompt) are in the devlog.
-- **Interactive opt-in (reviewers' default, pending the owner).** A global install that asks
-  which agents to configure, and writes only what the user picks, is recorded as a write the
-  user starts: **benign** (`common-context-mcp`, `@gleapai/kai-bridge`); notes start
-  "Interactive opt-in:" so they can be flipped together.
+- **Interactive opt-in is benign (the owner, 2026-11-09).** A global install that asks which
+  agents to configure, and writes only what the user picks, is a write the user starts
+  (`common-context-mcp`, `@gleapai/kai-bridge`; notes start "Interactive opt-in:").
+- **Global-install-only user-wide writes are unwanted (the owner, 2026-11-09):** "user-wide agent
+  file interactions should be unwanted", whether on every install or only on `npm -g` (notes
+  start "Owner ruling 2026-11-09 (global install only):").
+- **Shell rc edits are unwanted (the owner, 2026-11-09).** An install hook that silently edits the
+  user's shell startup files (`~/.zshrc`, `~/.bashrc`, the shell profile: completion blocks,
+  PATH lines, env lines) is **unwanted** (`@xfe-repo/cli@2.2.5`; six earlier benign verdicts
+  re-recorded: `@phnx-labs/agents-cli@1.23.46`, `coding-friend-cli` 1.43.0/1.43.1,
+  `rl-workspaces@0.7.0` (global only), `termux-dsh@0.2.2-rc.1-tdsh.1`, `tfv@6.2.0`). An edit
+  the user switches on (`repilot`: only with `REPOPILOT_ACCEPT_EULA=1`) stays benign.
+- **Persistent PATH changes are unwanted too (the owner, 2026-11-09),** on any platform,
+  including hooks that add npm's own global bin directory to the Windows user PATH:
+  `@visual-z/xeno@0.13.2`, `coolcanvas@1.0.0-beta.8` (global only), `@ziniao-open/cli`
+  0.1.0-beta.170/175 and 1.3.0 (its setup script registers the CLI directory in the user's
+  shell or user PATH on every install).
+- **System package installs are unwanted (the owner, 2026-11-09).** An install hook that installs
+  system packages (`sudo apt-get install -y`, `dnf`, `brew`, `winget`, `choco`) is **unwanted**,
+  even when what it installs is harmless (git, cmake): the mechanism, root-level changes during
+  `npm install`, which often runs unattended and, in CI and containers, with passwordless sudo,
+  is what could be abused. The usual practice is to fail with a message naming what to install,
+  which stays benign, as does an install the user is asked about first (`@cocreate/cli`).
+  Recorded: `streamgrab@1.3.4`, `@ohos-ports/zerox@1.1.20-beta.0` (`sudo -n` where passwordless),
+  `gebangautoupload@1.1.4`.
+- **Baileys media tagging is unwanted (the owner, 2026-11-09).** A fork that attaches the author's
+  channel (newsletter) annotation to messages the user sends, without following anything, is
+  covert channel promotion under the Baileys policy (`@codexverified/baileys` 2.19.18/2.19.19).
 
 ## Addendum 2026-11-08 (later): the Baileys signatures are retired
 

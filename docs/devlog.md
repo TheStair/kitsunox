@@ -2,6 +2,75 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: Why live recall jumped from 28% to 76%; benign-by-inference verdicts withdrawn
+
+**Stage(s):** evaluation (live matrices, reviewer verdicts)
+**Context:** The headline (flag-worthy, behaviour truth, window "all") went from 28.2% recall /
+1.9% precision (`live-20261108T151126Z`) to 76.4% / 5.7% (`live-20261109T113623Z`). Before the
+number goes on a slide, what moved it? Traced version by version between the two datasets
+(`data/eval/live/datasets/*.jsonl.zst`, placeholders left out; counts are over all rows, not
+the D-filtered matrix cells, so they are larger than the matrix's).
+
+### Decisions
+- **The jump is mostly a change in the truth, not in detection.** Of the 102 positives the
+  11-08 dataset had missed, 34 were then judged benign by reviewers, 30 unverified (left out of
+  the matrices), 20 unwanted (still misses), 10 malicious (still misses), 8 OSV-only (still
+  misses). On the reported side, 42 versions moved from benign to unwanted (four categories and
+  the 11-09 rulings) and 13 from unverified to unwanted; new data added 106 unwanted and 17
+  malicious reported versions. The strict malicious-only matrix moved from 28.2% to 72.1% for
+  the same reason (its misses fell from 94 to 12), and the OSV-truth matrix, which no verdict
+  can clear, reads 57.1%: the slide shows it beside the headline.
+- **Benign verdicts on code nobody read are withdrawn.** 29 of the 34 "OSV-labeled but benign"
+  misses were recorded from a manifest alone (tarball gone): 25 `@goparrot-dashboard*`
+  dependency-confusion placeholders whose sizes match one inspected template, and three
+  `calculator-preinstall-chain-demo` plus `@bigdevin55/calculator-install-demo`, whose sole
+  dependency is a hook demo. They are now **unverified (gone)**, probe tag kept. Recall is
+  unchanged (benign-unreported and unverified are both not misses), but they now count in the
+  worst-case bound, which is the honest place for unseen code. The review brief now forbids
+  benign for unread code.
+- **A legacy verdict missed by the 11-08 reclassification:** `calculator-preinstall-hook-demo
+  @1.1.1` posts only a fixed string to a Discord webhook at preinstall (re-read): marker-only
+  beacon, now **unwanted** with probe (it was benign with probe).
+
+### Open questions / next steps
+- The remaining 5 OSV-labeled-but-benign verdicts were made with the code read
+  (`@emilgroup/discount-sdk`, `filipt` x2, `print-hello-world-test-temp`,
+  `@goparrot-dashboard/app@0.0.1`); a second, independent look at those before the defence.
+- The slide should name the truth change as the cause, and show OSV truth and the worst case.
+
+## 2026-11-09: Owner rulings on global-only, opt-in prompts, shell rc edits, media tagging
+
+**Stage(s):** evaluation (reviewer verdicts), decision 0015; Stage 3 (`npm.publish-at-load`)
+**Context:** The owner answered the open verdict questions of the day.
+
+### Decisions
+- **Global-install-only user-wide writes are unwanted** ("user-wide agent file interactions
+  should be unwanted"): the reviewers' default stands; no records change.
+- **Interactive opt-in prompts are benign** (`common-context-mcp`, `@gleapai/kai-bridge`).
+- **Silent shell rc edits by install hooks are unwanted.** `@xfe-repo/cli@2.2.5` re-recorded;
+  a search of benign notes for rc/profile/PATH edits found six more, re-recorded after their
+  notes were read in full (`@phnx-labs/agents-cli@1.23.46`, `coding-friend-cli` 1.43.0/1.43.1,
+  `rl-workspaces@0.7.0`, `termux-dsh@0.2.2-rc.1-tdsh.1`, `tfv@6.2.0`). Left benign: an edit
+  behind an env opt-in (`repilot`).
+- **Persistent PATH changes are unwanted.** Claude first left two Windows hooks that add npm's
+  own global bin directory to the user PATH benign (a repair of the install); the owner ruled
+  any persistent PATH change unwanted. Re-recorded: `@visual-z/xeno@0.13.2`,
+  `coolcanvas@1.0.0-beta.8`, and `@ziniao-open/cli` 0.1.0-beta.170/175 and 1.3.0 (its
+  `install.js` `main()` always runs `setup-ziniao-cli.sh`/`.ps1`, which persists the CLI
+  directory in the user's PATH; checked in all three tarballs).
+- **System package installs by install hooks are unwanted** (owner: "npm is primarily for web
+  development ... it could be abused"). Claude's correction for the record: npm also ships CLIs,
+  Electron apps and native add-ons that need build tools, but the norm is to fail with a message
+  naming them, not to run `sudo apt-get -y`. `streamgrab@1.3.4` (reviewer: borderline benign),
+  `@ohos-ports/zerox@1.1.20-beta.0` and `gebangautoupload@1.1.4` (both benign before; found by a
+  search of benign notes) recorded unwanted; `@cocreate/cli` asks first and stays benign.
+- **Baileys media tagging is unwanted** (`@codexverified/baileys` 2.19.18/19, as recorded).
+- **`npm.publish-at-load` stays MEDIUM.** The owner: "do whatever preserves accuracy while
+  reducing false positives". A MEDIUM finding outside `WEAK_ALONE` already reports a version
+  alone (`correlate.decide`), so HIGH would change only the label and queue order, not one TP
+  or FP (measured: 0 benign of 1,452 `vm-day1`, 37,154 live, 1,434 reviewed); keeping MEDIUM
+  also avoids a rule change two days before the freeze.
+
 ## 2026-11-09: Afternoon review; the user-wide rule measured and left a note
 
 **Stage(s):** evaluation (verdicts, live sample), Stage 3 (`npm.install-agent-user-wide`)
