@@ -2,6 +2,57 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-09: User-wide agent installs relabelled unwanted (verdicts)
+
+**Stage(s):** evaluation (reviewer verdicts), decision 0015
+**Context:** Reviewing `sino-bc-cli@1.8.45`, a reviewer decoded its obfuscated `dist/index.js`:
+the postinstall's `/init` silently copies the package's skills into `~/.claude/skills` and
+`~/.agents/skills`. Under the 2026-11-08 ruling (AI-dev packages installing their own skills are
+benign) it was recorded benign, and the 19 older versions moved from unverified to benign. The
+owner disagreed: injecting skills user-wide, rather than into the project, is not benign, "the
+obfuscation is a big part too".
+
+### Decisions
+- **Silent user-wide agent installs are unwanted** (owner, decision 0015 addendum 2026-11-09):
+  an install hook writing skills, hooks, settings or MCP registrations into `~/.claude/`,
+  `~/.agents/`, `~/.codex/`, `~/.cursor/`, `~/.gemini/` etc. Unwanted rather than malicious
+  (offered as alternatives): nothing harmful was seen in the copied content. Project-scoped
+  writes and user-run `init` commands stay benign; harmful content stays malicious.
+- **Global-install-only copies are recorded unwanted too** (Claude's default, flagged to the owner;
+  each such note says "global install only", so they can be flipped mechanically).
+- **The `arkcli-probe-*` builds (23, `@volcengine`/`@byteplus`) are unwanted without the probe
+  tag:** the vendor's release-channel builds, not research probes. Their postinstall runs
+  `arkcli +connect --refresh`, which by the script's own comments downloads the latest skills
+  and installs them into every detected agent. Considered `unverified --reason remote` (the
+  fetched skills are unseen); rejected because the behaviour that decides the verdict, the silent
+  user-wide install, is plain in the script.
+- **No `eval` of package text, ever:** the sino-bc-cli reviewer had run Python `eval` on the
+  obfuscator's checksum arithmetic. Checked afterwards: both versions' expressions held only hex
+  literals, `parseInt(bf(0x..))` and operators. The reviewer brief now requires an `ast`
+  walker with a whitelist; the re-review used one.
+
+### Challenges
+- **Finding the affected verdicts:** a note-text filter caught 547 benign versions (408
+  packages); 181 had no install hook. A reviewer read the install path of the other 224.
+  - **Resolution:** 86 versions (57 packages) changed to unwanted: 31 packages write user-wide
+    on every install, 26 only on a global install. About 17 project-scoped copiers, opt-in /
+    ask-first installers and refresh-only hooks stayed benign. Plus `sino-bc-cli` (20) and
+    the arkcli builds (23).
+  - **Why it worked:** each change cites the file and line of the user-wide write; none came
+    out malicious. Two never-captured versions (`basinfy@1.3.5`, `@saltpub/agent-web@0.1.0`)
+    were left unchanged.
+
+### Evaluation snapshot
+- Current verdicts (latest per version, 3,483): malicious 54, unwanted 203 (was ~70), benign
+  3,155, unverified 71. All relabelled versions had been reported, so they move from FP to TP
+  in the headline (flag-worthy) matrix. `npm.install-explained` v2 (entry below) keeps
+  user-wide copiers reported from now on.
+
+### Open questions / next steps
+- Owner: are global-install-only copies unwanted (default) or benign?
+- A positive rule for silent user-wide agent writes at install was not built; today the
+  install rules report them and `npm.install-agent-user-wide` (INFO) explains why.
+
 ## 2026-11-09: S3 explains only copies into the project (`npm.install-explained` v2)
 
 **Stage(s):** Stage 3 (`npm.install-explained` v2, new INFO `npm.install-agent-user-wide`,
