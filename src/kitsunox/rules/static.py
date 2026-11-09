@@ -771,13 +771,9 @@ class DynamicCode(RegexRule):
 
 
 class Obfuscated(RegexRule):
-    """javascript-obfuscator style output: many `_0x1a2b3c` identifiers. v2 (2026-11-10,
-    `docs/proposals/precision-round4-D.md` D6): LOW, weight 1, in a bundler's hashed browser
-    asset under `assets/`; a path test, so it is in Stage 2 (`stages.static._browser_asset`).
-    The text test is unchanged."""
+    """javascript-obfuscator style output: many `_0x1a2b3c` identifiers."""
 
     id = "static.obfuscated"
-    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Obfuscated code"

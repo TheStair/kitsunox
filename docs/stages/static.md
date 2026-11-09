@@ -92,7 +92,7 @@ attributed.
 | `static.hardcoded-ip` (v5) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
-| `static.obfuscated` (v2) | many `_0x`-style identifiers (javascript-obfuscator output); LOW in a bundler's hashed browser asset under `assets/` (v2, a path test in `stages/static.py`) | MEDIUM |
+| `static.obfuscated` | many `_0x`-style identifiers (javascript-obfuscator output) | MEDIUM |
 | `static.npm-publish` | npm token use or `npm publish` from code (worm behaviour). Stage 3's `npm.publish-at-load` (MEDIUM) reports the command when it runs at load or install | LOW (v2; was MEDIUM) |
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
@@ -485,9 +485,9 @@ finding changes). `vm-day1`: see the proposal's section 5. Kept as they are, wit
 in the proposal: Telegram `bot${token}` (its token is often encoded elsewhere in the
 malicious samples: `github-badge-bot`, `foundry-toolkit`), bare tunnel suffixes, comments.
 
-### Round 4: what is sent, comments, module wrappers, browser assets (2026-11-10)
+### Round 4: what is sent, comments, module wrappers (2026-11-10)
 
-From [precision round 4, agent D](../proposals/precision-round4-D.md) (D1-D6), built before
+From [precision round 4, agent D](../proposals/precision-round4-D.md) (D1-D5), built before
 the rule freeze. Each lowered match is LOW, weight 1, with a note; nothing is dropped.
 
 - **`exfil-endpoint` v8 (D1-D3): what is sent, not only where to.** Round 3 rejected lowering
@@ -519,10 +519,6 @@ the rule freeze. Each lowered match is LOW, weight 1, with a note; nothing is dr
   and test or template sandboxes evaluating code the package compiled from local files. The
   `vm-day1` loaders pass `require` alone (`chai-as-*`, `aes-decode-runner-pro`) or fetch what
   they run (`alpha-replicator`), and stay MEDIUM.
-- **`obfuscated` v2 (D6): hashed browser assets.** A bundler's content-hashed chunk under
-  `assets/` (`hel_dist/assets/index-C6-GNDFy.js`), a path test in `stages/static.py`
-  (`_browser_asset`): a built web app's code, which Node never loads. `.html` pages are not
-  included (two `vm-day1` samples are an obfuscated `index.html`).
 
 Measured with the real code end to end on all 3,716 verdicted live versions and, for every
 `vm-day1` malicious sample on which a touched rule fires at MEDIUM or above, with the rule
