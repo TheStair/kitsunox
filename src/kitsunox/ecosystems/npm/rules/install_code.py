@@ -52,10 +52,15 @@ class InstallScriptCode(BaseRule):
     obfuscated loader behind 266 tabs on line 14 of `scripts/postinstall.mjs`; it finds its
     C2 through an Ethereum transaction and evals what it fetches, and Stage 3 saw only the
     file's honest `child_process` import. On the 1,710 verdicted live versions with install
-    code and the 18 `vm-day1` samples checked, it fires on that version only."""
+    code and the 18 `vm-day1` samples checked, it fires on that version only.
+
+    v4 (2026-11-10, round 5, `docs/proposals/precision-round5-J.md`): the whole environment
+    doesn't count when every whole-`process.env` reference of the install code is a parameter's
+    default value (`environment_injected`: `function f(env = process.env)`, `{ env =
+    process.env } = {}`), the way code takes its environment so tests can pass another."""
 
     id = "npm.install-script-code"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install script runs risky code"
@@ -66,6 +71,8 @@ class InstallScriptCode(BaseRule):
         risky = change.install.capabilities & RISKY
         if change.before is not None:
             risky -= change.install_before.capabilities if change.install_before else frozenset()
+        if C.ENV_ALL in risky and environment_injected(change):
+            risky -= {C.ENV_ALL}
         hidden = _hidden_install_code(change)
         if hidden:
             path, line, text = hidden[0]
@@ -96,6 +103,35 @@ class InstallScriptCode(BaseRule):
                 *evidence(change.install, risky),
             ),
         )
+
+
+# A whole-`process.env` reference (as `TOUCHED`'s "the whole environment") and one that is a
+# parameter's default value: `(env = process.env)`, `, env = process.env)`, `{ env =
+# process.env } = {}`, also over line breaks.
+_WHOLE_ENV: Final = re.compile(r"process\.env(?![\w$])(?!\s*(?:\.|\[|\?\.))")
+_DEFAULT_ENV: Final = re.compile(r"[(,{]\s*[\w$]+\s*=\s*(process\.env)\s*(?=[,)}])")
+
+
+def environment_injected(change: CodeChange) -> bool:
+    """Every install file Stage 3 saw take the whole environment has at least one whole-
+    `process.env` reference (comments and messages masked), and every such reference is a
+    parameter's default value (`_DEFAULT_ENV`). Such code reads the variables it names from
+    the object it is given; harvesting the environment needs the object itself
+    (`JSON.stringify(process.env)`, `Object.entries(process.env)`, `{ ...process.env }`)."""
+    install = change.install
+    paths = {u.path for u in install.uses if u.use.capability is C.ENV_ALL} if install else set()
+    if not paths:
+        return False
+    for path in paths:
+        data = change.install_files.get(path)
+        if data is None or language_for(path) is None:
+            return False
+        text = code_text(path, data)
+        defaults = {m.start(1) for m in _DEFAULT_ENV.finditer(text)}
+        whole = [m.start() for m in _WHOLE_ENV.finditer(text)]
+        if not whole or any(start not in defaults for start in whole):
+            return False
+    return True
 
 
 # Code pushed past the edge of the screen: a run of this many spaces or tabs, then code.
@@ -186,10 +222,16 @@ class InstallScriptChanged(BaseRule):
     credential or token, the home directory, a shell or package-manager command, the whole
     environment or dynamic code; a newly run file that does any of that; a binary; a file too
     long to diff that gains such a match. Otherwise (a refactor, an option, error handling, a
-    template's text) it is LOW, weight 1, and says so; the diff stays in the evidence."""
+    template's text) it is LOW, weight 1, and says so; the diff stays in the evidence.
+
+    v6 (2026-11-10, round 5, `docs/proposals/precision-round5-J.md`): what the previous install
+    code already ran isn't touched (`touched`, `_Before`): a changed or newly run line that is a
+    line of the previous install code in any file (moved, re-indented, a bundle chunk renamed)
+    counts for nothing, and a URL counts only when who serves it is new (its host, and the
+    repository owner on a code host: `_url_identity`)."""
 
     id = "npm.install-script-changed"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Code an install script runs changed"
@@ -348,8 +390,15 @@ def touched(change: CodeChange, paths: Sequence[str]) -> set[str]:
     """What the change to `paths` (install files that changed) touches, by kind (`TOUCHED`,
     and Stage 3's risky uses): on the changed and added lines of a diffable file; anywhere in
     a newly run file; for a file too long to diff, the matches it has that its previous
-    version didn't. A binary file is "binary code"."""
+    version didn't. A binary file is "binary code".
+
+    v6: what the previous install code already ran doesn't count (`_Before`). A line whose code
+    (comments and messages masked, whitespace and volatile strings aside) is a line of the
+    previous install code, in any file, was moved, re-indented or renamed with its file, not
+    written: neither its matches nor its risky uses count. A URL counts only when its host is
+    new to the install code (`_new_host`)."""
     before = change.install_files_before or {}
+    seen = _Before(before, change)
     kinds: set[str] = set()
     for path in paths:
         new, old = _lf(change.install_files[path]), before.get(path)
@@ -357,46 +406,162 @@ def touched(change: CodeChange, paths: Sequence[str]) -> set[str]:
             kinds.add("binary code")
             continue
         text = code_text(path, new)
-        uses = {
-            u.use.line: _USE_KIND[u.use.capability]
+        masked = text.split("\n")
+        uses = [
+            (u.use.line, _USE_KIND[u.use.capability], (u.use.capability, u.use.detail))
             for u in (change.install.uses if change.install else ())
             if u.path == path and u.use.capability in RISKY
-        }
+        ]
         if old is None:
-            kinds |= _kinds(text) | set(uses.values())
+            lines = set(range(len(masked)))
             if hidden_code(path, new) is not None:
                 kinds.add(HIDDEN_KIND)
             if LONG_LITERAL.search(text):
                 kinds.add(LONG_KIND)
-            continue
-        old = _lf(old)
-        a, b = (
-            old.decode("utf-8", "replace").split("\n"),
-            new.decode("utf-8", "replace").split("\n"),
-        )
-        if not _diffable(a, b):
-            before_text = code_text(path, old)
-            kinds |= {kind for kind, _ in _matches(text) - _matches(before_text)}
-            if hidden_code(path, new) is not None and hidden_code(path, old) is None:
+        else:
+            old = _lf(old)
+            a, b = (
+                old.decode("utf-8", "replace").split("\n"),
+                new.decode("utf-8", "replace").split("\n"),
+            )
+            if not _diffable(a, b):
+                before_text = code_text(path, old)
+                kinds |= {
+                    kind
+                    for kind, token in _matches(text) - _matches(before_text)
+                    if seen.counts(kind, token)
+                }
+                if hidden_code(path, new) is not None and hidden_code(path, old) is None:
+                    kinds.add(HIDDEN_KIND)
+                if _long_literals(text) - _long_literals(before_text):
+                    kinds.add(LONG_KIND)
+                continue
+            matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+            lines = {
+                n
+                for tag, _, _, j1, j2 in matcher.get_opcodes()
+                if tag in ("replace", "insert")
+                for n in range(j1, j2)
+            }
+            if (hidden := hidden_code(path, new)) is not None and hidden[0] - 1 in lines:
                 kinds.add(HIDDEN_KIND)
-            if _long_literals(text) - _long_literals(before_text):
+            if any(n < len(masked) and LONG_LITERAL.search(masked[n]) for n in lines):
                 kinds.add(LONG_KIND)
-            continue
-        masked = text.split("\n")
-        matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
-        added = {
-            n
-            for tag, _, _, j1, j2 in matcher.get_opcodes()
-            if tag in ("replace", "insert")
-            for n in range(j1, j2)
+        written = {n for n in lines if n < len(masked) and not seen.moved(masked[n])}
+        kinds |= {
+            kind
+            for n in sorted(written)
+            for kind, token in _matches(masked[n])
+            if seen.counts(kind, token, len(masked[n]))
         }
-        kinds |= _kinds("\n".join(masked[n] for n in sorted(added) if n < len(masked)))
-        if (hidden := hidden_code(path, new)) is not None and hidden[0] - 1 in added:
-            kinds.add(HIDDEN_KIND)
-        if any(n < len(masked) and LONG_LITERAL.search(masked[n]) for n in added):
-            kinds.add(LONG_KIND)
-        kinds |= {kind for line, kind in uses.items() if line - 1 in added}
+        kinds |= {
+            kind
+            for line, kind, use in uses
+            if line - 1 in written and seen.new_use(use, len(masked[line - 1]))
+        }
     return kinds
+
+
+# v6 trade-off switch (`docs/proposals/precision-round5-J.md`, J2): a match (or risky use) that
+# the previous install code already had anywhere doesn't count either, even on a line that
+# changed: on every line ("never"), or only on minified lines of `MINIFIED_LINE`+ characters
+# ("minified"). "never" loses two `vm-day1` follow-ons (`esoftplay@0.0.196` rewraps its
+# `execSync`, `gina@0.7.1` rewrites its `getUserHome()` line).
+OLD_TOKENS_COUNT: str = "always"
+MINIFIED_LINE: Final = 500
+
+
+class _Before:
+    """The previous install code, as v6 of `touched` compares with it: its masked lines
+    (whitespace collapsed, volatile strings masked), its `TOUCHED` matches, its URL hosts and
+    its risky uses."""
+
+    def __init__(self, before: Mapping[str, bytes], change: CodeChange) -> None:
+        texts = [
+            code_text(path, _lf(data))
+            for path, data in before.items()
+            if b"\x00" not in data[:8192]
+        ]
+        self.lines = {_line_key(line) for text in texts for line in text.split("\n")}
+        self.lines.discard("")
+        self.matches = {m for text in texts for m in _matches(text)}
+        self.hosts = {
+            identity
+            for text in texts
+            for m in _URL.finditer(text)
+            if (identity := _url_identity(m.group(0))) is not None
+        }
+        self.uses = {
+            (u.use.capability, u.use.detail)
+            for u in (change.install_before.uses if change.install_before else ())
+            if u.use.capability in RISKY
+        }
+
+    def moved(self, line: str) -> bool:
+        return _line_key(line) in self.lines
+
+    def counts(self, kind: str, token: str, width: int = 0) -> bool:
+        if _old_tokens_ignored(width) and (kind, token) in self.matches:
+            return False
+        return kind != URL_KIND or _new_host(token, self.hosts)
+
+    def new_use(self, use: tuple[Capability, str], width: int = 0) -> bool:
+        return not _old_tokens_ignored(width) or use not in self.uses
+
+
+def _old_tokens_ignored(width: int) -> bool:
+    if OLD_TOKENS_COUNT == "never":
+        return True
+    return OLD_TOKENS_COUNT == "minified" and width >= MINIFIED_LINE
+
+
+URL_KIND: Final = "URLs or hosts"
+_URL: Final = re.compile(r"[a-z][a-z0-9+.-]*://[^\s\"'`)<>\\]+", re.IGNORECASE)
+_URL_PARTS: Final = re.compile(
+    r"[a-z][a-z0-9+.-]*://\[?([^/\s\"'`)<>\\:\]]+)\]?(?::\d+)?(/[^?#\s\"'`)<>\\]*)?",
+    re.IGNORECASE,
+)
+# Hosts where anyone can publish: the repository owner is part of who serves the file.
+CODE_HOSTS: Final = frozenset(
+    {
+        "github.com",
+        "raw.githubusercontent.com",
+        "codeload.github.com",
+        "gist.github.com",
+        "gist.githubusercontent.com",
+        "gitlab.com",
+        "bitbucket.org",
+        "api.github.com",
+    }
+)
+
+
+def _url_identity(url: str) -> str | None:
+    """Who serves `url`: its host, and on a code host (`CODE_HOSTS`) the repository owner too
+    (`github.com/o`, `api.github.com/repos/o`); None when the host or that owner is built from a
+    variable or a volatile string."""
+    match = _URL_PARTS.match(url)
+    if match is None:
+        return None
+    host = match.group(1).lower()
+    if host in CODE_HOSTS:
+        segments = [p for p in (match.group(2) or "").split("/") if p]
+        if host == "api.github.com" and segments[:1] == ["repos"]:
+            segments = segments[1:]
+        host = f"{host}/{segments[0].lower()}" if segments else host
+    return None if "$" in host or "\x00" in host or "{" in host else host
+
+
+def _new_host(token: str, hosts: set[str]) -> bool:
+    """A URL counts unless the previous install code named who serves it (`_url_identity`:
+    the package's own release repository, the registry); an IP address, a bare host name, or a
+    host or owner built from a variable always counts."""
+    identity = _url_identity(token)
+    return identity is None or identity not in hosts
+
+
+def _line_key(line: str) -> str:
+    return VOLATILE.sub("\x00", " ".join(line.split()))
 
 
 def _long_literals(text: str) -> set[str]:
