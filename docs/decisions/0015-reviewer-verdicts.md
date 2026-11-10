@@ -153,6 +153,34 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   code, or plants instructions that work against the user (e.g. telling the agent to hide
   activity, exfiltrate, or disable safeguards) is judged on that, as anywhere else.
 
+## Addendum 2026-11-10: re-reviews under the 2026-11-09 rulings, and two new calls
+
+- **Credential upload from a CLI command is malicious (the owner, 2026-11-10).** A command the
+  user runs that covertly sends secret configuration (keys, salts, logins) or files, with
+  `username@hostname`, to a chat or bot the vendor hard-coded is credential exfiltration, even
+  though nothing happens at install: `esoftplay@0.0.269-beta96052d3` (`esp bcl`/`bcd` upload
+  `config.live.json` to a hard-coded Telegram bot; `esp p`/`esp b` send host, user, Expo
+  account). The other two live betas carry no hard-coded token (the bot is the user's own) and
+  stay benign. This also squares the live labels with the DataDog labels of older esoftplay
+  versions.
+- **A lone persistent user variable is benign (the owner, 2026-11-10).** `@hsusulist/luc@0.3.1`
+  runs its PowerShell installer with `-NoPath` and only sets `LUC_PATH`; no PATH or shell rc
+  change. The owner added that scripts an install hook triggers must be analysed (obfuscation in
+  a `.ps1` should be flagged): built the same day (`npm.install-script-loader`,
+  `npm.install-script-exfil`, scripts started by scripts; see the round-4 G proposal).
+- **Re-reviews.** The new `npm.install-persistence` rule fired on benign verdicts recorded before
+  the 2026-11-09 rulings; reviewers re-read the code. 13 of 20 moved benign → unwanted
+  (`pantheon-opencode` ×3, `triflux` ×2, `@muggleai/works`, `novahiz`, `warp-agent-mcp`,
+  `@kopplin-co/claude-web-design-skill`, `@civitas-cerebrum/achilles` (global only),
+  `@ohos-ports/gifsicle` (`brew install`), `@shanks-dev/baileys` and `shanks-dev` (media
+  tagging)); 7 stayed (writes only behind a command the user runs: `0xray wear`, `install-skill`,
+  `init`, `zn hooks install`). `stock-analyzer-skill@1.30.0` (runs `claude plugins marketplace
+  add` on install) moved to unwanted. `@lunabotv6/luna-baileys@8.1.0` stays unverified: media
+  tagging confirmed, but it depends on the obfuscated `@itsliaaa/starforge`, like `hyrox@0.1.6`.
+- **Reviewer precedent, not an owner ruling:** an install hook that patches another installed
+  program's files (`blue-crab`, `dsh-theme-mls-desktop@0.6.13` rewriting DeepSeek Harness
+  Desktop's `app.asar`) is recorded unwanted.
+
 ## Addendum 2026-11-09: user-wide agent installs are unwanted
 
 - **The owner, 2026-11-09**, narrowing the addendum above: install code that silently writes a

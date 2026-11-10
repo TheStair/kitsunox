@@ -2,6 +2,69 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-10: Precision round 4: seven agents, benign reports cut by a quarter
+
+**Stage(s):** Stages 1-4 (rules), evaluation (re-reviews), decision 0015
+**Context:** The owner asked to "drastically decrease the number remaining in benign" before the
+rule freeze (2026-11-12 00:00Z). Round 3 had used up the narrow shapes (-47). What was left came
+from a few broad signals, each carrying a handful of positives that earlier rounds would not
+give up: `install-script-changed` was decisive for 341 benign and 65 unwanted reports,
+`install-hook` for 238 and 12, `non-registry` for 152 and 13. Seven agents worked in parallel,
+one rule cluster each, measured with the round-3 harness (Stages 1-4 replayed per verdicted
+version with the real code) and on `vm-day1` with `pipeline+4` per sample.
+
+### Decisions
+- **Rescue rules instead of trade-offs.** The approach that worked: before demoting a noisy
+  signal, write a precise rule for what its positives actually do. `npm.install-persistence`
+  (user-wide agent configs, shell rc, persistent PATH, system package managers in install code)
+  now catches 51 of the 65 unwanted versions `install-script-changed` used to carry alone;
+  `static.channel-tagging` the Baileys forks. Following the scripts that install code starts
+  rescued 3 of the 4 installers the content-aware `install-script-changed` v5 first lost.
+- **The owner took one trade-off:** v5 (-187 benign, +7) loses `tmailcli@0.1.5` (its Go binary
+  does the persistence) and 6 `esoftplay` `vm-day1` follow-ons (malicious code unchanged in a file
+  the hook never runs), while gaining 2 unwanted and 1 unverified live.
+- **The owner rejected three zero-loss or near-zero-loss changes on recall grounds:** D6
+  (obfuscation in hashed browser assets: an injected drainer would be LOW), R1 (revived with
+  popular dependencies: lowers `vant@2.13.3`, a real takeover kept only by its hook), E3 (inline
+  `node -e` on updates: loses `shoal-cli@0.4.5`). `CLEAR_*` stay off (-58 benign for 10
+  positives); `node_modules` patchers stay reported (34 benign) as possible tampering.
+- **Recall work alongside.** `hauntview@0.2.9` (malicious, found by a reviewer: a loader hidden
+  after 266 tabs in `postinstall.mjs` and `dist/cli.js`, C2 from an Ethereum transaction, `eval`
+  of fetched code) was caught only by `install-script-changed`. No content rule saw it. F's
+  `static.padded-code` now flags the shape anywhere (0 benign in a day of 49,733 versions;
+  +17 `vm-day1` samples, 15 of them the `@gluestack-ui`/`@react-native-aria` compromise). G's
+  script rules (download-and-run, encoded PowerShell, reverse shells, credential uploads in
+  install-run `.sh`/`.ps1`/`.bat`, scripts started by scripts, Windows hook paths) answer the
+  owner's request that triggered scripts be analysed: +4 `vm-day1`, 0 benign.
+
+### Challenges
+- **Overlapping demotions.** 388 benign reports had two or more severe install rules, so no
+  single-rule demotion could reach them; and B's inert-hook rule and E's inert-code explanation
+  targeted the same versions. **Resolution:** E's decomposition (`~/kitsunox-scratch/r4/shared/
+  decomposition.md`) went to every agent; agents merged in sequence and each re-measured its
+  marginal gain on the new main (E: 68 → 52; B: 45 → 16).
+- **A first claim of a miss was wrong.** I read the reviewer's "new since 0.1.9" as "present
+  since 0.1.9"; the investigator scanned all ten `hauntview` versions and only 0.2.9 has the
+  loader, so nothing was missed.
+- **Masking bugs.** A's comment masking blanked a newline before a comment, shifting every later
+  line by one; printed advice through a script's own `info()` function read as an rc write
+  (`@ornexus/neocortex`). G's script-aware masking fixed both (+1 benign, `node-sword-interface`).
+- **The shared heavy lock** serialised seven agents' DataDog runs; some waited hours.
+
+### Evaluation snapshot
+- Live (3,716 verdicted versions, real code): reported 1,787 → 1,428; benign 1,486 → 1,112
+  (-25%); precision 15.42% → 20.46%. Per agent: D -54, C -70, A -180 net, E -52, B -16, F/G +1.
+- `vm-day1`: +21 malicious samples reported, -6 accepted (`esoftplay` follow-ons).
+- Truth moved too: re-reviews under the 2026-11-09 rulings moved 14 benign → unwanted and one
+  unwanted → malicious (`esoftplay@0.0.269-beta96052d3`, decision 0015 addendum 2026-11-10).
+
+### Open questions / next steps
+- Round 5 (five agents, due 2026-11-11 10:00Z): own-binary installers, native/tool hooks and the
+  gyp command-expansion gap, `install-script-changed` residual, dependency residual, Stage 2
+  residual. Then a full re-measurement of main before the freeze.
+- After the freeze: persistence on every version (+18 unwanted, +26 benign measured);
+  follow binaries' behaviour (`tmailcli`) only in the sandbox.
+
 ## 2026-11-09: Precision round 3: seven narrow shapes, measured end to end
 
 **Stage(s):** Stage 2 (`static.exfil-endpoint` v7, `static.hardcoded-ip` v4), Stage 3
