@@ -86,7 +86,7 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v10) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8); a `trycloudflare.com` host that is not a quick tunnel's name (`demo.`, `api.`, `a.b.`, `abc-def.`), `pastebin.com/` with no paste or API after it, an ellipsis label, a `/bot,` list entry, a list of three services' names, and a URL written as a UI placeholder or example (`placeholder:`, `example:`, `e.g.`), anywhere (v9); a bare tunnel suffix in a host check or allowed-hosts setting (`endsWith(".trycloudflare.com")`, `allowedHosts: [".ngrok.app"]`), anywhere (v10) | HIGH |
+| `static.exfil-endpoint` (v10) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8); a `trycloudflare.com` host that is not a quick tunnel's name (`demo.`, `api.`, `a.b.`, `abc-def.`), `pastebin.com/` with no paste or API after it, an ellipsis label, a `/bot,` list entry, a list of three services' names, and a URL written as a UI placeholder or example (`placeholder:`, `example:`, `e.g.`), anywhere (v9); a bare tunnel suffix in a host check or allowed-hosts setting (`endsWith(".trycloudflare.com")`, `allowedHosts: [".ngrok.app"]`) and a service named in a parenthesised prose list (`collectors (webhook.site, interact.sh)`), anywhere (v10) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
@@ -662,9 +662,9 @@ Measured with the real code on every live version these changes can touch and, f
 `vm-day1` malicious sample on which the touched rules fire, with the rules themselves and then
 `pipeline+4`: see the proposal for the numbers.
 
-### Round 6: tunnel suffixes in host checks (2026-11-11)
+### Round 6: host checks and prose (2026-11-11)
 
-From [precision round 6, agent P](../proposals/precision-round6-P.md) (P1), built before
+From [precision round 6, agent P](../proposals/precision-round6-P.md) (P1, P2), built before
 the rule freeze for the versions `exfil-endpoint` reported on its own.
 Each lowered match is LOW, weight 1, with a note; nothing is dropped, and none applies on an
 install hook's line. Unlike v8's notes, these don't ask whether the file collects anything:
@@ -678,6 +678,12 @@ each names a use that is not a connection.
   runtime or CLI that also runs processes they stayed HIGH (`@mostra/runtime`, `loclyn`,
   `@ishlabs/cli`, `@textjs/next`). A suffix joined to a name (`'https://' + id + TUNNEL`) or
   any named tunnel stays HIGH.
+- **`exfil-endpoint` v10 (P2): a service named in prose.** A bare service host (no id, no
+  scheme, no path) that is a whole entry of a parenthesised, comma-separated list opened
+  after a space, every entry a short word or host: "Short-lived collectors (webhook.site,
+  requestbin, ngrok, interact.sh) or raw IP endpoints" (a scanner's rule description), "a
+  request catcher (webhook.site, interact.sh)". An id in the list (`abcd.oast.fun`) or a URL
+  keeps it HIGH.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 

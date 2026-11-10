@@ -162,12 +162,13 @@ class ExfilEndpoint(RegexRule):
     # three services where brand names alone count (`"webhook.site", "requestbin", "ngrok"`:
     # a detection rule's substrings, `_in_name_list`). `bot&lt;token&gt;` (HTML for
     # `bot<token>`) is a written placeholder, as v4 decided for `bot<token>`.
-    # v10 (2026-11-11, `docs/proposals/precision-round6-P.md` P1): LOW, weight 1, not on an
+    # v10 (2026-11-11, `docs/proposals/precision-round6-P.md` P1, P2): LOW, weight 1, not on an
     # install hook's line and whatever else the file does: a tunnel's bare suffix that a host
     # check compares with or an allowed-hosts setting lists (`_host_check`:
     # `hostname.endsWith(".trycloudflare.com")`, `allowedHosts: ['.ngrok.app']`,
     # `ALLOWED_HOSTS=.trycloudflare.com`), which v8 lowered only in a file that collects
-    # nothing.
+    # nothing; and a bare service host named in a parenthesised list in prose (`_prose_list`:
+    # "collectors (webhook.site, requestbin, ngrok, interact.sh)").
 
     id = "static.exfil-endpoint"
     version = 10
@@ -223,6 +224,8 @@ class ExfilEndpoint(RegexRule):
                 return EXAMPLE_NOTE
             if _host_check(match):
                 return HOST_CHECK_NOTE
+            if _prose_list(match):
+                return PROSE_LIST_NOTE
         return _sends_nothing(match)
 
 
@@ -583,6 +586,39 @@ def _host_check(match: re.Match[str]) -> bool:
     if match.group(0).lower() not in _TUNNEL_SUFFIXES or not _HOST_END.match(text, end):
         return False
     return _HOST_CHECK_LEAD.search(text, max(0, start - 200), start) is not None
+
+
+# v10 (P2): a service named in prose, as an entry of a parenthesised list after a word:
+# "collectors (webhook.site, requestbin, ngrok, interact.sh) or", "a request catcher
+# (webhook.site, interact.sh)". The bare service host (no id, no scheme, no path) among other
+# short entries; code never writes a host unquoted in a list after a space.
+_PROSE_ITEM: Final = re.compile(r"[`*]{0,2}[\w][\w. /-]{0,30}[`*]{0,2}")
+PROSE_LIST_NOTE: Final = (
+    " A service named in a parenthesised list in prose (`(webhook.site, interact.sh)`): no id"
+    " and no URL, not an endpoint."
+)
+
+
+def _prose_list(match: re.Match[str]) -> bool:
+    """v10: a bare service host that is a whole entry of a `(a, b, c)` list opened after a
+    space, with at least one other entry, each entry a short word or host."""
+    if match.group(0).startswith("."):
+        return False
+    text = match.string
+    start, end = _host_span(match)
+    if (start, end) != (match.start(), match.end()):
+        return False  # a subdomain or a path: an id
+    lo = text.rfind("(", max(0, start - 120), start)
+    hi = text.find(")", end, end + 120)
+    if lo < 1 or hi < 0 or text[lo - 1] != " ":
+        return False
+    items = [item.strip() for item in text[lo + 1 : hi].split(",")]
+    own = text[start:end]
+    return (
+        len(items) >= 2
+        and all(_PROSE_ITEM.fullmatch(item) for item in items)
+        and any(item.strip("`*") == own for item in items)
+    )
 
 
 # v9 (exfil-endpoint, hardcoded-ip): a URL written as the value of a UI placeholder
@@ -1315,9 +1351,10 @@ CONTEXT_NOTES: Final = (
     TUNNEL_SUFFIX_NOTE,
     IP_COMMENT_NOTE,
     MODULE_WRAPPER_NOTE,
-    # Round 6 (P): the same match can be LOW in one version (a host check) and not in the
-    # next, whose code around it changed.
+    # Round 6 (P): the same match can be LOW in one version (a host check, a prose list) and
+    # not in the next, whose code around it changed.
     HOST_CHECK_NOTE,
+    PROSE_LIST_NOTE,
 )
 
 
