@@ -387,7 +387,16 @@ has a name npm lacks; 2 malicious ones would get the finding after the exemption
   C1) is LOW for a release published through trusted publishing too, which npm can record
   without an attestation (`productenv@2.0.0`, `@musedesignsystem/tokens@2.12.2`, `GitHub
   Actions` publishing with `trusted_publisher` github): 2 benign reports fewer, no positive, no
-  `vm-day1` sample touched. Measured before choosing it: "HIGH or score 6" for every rule would have
+  `vm-day1` sample touched. v5 (round 6 N C2) drops v2's "no maintainer added": the account
+  that published the previous release publishing this one is LOW whatever joined the list in
+  the year or more since (`@rbbn/distant-*` x3, `@coorpacademy/update-node`,
+  `@terrahq/design-system`, `@iqb/eslint-config`, `@biodiv-platform/naksha-gmaps-draw`,
+  `docx-populator`, `pockethost`: 9 benign reports fewer, no positive). A newly added
+  maintainer who publishes (the `event-stream` handover), or a listed maintainer who did not
+  publish the previous release (`xrpl@2.14.2`, `vant@2.13.3`), keeps MEDIUM. On `vm-day1`
+  it lowers the rule on one sample, `@antv/data-set@0.12.8` (`atool` again, 40 maintainers
+  joined), which stays reported through its install hook and five other rules; the recall
+  risk is v2's (an account hijacked as itself). Measured before choosing it: "HIGH or score 6" for every rule would have
   lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.
@@ -558,7 +567,7 @@ Rules over it:
 |---|---|---|---|
 | `npm.provenance.githead-dropped` (v2) | the previous release recorded `gitHead`, this one doesn't. Weight 1 when Stage 1's `npm.publish-method.downgrade` fired on the same release: both then say it left the CI path, and given a downgrade a dropped `gitHead` is no commoner among malicious samples (34 of 149 `vm-day1` downgrades, 23%) than among live benign verdicts (81 of 273, 30%) (v2, [round 5 K](../proposals/precision-round5-K.md) G1) | LOW | 2 |
 | `npm.dependency.known-malware` (v3) | an added (or re-pointed) runtime dependency, or its `npm:` alias target, is malware in every version per an OSV record published by `as_of`. LOW (weight 1) when the specifier only matches npm's empty `0.0.1-security` holding package (`fs: ^0.0.1-security`, what `npm install fs` writes), or when a Unity (UPM) package (`unity` field) depends on a `com.unity.*` built-in module, which Unity resolves from its own registry while the npm names are malware squats (v3) | HIGH | 5 |
-| `npm.combination.revived-with-new-dependency` (v4) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one and no maintainer was added: the package's own maintainer coming back (v2); LOW (weight 1) too when the release carries a provenance attestation (v3) or was published through trusted publishing (v4) | MEDIUM | 2 |
+| `npm.combination.revived-with-new-dependency` (v5) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one: the package's own maintainer coming back (v2; since v5 also when maintainers were added, none of whom published it); LOW (weight 1) too when the release carries a provenance attestation (v3) or was published through trusted publishing (v4) | MEDIUM | 2 |
 | `npm.dependency.fresh-foreign` (v4) | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them. LOW (weight 1) when this release is a prerelease, which npm installs only when asked for it (v3, [round 3](../proposals/precision-round3.md) X7), and when the dependency's npm scope also holds a package on the run's watchlist (v4, [round 4 C](../proposals/precision-round4-C.md) F1) | MEDIUM | 3 |
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count) | MEDIUM | 3 |
 | `npm.undeclared.missing` | a package Stage 3's `npm.undeclared-package` names (loaded at module load, not declared; not own scope, watched or a sibling) was 404 when the run looked it up (Undeclared and missing, above). INFO, weight 0, when the lookup failed or was over the limits | MEDIUM | 3 |

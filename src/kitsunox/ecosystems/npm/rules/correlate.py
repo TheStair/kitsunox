@@ -865,10 +865,21 @@ class RevivedWithNewDependency(BaseRule):
     rule alone). Trusted publishing is the stronger tie to the repository's CI: no token can
     stand in for it. No `vm-day1` sample the rule fires on has a trusted publisher without
     provenance.
+
+    v5 (2026-11-10, round 6 N, C2): v2's same account is LOW even when maintainers were
+    added: the release was still published by the account that published the previous one,
+    and after a year or more a team's maintainer list drifts (`@rbbn/distant-*` x3 adding
+    `jfmorin_rbbn`, `@coorpacademy/update-node` four, `@terrahq/design-system`,
+    `docx-populator`, `pockethost`: 9 benign reports by this rule alone). A maintainer who
+    joined and publishes (the `event-stream` handover), or a listed maintainer other than the
+    last publisher (`xrpl@2.14.2`, `vant@2.13.3`), keeps MEDIUM. On `vm-day1` it lowers one
+    sample, `@antv/data-set@0.12.8` (`atool` again, after 40 maintainers joined the org's
+    packages); it stays reported through its install hook and five other rules. The recall
+    risk is v2's: an account hijacked as itself is LOW here.
     """
 
     id = "npm.combination.revived-with-new-dependency"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 2.0
     title = "Dormant package revived with a new dependency"
@@ -884,12 +895,19 @@ class RevivedWithNewDependency(BaseRule):
         revived, added = fired.get("npm.dormant-revived"), fired.get("npm.dependency.added")
         if revived is None or added is None:
             return ()
-        if _same_account_returns(change):
+        if _previous_publisher_returns(change):
+            joined = _maintainers_added(change)
             return (
                 self.finding(
                     f"{revived.explanation} {added.explanation} Published by "
                     f"`{change.new.publish.publisher}`, who published the previous release, "
-                    "with no maintainer added.",
+                    + (
+                        f"with maintainers added ({', '.join(joined[:5])}"
+                        + ("..." if len(joined) > 5 else "")
+                        + "), none of whom published it."
+                        if joined
+                        else "with no maintainer added."
+                    ),
                     *revived.evidence,
                     *added.evidence,
                     severity=Severity.LOW,
@@ -921,13 +939,20 @@ class RevivedWithNewDependency(BaseRule):
         )
 
 
-def _same_account_returns(change: Change) -> bool:
-    """The previous release's publisher publishes this one, and no maintainer was added."""
+def _previous_publisher_returns(change: Change) -> bool:
+    """The previous release's publisher publishes this one (v5: whether or not maintainers
+    were added)."""
     previous = change.previous
     if previous is None or change.new.publish.publisher is None:
         return False
-    added = set(change.new.publish.maintainers) - set(previous.publish.maintainers)
-    return change.new.publish.publisher == previous.publish.publisher and not added
+    return change.new.publish.publisher == previous.publish.publisher
+
+
+def _maintainers_added(change: Change) -> list[str]:
+    previous = change.previous
+    if previous is None:
+        return []
+    return sorted(set(change.new.publish.maintainers) - set(previous.publish.maintainers))
 
 
 class InstallScriptNotInRepo(BaseRule):

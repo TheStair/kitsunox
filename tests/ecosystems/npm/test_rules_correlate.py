@@ -188,8 +188,15 @@ def test_revived_by_the_same_account_is_low() -> None:
     assert "who published the previous release" in same.explanation
     other = found(snap("2.14.2", publisher="mukulljangid", maintainers=("ckniffen",)), old)
     assert (other.severity, other.weight) == (Severity.MEDIUM, 2.0)
+    # v5: maintainers added, the same account publishing (`@rbbn/distant-web@1.3.0`)
     added = found(snap("2.14.2", publisher="ckniffen", maintainers=("ckniffen", "m")), old)
-    assert (added.severity, added.weight) == (Severity.MEDIUM, 2.0)
+    assert (added.severity, added.weight, added.rule_version) == (Severity.LOW, 1.0, 5)
+    assert added.explanation.endswith(
+        "who published the previous release, with maintainers added (m), none of whom published it."
+    )
+    # a maintainer who joined publishes (the event-stream handover): MEDIUM
+    joined = found(snap("2.14.2", publisher="m", maintainers=("ckniffen", "m")), old)
+    assert (joined.severity, joined.weight) == (Severity.MEDIUM, 2.0)
     unknown = found(snap("2.14.2"), snap("2.14.1"))
     assert unknown.severity == Severity.MEDIUM
 
@@ -228,7 +235,7 @@ def test_revived_with_provenance_is_low() -> None:
     assert (hand.severity, hand.weight) == (Severity.MEDIUM, 2.0)
     # v4: trusted publishing without an attestation (`productenv@2.0.0`)
     oidc = found(snap("2.14.2", publisher="GitHub Actions", trusted_publisher="github"))
-    assert (oidc.severity, oidc.weight, oidc.rule_version) == (Severity.LOW, 1.0, 4)
+    assert (oidc.severity, oidc.weight) == (Severity.LOW, 1.0)
     assert oidc.explanation.endswith(
         "Published with trusted publishing (github) (from the repository's CI)."
     )
