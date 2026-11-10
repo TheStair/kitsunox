@@ -16,6 +16,7 @@ from typing import ClassVar, Final
 
 from kitsunox.core.models import Severity
 from kitsunox.core.rules import FileMatch
+from kitsunox.rules.padding import PaddedCode
 from kitsunox.rules.signatures import KnownSignature, decoded_strings
 
 MAX_MATCHES_PER_RULE: Final = 3
@@ -1182,4 +1183,5 @@ RULES: Final = (
     NpmPublish(),
     ProcessExec(),
     Network(),
+    PaddedCode(),
 )

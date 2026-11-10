@@ -92,6 +92,25 @@ def hidden_note(count: int) -> str:
     return f"[{count:,} hidden character{'' if count == 1 else 's'} removed]"
 
 
+COLLAPSE_RUN: Final = 40
+_RUN: Final = re.compile(rf"[ \t]{{{COLLAPSE_RUN},}}")
+
+
+def collapse_runs(value: str) -> str:
+    """`value` with every run of `COLLAPSE_RUN` or more spaces and tabs replaced by a marker
+    that counts it (`⟨266 tabs⟩`, `⟨120 spaces⟩`, `⟨130 spaces and tabs⟩`), so a snippet cut to
+    a width shows the code a run pushed off screen (`hauntview@0.2.9`: 266 tabs filled the
+    whole 200-character diff line, which read as blank)."""
+    return _RUN.sub(_run_marker, value)
+
+
+def _run_marker(match: re.Match[str]) -> str:
+    run = match.group(0)
+    tabs = run.count("\t")
+    kind = "tabs" if tabs == len(run) else "spaces" if not tabs else "spaces and tabs"
+    return f"⟨{len(run):,} {kind}⟩"
+
+
 def safe_url(url: str | None) -> str | None:
     """`url` if it is a plain `https://` URL safe to put in a link, else None."""
     if url is None or not url.isascii() or not _SAFE_URL.fullmatch(url):

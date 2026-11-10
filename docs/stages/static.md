@@ -97,6 +97,7 @@ attributed.
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
 | `static.shell-startup` (2026-11-08) | writes to shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, fish's `config.fish`, the PowerShell profile). Forms: `hook` (an install hook in `package.json` appends to one), `inject` (code that writes files holds a line sourcing a file under `$HOME`, or a prompt that runs a command: `setopt prompt_subst`, `PROMPT="$(...)"`), `shell` (a shell command elsewhere appends to one), `code` (a start-up file's name, a file write within 1,000 characters and a home-directory reference) | MEDIUM (weight 3) for `hook` and `inject`; LOW for `shell` and `code` |
+| `static.padded-code` (2026-11-10, `rules/padding.py`) | code pushed off screen: on one line, a run of 100+ spaces or tabs, then 200+ characters of code (not a comment, table cell or markup, not inside a string, with code punctuation); a run that is the line's indentation counts only when it is 100+ deeper than the line before's. One finding per file; [below](#code-hidden-behind-whitespace-staticpadded-code-2026-11-10) | MEDIUM (weight 3) |
 | `static.channel-follow` (2026-11-08) | a WhatsApp library (Baileys fork) following channels with the user's account: a FOLLOW query or `newsletterFollow(...)` call outside the library's own follow method, in a file that also names channels (`...@newsletter`, `0029V...` invite codes, also in base64 or char codes), fetches them, or calls it an auto-follow/auto-join; not behind an `if (... === true)` opt-in. Never demoted as "not new" | MEDIUM (weight 3), "unwanted" |
 | `static.channel-tagging` (2026-11-09) | a WhatsApp library (Baileys fork) tagging the user's messages with a channel: a fixed `...@newsletter` JID written as `newsletterJid` in a file that builds the forwarded-newsletter context (`forwardedNewsletterMessageInfo`). Never demoted as "not new"; [below](#whatsapp-channel-tagging-staticchannel-tagging-2026-11-09) | MEDIUM (weight 3), "unwanted" |
 
@@ -376,6 +377,55 @@ and 0.0.18 are reported (both need small updates routed, `triage.md` reason 6); 
 releases repeat the previous version's match and are LOW. No reviewed version of any kind is
 reported by the MEDIUM forms that wasn't reported already; DataDog `vm-day1` has no sample it
 changes.
+
+### Code hidden behind whitespace (`static.padded-code`, 2026-11-10)
+
+`hauntview@0.2.9` (live, malicious) added one line to `scripts/postinstall.mjs` and the same
+line to `dist/cli.js`: 266 tabs, then a 12,433-character obfuscated loader (an Ethereum
+blockscout lookup for its C2 address, an XOR-decoded download, `eval`, a detached `node -i`).
+No other Stage 2 rule matched it: `Function` is reached as `d[p.substring(0,11)]` (no literal
+`eval` or `Function`), the obfuscator writes no `_0x` names, and its shuffled strings are full of
+punctuation, so `encoded-blob` never matches. Only `npm.install-script-changed` reported it.
+
+The rule (`rules/padding.py`, MEDIUM, weight 3, one finding per file) asks for a run of 100 or
+more spaces or tabs on a line, then 200 or more characters of code on the same line. Not
+counted: a tail that opens a comment, a table cell or markup (`//`, `/*`, `*`, `#`, `|`, `<`);
+a run inside a string (an odd count of one quote kind before it); a tail without code
+punctuation; a run that is the line's indentation and is less than 100 deeper than the line
+before's (generated nested code grows a level at a time: `@motir/cli`'s compiled schema
+validators are 106 spaces deep). The snippet shows the run as a counted marker
+(`⟨266 tabs⟩var z = '-c';...`), so a reviewer sees the code. Install files are covered at
+Stage 3 by `npm.install-script-code` v3 (round 4, agent A) with the same 100-character run;
+this rule is what sees the line in a file no hook runs (`dist/cli.js`, an entry point, a file
+loaded at `require`).
+
+Thresholds from data (`docs/proposals/precision-round4-F.md`): over the files Stage 2 reads in
+the 3,716 verdicted live versions, with the run then code in an executable file and not a
+comment, table or string, no benign version has a run over 88 characters, and no benign
+version has a run of 60 or more followed by 100 or more characters (the nearest:
+`@helmcms/checkout`, 68 spaces, JSX). Every benign hit at 100/200 is a Markdown table or a
+source map (documentation, LOW anyway). The malicious hits are `hauntview@0.2.9` (266 tabs)
+and three samples of one family with 2,000 spaces before `_0x` code (`persona-ai-sdk`,
+`ai-persona-sdk`, `archetype-index-sdk`, also `static.obfuscated`).
+
+Measured with the real code (round 4 F):
+
+- **Live replay** (3,716 verdicted versions, `main` vs. this rule): reported 1,674 → 1,674, 0
+  benign newly reported, 0 positive or unverified lost; it fires only on the three persona
+  samples (already reported). On the 27 versions verdicted since, `hauntview@0.2.9` gains
+  it in both files (score 6 → 9); its nine benign versions get nothing.
+- **One day of everything Stage 2 read** (24 runs, 49,733 versions, reviewed or not): MEDIUM
+  only on `hauntview@0.2.9`; LOW (documentation) on two source maps and a `GUIDE.md` table.
+- **`vm-day1`**: +17 malicious samples reported that nothing else reports (2,708 → 2,725 of
+  3,444 at round4-base), 15 of them the `@gluestack-ui`/`@react-native-aria` compromise, whose
+  `lib/commonjs/index.js` ends an ordinary line with 526-1,441 spaces and then a
+  3,426-character loader (`global['_V']='8-npm29';global['r']=require;(function(){...`), and
+  `emittery-up@1.8.2` and `tailwindcss-animate-ui@1.0.0` (149-152 tabs, same loader).
+  None of the 1,500 benign samples has the shape (1,046 with files read; 9 have a run of 80+
+  then 100+ characters, none 100/200).
+
+Known limit: the indentation exception can be gamed (indent the line before as deep), and a
+payload padded with other characters (non-breaking spaces, form feeds) is not matched.
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
