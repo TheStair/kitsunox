@@ -103,8 +103,9 @@ is the malicious set.
 |---|---|---|---|---|
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` (v3) | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count. v3 (2026-11-10): also code hidden past the edge of the screen (100+ spaces or tabs, then code that is no comment, message or string) in a new install file or one whose previous version had none: `hauntview@0.2.9`, malicious, the only one of 1,710 verdicted versions with install code and 18 `vm-day1` samples | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
-| `npm.install-build-tool` (v2) | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...), and `binding.gyp` runs no command but `node-addon-api`/`nan` header lookups (v2). An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
+| `npm.install-build-tool` (v3) | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...; v3 adds `only-allow npm`, `opencollective-postinstall`, `node-gyp-build \|\| node-gyp rebuild`, `npx @mapbox/node-pre-gyp ...`, and Playwright's browser download when the package depends on Playwright), no tool it runs is one of the package's own `bin` names (v3), and `binding.gyp` runs no command but `node-addon-api`/`nan` header lookups (v2) or tree-sitter's `src/scanner.c` test (v3). An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
 | `npm.install-explained` (v2) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
+| `npm.install-inert` (v1) | a new package whose every install hook only runs package code (`node <file>`, `node -e`, chained with `&&`/`\|\|`/`;`) or a constant `echo`, that Stage 3 read in full and that reaches nothing outside the package; carries agent E's S5 guards (no Baileys `engine-requirements.js`, no `require.resolve`, no placeholder, no risky text, no deleting, readable UTF-8) and refuses probes (`PROBE_TEXT`). An explanation for Stage 4, which makes `npm.install-hook` LOW; [below](#inert-install-hooks-npminstall-inert-round-4) | INFO (weight 0) | live: see below | `vm-day1`: fires on none |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
 | `npm.install-persistence` (v1) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
 | `npm.install-script-loader` (v1) | a shell, PowerShell or batch install script (run by a hook or started by install code) or a hook command line, comments and messages aside, fetches or decodes code and runs it, or hides it: `curl ... \| sh`, `bash -c "$(curl ...)"`, `base64 -d \| sh`, `/dev/tcp/`, `-EncodedCommand`, `irm ... \| iex`, `iex` of decoded text, `[char]` chains, `-join` reversals, `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta`, `regsvr32 /i:http`, batch substring chains, code behind 100+ spaces that the hidden-code check skips; only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3); LOW (weight 1) for a download piped into a shell from the package's own site | live: 0 of the 3,716 verdicted versions change (64 have install scripts); 0 fires in a day of 2,044 hooked versions | `vm-day1`: fires on 8 malicious samples, all reported already (one, `@optimystic99/dev-utils@1.0.17`, otherwise only by `npm.install-hook`); 0 of 1,452 benign |
@@ -200,6 +201,24 @@ The hook list is unchanged. Live, real code on all 3,716 verdicted versions: 9 f
 changes. `vm-day1`: of the 4 malicious samples with build-tool-only hooks, `duckdb@1.3.3`
 has a header-lookup-only `binding.gyp`, but its hook is unchanged from 1.3.2, so
 `npm.install-hook` doesn't fire on it; nothing changes (proposal, section 5).
+**v3** (2026-11-10, [round 4, agent B](../proposals/precision-round4-B.md), B3): more hook
+lines (`npx only-allow npm`, `npx -y only-allow npm|pnpm`, `bunx only-allow bun`,
+`opencollective-postinstall`, `node-gyp-build || node-gyp rebuild`,
+`npx @mapbox/node-pre-gyp install --fallback-to-build`); Playwright's browser download
+(`playwright install [chromium]`, with or without `npx`) when the manifest depends on
+`playwright`, `playwright-core` or `@playwright/test` (`--with-deps` installs system packages
+through `apt-get`, decision 0015, and is not on the list); a tool the package's own `bin`
+names is the package's code, not the tool (`tool_shadowed`: npm links a package's bins before
+its hooks run); and in `binding.gyp`, tree-sitter's `fs.existsSync('src/scanner.c')` test
+(the ternary form and the newer `has_scanner` form, which `gyp_commands` receives cut at its
+first `)` before a quote) and `require('node-addon-api').targets` count as lookups
+(`SCANNER_LOOKUP`, `HEADER_LOOKUP`). Live: 12 fewer reports (`docsify@5.1.0`,
+`autorunqa-runner`, `phloem-ai`, `tree-sitter-swi-prolog`, ...), all benign; no positive
+changes.
+**Known gap (not this rule's):** `gyp_commands` only finds an expansion whose `)` is followed
+by a quote on the same line, so `"<!(node payload.js):target"` is not extracted at all, and
+neither this rule nor `npm.install-script-code` would see that command (proposal, owner
+question 4).
 **Extractor v5 and `code.function-constructor`** (2026-11-08). `txnforge@1.0.4` and
 `mock-datas-lib@1.0.1` (2026-11-02, same author, adjudicated malicious: a Python dropper
 fetched from a hard-coded host) decoded their payload and ran it with the Function
@@ -1020,6 +1039,52 @@ the guards cost, in benign reports kept: the Baileys exclusion 15 (without it S5
 `@lunabotv6/luna-baileys@8.1.0`), `OTHER_PACKAGE` 34 (`node-pty` spawn-helper `chmod`,
 `fastmcp` fixes), the text and hook guards 16 (`dotnet build`, `prisma generate`, shell
 scripts, the two above), the `vm-day1` guards 8 and inline code 12.
+
+### Inert install hooks: `npm.install-inert` (round 4)
+
+`npm.install-inert` (INFO, weight 0; 2026-11-10,
+[precision round 4, agent B](../proposals/precision-round4-B.md), B1) is an explanation for
+Stage 4 that makes `npm.install-hook` LOW, weight 1, on a **new package** whose hooks provably
+do nothing (`correlate.EXPLAINED`, stage version 16). It explains no other rule. It covers the
+same population as agent E's S5 ("inert install code", `npm.install-explained` v3), carries all
+of S5's guards, and adds what S5 doesn't take: inline `node -e` code, several `node` files
+chained with `&&`/`||`/`;`, and echo-only hooks. All of these must hold:
+
+- **New package.** Stage 2 reads every file of a new package but only the changed files of an
+  update, so on an update the hook may be what still points at a payload in an unchanged file
+  (`kevinx-baileys@1.2.2`, unwanted, follows channels from an unchanged
+  `lib/Socket/newsletter.js`).
+- **Hook lines that only run package code** (`hook_runs`, split with `shlex`): each segment is
+  `node [harmless option] <file> [args]`, `node -e|-p <code>`, a constant `echo`, `true`, `:`
+  or `exit N`. Not another program, a pipe or redirect, `$(` or a backtick anywhere, an
+  environment assignment, `node -r`/`--import`. Every file is among what Stage 3 read.
+- **Read in full and readable**: parsed without errors, nothing cut at 256 KiB, every relative
+  path the code loads or names as a script read too (`_complete`), plain UTF-8 (UTF-16 parses
+  as nothing), no line over 1,000 characters and no code padded off-screen (S5).
+- **Reaches nothing**: no `network`, `process`, `env-all`, `dynamic-code`, `dynamic-require` or
+  `native` use, no package loaded by name, and no text naming them either (`RISKY_TEXT`, S5's:
+  `fetchImpl = fetch` is a use the analysis misses).
+- **Touches nothing outside the package** (`outside`): no home-directory reference, agent
+  directory, `node_modules`, `INIT_CWD`, `process.cwd()`, system path, `/tmp`/`tmpdir`,
+  `%VAR%`, credential or shell file (`.npmrc`, `.ssh`, `.bashrc`, `.profile`, ...), no more `..`
+  than the file is deep, no other package resolved by name (`require.resolve`, even for a
+  `node-pty` chmod: the owner keeps patchers reported), no deleting.
+- **Not upstream Baileys's `engine-requirements.js`** and not a **placeholder** (a package with
+  no code but its install code), both S5's; no `binding.gyp` command.
+- **Not a probe** (`PROBE_TEXT`: `poc`, `takeover`, `inject`, `confusion`, `red team`,
+  `install works/fired`, ...), in an echo, in the install code or in its file name. Echo-only
+  hooks are otherwise inert. Eight `vm-day1` malicious samples needed this:
+  `echo "code injection possible by golu"` (`node-pdfmake@7.7.7`, `surpaonchainagent@7.7.7`,
+  `contentful-app-entry-localization-matrix@7.7.7`), `echo "takeover poc"`
+  (`openwhisk-probot-builder@1.0.0`), and inert PoC code (`wc@1.5.0`, `grab-service-worker@1.0.1`,
+  `coldbox@6.7.71`, `pmcrypto@0.1.0`'s `poc.js`).
+
+Measured on `main` `bd222bd` (S5 merged), all 3,716 verdicted live versions: 4 fewer reports,
+all benign new packages (`@8-interactive/parse-server`, `@focus-at/zs3`: inline `node -e`/`-p`;
+`@buoy-gg/bug-links`, `lilia-mcp`: echo-only), and it fires on no positive. On `vm-day1` it
+fires on no malicious sample
+(the pre-filter `ddfire.py` over all 2,319 malicious samples with an install hook: it fires on
+2 Baileys forks before the engine guard, 0 after).
 
 ## Evaluation
 

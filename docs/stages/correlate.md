@@ -413,6 +413,11 @@ has a name npm lacks; 2 malicious ones would get the finding after the exemption
   packages), all benign, 0 malicious, unwanted or unverified lost; precision 4.23% → 4.41%.
   `vm-day1`: none of the 433 malicious samples reported only through the install rules is
   explained.
+- **Inert install hooks** (stage version 16, 2026-11-10): Stage 3's `npm.install-inert`
+  (a new package whose install hooks only run package code Stage 3 read in full that reaches
+  nothing outside the package, or only echo a message that isn't a probe's; S5's guards;
+  [ast.md](ast.md#inert-install-hooks-npminstall-inert-round-4)) explains `npm.install-hook`
+  only ([round 4, agent B](../proposals/precision-round4-B.md)).
 - **Established repository match** (stage version 9, 2026-11-04): clearing install-code
   MEDIUM findings for a version whose code is exactly an established repository's is built
   but off (`CLEAR_ESTABLISHED`; Repository trust, below).
