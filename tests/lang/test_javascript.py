@@ -15,7 +15,9 @@ from kitsunox.lang.javascript import (
     mask_comments_and_messages,
     mask_printed_text,
     module_capability,
+    opt_in_parameter,
     package_name,
+    passes_argument,
 )
 
 C = Capability
@@ -373,3 +375,35 @@ def test_in_text_tells_strings_and_comments_from_code() -> None:
     assert in_text(code, "javascript", code.index(b"x"))
     assert in_text(code, "javascript", code.index(b"y"))
     assert not in_text(code, "javascript", code.index(b"f("))
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (b"function set(a, g = false) { if (g) { X() } }", ("set", 1)),
+        (b"const set = function (g = false) { if (g) { X() } }", ("set", 0)),
+        (b"exports.set = (g = undefined) => { if (g && ok) { X() } }", ("set", 0)),
+        (b"const o = { set(g = false) { if ((g)) { X() } } }", ("set", 0)),
+        (b"const o = { 'set': (g = 0) => { if (g) { X() } } }", ("set", 0)),
+        (b"function set(g = false) { if (g) { } else { X() } }", None),  # the other branch
+        (b"function set(g = true) { if (g) { X() } }", None),  # on by default
+        (b"function set(g = false) { if (g || h) { X() } }", None),  # not required
+        (b"function set(g = false) { X() }", None),  # no guard
+        (b"[0].map((g = false) => { if (g) { X() } })", None),  # no name
+        (b"if (g) { X() }", None),  # not in a function
+    ],
+)
+def test_opt_in_parameter(code: bytes, expected: tuple[str, int] | None) -> None:
+    assert opt_in_parameter(code, "javascript", code.index(b"X()")) == expected
+
+
+def test_passes_argument() -> None:
+    def passes(code: bytes) -> bool:
+        return passes_argument(code, "javascript", "set", 1)
+
+    assert not passes(b"set(a); set(a, false); o.set(a, null); other(a, true)")
+    assert passes(b"set(a, true)")
+    assert passes(b"lib.set(a, opts.global)")
+    assert passes(b"set(...argv)")
+    assert passes(b"items.forEach(set)")
+    assert not passes(b"set(a, /* g */)")

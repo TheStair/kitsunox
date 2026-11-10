@@ -107,7 +107,7 @@ is the malicious set.
 | `npm.install-explained` (v4) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), inert (S5, v3), an own-binary download that runs nothing it fetched (S6, v4, [below](#v4-s6-own-binary-downloads-that-run-nothing-they-fetch-2026-11-10-round-5)), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `npm.install-inert` (v1) | a new package whose every install hook only runs package code (`node <file>`, `node -e`, chained with `&&`/`\|\|`/`;`) or a constant `echo`, that Stage 3 read in full and that reaches nothing outside the package; carries agent E's S5 guards (no Baileys `engine-requirements.js`, no `require.resolve`, no placeholder, no risky text, no deleting, readable UTF-8) and refuses probes (`PROBE_TEXT`). An explanation for Stage 4, which makes `npm.install-hook` LOW; [below](#inert-install-hooks-npminstall-inert-round-4) | INFO (weight 0) | live: see below | `vm-day1`: fires on none |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
-| `npm.install-persistence` (v2) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; v2 (round 5): a system-package command that JavaScript only prints, returns or keeps in a table doesn't count, an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) does; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
+| `npm.install-persistence` (v3) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; v2 (round 5): a system-package command that JavaScript only prints, returns or keeps in a table doesn't count, an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) does; v3 (round 5 M): changing the global or system git configuration for a key that runs code or redirects data in every repository (`git config --global core.hooksPath`, `credential.helper`, `url.*.insteadOf`, ...), or writing `~/.gitconfig`; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
 | `npm.install-script-loader` (v1) | a shell, PowerShell or batch install script (run by a hook or started by install code) or a hook command line, comments and messages aside, fetches or decodes code and runs it, or hides it: `curl ... \| sh`, `bash -c "$(curl ...)"`, `base64 -d \| sh`, `/dev/tcp/`, `-EncodedCommand`, `irm ... \| iex`, `iex` of decoded text, `[char]` chains, `-join` reversals, `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta`, `regsvr32 /i:http`, batch substring chains, code behind 100+ spaces that the hidden-code check skips; only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3); LOW (weight 1) for a download piped into a shell from the package's own site | live: 0 of the 3,716 verdicted versions change (64 have install scripts); 0 fires in a day of 2,044 hooked versions | `vm-day1`: fires on 8 malicious samples, all reported already (one, `@optimystic99/dev-utils@1.0.17`, otherwise only by `npm.install-hook`); 0 of 1,452 benign |
 | `npm.install-script-exfil` (v1) | the same scripts and hook lines pipe command output into an upload, upload a file, read the cloud metadata service, or name a credential file (SSH private key, `~/.npmrc`, `.aws/credentials`, ...); only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3) | live: as above, 0 | `vm-day1`: fires on 81; **3 newly reported** (`justgetit@1.2.4`, `ts-form-helpers` 1.0.3 and 1.0.12), 0 lost; 0 of 1,452 benign |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
@@ -1023,6 +1023,40 @@ a variable used only in read calls) loses 4 unwanted (`wkappbot-code` 0.3.11/0.3
 and frees none of the 47 benign the reviewer listed (each also names a path it writes or
 passes on); opt-in prompts were rejected in round 4; `@usebitl/cli`'s early exit depends on
 the hook's argument (`if (syncOnly) process.exit(0)`).
+
+**`npm.install-persistence` v3** (2026-11-10, round 5 M, [precision-round5-M](../proposals/
+precision-round5-M.md); zero-loss): a fifth form, **`git-config`**, for the owner's 2026-11-10
+ruling (a silent system or user setting change at install is unwanted). `signoff-cli` and
+`dsh-signoff` run `bin/signoff.js ensure --from-install` on postinstall, and `lib/bootstrap.js`
+runs `spawnSync("git", ["config", "--global", "core.hooksPath", "~/.signoff/hooks"])`: every
+repository on the machine then runs the package's hooks. The form fires on install code (the
+same reach and masking as the other forms, hook command lines included) that changes the
+**global or system** git configuration (`--global`, `--system`, `--file ~/.gitconfig`; the
+`git config set` syntax too) for a key that decides what git runs or where it sends data in
+every repository (`GIT_KEYS`): `core.hooksPath`, `init.templateDir`, `core.sshCommand`,
+`core.pager`, `core.editor`, `core.fsmonitor`, `core.askPass`, `core.gitProxy`,
+`sequence.editor`, `diff.external`, `credential.helper` (also per URL), `url.*.insteadOf` /
+`pushInsteadOf`, `include.path`, `includeIf.*.path`, `http.proxy` / `https.proxy`,
+`filter.*.clean`/`smudge`/`process`, `diff.*.textconv`, `merge.*.driver`, `gpg.program`;
+`alias.*` only with a `!` shell command and `safe.directory` only with `*`. Forms: a command
+string (`git config --global core.hooksPath x`, also a string starting at `config` passed to a
+helper, `runGit("config --global ...")`), an argument list (`["config", "--global",
+"core.hooksPath", dir]`), or a write of `~/.gitconfig` / `~/.config/git/config` (a write call
+naming the path or a variable given it, `>>`, `tee`). Not counted: the project's own setting
+(`git config core.hooksPath .githooks`, no `--global`: husky-style hooks, `@acertijosapps/
+android-viewer`, `@brighterly/lib-assessment`, `clavarium`, `@xingwangzhe/stalux`, all benign),
+per-command overrides (`git -c k=v ...`), reads and removals (`--get`, `--list`, `--unset`),
+reading `~/.gitconfig`, keys that change nothing git runs (`user.email`, `alias.st status`), a
+command string JavaScript only shows or keeps as data (`shown_not_run`), and a change made only
+inside `if (p)` where `p` is a parameter with an off default (`installHook(cwd, isGlobal =
+false)`) that no install file passes (`lang.javascript.opt_in_parameter`, `passes_argument`;
+a spread argument or the function handed to another call counts as passing):
+`@arifbiswas/git-pre-push@1.0.0` (benign) sets `core.hooksPath` globally only when its CLI is
+asked to. Measured: on the 3,716 verdicted live versions the form fires on exactly the 6
+re-labelled unwanted `signoff-cli`/`dsh-signoff` versions and nothing else; it brings back
+`signoff-cli@4.1.9` (unreported since `install-script-changed` v5), 1,348 → 1,349 reported, 0
+benign added; `signoff-cli@4.2.0` (verdicted after the shared candidates were made, replayed
+from its run) gains the finding too. `vm-day1`: see the proposal.
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, `npm.install-script-exfil`, 2026-11-10)
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, 2026-11-10)
 
@@ -1039,7 +1073,7 @@ x.ps1`: `install.files_named`) or install code starts it by a constant name
 | `npm.install-script-code` v3 hidden code | yes, on `code_text`, which blanked every `echo` line whole: code pushed off screen after an `echo` on the same line was missed (fixed by the script masking above, 2026-11-10) |
 | `npm.install-script-changed` v6 | updates only: its `TOUCHED` lexicon (`curl`, `iex`, `powershell`, `certutil`, `\| sh`, base64 runs) keeps the MEDIUM when a script's changed lines have them; a new package has no base, so nothing |
 | `npm.install-script-obfuscated` | runs on scripts, but its tests (`_0x`, javascript-obfuscator's rotation prologue) never match one |
-| `npm.install-persistence` | yes: agent paths, shell rc, persistent PATH, system packages |
+| `npm.install-persistence` | yes: agent paths, shell rc, persistent PATH, system packages, global git configuration (v3) |
 
 So a new package whose hook runs `install.ps1` with `-EncodedCommand`, `[char]` codes or
 `irm ... | iex` was reported only by `npm.install-hook` (MEDIUM for a new package), and an

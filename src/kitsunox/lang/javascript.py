@@ -1027,6 +1027,130 @@ def in_text(content: bytes, language: str, offset: int) -> bool:
     return False
 
 
+# `opt_in_parameter` and `passes_argument` (2026-11-10, `npm.install-persistence` v3): code an
+# install hook reaches only when a caller switches it on. `@arifbiswas/git-pre-push@1.0.0`'s
+# `installHook(cwd, isGlobal = false)` sets the global `core.hooksPath` only `if (isGlobal)`;
+# its postinstall calls `installHook(targetDir)`, and only its CLI passes `true`.
+_OFF: Final = frozenset({"false", "undefined", "null", "0", "void 0", "!1"})
+
+
+def opt_in_parameter(content: bytes, language: str, offset: int) -> tuple[str, int] | None:
+    """When the code at byte `offset` runs only inside `if (p) { ... }` (`p` alone or one of
+    the `&&` terms) where `p` is a parameter of the enclosing function declared with an off
+    default (`p = false`): the function's name and the parameter's position. Only the nearest
+    enclosing function is looked at; a function without a name gives None."""
+    if len(content) > MAX_SOURCE_BYTES:
+        return None
+    parser, _ = _parser(language)
+    node: ts.Node | None = parser.parse(content).root_node.descendant_for_byte_range(
+        offset, offset + 1
+    )
+    guards: set[str] = set()
+    while node is not None and node.parent is not None:
+        parent = node.parent
+        if parent.type == "if_statement" and parent.child_by_field_name("consequence") == node:
+            guards |= _conjuncts(parent.child_by_field_name("condition"))
+        if parent.type in _FUNCTIONS:
+            name = _function_name(parent)
+            if name is None or not guards:
+                return None
+            for index, parameter in enumerate(_parameters(parent)):
+                if parameter in guards:
+                    return name, index
+            return None
+        node = parent
+    return None
+
+
+def passes_argument(content: bytes, language: str, name: str, index: int) -> bool:
+    """Whether the code calls the function `name` (`name(...)`, `x.name(...)`) with an argument
+    at position `index` that may be on (anything but `false`, `undefined`, `null`, `0`; a spread
+    `...args` at or before it may be), or hands `name` itself to a call (a callback is called
+    with arguments the code doesn't show)."""
+    parser, _ = _parser(language)
+    stack = [parser.parse(content).root_node]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.children)
+        if node.type == "identifier" and _text(node) == name:
+            parent = node.parent
+            if parent is not None and parent.type == "arguments":
+                return True
+        if node.type != "call_expression":
+            continue
+        function = _text(node.child_by_field_name("function"))
+        if function != name and not function.endswith("." + name):
+            continue
+        arguments = node.child_by_field_name("arguments")
+        given = [c for c in arguments.named_children if c.type != "comment"] if arguments else []
+        for position, argument in enumerate(given):
+            if argument.type == "spread_element" and position <= index:
+                return True
+            if position == index and _text(argument).strip() not in _OFF:
+                return True
+    return False
+
+
+def _conjuncts(condition: ts.Node | None) -> set[str]:
+    """The plain names a condition requires: `(p)`, `(p && q)`."""
+    while condition is not None and condition.type == "parenthesized_expression":
+        condition = condition.named_children[0] if condition.named_children else None
+    if condition is None:
+        return set()
+    if condition.type == "identifier":
+        return {_text(condition)}
+    if (
+        condition.type == "binary_expression"
+        and _text(condition.child_by_field_name("operator")) == "&&"
+    ):
+        return _conjuncts(condition.child_by_field_name("left")) | _conjuncts(
+            condition.child_by_field_name("right")
+        )
+    return set()
+
+
+def _function_name(function: ts.Node) -> str | None:
+    """A function's name: its own, the variable or property it is assigned to, or the key it
+    is the value of."""
+    if (own := function.child_by_field_name("name")) is not None:
+        return _text(own).rsplit(".", 1)[-1]
+    parent = function.parent
+    if parent is None:
+        return None
+    if parent.type == "variable_declarator":
+        return _text(parent.child_by_field_name("name")) or None
+    if parent.type == "assignment_expression":
+        return _text(parent.child_by_field_name("left")).rsplit(".", 1)[-1] or None
+    if parent.type == "pair":
+        return _text(parent.child_by_field_name("key")).strip("\"'`") or None
+    return None
+
+
+def _parameters(function: ts.Node) -> list[str | None]:
+    """Per parameter, its name when it has an off default (`p = false`), else None."""
+    parameters = function.child_by_field_name("parameters")
+    if parameters is None:
+        return []
+    out: list[str | None] = []
+    for parameter in parameters.named_children:
+        if parameter.type == "comment":
+            continue
+        if parameter.type == "assignment_pattern":  # JavaScript
+            left = parameter.child_by_field_name("left")
+            right = parameter.child_by_field_name("right")
+        else:  # TypeScript: `p: boolean = false` is a required parameter with a value
+            left = parameter.child_by_field_name("pattern")
+            right = parameter.child_by_field_name("value")
+        off = (
+            left is not None
+            and left.type == "identifier"
+            and right is not None
+            and _text(right) in _OFF
+        )
+        out.append(_text(left) if off else None)
+    return out
+
+
 def _message(node: ts.Node) -> bool:
     parent = node.parent
     while parent is not None and parent.type in _PRINTED_PATH:

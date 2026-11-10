@@ -12,7 +12,14 @@ addenda of 2026-11-09), harmless as what they install may be:
 - **`path`**: changing PATH persistently (the Windows user or machine PATH, `setx PATH`, the
   `HKCU\\Environment` key, `/etc/paths.d`, `/etc/profile.d`);
 - **`system-package`**: installing system packages (`sudo apt-get install -y`, `dnf`,
-  `brew`, `winget`, `choco`, ...): root-level changes during `npm install`.
+  `brew`, `winget`, `choco`, ...): root-level changes during `npm install`;
+- **`git-config`** (v3, the owner's 2026-11-10 ruling: a silent system or user setting change at
+  install is unwanted): changing the user's **global or system git configuration** for a key
+  that decides what git runs or where it sends data in every repository on the machine
+  (`git config --global core.hooksPath ~/.x/hooks`, `credential.helper`, `url.*.insteadOf`,
+  ...; `GIT_KEYS`), or writing `~/.gitconfig`. A project's own setting (`git config
+  core.hooksPath .githooks`, no `--global`) and per-command overrides (`git -c k=v ...`) are
+  not.
 
 The test reads the install code as `npm.install-script-code` does (the files the hooks run
 and those they load), plus the hook command lines, with comments and messages masked
@@ -34,7 +41,13 @@ from typing import Final
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts
-from kitsunox.lang.javascript import language_for, mask_comments_and_messages, shown_not_run
+from kitsunox.lang.javascript import (
+    language_for,
+    mask_comments_and_messages,
+    opt_in_parameter,
+    passes_argument,
+    shown_not_run,
+)
 from kitsunox.lang.shell import mask_script_messages
 from kitsunox.rules.static import ShellStartup
 from kitsunox.stages.ast import CodeChange
@@ -150,10 +163,16 @@ class InstallPersistence(BaseRule):
     command string that JavaScript install code only shows or keeps as data (printed advice, a
     per-distribution table, a returned hint) is not an install (`_system_package`); the same
     command as an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) now counts,
-    which keeps the two unwanted installers whose only command strings are messages."""
+    which keeps the two unwanted installers whose only command strings are messages.
+
+    v3 (2026-11-10, round 5, `docs/proposals/precision-round5-M.md`): the `git-config` form
+    (`_git_config`): install code that changes the global or system git configuration for a
+    key that runs code or redirects data in every repository (`signoff-cli`, `dsh-signoff`:
+    `spawnSync("git", ["config", "--global", "core.hooksPath", dir])`, unwanted by the owner's
+    2026-11-10 ruling)."""
 
     id = "npm.install-persistence"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code changes the user's machine beyond the project"
@@ -191,6 +210,8 @@ FORM_TEXT: Final = {
     "path": "changes the PATH persistently",
     "shell-rc": "writes the user's shell start-up files",
     "system-package": "installs system packages",
+    "git-config": "changes the user's global git configuration (hooks, credentials, remotes or "
+    "commands git runs): every repository on the machine is affected",
 }
 
 
@@ -217,6 +238,8 @@ def persistence(
             found.append(("path", path, *_where(text, match.start(), match.end())))
         if match := _system_package(path, install_files.get(path), text):
             found.append(("system-package", path, *_where(text, match.start(), match.end())))
+        if match := _git_config(path, install_files, text):
+            found.append(("git-config", path, *_where(text, match.start(), match.end())))
     return found
 
 
@@ -238,6 +261,175 @@ def _system_package(path: str, data: bytes | None, text: str) -> re.Match[str] |
         if not shown_not_run(data, language, len(text[: match.end() - 1].encode("utf-8"))):
             return match
     return None
+
+
+# v3: git configuration keys that decide, for every repository, what git runs (hooks, templates
+# with hooks, ssh, pager, editor, fsmonitor, askpass, proxy commands, filters, diff and merge
+# drivers, signing programs) or where it sends data and credentials (credential helpers, URL
+# rewrites, proxies), or that pull in another configuration file (`include`). `alias.*` counts
+# only with a `!` shell command and `safe.directory` only with `*`.
+GIT_KEYS: Final = (
+    r"core\.(?:hooksPath|sshCommand|pager|editor|fsmonitor|askPass|gitProxy)"
+    r"|init\.templateDir|sequence\.editor|diff\.external"
+    r"|credential\.(?:[^\s\"'`=]+\.)?helper"
+    r"|url\.[^\s\"'`=]+\.(?:push)?insteadOf"
+    r"|include\.path|includeIf\.[^\s\"'`=]+\.path"
+    r"|https?\.(?:[^\s\"'`=]+\.)?proxy"
+    r"|filter\.[^\s\"'`=]+\.(?:clean|smudge|process)"
+    r"|diff\.[^\s\"'`=]+\.textconv|merge\.[^\s\"'`=]+\.driver"
+    r"|gpg\.(?:[\w-]+\.)?program"
+)
+_ALIAS: Final = r"alias\.[^\s\"'`=]+"
+_SAFE: Final = r"safe\.directory"
+# Options that only read or remove (`--get`, `--list`, `--unset`, ...) end the match.
+_READ_OPTION: Final = (
+    r"--(?:get|list|unset|remove|rename|show|name-only|edit|null|default)|-[lez](?![\w-])"
+)
+_OPTION: Final = r"(?:(?!" + _READ_OPTION + r")--?[\w-]+(?:=\S+)?\s+)*"
+_HOME_FILE: Final = r"(?:~|\$\{?HOME\}?|%USERPROFILE%)[/\\]+\.gitconfig"
+# As a command string: `git config --global core.hooksPath ~/.x`, `git config set --system ...`,
+# a string starting at `config` (`runGit("config --global ...")`), `git config --file
+# ~/.gitconfig ...`.
+GIT_CONFIG: Final = re.compile(
+    r"(?:\bgit(?:\.exe)?[\"']?\s+(?:-C\s+\S+\s+)*|(?<=[\"'`]))config\s+(?:set\s+)?"
+    + _OPTION
+    + r"(?:--(?:global|system)\s+|(?:--file|-f)[\s=]+[\"']?"
+    + _HOME_FILE
+    + r"[\"']?\s+)"
+    + _OPTION
+    + r"[\"']?(?:(?:"
+    + GIT_KEYS
+    + r")(?![\w.-])|"
+    + _ALIAS
+    + r"[\"']?\s+[\"']?!|"
+    + _SAFE
+    + r"[\"']?\s+[\"']?\*)",
+    re.IGNORECASE,
+)
+_Q: Final = r"[\"'`]"
+_ARG_OPTION: Final = (
+    r"(?:" + _Q + r"(?!" + _READ_OPTION + r")--?[\w-]+(?:=[^\"'`]*)?" + _Q + r"\s*,\s*)*"
+)
+# As an argument list: `spawnSync("git", ["config", "--global", "core.hooksPath", dir])`,
+# `git(["config", "set", "--global", ...])`.
+GIT_CONFIG_ARGV: Final = re.compile(
+    _Q
+    + r"config"
+    + _Q
+    + r"\s*,\s*(?:"
+    + _Q
+    + r"set"
+    + _Q
+    + r"\s*,\s*)?"
+    + _ARG_OPTION
+    + _Q
+    + r"--(?:global|system)"
+    + _Q
+    + r"\s*,\s*"
+    + _ARG_OPTION
+    + _Q
+    + r"(?:(?:"
+    + GIT_KEYS
+    + r")"
+    + _Q
+    + r"|"
+    + _ALIAS
+    + _Q
+    + r"\s*,\s*"
+    + _Q
+    + r"!|"
+    + _SAFE
+    + _Q
+    + r"\s*,\s*"
+    + _Q
+    + r"\*)",
+    re.IGNORECASE,
+)
+# `~/.gitconfig` (or the XDG `~/.config/git/config`) written out under the home directory or
+# joined to a home expression.
+_GITCONFIG: Final = r"(?:\.gitconfig|\.config[/\\]+git[/\\]+config)\b"
+HOME_GITCONFIG: Final = (
+    r"[\"'`]~[/\\]+"
+    + _GITCONFIG
+    + r"|\$\{?HOME\}?[/\\]+"
+    + _GITCONFIG
+    + r"|%USERPROFILE%[/\\]+"
+    + _GITCONFIG
+    + r"|\$\{\s*(?:"
+    + _HOME_CALL
+    + r")\s*\}[/\\]+"
+    + _GITCONFIG
+    + r"|(?:join|resolve)\s*\(\s*"
+    + _OVERRIDE
+    + r"(?:"
+    + _HOME_CALL
+    + r")"
+    + _SEP
+    + r"(?:\.gitconfig|\.config[\"'`]\s*,\s*[\"'`]git[\"'`]\s*,\s*[\"'`]config)[\"'`]"
+)
+# Written: a file-writing call with the path in its arguments, or a shell redirection or `tee`.
+_WRITES: Final = (
+    r"\b(?:writeFile|appendFile|outputFile|createWriteStream|copyFile|cpSync|writeJson)\w*"
+)
+GITCONFIG_WRITE: Final = re.compile(
+    _WRITES
+    + r"\s*\([^;\n]{0,160}?(?:"
+    + HOME_GITCONFIG
+    + r")|(?:>>?|\btee\s+(?:-a\s+)?)\s*[\"']?(?:~|\$\{?HOME\}?|%USERPROFILE%)[/\\]+"
+    + _GITCONFIG
+)
+# A variable given the path, then written: `const p = join(homedir(), ".gitconfig");
+# fs.appendFileSync(p, ...)`.
+GITCONFIG_VARIABLE: Final = re.compile(
+    r"\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:" + HOME_GITCONFIG + r")"
+)
+
+
+def _git_config(path: str, install_files: Mapping[str, bytes], text: str) -> re.Match[str] | None:
+    """The first change of the global or system git configuration in `text` that install code
+    may make (v3): `GIT_CONFIG_ARGV` and `GIT_CONFIG` for a key in `GIT_KEYS`, or a write of
+    `~/.gitconfig`. In JavaScript, a command string only shown or kept as data
+    (`lang.javascript.shown_not_run`) doesn't count, nor a change made only inside `if (p)`
+    where `p` is a parameter with an off default (`f(cwd, isGlobal = false)`) that no install
+    file passes (`lang.javascript.opt_in_parameter`, `passes_argument`):
+    `@arifbiswas/git-pre-push@1.0.0` sets `core.hooksPath` globally only when its CLI asks."""
+    data = install_files.get(path)
+    language = language_for(path)
+    # Offsets map back to the bytes only when decoding replaced nothing.
+    mapped = language is not None and data is not None and len(text.encode("utf-8")) == len(data)
+    matches = [
+        *((m, False) for m in GIT_CONFIG_ARGV.finditer(text)),
+        *((m, True) for m in GIT_CONFIG.finditer(text)),
+        *((m, False) for m in GITCONFIG_WRITE.finditer(text)),
+    ]
+    for name in sorted({m.group(1) for m in GITCONFIG_VARIABLE.finditer(text)}):
+        written = _WRITES + r"\s*\(\s*" + re.escape(name) + r"(?![\w$])"
+        matches += [(m, False) for m in re.finditer(written, text)]
+    for match, command in sorted(matches, key=lambda item: item[0].start()):
+        if not mapped or data is None or language is None:
+            return match
+        offset = len(text[: match.start()].encode("utf-8"))
+        if command and shown_not_run(data, language, offset):
+            continue
+        if _opt_in_only(data, language, offset, install_files):
+            continue
+        return match
+    return None
+
+
+def _opt_in_only(
+    data: bytes, language: str, offset: int, install_files: Mapping[str, bytes]
+) -> bool:
+    """Whether the code at `offset` runs only when a caller passes an option that no install
+    file passes."""
+    if (guard := opt_in_parameter(data, language, offset)) is None:
+        return False
+    name, index = guard
+    return not any(
+        passes_argument(code, other, name, index)
+        for path, code in sorted(install_files.items())
+        if (other := language_for(path)) is not None
+    )
 
 
 # The XDG config home (`$XDG_CONFIG_HOME`, else `~/.config`) and an agent that keeps its

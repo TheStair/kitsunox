@@ -208,3 +208,109 @@ def test_a_command_string_only_shown_or_kept_as_data_is_not_an_install(code: byt
 )
 def test_a_command_the_install_code_may_run_still_counts(code: bytes) -> None:
     assert forms(code) == ["system-package"]
+
+
+@pytest.mark.parametrize(
+    ("code", "path"),
+    [
+        # `signoff-cli`, `dsh-signoff` (unwanted, owner 2026-11-10): `lib/bootstrap.js`
+        (b'spawnSync("git", ["config", "--global", "core.hooksPath", d], {})\n', "b.js"),
+        (b"execSync('git config --global core.hooksPath ~/.kx/hooks')\n", "b.js"),
+        (b"execSync(`git config --system credential.helper ${helper}`)\n", "b.js"),
+        (
+            b'execFileSync("git", ["config", "--global", "--add", "url.s://x.insteadOf", u])\n',
+            "b.js",
+        ),
+        (b'git(["config", "set", "--global", "init.templateDir", tpl])\n', "b.js"),
+        (b"run('git config --global alias.up \"!sh ./x.sh\"')\n", "b.js"),
+        (b'spawnSync("git", ["config", "--global", "--add", "safe.directory", "*"])\n', "b.js"),
+        (b'git config --global include.path "$HOME/.kx/gitconfig"\n', "setup.sh"),
+        (b"git -C /tmp config --global http.proxy http://127.0.0.1:9\n", "setup.sh"),
+        (b"git config --file ~/.gitconfig core.sshCommand 'ssh -i k'\n", "setup.sh"),
+        (b"printf '[core]\\n\\thooksPath = x\\n' >> ~/.gitconfig\n", "setup.sh"),
+        (b'fs.appendFileSync(path.join(os.homedir(), ".gitconfig"), "[include]")\n', "b.js"),
+        (b'const p = join(homedir(), ".gitconfig");\nfs.writeFileSync(p, text)\n', "b.js"),
+    ],
+)
+def test_changing_the_global_git_configuration(code: bytes, path: str) -> None:
+    """v3 (owner, 2026-11-10: a silent system or user setting change at install is unwanted):
+    a global or system git setting that runs code or redirects data in every repository."""
+    assert forms(code, path) == ["git-config"]
+
+
+@pytest.mark.parametrize(
+    ("code", "path"),
+    [
+        # `@acertijosapps/android-viewer`, `@brighterly/lib-assessment`, `clavarium` (benign):
+        # the project's own repository
+        (b"git config core.hooksPath .githooks || exit 0\n", "setup.sh"),
+        (b'spawnSync("git", ["config", "core.hooksPath", ".husky"])\n', "b.js"),
+        (b"git -c core.hooksPath=/dev/null commit -m x\n", "setup.sh"),  # one command
+        # reads and removals
+        (b'spawnSync("git", ["config", "--global", "--get", "core.hooksPath"])\n', "b.js"),
+        (b"execSync('git config --global --unset core.hooksPath')\n", "b.js"),
+        (b"git config --global --list\n", "setup.sh"),
+        (b'const name = fs.readFileSync(join(os.homedir(), ".gitconfig"), "utf8")\n', "b.js"),
+        # keys that change nothing git runs
+        (b"git config --global user.email ci@example.invalid\n", "setup.sh"),
+        (b"git config --global alias.st status\n", "setup.sh"),
+        (b"git config --global --add safe.directory /work\n", "setup.sh"),
+        # shown, not run
+        (b'console.log("run: git config --global core.hooksPath ~/.kx/hooks")\n', "b.js"),
+        (b"const STEPS = ['git config --global core.hooksPath ~/.kx/hooks'];\n", "b.js"),
+        (b'echo "git config --global core.hooksPath ~/.kx/hooks"\n', "setup.sh"),
+    ],
+)
+def test_project_settings_reads_and_messages_are_not_global_changes(code: bytes, path: str) -> None:
+    assert forms(code, path) == []
+
+
+def git_forms(files: dict[str, bytes]) -> list[str]:
+    return [form for form, *_ in persistence(files, {})]
+
+
+def test_a_global_change_only_a_caller_switches_on() -> None:
+    """`@arifbiswas/git-pre-push@1.0.0` (benign): `installHook(cwd, isGlobal = false)` sets the
+    global `core.hooksPath` only `if (isGlobal)`; the postinstall calls `installHook(dir)` and
+    only the CLI (not install code) passes `true`."""
+    installer = (
+        b"function installHook(cwd = process.cwd(), isGlobal = false) {\n"
+        b"  if (isGlobal) {\n"
+        b'    runGit(`config --global core.hooksPath "${dir}"`);\n'
+        b"  }\n"
+        b"}\n"
+        b"module.exports = { installHook };\n"
+    )
+    hook = b"const { installHook } = require('./installer');\ninstallHook(process.env.INIT_CWD);\n"
+    files = {"installer.js": installer, "setup.js": hook}
+    assert git_forms(files) == []
+    assert git_forms({**files, "setup.js": hook + b"installHook(d, false);\n"}) == []
+    for call in (b"installHook(d, true);\n", b"installHook(...args);\n", b"[a].map(installHook)\n"):
+        assert git_forms({**files, "setup.js": hook + call}) == ["git-config"], call
+    # A guard that isn't an off-by-default parameter keeps it (`signoff`'s `--from-install`).
+    always = installer.replace(b"isGlobal = false", b"isGlobal")
+    assert git_forms({**files, "installer.js": always}) == ["git-config"]
+    arrow = (
+        b"const set = (g = false) => { if (ok && g) { run('git config --global core.pager x') } }\n"
+    )
+    assert git_forms({"setup.js": arrow + b"set()\n"}) == []
+    assert git_forms({"setup.js": arrow + b"set(1)\n"}) == ["git-config"]
+    typed = (
+        b"function f(g: boolean = false) { if (g) { run('git config --global core.pager x') } }\n"
+    )
+    assert git_forms({"setup.ts": typed}) == []
+    assert git_forms({"setup.ts": typed + b"f(true)\n"}) == ["git-config"]
+
+
+def test_the_hook_command_line_changing_git_globally() -> None:
+    found = persistence({}, {"postinstall": "git config --global core.hooksPath ./hooks"})
+    assert [f for f, *_ in found] == ["git-config"]
+    assert persistence({}, {"postinstall": "git config core.hooksPath ./hooks || true"}) == []
+
+
+def test_the_rule_names_the_git_change() -> None:
+    code = b'spawnSync("git", ["config", "--global", "core.hooksPath", dir])\n'
+    (finding,) = RULE.evaluate_code(hooked({"setup.js": code}))
+    assert finding.rule_version == 3
+    assert "global git configuration" in finding.explanation
+    assert finding.evidence[0].path == "setup.js"
