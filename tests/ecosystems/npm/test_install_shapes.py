@@ -152,6 +152,119 @@ def test_s2_cargo_dist_downloads_need_no_checksum() -> None:
     assert shape(change({"install.js": unchecked}, manifest)) is None
 
 
+FETCHER = b"""
+const https = require("https"), fs = require("fs"), path = require("path");
+const { execFileSync } = require("child_process");
+const version = require("./package.json").version;
+const url = `https://github.com/kx-org/tool/releases/download/v${version}/tool-${process.platform}.tar.gz`;
+https.get(url, (res) => {
+  const file = path.join(__dirname, "bin", "tool.tar.gz");
+  res.pipe(fs.createWriteStream(file)).on("finish", () => {
+    execFileSync("tar", ["-xzf", file, "-C", path.join(__dirname, "bin")]);
+    fs.chmodSync(path.join(__dirname, "bin", "tool"), 0o755);
+  });
+});
+"""
+
+
+def test_s6_own_binary_download_not_run() -> None:
+    """v4 (round 5): a download from the package's own releases (its repository's, or its
+    owner's other repositories'), unpacked by an archive tool and never run, needs no
+    checksum."""
+    manifest = hook(repository=REPO)
+    found = RULE.evaluate_code(change({"install.js": FETCHER}, manifest))
+    assert [f.explanation.split(" ", 1)[0] for f in found] == ["S6"]
+    assert "kx-org" in found[0].explanation
+    # The owner's other repository (a separate releases repository), and shell unpacking.
+    org = FETCHER.replace(b"kx-org/tool/", b"kx-org/tool-releases/")
+    assert shape(change({"install.js": org}, manifest)) == "S6"
+    for unpack in (
+        b'execSync(`cd "${dir}" && unzip -o tool.zip 2>/dev/null`);',
+        b"execSync(`powershell -NoProfile -Command \"Expand-Archive -Force '${a}' '${d}'\"`);",
+        b'spawnSync("xattr", ["-d", "com.apple.quarantine", bin]);',
+        b'execFileSync("uname", ["-m"]); execSync("ldd --version");',
+    ):
+        code = FETCHER.replace(
+            b'const { execFileSync } = require("child_process");',
+            b'const { execFileSync, execSync, spawnSync } = require("child_process");',
+        )
+        assert shape(change({"install.js": code + unpack}, manifest)) == "S6", unpack
+    # Running what it downloaded (or anything else) keeps the findings.
+    for run in (
+        b'execFileSync(path.join(__dirname, "bin", "tool"), ["init"]);',
+        b'execFileSync(bin, ["--version"]);',
+        b'execFileSync("tar", ["-xf", f, "--checkpoint=1", "--checkpoint-action=exec=sh x"]);',
+        b'execFileSync("curl", ["-o", f, url]);',
+        b'execFileSync("powershell", ["-Command", "iex (irm x)"]);',
+        b"execFileSync(cmd, args);",
+        b'const run = execFileSync; run("tar", ["-xf", f]);',
+    ):
+        assert shape(change({"install.js": FETCHER + run}, manifest)) is None, run
+    shell = FETCHER.replace(b'execFileSync("tar", [', b"require('child_process').execSync(`tar ")
+    shell = shell.replace(
+        b'"-xzf", file, "-C", path.join(__dirname, "bin")]);', b"-xzf x && ./bin/tool`);"
+    )
+    assert shape(change({"install.js": shell}, manifest)) is None
+    # Another host, another owner, another version, a home directory, a package loaded by name,
+    # sending, or code run another way: no.
+    for extra in (
+        b'https.get("https://cdn.example.invalid/tool.tgz");',
+        b'https.get("https://github.com/someone/tool/releases/download/v1.0.1/x");',
+        b'https.get("https://github.com/kx-org/tool/releases/download/v0.9.0/x");',
+        b'fs.mkdirSync(require("os").homedir() + "/.kx");',
+        b'require("kx-downloader").fetch();',
+        b'https.request({ host: "github.com", method: "POST" });',
+        b'new (require("worker_threads").Worker)(file);',
+        b'require("./bin/tool.js");',  # a file it doesn't ship: maybe what it downloaded
+        b'import("./vendor/run.mjs");',
+    ):
+        assert shape(change({"install.js": FETCHER + extra}, manifest)) is None, extra
+    # Shipped files and JSON data may be loaded.
+    lib = {"lib/util.js": b"module.exports = 1;"}
+    shipped = FETCHER + b'require("./lib/util"); require("./package.json");'
+    assert shape(change({"install.js": shipped} | lib, manifest)) == "S6"
+    # A literal version that is the package's is fine; so is a file of the owner's repositories
+    # that the code only names (an install hint), since nothing it fetches runs.
+    pinned = FETCHER + b'https.get("https://github.com/kx-org/tool/releases/download/v1.0.1/x");'
+    assert shape(change({"install.js": pinned}, manifest)) == "S6"
+    hint = (
+        FETCHER + b'console.log("or: curl https://raw.githubusercontent.com/kx-org/x/main/i.sh");'
+    )
+    assert shape(change({"install.js": hint}, manifest)) == "S6"
+    raw_only = b'require("https").get("https://raw.githubusercontent.com/kx-org/tool/main/x");'
+    assert shape(change({"install.js": raw_only}, manifest)) is None  # not a release download
+    # The hook must be plain `node <file>`: nothing chained that runs the binary.
+    chained = hook("node install.js && bin/tool init", repository=REPO)
+    assert shape(change({"install.js": FETCHER}, chained)) is None
+    inline = hook(
+        "node -e \"require('https').get('https://github.com/kx-org/tool/releases/download/x')\"",
+        repository=REPO,
+    )
+    assert shape(change({}, inline)) is None
+    # No repository, or no download of its own: no.
+    assert shape(change({"install.js": FETCHER}, hook())) is None
+    nothing = b'const https = require("https");\nhttps.get(process.argv[2]);\n'
+    assert shape(change({"install.js": nothing}, manifest)) is None
+    # The homepage's own host counts as the package's own; a code host's doesn't.
+    home = FETCHER.replace(
+        b"https://github.com/kx-org/tool/releases/download", b"https://dl.kx.dev"
+    )
+    assert shape(change({"install.js": home}, manifest | {"homepage": "https://kx.dev/"})) is None
+    site = manifest | {"homepage": "https://dl.kx.dev/docs"}
+    assert shape(change({"install.js": home}, site)) == "S6"
+    hub = manifest | {"homepage": "https://gitlab.com/kx-org/tool"}
+    gitlab = FETCHER.replace(
+        b"https://github.com/kx-org/tool/releases/download", b"https://gitlab.com/x"
+    )
+    assert shape(change({"install.js": gitlab}, hub)) is None
+    # Install code that isn't JavaScript, or uses child_process in a way that can't be read.
+    other = {"install.js": FETCHER, "install.sh": b"#!/bin/sh\n./bin/tool init\n"}
+    loader = FETCHER + b'execFileSync("sh", ["install.sh"]);'
+    assert shape(change(other | {"install.js": loader}, manifest)) is None
+    hidden = FETCHER + b'const cp = require("child_process"); later(cp);'
+    assert shape(change({"install.js": hidden}, manifest)) is None
+
+
 NOTICE = b"""
 const fs = require("fs"), path = require("path");
 if (!process.env.CI) console.log("Run `kx init` to finish setting up kx.");
