@@ -462,7 +462,7 @@ def test_a_missing_unrelated_dependency_reports_alone() -> None:
         {"@utilitycraft/tailwindcss-motion-atelier": "^1.0.4", "kept": "^1"},
     )
     (found,) = missing(candidate, ctx(kept=packument("kept", OLD)))  # unknown names are 404
-    assert found.rule_id == "npm.dependency.missing" and found.rule_version == 1
+    assert found.rule_id == "npm.dependency.missing" and found.rule_version == 2
     assert found.severity is Severity.MEDIUM and found.weight == 3.0
     assert "`@utilitycraft/tailwindcss-motion-atelier`" in found.explanation
     assert "HTTP 404" in found.explanation and "`kept`" not in found.explanation
@@ -475,6 +475,19 @@ def test_a_missing_unrelated_dependency_reports_alone() -> None:
     deps = {"@nexlayerlabs/postcss-keyframe-utils": "^1.0.3"}
     assert missing(update(deps, name="tailwindcss-visual-kit"), ctx())
     assert not missing(update(deps, name="tailwindcss-visual-kit", before=deps), ctx())
+
+
+def test_a_jsr_alias_is_info() -> None:
+    """v2 (S6): `ichikara@0.1.0` aliases `npm:@jsr/sevenc-nanashi__utaformatix-ts`; JSR serves
+    `@jsr/*` from npm.jsr.io, so the npm registry's 404 is expected. A look-alike scope is not."""
+    deps = {"@sevenc-nanashi/utaformatix-ts": "npm:@jsr/sevenc-nanashi__utaformatix-ts@^0.4.0"}
+    (found,) = missing(new_package("ichikara", "0.1.0", deps), ctx())
+    assert found.severity is Severity.INFO and found.weight == 0.0
+    assert "a JSR package" in found.explanation
+    assert not decide([found]).forwarded
+    for target in ("@jsrx/sevenc-nanashi__utaformatix-ts", "jsr"):
+        (other,) = missing(new_package("ichikara", "0.1.0", {"x": f"npm:{target}@^0.4.0"}), ctx())
+        assert other.severity is Severity.MEDIUM, target
 
 
 def test_several_missing_dependencies_share_one_finding() -> None:

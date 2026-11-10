@@ -544,6 +544,14 @@ def sibling_reason(dep: AddedDependency, change: Change, watchlist: Watchlist | 
     return None
 
 
+# JSR's npm-compatibility scope: `npm.jsr.io` serves JSR packages as `@jsr/<scope>__<name>`.
+JSR_SCOPE: Final = "@jsr/"
+JSR_REASON: Final = (
+    "a JSR package (`@jsr/*` is served by npm.jsr.io to projects that map the scope there; "
+    "the npm registry has none)"
+)
+
+
 class MissingDependency(BaseRule):
     """The release adds a dependency (`foreign_added_dependencies`) that the registry doesn't
     have: its packument lookup in this run returned 404 (`DependencyStatus.MISSING`). `npm
@@ -570,10 +578,16 @@ class MissingDependency(BaseRule):
     Only a 404 counts. A lookup that failed (the network, a malformed record) is `FAILED`, not
     missing (decision 0009), and one over the lookup limits was never asked; `fresh-foreign`
     says both were not evaluated. The 404 is the run's recorded answer, so a replay reads the
-    same. All unrelated missing dependencies share one MEDIUM finding, the siblings one INFO."""
+    same. All unrelated missing dependencies share one MEDIUM finding, the siblings one INFO.
+
+    v2 (2026-11-11, `docs/proposals/precision-round6-S.md` S6): an alias into JSR's
+    npm-compatibility scope (`"x": "npm:@jsr/sevenc-nanashi__utaformatix-ts@^0.4"`, `JSR_SCOPE`)
+    is INFO too, with the reason: JSR serves `@jsr/*` from `npm.jsr.io` to projects that map the
+    scope there, and the npm registry answers 404 for it by design (`ichikara@0.1.0`,
+    `@audiflo/ichikara@0.1.0`, both benign)."""
 
     id = "npm.dependency.missing"
-    version = 1
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Depends on a package the registry doesn't have"
@@ -589,7 +603,8 @@ class MissingDependency(BaseRule):
         for dep in foreign_added_dependencies(change, ctx.watchlist):
             if ctx.dependencies(dep.target).status is not DependencyStatus.MISSING:
                 continue
-            why = sibling_reason(dep, change, ctx.watchlist)
+            why = JSR_REASON if dep.target.startswith(JSR_SCOPE) else None
+            why = why or sibling_reason(dep, change, ctx.watchlist)
             if why is None:
                 unrelated.append(dep)
             else:
@@ -612,7 +627,8 @@ class MissingDependency(BaseRule):
             more = f" (+{len(siblings) - 10} more)" if len(siblings) > 10 else ""
             finding = self.finding(
                 f"Depends on {len(siblings)} package(s) the registry did not have when this "
-                f"run looked (HTTP 404) that look like this package's own: {listed}{more}.",
+                f"run looked (HTTP 404) that look like this package's own (or are JSR's): "
+                f"{listed}{more}.",
                 *(_dependency_evidence(d) for d, _ in siblings[:5]),
                 severity=Severity.INFO,
             )
