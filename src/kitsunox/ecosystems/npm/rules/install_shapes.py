@@ -91,7 +91,7 @@ from kitsunox.lang.agent_config import (
     script_concerns,
     widening,
 )
-from kitsunox.lang.javascript import Capability, language_for
+from kitsunox.lang.javascript import Capability, language_for, mask_comments_and_messages
 from kitsunox.lang.process_calls import process_calls
 from kitsunox.stages.ast import CodeChange
 
@@ -612,6 +612,14 @@ SENDS: Final = re.compile(
     r"""\bmethod\s*:\s*["'`](?:POST|PUT|PATCH)["'`]|\.(?:post|put|patch)\s*\(""",
     re.IGNORECASE,
 )
+# Where S6's install code may not write what it fetched: a system directory (the temporary
+# directory is where downloads are staged, so it is allowed here, unlike S5), or the user's
+# project (`INIT_CWD`, git hooks). Another installed package is `OTHER_PACKAGE`.
+SYSTEM_DIR: Final = re.compile(
+    r"""["'`](?:/(?:etc|usr|bin|sbin|opt|var|Library|System|Applications|private)"""
+    r"""(?:/|["'`])|[A-Za-z]:(?:\\\\|\\|/))"""
+)
+PROJECT: Final = re.compile(r"""\bINIT_CWD\b|\.git[/\\]+hooks|["'`]\.git["'`]""")
 _VERSION_IN_URL: Final = re.compile(r"/v?(\d+\.\d+\.\d+(?:[-+][\w.]+)?)(?=/|$)")
 
 
@@ -756,6 +764,20 @@ def own_binary_concerns(change: CodeChange, urls: Sequence[str]) -> list[str]:
         concerns.append("home")
     if names_agent_dir(change.install_files):
         concerns.append("agent dir")
+    # Comments and messages aside ("the binary lives in node_modules/<name>/", `herozion`).
+    text = "\n".join(
+        mask_comments_and_messages(c, language).decode("utf-8", "replace")
+        if (language := language_for(p)) is not None
+        else c.decode("utf-8", "replace")
+        for p, c in change.install_files.items()
+    )
+    for name, pattern in (
+        ("other package", OTHER_PACKAGE),
+        ("system path", SYSTEM_DIR),
+        ("project", PROJECT),
+    ):
+        if m := pattern.search(text):
+            concerns.append(f"{name}: {m.group(0)}")
     for path, content in sorted(change.install_files.items()):
         language = language_for(path)
         if language is None:

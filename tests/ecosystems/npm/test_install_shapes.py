@@ -216,6 +216,12 @@ def test_s6_own_binary_download_not_run() -> None:
         b'https.request({ host: "github.com", method: "POST" });',
         b'new (require("worker_threads").Worker)(file);',
         b'require("./bin/tool.js");',  # a file it doesn't ship: maybe what it downloaded
+        # Writing it into another package, a system directory or the user's project.
+        b'fs.copyFileSync(f, path.join(root, "node_modules", "esbuild", "bin", "esbuild"));',
+        b'fs.copyFileSync(f, require.resolve("dep/bin/x"));',
+        b'fs.copyFileSync(f, "/usr/local/bin/tool");',
+        b'fs.copyFileSync(f, path.join(process.env.INIT_CWD, "tool"));',
+        b'fs.copyFileSync(f, path.join(root, ".git", "hooks", "pre-commit"));',
         b'import("./vendor/run.mjs");',
     ):
         assert shape(change({"install.js": FETCHER + extra}, manifest)) is None, extra
