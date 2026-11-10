@@ -987,3 +987,40 @@ def test_a_service_named_in_a_prose_list_is_low(text: str) -> None:
 )
 def test_a_service_outside_a_prose_list_stays_high(text: str) -> None:
     assert ("high", 5.0) in _exfil(text)
+
+
+def _ips(text: str) -> list[tuple[str, float]]:
+    return [
+        (m.severity.value, m.weight)
+        for m in analyse(text.encode())
+        if m.rule_id == "static.hardcoded-ip"
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'const DEFAULT_OA_URL = process.env.SEEYON_BASE_URL || "http://120.35.0.67:28101";',
+        "const u = process.env.ANT_MARKET_URL?.trim() || 'https://8.160.178.245'",
+        'const l = process.env["OPENCORAX_LOGIN_URL"]?.trim() || "http://39.107.112.161/web/";',
+        "base = os.environ.get('API_BASE', 'http://45.33.32.156:8080')",
+        'url="${API_URL:-http://45.33.32.156/x}"',
+    ],
+)
+def test_an_ip_url_as_an_environment_default_is_low(text: str) -> None:
+    """`hardcoded-ip` v7 (round 6, P3)."""
+    assert _ips(text) == [("low", 1.0)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "get('http://45.33.32.156:8080/p')",
+        "const C2 = 'http://45.33.32.156'; fetch(process.env.X || C2)",
+        '  "preinstall": "curl ${U:-http://45.33.32.156/x}"',
+        "const hosts = ['http://45.33.32.156', 'http://1.92.103.192']; for (h of hosts) get(h)",
+        "lib = require(('http://100.24.177.136/cb'.indexOf('https:') === 0) ? 'https' : 'http')",
+    ],
+)
+def test_an_ip_url_that_is_used_stays_medium(text: str) -> None:
+    assert ("medium", 3.0) in _ips(text)

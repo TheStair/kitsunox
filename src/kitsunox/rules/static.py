@@ -867,10 +867,13 @@ class HardcodedIp(RegexRule):
     on the same line (`/*! v1 */ fetch("http://…")`). v6 (2026-11-11,
     `docs/proposals/precision-round5-L.md` L3): LOW, weight 1, for a URL written as a UI
     placeholder or an example (`placeholder: 'http://8.130.134.171'`, `# e.g. http://…`;
-    `_example_value`, as `exfil-endpoint` v9), not on an install hook's line."""
+    `_example_value`, as `exfil-endpoint` v9), not on an install hook's line. v7 (2026-11-11,
+    `docs/proposals/precision-round6-P.md` P3): LOW, weight 1, not on an install hook's
+    line, for an environment variable's fallback (`process.env.X || 'http://…'`,
+    `_ENV_DEFAULT`)."""
 
     id = "static.hardcoded-ip"
-    version = 6
+    version = 7
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"
@@ -886,9 +889,27 @@ class HardcodedIp(RegexRule):
     def lowered(self, match: re.Match[str]) -> str | None:
         if match.group(1) in EXAMPLE_IPS:
             return EXAMPLE_IP_NOTE
-        if _example_value(match, match.start()) and not _on_hook_line(match):
-            return EXAMPLE_NOTE
+        if not _on_hook_line(match):
+            if _example_value(match, match.start()):
+                return EXAMPLE_NOTE
+            if _ENV_DEFAULT.search(match.string, max(0, match.start() - 120), match.start()):
+                return ENV_DEFAULT_NOTE
         return IP_COMMENT_NOTE if _on_comment_line(match) else None
+
+
+# v7 (round 6, P3): a URL that is an environment variable's fallback, as a configurable
+# product writes its default backend: `process.env.X || 'http://…'`,
+# `process.env["X"]?.trim() || "…"`, `process.env.X ?? …`, Python's
+# `os.environ.get("X", "…")` / `os.getenv("X", "…")`, a shell `${X:-http://…}`.
+_ENV_DEFAULT: Final = re.compile(
+    r"(?:process\.env(?:\.\w+|\[\s*[\"'`]\w+[\"'`]\s*\])(?:\?\.\w+\(\))?\s*(?:\|\||\?\?)\s*"
+    r"|os\.(?:environ\.get|getenv)\(\s*[\"']\w+[\"']\s*,\s*"
+    r"|\$\{\w+:-)[\"'`]?$"
+)
+ENV_DEFAULT_NOTE: Final = (
+    " The fallback of an environment variable (`process.env.X || '…'`): a configurable"
+    " product's default server, which the user can point elsewhere."
+)
 
 
 # v5: a line that is a comment where the match is: `//`, `# ` (not a shebang or a CSS `#id`
@@ -1351,10 +1372,11 @@ CONTEXT_NOTES: Final = (
     TUNNEL_SUFFIX_NOTE,
     IP_COMMENT_NOTE,
     MODULE_WRAPPER_NOTE,
-    # Round 6 (P): the same match can be LOW in one version (a host check, a prose list) and
+    # Round 6 (P): the same match can be LOW in one version (a host check, a fallback) and
     # not in the next, whose code around it changed.
     HOST_CHECK_NOTE,
     PROSE_LIST_NOTE,
+    ENV_DEFAULT_NOTE,
 )
 
 

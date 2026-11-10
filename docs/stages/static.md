@@ -92,7 +92,7 @@ attributed.
 | `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v6) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6) | MEDIUM |
+| `static.hardcoded-ip` (v7) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6); LOW as an environment variable's fallback (`process.env.X || 'http://…'`, v7) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
 | `static.obfuscated` (v2) | many `_0x`-style identifiers (javascript-obfuscator output); LOW (weight 1) in Emscripten glue with fewer than 100 such names and no obfuscator string array (v2) | MEDIUM |
@@ -662,10 +662,10 @@ Measured with the real code on every live version these changes can touch and, f
 `vm-day1` malicious sample on which the touched rules fire, with the rules themselves and then
 `pipeline+4`: see the proposal for the numbers.
 
-### Round 6: host checks and prose (2026-11-11)
+### Round 6: host checks, prose, defaults (2026-11-11)
 
-From [precision round 6, agent P](../proposals/precision-round6-P.md) (P1, P2), built before
-the rule freeze for the versions `exfil-endpoint` reported on its own.
+From [precision round 6, agent P](../proposals/precision-round6-P.md) (P1-P3), built before
+the rule freeze for the versions `exfil-endpoint` and `hardcoded-ip` reported on their own.
 Each lowered match is LOW, weight 1, with a note; nothing is dropped, and none applies on an
 install hook's line. Unlike v8's notes, these don't ask whether the file collects anything:
 each names a use that is not a connection.
@@ -684,6 +684,9 @@ each names a use that is not a connection.
   requestbin, ngrok, interact.sh) or raw IP endpoints" (a scanner's rule description), "a
   request catcher (webhook.site, interact.sh)". An id in the list (`abcd.oast.fun`) or a URL
   keeps it HIGH.
+- **`hardcoded-ip` v7 (P3): an environment variable's fallback.** `process.env.X || 'http://…'`,
+  `process.env["X"]?.trim() || "…"`, `?? `, Python's `os.environ.get("X", "…")` /
+  `os.getenv`, a shell `${X:-http://…}`: a configurable product's default server.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 
