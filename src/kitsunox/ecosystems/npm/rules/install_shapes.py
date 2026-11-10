@@ -621,6 +621,13 @@ SYSTEM_DIR: Final = re.compile(
     r"""["'`](?:/(?:etc|usr|bin|sbin|opt|var|Library|System|Applications|private)"""
     r"""(?:/|["'`])|[A-Za-z]:(?:\\\\|\\|/))"""
 )
+# Decoding a string: how a URL or a command the checks above should see is hidden.
+DECODES: Final = re.compile(
+    r"""\batob\s*\(|\bBuffer\s*\.\s*from\s*\([^()]*["'`](?:base64|base64url|hex)["'`]\s*\)"""
+)
+# A runner told to use a shell (`spawn("tar", args, { shell: true })`): its arguments are a
+# shell line too.
+SHELL_OPTION: Final = re.compile(r"""\bshell\s*:\s*(?:true|["'`])""")
 PROJECT: Final = re.compile(r"""\bINIT_CWD\b|\.git[/\\]+hooks|["'`]\.git["'`]""")
 _VERSION_IN_URL: Final = re.compile(r"/v?(\d+\.\d+\.\d+(?:[-+][\w.]+)?)(?=/|$)")
 
@@ -792,17 +799,18 @@ def own_binary_concerns(change: CodeChange, urls: Sequence[str]) -> list[str]:
             concerns.append(f"sends: {m.group(0)}")
         if m := TAR_EXEC.search(text):
             concerns.append(f"tar exec: {m.group(0)}")
+        if m := DECODES.search(text):
+            concerns.append(f"decodes: {m.group(0)[:40]}")
         concerns += [f"loads unshipped: {spec}" for spec in unshipped_loads(path, text, change)]
-        if C.PROCESS not in install.capabilities:
-            continue
         calls = process_calls(content, language)
         if calls is None:
             concerns.append(f"process unreadable: {path}")
             continue
+        shell = bool(SHELL_OPTION.search(text))
         concerns += [
             f"runs: {c.command[:80] or c.runner}"
             for c in calls
-            if not allowed_command(c.command, c.shell)
+            if not allowed_command(c.command, c.shell or shell)
         ]
     return concerns
 
