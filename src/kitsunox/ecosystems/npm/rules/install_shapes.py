@@ -259,10 +259,15 @@ class InstallExplained(BaseRule):
     `artifactDownloadUrls`); and S5, inert install code (`INERT` capabilities only, no package
     loaded by name, no home, agent or system directory named).
     v4 (2026-11-10, `docs/proposals/precision-round5-H.md`): S6, an own-binary download that
-    runs nothing it fetched (module docstring)."""
+    runs nothing it fetched (module docstring).
+    v5 (2026-11-11, `docs/proposals/precision-round6-Q.md`, Q2): an update whose install hook
+    is new (`hook_added`: its previous version ran no install code) is judged like a new
+    package instead of failing the new-capability test outright (every capability is new to
+    it), for S1, S3 and S5 only (`ADDED_HOOK_SHAPES`), and never when the install code names
+    the home directory or a URL besides the npm registry and page links."""
 
     id = "npm.install-explained"
-    version = 4
+    version = 5
     severity = Severity.INFO
     weight = 0.0
     title = "Install code has an explained shape"
@@ -275,8 +280,40 @@ class InstallExplained(BaseRule):
         return (self.finding(explanation, *evidence),)
 
 
+# v5 (round 6, Q2): the shapes an update whose install hook is new (no install code before)
+# may have, judged like a new package's: S1, S3 and S5 only. A download (S2, S6) never: the
+# owner rules install-time downloads of code unwanted (decision 0015, 2026-11-10).
+ADDED_HOOK_SHAPES: Final = ("S1 ", "S3 ", "S5 ")
+
+
+def hook_added(change: CodeChange) -> bool:
+    """An update whose previous version ran no install code: its hook is new (or ran no file
+    of the package), so every capability of the install code is "new" to it."""
+    return change.before is not None and not change.install_files_before
+
+
 def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
-    """The shape the version's install code has, as (explanation, evidence), or None."""
+    """The shape the version's install code has, as (explanation, evidence), or None. An
+    update whose install hook is new (`hook_added`) is judged like a new package, for the
+    shapes `ADDED_HOOK_SHAPES` only, never for install code that names the home directory or a
+    URL other than the npm registry or a page link."""
+    shaped = _explain(change)
+    if shaped is None or not hook_added(change):
+        return shaped
+    text = "\n".join(c.decode("utf-8", "replace") for c in change.install_files.values())
+    if (
+        not shaped[0].startswith(ADDED_HOOK_SHAPES)
+        or user_wide(change)
+        or any(_url_kind(u, None) not in ("registry", "page") for u in _urls(text))
+    ):
+        return None
+    return (
+        shaped[0] + " The hook is new in this update; it is judged like a new package's.",
+        shaped[1],
+    )
+
+
+def _explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
     hooks = _hooks(change.snapshot.manifest)
     install = change.install
     if (
@@ -288,9 +325,13 @@ def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
         or install.capabilities & EXCLUDED
     ):
         return None
-    if change.before is not None and (
-        install.capabilities
-        - (change.install_before.capabilities if change.install_before else frozenset())
+    if (
+        change.before is not None
+        and not hook_added(change)
+        and (
+            install.capabilities
+            - (change.install_before.capabilities if change.install_before else frozenset())
+        )
     ):
         return None  # an update whose install code does something new
     if names_agent_dir(change.install_files) and agent_concerns(change):

@@ -529,4 +529,31 @@ def test_common_conditions() -> None:
     quiet = {"install.js": b'const fs = require("fs");'}
     assert shape(change(launcher, manifest, base=quiet)) is None
     assert shape(change(launcher, manifest, base=launcher)) == "S1"
-    assert shape(change(launcher, manifest, base={})) is None  # the base ran no install code
+    # v5 (round 6, Q2): an update whose base ran no install code (its hook is new) is judged
+    # like a new package, for S1, S3 and S5 only.
+    (added,) = RULE.evaluate_code(change(launcher, manifest, base={}))
+    assert added.explanation.startswith("S1 ") and "new in this update" in added.explanation
+
+
+def test_an_added_hook_is_judged_like_a_new_package_for_s1_s3_s5_only() -> None:
+    """v5 (round 6, Q2): every capability of a new hook's code is "new" to the update, so the
+    new-capability test alone would refuse it; it gets S1, S3 or S5 as a new package would,
+    but never a download (S2, S6: owner, 2026-11-10), home-directory code or a foreign URL."""
+    assert shape(change({**LIB, "install.js": NOTICE}, hook(), base={})) == "S5"
+    assert shape(change({**LIB, "install.js": NOTICE}, hook())) == "S5"
+    copier = {"scripts/copy.js": COPIER, "skills/kx/SKILL.md": SKILL}
+    assert shape(change(copier, hook("node scripts/copy.js"), base={})) == "S3"
+    manifest = hook(repository=REPO)
+    assert shape(change({"install.js": DOWNLOADER}, manifest)) == "S2"
+    assert shape(change({"install.js": DOWNLOADER}, manifest, base={})) is None
+    platforms = hook(optionalDependencies=PLATFORMS)
+    assert shape(change({"install.js": LAUNCHER_FETCH}, platforms, base={})) == "S1"
+    linked = (
+        LAUNCHER
+        + b'\n// see https://kx.example.invalid/docs\nconst u = "https://cdn.kx.invalid/x";\n'
+    )
+    assert shape(change({"install.js": linked}, platforms)) == "S1"
+    assert shape(change({"install.js": linked}, platforms, base={})) is None
+    home = LAUNCHER + b'\nconst dir = require("os").homedir();\n'
+    assert shape(change({"install.js": home}, platforms)) == "S1"
+    assert shape(change({"install.js": home}, platforms, base={})) is None
