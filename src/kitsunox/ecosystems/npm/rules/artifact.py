@@ -121,14 +121,19 @@ class DeclaredSizeMismatch(BaseRule):
 # Words that end a hook harmlessly after the failing `node <file>`: `|| true`, `|| exit 0`.
 _NO_OP_TAILS: Final = frozenset({("true",), (":",), ("exit",), ("exit", "0")})
 # A path as a hook line writes it: relative, plain characters, no shell expansion; every segment
-# starts with a word character, `@`, `+` or `-`, so none is `.` or `..`.
-_PLAIN_PATH: Final = re.compile(r"(?:\./)?[\w@+-][\w.@+-]*(?:/[\w@+-][\w.@+-]*)*")
+# starts with a word character, `@` or `+`, so none is `.`, `..` or a `node` option (`-v`).
+_PLAIN_PATH: Final = re.compile(r"(?:\./)?[\w@+][\w.@+-]*(?:/[\w@+][\w.@+-]*)*")
 
 
 def hook_target(command: str) -> str | None:
     """The package path a hook runs when the whole line is `node <path>`, optionally followed
     by `|| true` or `|| exit 0`; None for anything else (another program, a `node` option,
-    inline code, a chain, a redirect, a variable, a path with `..` or outside the package)."""
+    inline code, a chain, a redirect, a variable, a path with `..` or outside the package).
+    A line with a backslash is none: Windows runs `node lib\\index.js` as the package's
+    `lib/index.js`, while a POSIX shell reads `libindex.js` (`company-ts@1.0.3`, `vm-day1`
+    malicious, runs its payload that way)."""
+    if "\\" in command:
+        return None
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True

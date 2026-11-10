@@ -89,6 +89,8 @@ def test_a_file_node_would_find_is_not_missing(path: str) -> None:
         "node x.js || echo hi",
         "node $DIR/x.js",
         "node /tmp/x.js",
+        "node --version",  # an option, not a file
+        "node lib\\index.js",  # Windows runs lib/index.js (`company-ts@1.0.3`)
         "npm run setup",
         "sh install.sh",
         "",
