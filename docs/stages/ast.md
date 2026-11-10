@@ -102,12 +102,12 @@ is the malicious set.
 | Rule | Fires when | Severity | Benign (updates / new) | Malicious (updates / new) |
 |---|---|---|---|---|
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
-| `npm.install-script-code` (v3) | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count. v3 (2026-11-10): also code hidden past the edge of the screen (100+ spaces or tabs, then code that is no comment, message or string) in a new install file or one whose previous version had none: `hauntview@0.2.9`, malicious, the only one of 1,710 verdicted versions with install code and 18 `vm-day1` samples | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
+| `npm.install-script-code` (v4) | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count. v3 (2026-11-10): also code hidden past the edge of the screen (100+ spaces or tabs, then code that is no comment, message or string) in a new install file or one whose previous version had none: `hauntview@0.2.9`, malicious, the only one of 1,710 verdicted versions with install code and 18 `vm-day1` samples. v4 (2026-11-10, round 5): `env-all` doesn't count when every whole-`process.env` reference of each file Stage 3 saw take it is a parameter's default (`function f(env = process.env)`), [below](#round-5-what-the-previous-install-code-already-ran-and-what-is-only-shown-2026-11-10) | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 | `npm.install-build-tool` (v3) | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...; v3 adds `only-allow npm`, `opencollective-postinstall`, `node-gyp-build \|\| node-gyp rebuild`, `npx @mapbox/node-pre-gyp ...`, and Playwright's browser download when the package depends on Playwright), no tool it runs is one of the package's own `bin` names (v3), and `binding.gyp` runs no command but `node-addon-api`/`nan` header lookups (v2) or tree-sitter's `src/scanner.c` test (v3). An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
 | `npm.install-explained` (v2) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `npm.install-inert` (v1) | a new package whose every install hook only runs package code (`node <file>`, `node -e`, chained with `&&`/`\|\|`/`;`) or a constant `echo`, that Stage 3 read in full and that reaches nothing outside the package; carries agent E's S5 guards (no Baileys `engine-requirements.js`, no `require.resolve`, no placeholder, no risky text, no deleting, readable UTF-8) and refuses probes (`PROBE_TEXT`). An explanation for Stage 4, which makes `npm.install-hook` LOW; [below](#inert-install-hooks-npminstall-inert-round-4) | INFO (weight 0) | live: see below | `vm-day1`: fires on none |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
-| `npm.install-persistence` (v1) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
+| `npm.install-persistence` (v2) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; v2 (round 5): a system-package command that JavaScript only prints, returns or keeps in a table doesn't count, an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) does; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
 | `npm.install-script-loader` (v1) | a shell, PowerShell or batch install script (run by a hook or started by install code) or a hook command line, comments and messages aside, fetches or decodes code and runs it, or hides it: `curl ... \| sh`, `bash -c "$(curl ...)"`, `base64 -d \| sh`, `/dev/tcp/`, `-EncodedCommand`, `irm ... \| iex`, `iex` of decoded text, `[char]` chains, `-join` reversals, `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta`, `regsvr32 /i:http`, batch substring chains, code behind 100+ spaces that the hidden-code check skips; only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3); LOW (weight 1) for a download piped into a shell from the package's own site | live: 0 of the 3,716 verdicted versions change (64 have install scripts); 0 fires in a day of 2,044 hooked versions | `vm-day1`: fires on 8 malicious samples, all reported already (one, `@optimystic99/dev-utils@1.0.17`, otherwise only by `npm.install-hook`); 0 of 1,452 benign |
 | `npm.install-script-exfil` (v1) | the same scripts and hook lines pipe command output into an upload, upload a file, read the cloud metadata service, or name a credential file (SSH private key, `~/.npmrc`, `.aws/credentials`, ...); only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3) | live: as above, 0 | `vm-day1`: fires on 81; **3 newly reported** (`justgetit@1.2.4`, `ts-form-helpers` 1.0.3 and 1.0.12), 0 lost; 0 of 1,452 benign |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
@@ -905,6 +905,88 @@ configuration edits in `bin/build.js`; the Telegram code that makes the family m
 limits: a change that only edits a value another line runs (a bare command name, a path
 without a lexicon word) or that removes a guard is LOW; install code a hook starts through a
 spawned shell script or a binary is not read at all.
+
+#### Round 5: what the previous install code already ran, and what is only shown (2026-11-10)
+
+[precision-round5-J](../proposals/precision-round5-J.md) measured which "touches" keep v5's
+MEDIUM on the 102 benign versions `npm.install-script-changed` reported alone (8 unwanted). For
+every match of `TOUCHED` on a changed line, it asked where the previous install code had it:
+in the same file (30 benign carried only by such matches), in another install file (11 more:
+renamed bundle chunks, moved helpers), or nowhere. A process call, the whole environment, the
+home directory, a credential name or a package-manager command that the previous version's
+install code already had, on a line that was only re-indented, rewrapped or extended, is most
+of what keeps those benign reports MEDIUM (`@aziron/atlas`: `process.env` on an edited option
+line; `@znmin/claude-remote-cli`: a `spawn(` call wrapped in a new guard; `@whobot/cli`:
+`spawnSync(` in a rewritten function). The rest is URLs whose host the previous install code
+already named (`@hanzo/cli`'s own `github.com/hanzoai/...` releases, `registry.npmjs.org`), a 4 KB
+literal in a rebuilt bundle (`@progress/kendo-licensing`, `@tailor-platform/sdk`; also
+`scarwise` 0.1.7/0.1.8, unwanted), and new tokens.
+
+**`npm.install-script-changed` v6** (zero-loss) keeps the content-aware test and removes what
+the previous install code demonstrably already ran (`touched`, `_Before`):
+
+- a changed or newly run line whose code (comments and messages masked, whitespace collapsed,
+  volatile strings masked) is a line of the previous version's install code, in any file, was
+  moved, re-indented or renamed with its file: neither its `TOUCHED` matches nor Stage 3's risky
+  uses on it count (`@tetsuo-ai/agenc`'s renamed `runtime-maintenance.mjs`, `brewtui-bar`'s
+  renamed chunk);
+- a URL counts only when who serves it is new (`_url_identity`): the host, and on a code host
+  (`github.com`, `raw.githubusercontent.com`, `gitlab.com`, `bitbucket.org`, `api.github.com/repos`,
+  ...) the repository owner as well. A new owner on GitHub, a new host, an IP address, a bare
+  host name, or a host or owner built from a variable still counts.
+
+In v6 a matched token on a line that changed still counts even when the previous version had
+the same token: `vm-day1`'s `esoftplay@0.0.196` (its `execSync("mkdir ...")` wrapped in an `if`)
+and `gina@0.7.1` (`getUserHome()` wrapped in `escapeRegex(...)`) are malicious follow-ons whose
+only touches are such lines.
+
+**Rejected by the owner (2026-11-10): J2**, which went further: on a changed line, a match or
+risky use the previous install code already had anywhere would not count either, unless the
+line held a string literal the previous install code didn't (so `exec("a")` to `exec("b")`
+still counted). It removed 21 more benign live reports but lost the two `vm-day1` follow-ons
+above; the owner ruled that `gina@0.7.1` must stay reported. Not built.
+
+Measured with the real code on the 3,716 verdicted live versions against `main` `cde7f12`
+(1,402 reported, 1,076 benign): v6 removes 12 benign reports and `npm.install-persistence` v2
+(below) 2, together 1,388 reported. No malicious, unwanted or unverified version stops being
+reported. `vm-day1` (`pipeline+4`, the 271 samples whose only severe rules are install rules):
+none lost.
+
+**`npm.install-script-code` v4** (zero-loss): `env-all` doesn't count when every install file
+Stage 3 saw take the whole environment has whole-`process.env` references only as a parameter's
+default value (`environment_injected`: `function dirs(env = process.env)`, `({ env =
+process.env } = {}) =>`, also over line breaks). That is how code takes its environment so tests
+can pass another; harvesting needs the object itself (`JSON.stringify(process.env)`,
+`Object.keys(process.env)`, `{ ...process.env }`). Of the 340 versions where the rule is MEDIUM
+it removes the finding from 14 benign and 3 unwanted (`@civitas-cerebrum/achilles@0.1.8`,
+`@polymorphism-tech/morph-spec@10.5.3`, `aptly@0.1.0`, all still reported through
+`npm.install-persistence`). No report changes by it alone, because each of those versions has
+`npm.install-hook` or `npm.install-script-changed` MEDIUM as well; for 5 of them
+(`@danielmeneses/harness2`, `@humwick/server`, `chuskybrowser`, ...) `npm.install-hook` is the
+only severe rule left. `dynamic-require` alone (11 benign) is not a candidate: the
+`*-bg@9.9.x` beacons are malicious with only it.
+
+**`npm.install-persistence` v2** (zero-loss): a system package manager's command string that
+JavaScript install code only shows or keeps as data doesn't count (`lang.javascript.
+shown_not_run`): an argument of a printing call (`console.*`, a logging method, a bare
+`warn`/`log`/`print`), also through `+`, ternaries, templates and styling calls; a value in an
+object or array literal or pushed into an array; a `return` or an arrow function's body. A call
+named like a runner on the way (`exec*`, `spawn*`, `execa*`, `run*`, `sh`, `shell`), any other
+call (`installPackage("brew install x")`), an array that is a call's argument
+(`execFileSync("/bin/bash", ["-c", "brew install python3"])`, `vm-day1`'s
+`free-anthropic-claude`) or a variable keeps it. The same command as an
+argument list (`SYSTEM_PACKAGE_ARGV`: `spawnSync("sudo", ["apt-get", "install", "-y", ...])`,
+`run("brew", ["install", "ffmpeg"])`) now counts: `streamgrab@1.3.4` and
+`gebangautoupload@1.1.4` (unwanted) were caught only through a message naming the command, and
+are caught by what they run. Benign that stop firing: `argonauts-code@0.2.0` (a table of
+commands per distribution), `wyrm-mcp@9.4.2` (returned hints), `uniwind-pro@1.9.2` (help text
+pushed line by line). Not built (the reviewer's other shapes, measured on all 116 unwanted
+versions where the rule fires): a path only read or tested (`existsSync(join(home, ".claude"))`,
+a variable used only in read calls) loses 4 unwanted (`wkappbot-code` 0.3.11/0.3.12,
+`local-mcp@3.0.430`, `@follenfang/fupload@1.1.0`) and both `wkappbot-code` unverified versions,
+and frees none of the 47 benign the reviewer listed (each also names a path it writes or
+passes on); opt-in prompts were rejected in round 4; `@usebitl/cli`'s early exit depends on
+the hook's argument (`if (syncOnly) process.exit(0)`).
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, `npm.install-script-exfil`, 2026-11-10)
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, 2026-11-10)
 
@@ -919,7 +1001,7 @@ x.ps1`: `install.files_named`) or install code starts it by a constant name
 | Stage 2 file rules (`exfil-endpoint`, `hardcoded-ip`, `encoded-url`, `sensitive-path`, `env-harvest`, `shell-startup`, `encoded-blob` LOW, `padded-code`) | yes: every new text file, whatever its suffix. `static.obfuscated` (`_0x` names), `dynamic-code` (`eval(`), `process-exec` and `network` (`require(...)`) are JavaScript forms and never match a script; `padded-code` needs `(` or `=` in the hidden tail, so `curl ... \| sh` behind spaces is not code to it |
 | `npm.install-script-code` capabilities | no: tree-sitter profiles JavaScript only, so a script has no capability |
 | `npm.install-script-code` v3 hidden code | yes, on `code_text`, which blanked every `echo` line whole: code pushed off screen after an `echo` on the same line was missed (fixed by the script masking above, 2026-11-10) |
-| `npm.install-script-changed` v5 | updates only: its `TOUCHED` lexicon (`curl`, `iex`, `powershell`, `certutil`, `\| sh`, base64 runs) keeps the MEDIUM when a script's changed lines have them; a new package has no base, so nothing |
+| `npm.install-script-changed` v6 | updates only: its `TOUCHED` lexicon (`curl`, `iex`, `powershell`, `certutil`, `\| sh`, base64 runs) keeps the MEDIUM when a script's changed lines have them; a new package has no base, so nothing |
 | `npm.install-script-obfuscated` | runs on scripts, but its tests (`_0x`, javascript-obfuscator's rotation prologue) never match one |
 | `npm.install-persistence` | yes: agent paths, shell rc, persistent PATH, system packages |
 
