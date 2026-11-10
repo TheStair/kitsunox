@@ -377,7 +377,13 @@ has a name npm lacks; 2 malicious ones would get the finding after the exemption
   lose 37 `vm-day1` samples published from compromised CI. Live, with the implemented rule:
   65 fewer reports among the proposal's 3,032 reported versions (65 packages; 69 of all 3,211
   with a verdict), all benign; the rule's one `vm-day1` malicious sample at risk is still
-  reported. Measured before choosing it: "HIGH or score 6" for every rule would have
+  reported. **Rejected by the owner (2026-11-10):** a v4 that is LOW when no maintainer was
+  added and every added dependency is on the run's watchlist ([round 4 C](../proposals/precision-round4-C.md)
+  R1). It removed 9 benign live reports and no positive, but on `vm-day1` it lowers the rule
+  on the real `vant` takeover (`vant@2.13.3`, `3.6.13`: the maintainer's own account, no
+  maintainer added, only popular dependencies added; still reported through a HIGH
+  `npm.install-hook`), so a takeover shipping its payload in its own code would lose the
+  revived MEDIUM. The rule stays at v3. Measured before choosing it: "HIGH or score 6" for every rule would have
   lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.
