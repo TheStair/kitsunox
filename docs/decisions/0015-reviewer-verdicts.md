@@ -194,6 +194,18 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   `@geekbeer/minion` (Windows user PATH), `dsh-harmonyos`, `@frontendxlab/opencode-computer-use`);
   47 stay benign (printed advice, read-only checks, installers that ask first, code that never
   runs at install: the rule's false-fire shapes, handed to round 5).
+- **Global git configuration counts as a user setting (integrator's reading of the ruling above,
+  2026-11-10; pending the owner).** An install hook that runs `git config --global
+  core.hooksPath` makes every repository on the machine run the package's hooks: a silent,
+  user-wide setting change. `signoff-cli@4.2.0` was recorded unwanted, and a re-review moved six
+  benign verdicts of 2026-11-08 to unwanted for the same code (`signoff-cli` 4.0.0, 4.1.2,
+  4.1.9; `dsh-signoff` 3.10.0, 3.12.0, 3.13.0: postinstall `ensure --from-install` →
+  `lib/bootstrap.js` `ensureGlobal`, on every install, the README's opt-out not checked on that
+  path). Local `git config core.hooksPath` in the installing project stays benign
+  (`@acertijosapps/android-viewer`, `@brighterly/lib-assessment`, `@xingwangzhe/stalux`,
+  `clavarium`, `@arifbiswas/git-pre-push`). Main reports five of the six only through the
+  install rules and no longer reports `signoff-cli@4.1.9` (round 4's `install-script-changed`
+  v5); a rescue signal for global git configuration is being built before the freeze.
 
 ## Addendum 2026-11-09: user-wide agent installs are unwanted
 
