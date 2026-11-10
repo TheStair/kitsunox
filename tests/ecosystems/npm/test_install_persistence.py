@@ -201,6 +201,8 @@ def test_a_command_string_only_shown_or_kept_as_data_is_not_an_install(code: byt
         # `gebangautoupload@1.1.4`, `streamgrab@1.3.4` (unwanted): argument lists
         b'warn("Install: brew install python");\nrun("sudo", ["apt-get", "install", "-y", "x"])\n',
         b"const r = spawnSync('brew', ['install', ...packages], { stdio: 'inherit' })\n",
+        # `free-anthropic-claude@5.0.3` (vm-day1): a command string in an argument list
+        b"cp[['exec','File','Sync'].join('')]('/bin/bash', ['-c', 'brew install python3'])\n",
         b'run("winget", ["install", "--id", "Python.Python.3.12", "--silent"])\n',
     ],
 )

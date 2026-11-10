@@ -999,6 +999,13 @@ def shown_not_run(content: bytes, language: str, offset: int) -> bool:
                 return True
             node = call
             continue
+        if (
+            parent.type == "array"
+            and parent.parent is not None
+            and parent.parent.type == "arguments"
+        ):
+            node = parent  # an argument list given to a call: `execFileSync("bash", ["-c", s])`
+            continue
         if parent.type in _DATA_PARENTS:
             return True
         if parent.type in _STATEMENT_PARENTS:
