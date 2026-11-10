@@ -868,9 +868,10 @@ class HardcodedIp(RegexRule):
     `docs/proposals/precision-round5-L.md` L3): LOW, weight 1, for a URL written as a UI
     placeholder or an example (`placeholder: 'http://8.130.134.171'`, `# e.g. http://…`;
     `_example_value`, as `exfil-endpoint` v9), not on an install hook's line. v7 (2026-11-11,
-    `docs/proposals/precision-round6-P.md` P3): LOW, weight 1, not on an install hook's
+    `docs/proposals/precision-round6-P.md` P3, P5): LOW, weight 1, not on an install hook's
     line, for an environment variable's fallback (`process.env.X || 'http://…'`,
-    `_ENV_DEFAULT`)."""
+    `_ENV_DEFAULT`) and a literal compared with or hashed (`=== 'http://…'`, `[…].includes(`,
+    `.update(`; `_compared`)."""
 
     id = "static.hardcoded-ip"
     version = 7
@@ -894,7 +895,40 @@ class HardcodedIp(RegexRule):
                 return EXAMPLE_NOTE
             if _ENV_DEFAULT.search(match.string, max(0, match.start() - 120), match.start()):
                 return ENV_DEFAULT_NOTE
+            if _compared(match):
+                return COMPARED_NOTE
         return IP_COMMENT_NOTE if _on_comment_line(match) else None
+
+
+# v7 (P5): a URL literal that code compares a value with (`url.origin === "http://…"`,
+# `["http://…", …].includes(x)`) or hashes (`createHash(…).update("http://…")`): a value
+# checked against, which nothing connects to.
+# The right side of a comparison, or a hash's input: `=== "…`, `.update("…`.
+_COMPARED_RIGHT: Final = re.compile(r"(?:[=!]==?|\.update\()\s*[\"'`]$")
+# The left side: the rest of the literal, its quote, then `===` (not `=>`).
+_COMPARED_LEFT: Final = re.compile(r"[^\"'`\n]{0,200}[\"'`]\s*[=!]==?(?![=>])")
+# An entry of an array of string literals that is searched: `["…", "…"].includes(`, also
+# written `[…]['includes'](` (javascript-obfuscator's property form).
+_ARRAY_BEFORE: Final = re.compile(r"\[\s*(?:[\"'`][^\"'`\n]{0,200}[\"'`]\s*,\s*){0,8}[\"'`]$")
+_ARRAY_AFTER: Final = re.compile(
+    r"[^\"'`\n]{0,200}[\"'`]\s*(?:,\s*[\"'`][^\"'`\n]{0,200}[\"'`]\s*){0,8}\]\s*"
+    r"(?:\.includes|\[\s*[\"']includes[\"']\s*\])\("
+)
+COMPARED_NOTE: Final = (
+    " A literal that code compares a value with (`===`, `[…].includes`) or hashes: checked"
+    " against, not connected to."
+)
+
+
+def _compared(match: re.Match[str]) -> bool:
+    """v7: `match` (a URL) is a string literal compared with `===`/`!==`/`==`/`!=` on either
+    side, hashed (`.update("…")`), or an entry of an array of string literals searched with
+    `.includes(`."""
+    text, start, end = match.string, match.start(), match.end()
+    lo, hi = max(0, start - 2000), min(len(text), end + 2000)
+    if _COMPARED_RIGHT.search(text, lo, start) or _COMPARED_LEFT.match(text, end, hi):
+        return True
+    return bool(_ARRAY_BEFORE.search(text, lo, start) and _ARRAY_AFTER.match(text, end, hi))
 
 
 # v7 (round 6, P3): a URL that is an environment variable's fallback, as a configurable
@@ -1372,11 +1406,12 @@ CONTEXT_NOTES: Final = (
     TUNNEL_SUFFIX_NOTE,
     IP_COMMENT_NOTE,
     MODULE_WRAPPER_NOTE,
-    # Round 6 (P): the same match can be LOW in one version (a host check, a fallback) and
+    # Round 6 (P): the same match can be LOW in one version (a host check, a comparison) and
     # not in the next, whose code around it changed.
     HOST_CHECK_NOTE,
     PROSE_LIST_NOTE,
     ENV_DEFAULT_NOTE,
+    COMPARED_NOTE,
 )
 
 
