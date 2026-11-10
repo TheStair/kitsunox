@@ -1056,7 +1056,9 @@ asked to. Measured: on the 3,716 verdicted live versions the form fires on exact
 re-labelled unwanted `signoff-cli`/`dsh-signoff` versions and nothing else; it brings back
 `signoff-cli@4.1.9` (unreported since `install-script-changed` v5), 1,348 → 1,349 reported, 0
 benign added; `signoff-cli@4.2.0` (verdicted after the shared candidates were made, replayed
-from its run) gains the finding too. `vm-day1`: see the proposal.
+from its run) gains the finding too. `vm-day1`: the form fires on none of the 2,319 malicious
+samples with an install hook (0 gained, 0 lost). Options in the patterns match one way only
+(`e302003`): the first version backtracked exponentially on a long run of `--x` options.
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, `npm.install-script-exfil`, 2026-11-10)
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, 2026-11-10)
 
