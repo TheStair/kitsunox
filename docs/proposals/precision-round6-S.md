@@ -15,7 +15,7 @@
 | S4 | `0620066` `npm.dependency.non-registry` v7 (1) | a spec npm reads as a local path is LOW | 1 report | 0 | 0 of 87 | zero-loss |
 | S5 | `16b0fa3` `npm.dependency.non-registry` v8 (1) | a commit bump in the package's own repository (named by the previous release) is LOW | 28 reports | 0 | 0 of 87 | zero-loss, recall risk (section 3) |
 | S6 | `5679845` `npm.dependency.missing` v2 (4) | an alias into JSR's `@jsr/` scope is INFO | 2 reports (`ichikara`, `@audiflo/ichikara`, outside the replay set) | 0 | 0 (no sample) | zero-loss |
-| S1-S3 | `8bd67df` `npm.install-persistence` v5 (3) | agent paths and shell start-up files in JavaScript count only when their value reaches a write; installers the analysis can't read still count; an agent CLI command kept as data doesn't | 8 of the 32 benign versions the rule fires on (no report changes alone) | 0 reports; the finding leaves `great-cto@3.75.6` (section 2) | 0 reports; the finding leaves `aicp-tracker@1.0.7` (section 5) | zero-loss on reports |
+| S1-S3 | `8bd67df` `npm.install-persistence` v5 (3) | agent paths and shell start-up files in JavaScript count only when their value reaches a write; installers the analysis can't read still count; an agent CLI command kept as data doesn't | the rule leaves 8 of the 32 benign versions it fires on, gains 1 (no report changes alone) | 0 reports; the finding leaves `great-cto@3.75.6` and is gained on `rl-workspaces@0.7.0` (sections 2, 5b) | 0 reports; the finding leaves `aicp-tracker@1.0.7` (section 5) | zero-loss on reports |
 
 **Live, real code, verdicts of 2026-11-10 ~21:00Z:** 1,349 → 1,320 reported, 851 → 822 benign,
 precision 35.48% → 36.28%; no malicious, unwanted or unverified version changes decision.
@@ -31,7 +31,7 @@ precision 35.48% → 36.28%; no malicious, unwanted or unverified version change
   gives the final ones.
 - **Baseline:** `~/kitsunox-scratch/r6/shared/base.jsonl` (rules identical to `79958e6`).
 - **Harness:** agent K's corrected `replay.py` (Stages 1-4 with the real code); subsets of the
-  versions a fix can touch while developing, then one full replay of the final code.
+  versions a fix can touch, patched over the baseline (no full replay: section 5b).
 - **`vm-day1`:** `pipeline+4` per sample (`dd.py`) on every malicious sample the
   `non-registry` change can touch (the 87 on which the rule fires); for `install-persistence`,
   the rule itself on the install files of all 2,207 malicious samples with an install hook
@@ -88,7 +88,7 @@ caught by S1: its `uninstall.js` writes `~/.claude/CLAUDE.md`.
 | baseline (final verdicts) | 32 | 142 unwanted, 2 unverified | |
 | first prototype (every call that isn't a read counts as a write) | -6 | -8 unwanted, -2 unverified | over-tainted through generic property names and `options` objects; lost `blue-crab`, `coding-friend-cli`, `wkappbot-code`, `local-mcp`, `basinfy` 1.3.8/1.3.12 |
 | + containers (`list.push`), options objects handed to a library, function values (`(opts.dirs ?? defaultDirs)()`), the unfollowed-installer rescue, S3 | -8 | -1 (`great-cto@3.75.6`, below) | `blue-crab`, `basinfy`, `wkappbot`, `local-mcp`, `coding-friend-cli` kept |
-| v5 (S1+S2+S3) | **24** | **141 unwanted, 2 unverified** | |
+| v5 (S1+S2+S3), these 176 versions | **24** | **141 unwanted, 2 unverified** | plus `repilot@0.3.0` (benign) and `rl-workspaces@0.7.0` (unwanted) gained elsewhere (section 5b) |
 
 **The one positive that loses the finding: `great-cto@3.75.6`.** Re-labelled unwanted on
 2026-11-10 for a reason this rule never described (a detached `great-cto board` server that
@@ -158,11 +158,42 @@ this rule; verdicted after the shared candidates were made, so not in the replay
   reported before (score 7) and after (score 4, `npm.install-script-changed`). Not lost, but it
   now rests on that one MEDIUM; a rule for install code that reads agent transcripts and sends
   them out would name it (Stage 2's exfiltration rules don't fire on it).
+  The final code on all 2,207: no sample gains or loses a form besides `aicp-tracker` (two
+  samples timed out at 120 s under the machine's load in the fix run; re-run alone they take 4
+  s each and give the same empty result as `main`).
 - **`missing`:** the rule fires on one sample, not a `@jsr/` one.
+- **Cost:** `persistence()` on the 176 live versions the rule fires on: median 0.04 s (v4
+  0.02 s), slowest 1.24 s (`@mearl/native-host@3.0.0-beta.9`, 306 KB of install files; v4's
+  slowest 0.46 s).
 
 ## 5b. Live result (full replay)
 
-FULL_REPLAY
+No full replay was run (the shared lock had four jobs queued); every version the changes can
+touch was replayed or scanned instead:
+
+- the 234 versions on which `non-registry` fires at all (S4 and S5 only lower its findings)
+  and the 176 on which `install-persistence` fires (S1-S3 can only change those, except for
+  new `shell-rc` findings), with the final code through K's harness, patched over the
+  baseline;
+- the other 1,567 versions with an install hook, the rule's `persistence()` on their install
+  files (`s_liveip.py`) with the final code and, where it fires on a changed installer, with
+  `main`'s: two new findings, both on versions reported already, so no report changes:
+  `rl-workspaces@0.7.0` (**unwanted**, gained: its `dist/common.js` writes the marked block to
+  `~/.bashrc`/`~/.zshrc` the value analysis follows from the name) and `repilot@0.3.0`
+  (benign: completion written to `~/.zshrc` only when `REPOPILOT_ACCEPT_EULA=1`, an opt-in the
+  analysis doesn't see because it is an early return, not an `if` around the write).
+
+| | Reported | Benign | Unwanted | Malicious | Unverified | Precision |
+|---|---|---|---|---|---|---|
+| `main` (`base.jsonl`), verdicts of 2026-11-10 ~22:00Z | 1,349 | 851 | 421 | 47 | 30 | 35.48% |
+| **S1-S6** | **1,320** | **822** | 421 | 47 | 30 | **36.28%** |
+
+29 versions change decision, all benign (S4 1, S5 28). No malicious, unwanted or unverified
+version changes decision. `install-persistence` itself: benign versions it fires on 32 → 25
+(-8: `@agentonweb/terminal-host@0.4.4`, `@gleapai/kai-bridge` 0.16.0/0.16.1, `aiimpactmeter`
+0.1.5/0.1.6, `dsh-undo-savepoint@0.5.1`, `nansen-cli@2.4.0`,
+`opencode-blocker-diverter@0.3.1`; +1 `repilot@0.3.0`); positives 144 → 144
+(-`great-cto@3.75.6`, +`rl-workspaces@0.7.0`).
 
 ## 6. Rejected or not built (with the sample that rules each out)
 
