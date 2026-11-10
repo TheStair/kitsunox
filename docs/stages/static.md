@@ -60,7 +60,10 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   code into new files; 8 other releases of the family are still reported); in the live queue
   about 27 of 46 exfil-endpoint reports with a base had the literal in another base file. A match
   only in a file that never runs (`NON_EXECUTING`: README and other docs, `.md`, `.d.ts`,
-  source maps, `docs/`, `examples/`, `test/`) is LOW as well; at first only for
+  source maps, `docs/`, `examples/`, `test/`; since round 5 also test-named files,
+  `TEST_FILES`: `*.test.js`, `*.spec.ts`, `*.stories.tsx`, `__mocks__/`, `test_*.py`,
+  `*_test.go`) is LOW as well, unless the version's install hooks or entry points load it
+  (`LoadedFiles`: npm's `install_sources` and `load_sources`), since round 5; at first only for
   `exfil-endpoint`, for every rule since the second pass (no malicious `vm-day1` sample lost;
   `@atairo/qixi` was MEDIUM for an IP in a bundled dependency's README). Findings
   are kept, so a reviewer still sees them and they still add to the score. On `vm-day1` it
@@ -83,16 +86,16 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v8) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8) | HIGH |
+| `static.exfil-endpoint` (v9) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8); a `trycloudflare.com` host that is not a quick tunnel's name (`demo.`, `api.`, `a.b.`, `abc-def.`), `pastebin.com/` with no paste or API after it, an ellipsis label, a `/bot,` list entry, a list of three services' names, and a URL written as a UI placeholder or example (`placeholder:`, `example:`, `e.g.`), anywhere (v9) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v5) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5) | MEDIUM |
+| `static.hardcoded-ip` (v6) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
-| `static.obfuscated` | many `_0x`-style identifiers (javascript-obfuscator output) | MEDIUM |
+| `static.obfuscated` (v2) | many `_0x`-style identifiers (javascript-obfuscator output); LOW (weight 1) in Emscripten glue with fewer than 100 such names and no obfuscator string array (v2) | MEDIUM |
 | `static.npm-publish` | npm token use or `npm publish` from code (worm behaviour). Stage 3's `npm.publish-at-load` (MEDIUM) reports the command when it runs at load or install | LOW (v2; was MEDIUM) |
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
@@ -605,6 +608,59 @@ itself and then `pipeline+4`: see the proposal for the numbers. **Recall risk:**
 that splits collection and sending into two files (the Telegram call alone in a helper) or
 that sends nothing but what the code was given gets LOW for the URL; its collecting file still
 carries `sensitive-path`, `env-harvest` and Stage 3's capability findings.
+
+### Round 5: what can't be an endpoint, Emscripten, test files (2026-11-11)
+
+From [precision round 5, agent L](../proposals/precision-round5-L.md) (L1-L5), built before
+the rule freeze. Each lowered match is LOW, weight 1, with a note; nothing is dropped. The
+owner's earlier rulings stand: vendor-obfuscated products keep `static.obfuscated` at full
+strength (only Emscripten glue, which is not obfuscation, changes), and hashed `assets/` chunks
+are not demoted (round 4's D6).
+
+- **`obfuscated` v2 (L1): Emscripten glue.** `emulatorjs-build`'s asm.js unzip workers have
+  94 `_0x` names: 25 locals of Emscripten's `getCFunc` renamed by a minifier. A file with
+  Emscripten's runtime (at least 20 of `getCFunc`, `HEAP8`/`HEAP32`/..., `Module["_" + name]`,
+  `STACKTOP`, `wasmMemory`, `_emscripten_*`), fewer than 100 distinct `_0x` names and none of
+  javascript-obfuscator's string-array machinery (`_STRING_ARRAY`: a lookup by hex index, the
+  `while(!![])` rotation, `push`/`shift`, `parseInt(_0x…(`) is LOW. Obfuscator output pasted
+  into glue brings its string array and stays MEDIUM.
+- **`exfil-endpoint` v9 (L2): hosts that can't be the endpoint.** Cloudflare names every quick
+  tunnel with hyphen-joined words (four on every one seen: `diameter-coins-limitations-parents`
+  on `vm-day1`); a `trycloudflare.com` host written out whole with one word (`demo.`, `api.`,
+  `u8bcd.`), more labels (`a.b.`), fewer than three words (`abc-def.`, `travel-calm.`) or one
+  word repeated (`word-word-word-word.`) is no one's tunnel. A name built in code
+  (`${id}.trycloudflare.com`, `id + "-x.trycloudflare.com"`) and any three-word or longer name
+  stay HIGH. `pastebin.com/` with no paste id, raw/download/embed view or API after it (the
+  site, `/u/<user>`, `/doc_api`, a site list's entry) is LOW too, as are a tunnel label that
+  is an ellipsis (`https://….trycloudflare.com`), `api.telegram.org/bot` followed by a comma
+  (an entry of a list of service prefixes: no token) and a host literal among literals of
+  three services where brand names alone count (`"webhook.site", "requestbin", "ngrok"`: a
+  detection rule's substrings). `bot&lt;token&gt;` is dropped as a written placeholder, as
+  v4 drops `bot<token>`.
+- **`exfil-endpoint` v9 and `hardcoded-ip` v6 (L3): placeholders and examples.** A URL that is
+  the value of a UI placeholder (`placeholder: 'cezar.ngrok.app'`, `placeholder="…"`,
+  `tunnelUrlPlaceholder:"https://demo…"`) or an `example:` field, at most 80 characters into
+  the string, or that follows `e.g.` / `for example` (`# e.g. http://62.84.188.166:30080`), is
+  text shown to a user. Not a variable named `example` (`const example = '…'; fetch(example)`)
+  and never on an install hook's line.
+- **L4, rejected by the owner (2026-11-10): a window around the match in bundles.** The
+  proposal asked v8's "collects nothing" only of the 16 KiB around the match in a file over
+  64 KiB (4 benign: `@kvali/cli`, `@mostra/runtime`, `nottoday`,
+  `kings-never-miss-wallet-sdk`; no positive or `vm-day1` sample changed). Dropped before
+  merge: a bundled drainer's Telegram send naturally sits far from the code that collects,
+  so the whole file still counts, however large.
+- **Stage 2 (L5): test files, and files the package loads.** A match only in a file named as
+  a test, story or mock (`TEST_FILES`: `*.test.js`, `*.spec.ts`, `*.stories.tsx`,
+  `__mocks__/`, `__fixtures__/`, `__snapshots__/`, `test_*.py`, `*_test.py`, `*_test.go`) is
+  LOW, as a match in `NON_EXECUTING` already was. Neither applies to a file the version's
+  install hooks or entry points load (`LoadedFiles`: npm's `install_sources` and
+  `load_sources`, worked out only when a MEDIUM or higher match is in such a path): a
+  postinstall that runs `test/setup.js` keeps its findings. That guard is new for
+  `NON_EXECUTING` too.
+
+Measured with the real code on every live version these changes can touch and, for every
+`vm-day1` malicious sample on which the touched rules fire, with the rules themselves and then
+`pipeline+4`: see the proposal for the numbers.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 
