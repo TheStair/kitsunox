@@ -13,7 +13,6 @@ from kitsunox.core.models import (
     VersionSnapshot,
 )
 from kitsunox.ecosystems.npm.install import install_sources
-from kitsunox.ecosystems.npm.rules import install_code
 from kitsunox.ecosystems.npm.rules.install_code import InstallScriptChanged, InstallScriptCode
 from kitsunox.stages.ast import CapabilityCache, CodeChange, code_change
 
@@ -78,19 +77,18 @@ def test_a_url_counts_only_when_who_serves_it_is_new() -> None:
     assert isc(url, url + ip).severity is Severity.MEDIUM
 
 
-def test_old_tokens_switch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """J2 (trade-off, off by default): a match the previous install code had anywhere doesn't
-    count even on a changed line (`esoftplay@0.0.196` rewraps its `execSync`)."""
+def test_an_old_token_on_a_changed_line_still_counts() -> None:
+    """A changed line keeps its MEDIUM even when the previous install code had the same token:
+    `vm-day1`'s `esoftplay@0.0.196` wraps its `execSync` in a guard, `gina@0.7.1` wraps
+    `getUserHome()` in `escapeRegex(...)` (ignoring such tokens, J2, was rejected by the owner
+    on 2026-11-10)."""
     before = b'execSync("mkdir -p raw")\n'
     after = b'if (ok) {\n  execSync("mkdir -p raw");\n}\n'
     assert isc(before, after).severity is Severity.MEDIUM
-    monkeypatch.setattr(install_code, "OLD_TOKENS_COUNT", "never")
-    assert isc(before, after).severity is Severity.LOW
-    assert isc(before, after + b'exec("curl x")\n').severity is Severity.MEDIUM
-    monkeypatch.setattr(install_code, "OLD_TOKENS_COUNT", "minified")
-    assert isc(before, after).severity is Severity.MEDIUM  # not a minified line
-    wide = b"var a=1;" * 80 + b'execSync("mkdir -p raw");\n'
-    assert isc(before, wide).severity is Severity.LOW
+    home = b"var p = re('^' + getUserHome())\n"
+    assert isc(home, home.replace(b"getUserHome()", b"esc(getUserHome())")).severity is (
+        Severity.MEDIUM
+    )
 
 
 @pytest.mark.parametrize(

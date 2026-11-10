@@ -398,7 +398,7 @@ def touched(change: CodeChange, paths: Sequence[str]) -> set[str]:
     written: neither its matches nor its risky uses count. A URL counts only when its host is
     new to the install code (`_new_host`)."""
     before = change.install_files_before or {}
-    seen = _Before(before, change)
+    seen = _Before(before)
     kinds: set[str] = set()
     for path in paths:
         new, old = _lf(change.install_files[path]), before.get(path)
@@ -452,31 +452,19 @@ def touched(change: CodeChange, paths: Sequence[str]) -> set[str]:
             kind
             for n in sorted(written)
             for kind, token in _matches(masked[n])
-            if seen.counts(kind, token, len(masked[n]))
+            if seen.counts(kind, token)
         }
-        kinds |= {
-            kind
-            for line, kind, use in uses
-            if line - 1 in written and seen.new_use(use, len(masked[line - 1]))
-        }
+        kinds |= {kind for line, kind, _ in uses if line - 1 in written}
     return kinds
-
-
-# v6 trade-off switch (`docs/proposals/precision-round5-J.md`, J2): a match (or risky use) that
-# the previous install code already had anywhere doesn't count either, even on a line that
-# changed: on every line ("never"), or only on minified lines of `MINIFIED_LINE`+ characters
-# ("minified"). "never" loses two `vm-day1` follow-ons (`esoftplay@0.0.196` rewraps its
-# `execSync`, `gina@0.7.1` rewrites its `getUserHome()` line).
-OLD_TOKENS_COUNT: str = "always"
-MINIFIED_LINE: Final = 500
 
 
 class _Before:
     """The previous install code, as v6 of `touched` compares with it: its masked lines
-    (whitespace collapsed, volatile strings masked), its `TOUCHED` matches, its URL hosts and
-    its risky uses."""
+    (whitespace collapsed, volatile strings masked) and who serves its URLs. A token it had,
+    on a line that changed, still counts: ignoring those (round 5 J2) was rejected by the owner
+    on 2026-11-10, since it loses `vm-day1`'s `gina@0.7.1` and `esoftplay@0.0.196`."""
 
-    def __init__(self, before: Mapping[str, bytes], change: CodeChange) -> None:
+    def __init__(self, before: Mapping[str, bytes]) -> None:
         texts = [
             code_text(path, _lf(data))
             for path, data in before.items()
@@ -484,35 +472,18 @@ class _Before:
         ]
         self.lines = {_line_key(line) for text in texts for line in text.split("\n")}
         self.lines.discard("")
-        self.matches = {m for text in texts for m in _matches(text)}
         self.hosts = {
             identity
             for text in texts
             for m in _URL.finditer(text)
             if (identity := _url_identity(m.group(0))) is not None
         }
-        self.uses = {
-            (u.use.capability, u.use.detail)
-            for u in (change.install_before.uses if change.install_before else ())
-            if u.use.capability in RISKY
-        }
 
     def moved(self, line: str) -> bool:
         return _line_key(line) in self.lines
 
-    def counts(self, kind: str, token: str, width: int = 0) -> bool:
-        if _old_tokens_ignored(width) and (kind, token) in self.matches:
-            return False
+    def counts(self, kind: str, token: str) -> bool:
         return kind != URL_KIND or _new_host(token, self.hosts)
-
-    def new_use(self, use: tuple[Capability, str], width: int = 0) -> bool:
-        return not _old_tokens_ignored(width) or use not in self.uses
-
-
-def _old_tokens_ignored(width: int) -> bool:
-    if OLD_TOKENS_COUNT == "never":
-        return True
-    return OLD_TOKENS_COUNT == "minified" and width >= MINIFIED_LINE
 
 
 URL_KIND: Final = "URLs or hosts"
