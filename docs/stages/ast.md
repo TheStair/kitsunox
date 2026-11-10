@@ -993,9 +993,9 @@ so no single install rule's demotion can unreport them; an explanation lowers al
   v3 is refused by this guard.
 
 **Measured** with the real code (round 3's replay of the 3,716 verdicted live versions, against
-round4-base and against `main` at `4cd4e8a`, the same versions either way): **68 fewer reports,
-all benign** (S5 51, S2 17); no malicious, unwanted or unverified version loses a report or
-even a finding; `hauntview@0.2.9` stays reported. `vm-day1`: all 344 malicious samples that
+round4-base): **68 fewer reports, all benign** (S5 51, S2 17); on `main` after agents A, C and
+D (`829dd41`, whose `install-script-changed` v5 already lowers 16 of them) **52** (S5 36, S2
+16); no malicious, unwanted or unverified version loses a report or even a finding; `hauntview@0.2.9` stays reported. `vm-day1`: all 344 malicious samples that
 demoting the three install rules would unreport were re-run with `pipeline+4`: 0 lost. What
 the guards cost, in benign reports kept: the Baileys exclusion 15 (without it S5 loses
 `kevinx-baileys@1.2.2`, unwanted, and the unverified `hyrox@0.1.6` and
