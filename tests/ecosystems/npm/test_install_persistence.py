@@ -36,13 +36,14 @@ def forms(code: bytes, path: str = "setup.js") -> list[str]:
     [
         b'const dir = path.join(os.homedir(), ".claude", "skills")\nfs.cpSync(src, dir)\n',
         b"const home = os.homedir();\nfs.writeFileSync(path.join(home, '.codex', 'c.toml'), t)\n",
-        b'let e=l.homedir();return l.join(e,".claude","settings.json")',
+        b'function p(){let e=l.homedir();return l.join(e,".claude","settings.json")}'
+        b"l.writeFileSync(p(),s)",
         b"fs.mkdirSync(`${os.homedir()}/.cursor/skills`)\n",
         b'copy(src, "~/.agents/skills/kx")\n',
-        b"const dir = process.env.CLAUDE_CONFIG_DIR || fallback\n",
-        b'join(homedir(), target === "codex" ? ".codex" : ".agents", "skills")\n',
-        b"const h = home();\nwrite(path.join(h, '.gemini', 'GEMINI.md'))\n",
-        b'const KJ = path.join(os.homedir(), ".claude.json");\n',
+        b"const dir = process.env.CLAUDE_CONFIG_DIR || fallback\nfs.cpSync(src, dir)\n",
+        b'cpSync(src, join(homedir(), target === "codex" ? ".codex" : ".agents", "skills"))\n',
+        b"const h = home();\nwriteFile(path.join(h, '.gemini', 'GEMINI.md'), t)\n",
+        b'const KJ = path.join(os.homedir(), ".claude.json");\nsaveJson(KJ, config);\n',
     ],
 )
 def test_user_wide_agent_configuration(code: bytes) -> None:
@@ -65,6 +66,48 @@ def test_user_wide_agent_configuration(code: bytes) -> None:
 )
 def test_project_writes_comments_and_messages_are_not_user_wide(code: bytes) -> None:
     assert forms(code) == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # `@mearl/native-host` (benign): checks whether Codex's config exists
+        b'let home=process.env.CODEX_HOME||path3.join(os.homedir(),".codex");'
+        b'diag({home,filePresent:fs3.existsSync(path3.join(home,"config.toml"))})',
+        # `aiimpactmeter` (benign): reads local usage logs
+        b"const roots = [path.join(home, '.codex')];\nfor (const r of roots) fs.readdirSync(r)\n",
+        # `nansen-cli` (benign): looks for an installed skill
+        b'const home = os.homedir();\nconst locations = [join(home, ".claude", "skills", "x")];\n'
+        b"const installed = locations.some((p) => existsSync(p));\n",
+    ],
+)
+def test_v5_reading_agent_configuration_is_not_writing_it(code: bytes) -> None:
+    """v5 (round 6 S, S1): a user-wide agent path counts only when the install code's value
+    for it reaches a write (`lang.flow`)."""
+    assert forms(code) == []
+
+
+def test_v5_an_installer_the_analysis_cannot_read_counts() -> None:
+    """`wkappbot-code@0.3.11` (unwanted): its postinstall runs its own CLI's `install`, which
+    is not an install file, and names `~/.claude` only to read it (`unfollowed_installer`)."""
+    code = (
+        b"const home = os.homedir();\nif (existsSync(join(home, '.claude'))) remote = true;\n"
+        b'const args = [CLI, "install"];\nspawn(process.execPath, args, {detached: true});\n'
+    )
+    assert forms(code) == ["agent"]
+
+
+def test_v5_a_shell_rc_name_that_reaches_a_write() -> None:
+    """`coding-friend-cli@1.43.0` (unwanted): `getRcPath()` returns `join(home, ".zshrc")`,
+    and `ensureShellCompletion()`, hundreds of lines on, writes the completion block to it."""
+    far = b"\n".join(b"const pad%d = %d;" % (i, i) for i in range(120))
+    code = (
+        b'function getRcPath() { const home = homedir(); return join(home, ".zshrc"); }\n'
+        + far
+        + b"\nfunction ensure() { const rc = getRcPath(); writeFileSync(rc, block); }\n"
+    )
+    assert forms(code) == ["shell-rc"]
+    assert forms(code.replace(b"writeFileSync(rc, block)", b"readFileSync(rc)")) == []
 
 
 def test_shell_rc_path_and_system_packages() -> None:
@@ -335,6 +378,6 @@ def test_the_hook_command_line_changing_git_globally() -> None:
 def test_the_rule_names_the_git_change() -> None:
     code = b'spawnSync("git", ["config", "--global", "core.hooksPath", dir])\n'
     (finding,) = RULE.evaluate_code(hooked({"setup.js": code}))
-    assert finding.rule_version == 4
+    assert finding.rule_version == 5
     assert "global git configuration" in finding.explanation
     assert finding.evidence[0].path == "setup.js"

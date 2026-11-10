@@ -41,6 +41,7 @@ from typing import Final
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts
+from kitsunox.lang.flow import Write, reaches_write, unfollowed_installer
 from kitsunox.lang.javascript import (
     language_for,
     mask_comments_and_messages,
@@ -174,10 +175,28 @@ class InstallPersistence(BaseRule):
     v4 (2026-11-10, owner): `GIT_KEYS` narrowed to hooks, templates, ssh, credential helpers,
     URL rewrites and includes; settings a development tool commonly makes for itself (editor,
     pager, diff and merge tools, signing program, proxies, `!` aliases, `safe.directory=*`)
-    are benign by the owner's ruling and no longer count. None fired on live data."""
+    are benign by the owner's ruling and no longer count. None fired on live data.
+
+    v5 (2026-11-11, round 6, `docs/proposals/precision-round6-S.md`): in JavaScript install
+    code, the `agent` form needs the value naming the agent's user-wide location to reach a
+    write (`lang.flow.reaches_write`: a file write at its destination argument, a writing shell
+    command, a library function named for writing), not just to be named: a usage meter that
+    reads `~/.codex/sessions` (`aiimpactmeter`), a check whether a skill is installed
+    (`nansen-cli`), an environment report (`dsh-undo-savepoint`) are reads (S1). When nothing
+    in the install files writes it but they run a program with an installer subcommand that
+    the analysis can't read (`lang.flow.unfollowed_installer`: `wkappbot-code` spawns its own
+    CLI's `install`, `local-mcp` a downloaded binary's `--configure-clients`), it still
+    counts. An agent CLI's install command that JavaScript only shows or keeps as data no
+    longer counts (`_agent_cli`, S2: `memtrace@1.2.13`'s "(written by `claude mcp add-json
+    --scope user` ...)" description). For `shell-rc` in JavaScript, `ShellStartup`'s `code`
+    form (a start-up file's name within 1,000 characters of any write) is replaced by the same
+    value analysis from the name (`RC_FILE`): `polydev-ai` lists `~/.zshrc` to read it;
+    `coding-friend-cli` returns `join(home, ".zshrc")` from one function and writes it in
+    another, out of `ShellStartup`'s reach (S3). Shell scripts and hook command lines are
+    matched as before; the `git-config` form is unchanged."""
 
     id = "npm.install-persistence"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code changes the user's machine beyond the project"
@@ -234,18 +253,99 @@ def persistence(
         if command := declared.get(hook, "").strip():
             texts[f"package.json:scripts.{hook}"] = command
     found: list[tuple[str, str, int, str]] = []
+    code = _javascript(install_files, texts)
+    agent_seeds: dict[str, list[tuple[int, int]]] = {}
+    rc_seeds: dict[str, list[tuple[int, int]]] = {}
     for path, text in texts.items():
-        if match := _agent_path(text):
+        if path in code:
+            if match := _agent_cli(code[path], text):
+                found.append(("agent", path, *_where(text, match.start(), match.end())))
+            elif spans := agent_spans(text):  # v5: only a value that reaches a write counts
+                agent_seeds[path] = [_bytes(text, span) for span in spans]
+        elif match := _agent_path(text):
             found.append(("agent", path, *_where(text, match.start(), match.end())))
-        for startup in _SHELL_STARTUP.evaluate_text(text):
+        startups = _SHELL_STARTUP.evaluate_text(text)
+        if path in code:  # v5: a start-up file's name near a write is followed instead
+            startups = [s for s in startups if "(form `code`)" not in s.explanation]
+        for startup in startups:
             found.append(("shell-rc", path, startup.line, startup.snippet))
+        rc_names = [m.span() for m in RC_FILE.finditer(text)] if path in code else []
+        if rc_names and not startups and _HOME_WORD.search(text):
+            rc_seeds[path] = [_bytes(text, span) for span in rc_names]
         if match := PERSISTENT_PATH.search(text):
             found.append(("path", path, *_where(text, match.start(), match.end())))
         if match := _system_package(path, install_files.get(path), text):
             found.append(("system-package", path, *_where(text, match.start(), match.end())))
         if match := _git_config(path, install_files, text):
             found.append(("git-config", path, *_where(text, match.start(), match.end())))
-    return found
+    if agent_seeds and not any(form == "agent" for form, *_ in found):
+        write = reaches_write(code, agent_seeds) or unfollowed_installer(code)
+        if write is not None:
+            found.append(("agent", *_located(code, write)))
+    shell_rc = any(form == "shell-rc" for form, *_ in found)
+    if rc_seeds and not shell_rc and (write := reaches_write(code, rc_seeds)) is not None:
+        found.append(("shell-rc", *_located(code, write)))
+    order = {path: i for i, path in enumerate(texts)}
+    return sorted(found, key=lambda item: (order.get(item[1], len(order)), item[2]))
+
+
+# v5: a shell start-up file's name as a string, for the value analysis (`ShellStartup` finds
+# the names it can see next to a write; `coding-friend-cli` builds `join(home, ".zshrc")` in
+# one function and writes it in another).
+RC_FILE: Final = re.compile(
+    r"[\"'`](?:~/|\$HOME/)?\.(?:bashrc|bash_profile|bash_login|zshrc|zprofile|zshenv|zlogin"
+    r"|profile|cshrc|tcshrc|kshrc)[\"'`]|[\"'`]config\.fish[\"'`]"
+    r"|Microsoft\.PowerShell_profile\.ps1"
+)
+_HOME_WORD: Final = re.compile(r"homedir|\bHOME\b|USERPROFILE|ZDOTDIR")
+
+
+def agent_spans(text: str) -> list[tuple[int, int]]:
+    """Every expression in `text` that names an AI agent's user-wide configuration (the
+    expressions `_agent_path` finds the first of, except an agent CLI's install command)."""
+    spans = [m.span() for m in AGENT_PATH.finditer(text)]
+    if XDG_HOME.search(text):
+        spans += [m.span() for m in XDG_AGENT.finditer(text)]
+    spans += [m.span() for m in AGENT_HOME_VARIABLE.finditer(text)]
+    names = sorted({m.group(1) for m in HOME_VARIABLE.finditer(text)}, key=len, reverse=True)
+    if names:
+        home = "(?:this\\.)?(?:" + "|".join(re.escape(n) for n in names) + ")"
+        agent = "(?:" + _AGENT + ")"
+        joined = re.compile(
+            rf"(?:join|resolve)\s*\(\s*{_OVERRIDE}{home}{_AGENT_ARG}"
+            rf"|\$\{{\s*{home}\s*\}}[/\\]+{agent}"
+            rf"|(?<![\w$.]){home}\s*\+\s*[\"'`][/\\]+{agent}"
+        )
+        spans += [m.span() for m in joined.finditer(text)]
+    return sorted(set(spans))
+
+
+def _javascript(
+    install_files: Mapping[str, bytes], texts: Mapping[str, str]
+) -> dict[str, tuple[bytes, str]]:
+    """The JavaScript and TypeScript install files whose masked text maps back to their bytes
+    (decoding replaced nothing), as (content, language) for `lang.flow`."""
+    out = {}
+    for path, data in sorted(install_files.items()):
+        language = language_for(path)
+        text = texts.get(path)
+        if language is not None and text is not None and len(text.encode("utf-8")) == len(data):
+            out[path] = (data, language)
+    return out
+
+
+def _bytes(text: str, span: tuple[int, int]) -> tuple[int, int]:
+    return len(text[: span[0]].encode("utf-8")), len(text[: span[1]].encode("utf-8"))
+
+
+def _located(code: Mapping[str, tuple[bytes, str]], write: Write) -> tuple[str, int, str]:
+    """(path, 1-based line, text around it) of a write `lang.flow` found."""
+    data = code[write.path][0] if write.path in code else b""
+    start = write.offset
+    end = min(start + len(write.text.encode("utf-8")), start + 160)
+    line = data.count(b"\n", 0, start) + 1
+    around = data[max(0, start - SNIPPET_RADIUS) : end + SNIPPET_RADIUS]
+    return write.path, line, " ".join(around.decode("utf-8", "replace").split())
 
 
 def _system_package(path: str, data: bytes | None, text: str) -> re.Match[str] | None:
@@ -451,6 +551,17 @@ AGENT_CLI: Final = re.compile(
     r"|\bcodex\s+mcp\s+add\b"
     r"|[\"'`]claude[\"'`]\s*,\s*\[\s*[\"'`]plugins?[\"'`]\s*,\s*[\"'`](?:install|marketplace)[\"'`]"
 )
+
+
+def _agent_cli(source: tuple[bytes, str], text: str) -> re.Match[str] | None:
+    """The first agent CLI install command in JavaScript that the code may run (v5): one only
+    shown or kept as data (`lang.javascript.shown_not_run`: a description in an object,
+    `memtrace@1.2.13`'s "written by `claude mcp add-json --scope user`") doesn't count."""
+    data, language = source
+    for match in AGENT_CLI.finditer(text):
+        if not shown_not_run(data, language, len(text[: match.start()].encode("utf-8"))):
+            return match
+    return None
 
 
 def _agent_path(text: str) -> re.Match[str] | None:

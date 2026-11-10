@@ -107,7 +107,7 @@ is the malicious set.
 | `npm.install-explained` (v4) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), inert (S5, v3), an own-binary download that runs nothing it fetched (S6, v4, [below](#v4-s6-own-binary-downloads-that-run-nothing-they-fetch-2026-11-10-round-5)), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `npm.install-inert` (v1) | a new package whose every install hook only runs package code (`node <file>`, `node -e`, chained with `&&`/`\|\|`/`;`) or a constant `echo`, that Stage 3 read in full and that reaches nothing outside the package; carries agent E's S5 guards (no Baileys `engine-requirements.js`, no `require.resolve`, no placeholder, no risky text, no deleting, readable UTF-8) and refuses probes (`PROBE_TEXT`). An explanation for Stage 4, which makes `npm.install-hook` LOW; [below](#inert-install-hooks-npminstall-inert-round-4) | INFO (weight 0) | live: see below | `vm-day1`: fires on none |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
-| `npm.install-persistence` (v3) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; v2 (round 5): a system-package command that JavaScript only prints, returns or keeps in a table doesn't count, an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) does; v3 (round 5 M): changing the global or system git configuration for a key that runs code or redirects data in every repository (`git config --global core.hooksPath`, `credential.helper`, `url.*.insteadOf`, ...), or writing `~/.gitconfig`; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
+| `npm.install-persistence` (v5) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; v2 (round 5): a system-package command that JavaScript only prints, returns or keeps in a table doesn't count, an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) does; v3 (round 5 M): changing the global or system git configuration for a key that runs code or redirects data in every repository (`git config --global core.hooksPath`, `credential.helper`, `url.*.insteadOf`, ...), or writing `~/.gitconfig`; v5 (round 6 S): in JavaScript an agent path or shell start-up file counts only when its value reaches a write (`lang/flow.py`), or the install code runs an installer it cannot read; an agent CLI command kept as data does not count; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
 | `npm.install-script-loader` (v1) | a shell, PowerShell or batch install script (run by a hook or started by install code) or a hook command line, comments and messages aside, fetches or decodes code and runs it, or hides it: `curl ... \| sh`, `bash -c "$(curl ...)"`, `base64 -d \| sh`, `/dev/tcp/`, `-EncodedCommand`, `irm ... \| iex`, `iex` of decoded text, `[char]` chains, `-join` reversals, `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta`, `regsvr32 /i:http`, batch substring chains, code behind 100+ spaces that the hidden-code check skips; only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3); LOW (weight 1) for a download piped into a shell from the package's own site | live: 0 of the 3,716 verdicted versions change (64 have install scripts); 0 fires in a day of 2,044 hooked versions | `vm-day1`: fires on 8 malicious samples, all reported already (one, `@optimystic99/dev-utils@1.0.17`, otherwise only by `npm.install-hook`); 0 of 1,452 benign |
 | `npm.install-script-exfil` (v1) | the same scripts and hook lines pipe command output into an upload, upload a file, read the cloud metadata service, or name a credential file (SSH private key, `~/.npmrc`, `.aws/credentials`, ...); only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3) | live: as above, 0 | `vm-day1`: fires on 81; **3 newly reported** (`justgetit@1.2.4`, `ts-form-helpers` 1.0.3 and 1.0.12), 0 lost; 0 of 1,452 benign |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
@@ -1060,6 +1060,46 @@ benign added; `signoff-cli@4.2.0` (verdicted after the shared candidates were ma
 from its run) gains the finding too. `vm-day1`: the form fires on none of the 2,319 malicious
 samples with an install hook (0 gained, 0 lost). Options in the patterns match one way only
 (`e302003`): the first version backtracked exponentially on a long run of `--x` options.
+
+**`npm.install-persistence` v5** (2026-11-11, round 6 S, [precision-round6-S](../proposals/
+precision-round6-S.md)): reviewers found the `agent` form firing on JavaScript install code
+that only *reads* an AI agent's user-wide configuration. The install files are the hook's
+script and everything it loads, often a whole CLI bundle, so a path that the CLI reads at run
+time (`@mearl/native-host` checking whether `~/.codex/config.toml` exists, `aiimpactmeter`
+reading `~/.codex` session logs, `nansen-cli` looking for an installed skill,
+`dsh-undo-savepoint` reporting whether `~/.dsh` is writable) matched as if it were written.
+
+- **S1, a value analysis (`lang/flow.py`).** In JavaScript, every expression the `agent`
+  patterns match is a *seed*; `reaches_write` follows its value through expressions,
+  variables (scoped to the declaring function; top-level names in every install file),
+  properties by name, function returns, parameters of functions the install files define, `for
+  ... of`, and containers it is pushed into, to the calls it is handed to. It counts when the
+  value reaches a write: a Node file write at its destination argument (`writeFile`,
+  `mkdir`, `copyFile`'s second argument, `rename`, `symlink`, `open` with a write flag), a
+  shell command that writes (`cp`, `mv`, `ln`, `mkdir`, `tee`, `>`, `Copy-Item`, ...) or a
+  library function named for writing that the install files don't define (`installSkill`,
+  `saveConfig`). Reads (`existsSync`, `readFileSync`, `stat`, functions named for reading),
+  conditions, comparisons, printing and content arguments end a path. A write only inside `if
+  (process.env.X === "1")` (a switch the user sets; npm's own `npm_config_*` don't count) is
+  not counted. Anything it can't finish (4,000 steps, 1,000 uses of one name) counts as a
+  write. **Rescue:** when nothing in the install files writes the path but they run a program
+  with an installer subcommand that the analysis can't read (`unfollowed_installer`:
+  `wkappbot-code` spawns its own CLI's `install`, which is not an install file; `local-mcp` runs
+  a downloaded binary with `--configure-clients`), the form still fires. Shell scripts and
+  hook command lines are matched as before.
+- **S3, shell start-up files the same way.** In JavaScript, `ShellStartup`'s `code` form (a
+  start-up file's name within 1,000 characters of any write) is replaced by the value
+  analysis from the name (`RC_FILE`): `polydev-ai` lists `~/.zshrc` among files it reads;
+  `coding-friend-cli` (unwanted) returns `join(home, ".zshrc")` from `getRcPath()` and writes
+  the completion block in `ensureShellCompletion()`, out of the 1,000-character reach, so v4
+  caught it only through an agent path it reads. Without S3, S1 would lose it.
+- **S2, an agent CLI's install command kept as data.** `claude mcp add --scope user`,
+  `claude plugin install` in a JavaScript string only shown or kept as data
+  (`shown_not_run`) no longer counts: `memtrace@1.2.13` describes what an earlier, consented
+  setup may have written ("written by `claude mcp add-json --scope user` ...").
+
+Measured in the proposal (sections 3-5).
+
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, `npm.install-script-exfil`, 2026-11-10)
 #### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, 2026-11-10)
 
