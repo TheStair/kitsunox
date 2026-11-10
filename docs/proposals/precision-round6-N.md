@@ -50,7 +50,7 @@ change, against the state before it:
 - D2: the 593 versions where the downgrade or the revived combination fires, D1+D2 vs D1.
 - C1, C2: the 316 versions where `npm.dormant-revived` fires (the combination needs it), each
   commit's code vs the one before.
-- All four together: the baseline with these subsets' rows put in (every version a change can reach is in one), counted with today's verdicts (section 4).
+- All four together: the baseline with these subsets' rows put in (every version a change can reach is in one), counted with today's verdicts (section 4). No full replay was run: it queued behind six heavy jobs on the shared lock and was withdrawn; a change can only act where its rule fires, and every such version is in a subset.
 
 Counting: `relabel.py` with today's verdicts. Positives = `malicious` + `unwanted`.
 
