@@ -710,6 +710,24 @@ add --scope user`, `codex mcp add`, also as `"$CLAUDE_BIN" plugin install`). Tha
 install` in `install.sh`) are seen; every install rule reads these scripts too. A binary the
 install code runs (`tmailcli`'s `install-skill`) stays unread.
 
+Since 2026-11-10 (round 4 G) the install code also includes what such a script starts
+(`install.script_started`): another package script (`sh ./stage2.sh`, `. "$(dirname
+"$0")/lib.sh"`, `bash "${SCRIPT_DIR}/x.sh"`, `& "$PSScriptRoot\helper.ps1"`, `call
+%~dp0setup.bat`, `powershell -File %~dp0tools\x.ps1`), up to `SCRIPT_DEPTH` (2) levels past
+the first script, and a package JavaScript file a script runs (`node ./lib/run.js`), which
+`followed_files` then follows. A path is resolved from the script's directory, then the package
+root, with leading variable segments dropped; a bare name is the script's own directory's file
+or one of at most three; comments, printed messages and URLs (`curl https://x/install.sh`) are
+not read; at most `MAX_SPAWNED` (10) files. And a hook path written Windows-style names the
+package file (`files_named`: `powershell -File .\scripts\x.ps1`, `node lib\index.js`).
+Measured ([precision-round4-G](../proposals/precision-round4-G.md), update): of the 1,743
+verdicted hooked live versions, 18 get a different install code set and all 18 decide as
+before; in a day of live hooked versions (2,112 read) 10 change and one gains MEDIUM
+findings, `@raditia/craftkit@1.63.0` (unreviewed: `scripts/postinstall.sh` runs `sync.sh`,
+whose adapters write `~/.claude/commands`, `~/.claude/agents` and `~/.cursor/rules`, the
+ruled-unwanted shape); `vm-day1`: +1 malicious reported, `company-ts@1.0.3`
+(`preinstall: node lib\index.js`).
+
 Script masking (2026-11-10, round 4 G, [precision-round4-G](../proposals/precision-round4-G.md)):
 `code_text` reads a shell, PowerShell or batch file with `lang.shell.mask_script_messages`,
 which `npm.install-script-loader` uses too. Two things changed for every install rule that
@@ -890,8 +908,8 @@ So a new package whose hook runs `install.ps1` with `-EncodedCommand`, `[char]` 
 `irm ... | iex` was reported only by `npm.install-hook` (MEDIUM for a new package), and an
 update whose script gained one only by `install-script-changed`. A script run by the hook and
 one spawned from JavaScript get the same reading (both are in `install_sources`); a script that
-another script starts is not followed, and a hook path written Windows-style
-(`.\scripts\x.ps1`) is not resolved (`files_named` strips `./` only).
+another script starts was not followed, and a hook path written Windows-style
+(`.\scripts\x.ps1`) was not resolved; both are read now (`install.script_started`, `files_named`; above).
 
 `npm.install-script-loader` (MEDIUM, weight 3; `ecosystems/npm/rules/install_loader.py`) reads
 the shell, PowerShell and batch install scripts (and a suffix-less file starting `#!`) and the
@@ -1025,7 +1043,7 @@ scripts, the two above), the `vm-day1` guards 8 and inline code 12.
 
 - `npm.install-script-loader` and `npm.install-script-exfil` are line patterns on script text,
   not a shell parser: a command split over variables (`c=curl; $c ... | sh`), built from a
-  `case` table, or run by a script another script starts (not followed) is missed, and a
+  `case` table, or started more than `SCRIPT_DEPTH` scripts deep is missed, and a
   message printed by a function that does more than print is read as code. A download's host
   is the first URL on the line; one held in a variable is "no host" (MEDIUM). JavaScript
   install files are not read by either (see their section).

