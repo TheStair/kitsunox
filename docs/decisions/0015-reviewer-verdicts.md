@@ -211,14 +211,35 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   merge tools, signing program, proxies, aliases, `safe.directory`) are benign; what counts is
   hooks (`core.hooksPath`, `init.templateDir`), `core.sshCommand`, credential helpers, URL
   rewrites and `include` (`npm.install-persistence` v4 `git-config` form).
-- **Install-time downloads from elsewhere are unwanted (the owner, 2026-11-10).** Install code
-  (a hook, not a command the user runs) that fetches files, scripts or binaries from somewhere
-  other than the package's own sources is **unwanted**: a vendor's `curl ... | bash`
-  installer (`boldcreate-acp@0.1.0`, global install), other people's scripts, third-party
-  runtimes, browsers or models. Downloading the package's **own** binary or release (its
-  declared repository, any repository of the declared GitHub owner, the homepage's host) stays
-  benign; that wider reading of "own" is the owner's too (agent H's S6,
-  `npm.install-explained` v4).
+- **Install-time downloads of code are unwanted (the owner, 2026-11-10; strict, final).** Install
+  code (a hook or a file it runs, not a command the user starts) that fetches files, scripts or
+  binaries that are not in the registry tarball is **unwanted**, whoever hosts them: a vendor's
+  `curl ... | bash` installer (`boldcreate-acp@0.1.0`), third-party runtimes, browsers, models,
+  and also **the package's own binary from its own GitHub release or CDN** (cargo-dist,
+  goreleaser and similar postinstall downloaders), checksum or not. Reason: the payload is
+  outside the tarball, so neither the static rules nor the tarball-vs-repo comparison see it; a
+  checksum shipped in the same tarball only proves it matches what the publisher intended, and a
+  hijacked account or release can change both. Benign alternatives stay benign: the binary in
+  the tarball, or in the package's own platform packages on the npm registry
+  (`optionalDependencies`, esbuild-style, including a fallback that fetches that platform
+  package's tarball from the registry), where it is immutable and scannable. A declared
+  dependency's own install script that npm runs by itself is that dependency's business. The
+  owner first chose "third-party only" (own-binary downloads benign, agent H's S6 explanation),
+  then, the same day, the strict reading after weighing the risk; the confusion matrix is also
+  shown under the narrower reading as a sensitivity row. Note prefixes: "Owner ruling
+  2026-11-10 (third-party download at install = unwanted):" (with "; wrapper" for packages
+  whose purpose is installing another project's tool) and "Owner ruling 2026-11-10 (own-binary
+  download at install = unwanted, strict):".
+- **An install hook that runs a Windows executable is unwanted at best (the owner, 2026-11-10:
+  "malicious at worst, and unwanted at best").** A bundled or downloaded installer run at
+  `npm install` (`@pro-gram/flux` 1.5.0/1.6.1 and `@pro-gram/drumbuddy` 1.1.1/1.4.1 run
+  `DrumBuddy-Setup.exe`, a silent per-user desktop-app install with shortcuts and an HKCU
+  Uninstall entry; `rvm-windows` 1.1.1/1.1.2-develop.1 run `rvm-windows-setup.exe`;
+  `filipt@0.4.0` launches a bundled `hello.exe`) is **unwanted**, and malicious when analysis
+  shows harm. Flux's installer was analysed statically (never run): a .NET installer running as
+  the user, every string literal in the shipped C# source, an app with no network classes, and
+  an `ffmpeg.exe` byte-identical to the official gyan.dev 9.0.2 build, so unwanted, not
+  malicious. Checking the package's own CLI with `--version` is not covered.
 - **Command expansion in `binding.gyp` that enumerates the user's environment stays reported
   (the owner, 2026-11-10).** `<!(echo $HOME)` matches enumeration (`@ohos-ports/distringuish`;
   agent I's `npm.install-build-tool` v4 keeps it).
