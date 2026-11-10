@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Final
@@ -134,10 +134,26 @@ NON_EXECUTING: Final = re.compile(
     r"|(?:^|/)(?:docs?|examples?|test|tests|__tests__|fixtures?)/",
     re.IGNORECASE,
 )
+# Round 5 (L): files named as tests, stories or mocks, which a test runner or Storybook loads,
+# never `npm install` or `require`: `chatPorts.test.ts`, `MultiHostDesign.stories.tsx`,
+# `alb_api_proxy.test.js`, `__mocks__/`, `test_x.py`, `x_test.go`. A test directory is in
+# `NON_EXECUTING` already. Either way a file the package's install hooks or entry points load
+# (`LoadedFiles`) is never taken for one: attackers put payloads in `test/` and run them.
+TEST_FILES: Final = re.compile(
+    r"(?:^|/)[^/]+[._-](?:test|spec)\.[cm]?[jt]sx?$"
+    r"|(?:^|/)[^/]+\.(?:stories|story)\.[cm]?[jt]sx?$"
+    r"|(?:^|/)(?:__mocks__|__fixtures__|__snapshots__)/"
+    r"|(?:^|/)test_[^/]+\.py$|(?:^|/)[^/]+_test\.(?:py|go)$",
+    re.IGNORECASE,
+)
 _NUMBER: Final = re.compile(r"[0-9]+")
 PREVIOUS_NOTE: Final = " Also in the previous version's file: not new in this release."
 ELSEWHERE_NOTE: Final = " Also in another of the previous version's files: not new in this release."
 DOCS_NOTE: Final = " Only in a file that doesn't run (documentation, types, a source map or tests)."
+TEST_NOTE: Final = (
+    " Only in a test file (`*.test.js`, `*.spec.ts`, a story, a mock), which neither the"
+    " install hooks nor the entry points load."
+)
 # `static.hardcoded-ip` v3 (F4b): files that hold data, not code that runs: markup and tables,
 # lockfiles, notices, tests named `*.test.js` / `*.spec.ts` (NON_EXECUTING has `.txt` and test
 # directories). `.json` and `.yml` are not here: an app loads its config from them
@@ -207,12 +223,16 @@ def _demoted(
     before: frozenset[tuple[str, str]],
     previous_note: str = PREVIOUS_NOTE,
     content: bytes = b"",
+    loaded: Container[str] = frozenset(),
 ) -> FileMatch:
+    """`match` made LOW with a note when it is not new or is in a file that doesn't run.
+    `loaded`: the files the version's install hooks and entry points load (`LoadedFiles`),
+    which never count as documentation or tests."""
     if match.severity in (Severity.INFO, Severity.LOW):
         return match
     if _key(match) in before and match.rule_id not in ALWAYS_NEW:
         note = previous_note
-    elif NON_EXECUTING.search(path):
+    elif NON_EXECUTING.search(path) and path not in loaded:
         note = DOCS_NOTE
     elif match.rule_id == HardcodedIp.id and IP_DATA_FILES.search(path):
         note = IP_DATA_NOTE
@@ -222,6 +242,8 @@ def _demoted(
         and _metadata_url(content, match.line)
     ):
         note = IP_METADATA_NOTE
+    elif TEST_FILES.search(path) and path not in loaded:
+        note = TEST_NOTE
     else:
         return match
     return match.model_copy(
@@ -319,9 +341,14 @@ def _base_keys(base: BaseFiles, path: str, cache: ContentCache) -> frozenset[tup
 
 
 def content_matches(
-    item: NewContent, content: bytes, base: BaseFiles, cache: ContentCache
+    item: NewContent,
+    content: bytes,
+    base: BaseFiles,
+    cache: ContentCache,
+    loaded: Container[str] = frozenset(),
 ) -> list[FileMatch]:
-    """A new content's matches as Stage 2 reports them (`_demoted` against the base)."""
+    """A new content's matches as Stage 2 reports them (`_demoted` against the base).
+    `loaded`: what the version's install hooks and entry points load (`LoadedFiles`)."""
     matches = cache.matches(item.sha256, content)
     before = _base_keys(base, item.path, cache) if matches else frozenset()
     note = PREVIOUS_NOTE
@@ -330,7 +357,35 @@ def content_matches(
     ):
         before, note = base.anywhere(cache), ELSEWHERE_NOTE
     manifest = content if item.path == "package.json" and _all_ips_shown(content, matches) else b""
-    return [_demoted(m, item.path, before, note, manifest) for m in matches]
+    return [_demoted(m, item.path, before, note, manifest, loaded) for m in matches]
+
+
+def _npm_loaded(tree: Tree) -> frozenset[str]:
+    from kitsunox.ecosystems.npm.entry import load_sources
+    from kitsunox.ecosystems.npm.install import install_sources
+
+    return frozenset(install_sources(tree)) | frozenset(load_sources(tree))
+
+
+LOADED_BY_ECOSYSTEM: Final[dict[str, Callable[[Tree], frozenset[str]]]] = {"npm": _npm_loaded}
+
+
+class LoadedFiles(Container[str]):
+    """The files a version's install hooks and entry points load, in its ecosystem's terms
+    (npm: `install_sources` and `load_sources`), worked out on the first question: only a
+    MEDIUM or higher match in a documentation or test path asks. An ecosystem with no such
+    function loads nothing Stage 2 knows of."""
+
+    def __init__(self, ecosystem: str, tree: Tree) -> None:
+        self.ecosystem = ecosystem
+        self.tree = tree
+        self._paths: frozenset[str] | None = None
+
+    def __contains__(self, path: object) -> bool:
+        if self._paths is None:
+            loaded = LOADED_BY_ECOSYSTEM.get(self.ecosystem)
+            self._paths = loaded(self.tree) if loaded is not None else frozenset()
+        return path in self._paths
 
 
 def _all_ips_shown(content: bytes, matches: Sequence[FileMatch]) -> bool:
@@ -368,6 +423,7 @@ def analyse_batch(
         base_note = f"; base {_unavailable(base)}"
     missing: dict[str, Unavailable] = {}
     by_artifact: dict[str, tuple[Finding, ...]] = {}
+    loaded: dict[str, LoadedFiles] = {}
 
     def versions() -> Iterator[tuple[str, Tree]]:
         for candidate in batch.versions:
@@ -380,13 +436,14 @@ def analyse_batch(
             by_artifact[version] = tuple(
                 f for rule in artifact_rules for f in rule.evaluate_artifact(snapshot, tree)
             )
+            loaded[version] = LoadedFiles(snapshot.ref.ecosystem, tree)
             yield version, tree
 
     found: dict[str, list[tuple[str, FileMatch]]] = {}
     base_tree = None if isinstance(base, Unavailable) else base
     base_files = BaseFiles(base_tree)
     for item, content in new_contents(base_tree, versions()):
-        for match in content_matches(item, content, base_files, cache):
+        for match in content_matches(item, content, base_files, cache, loaded[item.first_version]):
             found.setdefault(item.first_version, []).append((item.path, match))
     updated = []
     for candidate in batch.versions:

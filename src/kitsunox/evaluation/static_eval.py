@@ -50,6 +50,7 @@ from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
     BaseFiles,
     ContentCache,
+    LoadedFiles,
     content_matches,
     fetch_limit,
     new_contents,
@@ -208,10 +209,11 @@ class StaticRules:
         rules = NPM_ARTIFACT_RULES if complete else (HiddenInstallScript(),)
         version = change.new.ref.version
         base_files = BaseFiles(base)
+        loaded = LoadedFiles(change.new.ref.ecosystem, new)
         return tuple(f for rule in rules for f in rule.evaluate_artifact(change.new, new)) + tuple(
             m.finding(item.path)
             for item, content in new_contents(base or {}, [(version, new)])
-            for m in content_matches(item, content, base_files, self.cache)
+            for m in content_matches(item, content, base_files, self.cache, loaded)
         )
 
     def _new_tree(self, change: Change, sample: EvalSample) -> ArtifactTree | None:

