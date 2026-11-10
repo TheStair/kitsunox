@@ -421,19 +421,25 @@ def test_a_downgrade_with_a_cosignal_keeps_its_weight(
     assert f"With: {cosignal}." in small.explanation
 
 
-def test_a_watched_downgrade_that_drops_git_head_stays_high() -> None:
-    """v4: every malicious downgrade in `vm-day1` (149) lacks `gitHead`; for a watched package a
-    dropped commit keeps the full weight. Unwatched, the drop alone is not enough."""
+def test_a_dropped_git_head_is_not_a_cosignal() -> None:
+    """v5: a watched release that only drops `gitHead` is one step lower, like any downgrade
+    without a co-signal (`@daytona/*@0.231.0`, `claude-mem@15.8.2`: HIGH alone in v4, benign).
+    The finding still says the commit is missing."""
     old = snap("1", trusted_publisher="github", git_head="46bee3dea75e")
     new = snap("2")
     (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
     (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
-    assert (watched.severity, watched.weight) == (Severity.HIGH, 5.0)
-    assert "No git commit recorded" in watched.explanation
+    assert (watched.severity, watched.weight) == (Severity.MEDIUM, 3.0)
+    assert "No git commit recorded, where 1 had one." in watched.explanation
     assert (small.severity, small.weight) == (Severity.LOW, 1.0)
     kept = snap("2", git_head="0b82acbc69f6")
     (still,) = PublishMethodDowngrade().evaluate(change(kept, old, watched=True), CTX)
     assert (still.severity, still.weight) == (Severity.MEDIUM, 3.0)
+    assert "No git commit" not in still.explanation
+    # axios@1.14.1: dropped `gitHead` and a new dependency; the dependency keeps it HIGH.
+    added = snap("2", {"dependencies": {"plain-crypto-js": "^4.2.1"}})
+    (axios,) = PublishMethodDowngrade().evaluate(change(added, old, watched=True), CTX)
+    assert (axios.severity, axios.weight) == (Severity.HIGH, 5.0)
 
 
 def test_a_downgrade_on_a_prerelease_is_low() -> None:

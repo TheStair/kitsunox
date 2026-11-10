@@ -452,10 +452,20 @@ class PublishMethodDowngrade(BaseRule):
     co-signal (42 an install hook, 107 a new dependency); of the 89 live versions reported
     only because of this rule (Oct 28 - Nov 3), 74 had none, all benign or inconclusive
     (27 were one `@knapsack/*` release). See `docs/proposals/stage1-precision.md`. A stolen
-    token used for a code-only change that keeps `gitHead` now needs Stages 2-3 to see it."""
+    token used for a code-only change that keeps `gitHead` now needs Stages 2-3 to see it.
+
+    v5 (2026-11-10, `docs/proposals/precision-round6-N.md` D1): a dropped `gitHead` is no
+    longer a co-signal for a watched package. Given a downgrade it doesn't separate: 34 of the
+    149 malicious `vm-day1` downgrades drop it (23%), against 81 of 273 live benign verdicts
+    with a downgrade (30%; round 5, G1), and every one of the 149 has a co-signal of its own.
+    It was the only thing keeping 9 benign watched releases HIGH alone (`@daytona/*` x6,
+    `claude-mem`, `@adea-ai/themes`, `@react-native-kakao/user`). The finding still names the
+    missing commit; `npm.provenance.githead-dropped` still reports it (weight 1 here). Known
+    gap, as v4's: a stolen token used for a code-only release of a watched package is MEDIUM
+    weight 3 here (weak alone) and needs Stages 2-3 to see its code."""
 
     id = "npm.publish-method.downgrade"
-    version = 4
+    version = 5
     severity = Severity.HIGH
     weight = 5.0
     title = "Published without the CI provenance the previous release had"
@@ -478,16 +488,14 @@ class PublishMethodDowngrade(BaseRule):
         if parsed is not None and parsed.is_prerelease:
             severity, weight = Severity.LOW, 1.0
             note = ""
-        elif cosignals or (watched and git_head_dropped):
+        elif cosignals:
             severity, weight = (None, None) if watched else (Severity.MEDIUM, 3.0)
-            note = (
-                f" With: {', '.join(cosignals)}."
-                if cosignals
-                else f" No git commit recorded, where {change.previous.ref.version} had one."
-            )
+            note = f" With: {', '.join(cosignals)}."
         else:
             severity, weight = (Severity.MEDIUM, 3.0) if watched else (Severity.LOW, 1.0)
             note = " Nothing else about what gets installed, or who publishes it, changed."
+            if git_head_dropped:
+                note += f" No git commit recorded, where {change.previous.ref.version} had one."
         return [
             self.finding(
                 f"{change.previous.ref.version} was published from CI "
