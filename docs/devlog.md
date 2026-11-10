@@ -2,6 +2,80 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-10: Precision round 5: five agents, zero-loss, final pre-freeze main measured
+
+**Stage(s):** Stages 1-4 (rules), evaluation (replay harness)
+**Context:** The last round before the rule freeze (2026-11-12 00:00Z). Round 4 had cut the
+broad signals; what was left were residuals per rule cluster. Five agents, one cluster each:
+K dependency and publish metadata, L Stage 2 content rules, J the install-script rules, H
+installers that download their own binary, I build-tool hooks and `binding.gyp`. Every change
+had to be zero-loss (no live positive, no `vm-day1` malicious sample); the owner decided the
+two trade-offs offered (L4, J2) and rejected both.
+
+### Decisions
+- **K: harness corrections first.** The shared round-5 baseline replayed Stage 4 without the
+  run's watchlist (so round 4's `fresh-foreign` v4 never applied) and carried v1 known-malware
+  findings from the records. Corrected, main reported 15 fewer benign versions than the
+  baseline claimed (1,413 reported, not 1,428). Every later measurement used K's harness. Then
+  `npm.dependency.non-registry` v6 (the registry's own tarball of a package in the same scope:
+  LOW) and `npm.provenance.githead-dropped` v2 (weight 1 beside a publish-method downgrade):
+  -11 benign.
+- **L: what is provably not the thing the rule names** (Stage 2): `static.obfuscated` v2
+  (`_0x` names in Emscripten glue), `static.exfil-endpoint` v9 (`trycloudflare.com` hosts that
+  can't be quick tunnels, pastebin and Telegram prefixes in lists; with `static.hardcoded-ip`
+  v6, URLs shown as placeholders or after "e.g."), and matches only in test-named files that
+  no install hook or entry point loads (`LoadedFiles`): -17 benign. L4 (a 16 KiB window around Telegram calls) was rejected by the owner.
+- **J: don't count what the previous install code already ran.** `npm.install-script-changed`
+  v6 compares changed lines with every line of the previous install code; `install-script-code`
+  v4 ignores `process.env` as a parameter default; `npm.install-persistence` v2 ignores commands
+  only shown to the user (`lang/javascript.shown_not_run`): -14 benign. J2 (a trade-off that
+  loses `gina@0.7.1` and `esoftplay@0.0.196`) was rejected.
+- **H: S6, own-binary downloads that run nothing they fetched** (`npm.install-explained` v4,
+  new `lang/process_calls.py`): the download comes from a release of the declared GitHub owner
+  or the homepage's host, and every process call in the install files is an archive or
+  platform tool; no decoding, no writes outside the package, nothing sent. No checksum
+  required: a binary from the package's own release page is as trusted as the package. -16
+  benign; it fires on none of the 2,319 `vm-day1` samples with an install hook.
+- **I: read `binding.gyp` with a parser** (`ecosystems/npm/gyp.py`, a hand-written reader of
+  gyp's Python-literal format, never evaluated). It closes round 4 B's gap: command
+  expansions with trailing text, in keys, nested, escaped (`\x3c`), split across strings. That
+  is a recall fix and costs one benign report (`@ohos-ports/distringuish` runs
+  `<!(echo $HOME)`). `npm.install-build-tool` v4 then accepts gyp commands that run a package
+  script which only reads the package: -8. Net -7.
+
+### Challenges
+- **A flawed shared baseline** (above) would have credited agents with 15 benign versions the
+  code no longer reported. K found it by re-running Stage 4 on the baseline's own decisions.
+- **OOM kills.** Full replays at 3 workers were killed at the 8 GB cap; 2 workers fit.
+- **Overlaps between agents.** H and I both touch install shapes; each rebased on the merged
+  main and re-measured the versions it could change (H: 180 with network install code; I: the
+  121 a gyp change can reach). The final full replay matches the sum of the agents'
+  measurements exactly.
+- **A positive lost in round 4 grew in weight.** `esoftplay@0.0.269-beta96052d3` was lowered
+  by round 4's `install-script-changed` v5 (the owner's accepted trade-off) and later
+  re-reviewed malicious (decision 0015 addendum 2026-11-10). Its upload code sits unchanged in
+  `bin/cli.js`, identical to the vendor's repository: a follow-on release in decision 0007's
+  sense, which a pipeline reading changes can't see. It is the same mechanism as the 6 `vm-day1`
+  esoftplay follow-ons the owner accepted with v5.
+
+### Evaluation snapshot
+- Live, final main `7af2e32`, all 3,716 verdicted versions, real code, K's harness, today's
+  verdicts: round 5 1,413 → **1,348** reported, benign 1,087 → **1,022**, precision
+  21.40% → **22.46%**; no malicious, unwanted or unverified version changes.
+- Rounds 4 + 5 together, both ends labelled with today's verdicts: 1,787 → 1,348 reported,
+  benign **1,463 → 1,022 (-30%)**, precision 16.73% → 22.46%. Positives changed since round 4
+  started: lost `tmailcli@0.1.5` (unwanted), `esoftplay@0.0.269-beta96052d3` (malicious,
+  follow-on), `hyrox@0.1.6` (unverified); gained 4 unwanted and 1 unverified.
+- `vm-day1`: 0 samples lost in round 5.
+
+### Open questions / next steps
+- Owner questions from the proposals: H's "package's own" host (any repository of the owner,
+  or the declared one); I's `<!(echo $HOME)` as a lookup, `gyp_scripts` on updates.
+- After the freeze: persistence on every version; a CMake reader for `cmake-js`; following
+  `npm run` in install sources; the remaining benign clusters (vendors' backend IPs in
+  `hardcoded-ip`, javascript-obfuscator output in vendors' products, runtime-only `~/.codex`
+  checks that read as persistence).
+
 ## 2026-11-10: Precision round 4: seven agents, benign reports cut by a quarter
 
 **Stage(s):** Stages 1-4 (rules), evaluation (re-reviews), decision 0015
