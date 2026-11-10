@@ -1033,12 +1033,13 @@ repository on the machine then runs the package's hooks. The form fires on insta
 same reach and masking as the other forms, hook command lines included) that changes the
 **global or system** git configuration (`--global`, `--system`, `--file ~/.gitconfig`; the
 `git config set` syntax too) for a key that decides what git runs or where it sends data in
-every repository (`GIT_KEYS`): `core.hooksPath`, `init.templateDir`, `core.sshCommand`,
-`core.pager`, `core.editor`, `core.fsmonitor`, `core.askPass`, `core.gitProxy`,
-`sequence.editor`, `diff.external`, `credential.helper` (also per URL), `url.*.insteadOf` /
-`pushInsteadOf`, `include.path`, `includeIf.*.path`, `http.proxy` / `https.proxy`,
-`filter.*.clean`/`smudge`/`process`, `diff.*.textconv`, `merge.*.driver`, `gpg.program`;
-`alias.*` only with a `!` shell command and `safe.directory` only with `*`. Forms: a command
+every repository (`GIT_KEYS`, v4): `core.hooksPath`, `init.templateDir`, `core.sshCommand`,
+`credential.helper` (also per URL), `url.*.insteadOf` / `pushInsteadOf`, `include.path`,
+`includeIf.*.path`. **v4 (owner, 2026-11-10):** settings a development tool commonly makes for
+itself are benign and no longer count: `core.pager`, `core.editor`, `core.fsmonitor`,
+`core.askPass`, `core.gitProxy`, `sequence.editor`, `diff.external`, `http(s).proxy`,
+`filter.*`, `diff.*.textconv`, `merge.*.driver`, `gpg.program`, `!` aliases and
+`safe.directory=*` (v3 had them; none fired on live data or `vm-day1`). Forms: a command
 string (`git config --global core.hooksPath x`, also a string starting at `config` passed to a
 helper, `runGit("config --global ...")`), an argument list (`["config", "--global",
 "core.hooksPath", dir]`), or a write of `~/.gitconfig` / `~/.config/git/config` (a write call

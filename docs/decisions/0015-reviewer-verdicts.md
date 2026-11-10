@@ -206,6 +206,22 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   `clavarium`, `@arifbiswas/git-pre-push`). Main reports five of the six only through the
   install rules and no longer reports `signoff-cli@4.1.9` (round 4's `install-script-changed`
   v5); a rescue signal for global git configuration is being built before the freeze.
+  **Confirmed by the owner (2026-11-10, later):** global git configuration at install is
+  unwanted. Settings a development tool commonly makes for itself (editor, pager, diff and
+  merge tools, signing program, proxies, aliases, `safe.directory`) are benign; what counts is
+  hooks (`core.hooksPath`, `init.templateDir`), `core.sshCommand`, credential helpers, URL
+  rewrites and `include` (`npm.install-persistence` v4 `git-config` form).
+- **Install-time downloads from elsewhere are unwanted (the owner, 2026-11-10).** Install code
+  (a hook, not a command the user runs) that fetches files, scripts or binaries from somewhere
+  other than the package's own sources is **unwanted**: a vendor's `curl ... | bash`
+  installer (`boldcreate-acp@0.1.0`, global install), other people's scripts, third-party
+  runtimes, browsers or models. Downloading the package's **own** binary or release (its
+  declared repository, any repository of the declared GitHub owner, the homepage's host) stays
+  benign; that wider reading of "own" is the owner's too (agent H's S6,
+  `npm.install-explained` v4).
+- **Command expansion in `binding.gyp` that enumerates the user's environment stays reported
+  (the owner, 2026-11-10).** `<!(echo $HOME)` matches enumeration (`@ohos-ports/distringuish`;
+  agent I's `npm.install-build-tool` v4 keeps it).
 
 ## Addendum 2026-11-09: user-wide agent installs are unwanted
 

@@ -169,10 +169,15 @@ class InstallPersistence(BaseRule):
     (`_git_config`): install code that changes the global or system git configuration for a
     key that runs code or redirects data in every repository (`signoff-cli`, `dsh-signoff`:
     `spawnSync("git", ["config", "--global", "core.hooksPath", dir])`, unwanted by the owner's
-    2026-11-10 ruling)."""
+    2026-11-10 ruling).
+
+    v4 (2026-11-10, owner): `GIT_KEYS` narrowed to hooks, templates, ssh, credential helpers,
+    URL rewrites and includes; settings a development tool commonly makes for itself (editor,
+    pager, diff and merge tools, signing program, proxies, `!` aliases, `safe.directory=*`)
+    are benign by the owner's ruling and no longer count. None fired on live data."""
 
     id = "npm.install-persistence"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code changes the user's machine beyond the project"
@@ -210,8 +215,8 @@ FORM_TEXT: Final = {
     "path": "changes the PATH persistently",
     "shell-rc": "writes the user's shell start-up files",
     "system-package": "installs system packages",
-    "git-config": "changes the user's global git configuration (hooks, credentials, remotes or "
-    "commands git runs): every repository on the machine is affected",
+    "git-config": "changes the user's global git configuration (hooks, ssh, credentials or "
+    "remotes): every repository on the machine is affected",
 }
 
 
@@ -263,24 +268,18 @@ def _system_package(path: str, data: bytes | None, text: str) -> re.Match[str] |
     return None
 
 
-# v3: git configuration keys that decide, for every repository, what git runs (hooks, templates
-# with hooks, ssh, pager, editor, fsmonitor, askpass, proxy commands, filters, diff and merge
-# drivers, signing programs) or where it sends data and credentials (credential helpers, URL
-# rewrites, proxies), or that pull in another configuration file (`include`). `alias.*` counts
-# only with a `!` shell command and `safe.directory` only with `*`.
+# v3: git configuration keys that decide, for every repository, what git runs as hooks (the
+# hooks directory, templates that carry hooks) or how and where it connects and sends
+# credentials (ssh command, credential helpers, URL rewrites), or that pull in another
+# configuration file (`include`). Owner 2026-11-10: keys a development tool commonly sets for
+# itself (editor, pager, diff and merge tools, signing program, proxies, aliases,
+# `safe.directory`) are benign and not listed.
 GIT_KEYS: Final = (
-    r"core\.(?:hooksPath|sshCommand|pager|editor|fsmonitor|askPass|gitProxy)"
-    r"|init\.templateDir|sequence\.editor|diff\.external"
+    r"core\.(?:hooksPath|sshCommand)|init\.templateDir"
     r"|credential\.(?:[^\s\"'`=]+\.)?helper"
     r"|url\.[^\s\"'`=]+\.(?:push)?insteadOf"
     r"|include\.path|includeIf\.[^\s\"'`=]+\.path"
-    r"|https?\.(?:[^\s\"'`=]+\.)?proxy"
-    r"|filter\.[^\s\"'`=]+\.(?:clean|smudge|process)"
-    r"|diff\.[^\s\"'`=]+\.textconv|merge\.[^\s\"'`=]+\.driver"
-    r"|gpg\.(?:[\w-]+\.)?program"
 )
-_ALIAS: Final = r"alias\.[^\s\"'`=]+"
-_SAFE: Final = r"safe\.directory"
 # Options that only read or remove (`--get`, `--list`, `--unset`, ...) end the match.
 _READ_OPTION: Final = (
     r"--(?:get|list|unset|remove|rename|show|name-only|edit|null|default)|-[lez](?![\w-])"
@@ -301,13 +300,9 @@ GIT_CONFIG: Final = re.compile(
     + _HOME_FILE
     + r"[\"']?\s+)"
     + _OPTION
-    + r"[\"']?(?:(?:"
+    + r"[\"']?(?:"
     + GIT_KEYS
-    + r")(?![\w.-])|"
-    + _ALIAS
-    + r"[\"']?\s+[\"']?!|"
-    + _SAFE
-    + r"[\"']?\s+[\"']?\*)",
+    + r")(?![\w.-])",
     re.IGNORECASE,
 )
 _Q: Final = r"[\"'`]"
@@ -342,21 +337,10 @@ GIT_CONFIG_ARGV: Final = re.compile(
     + r"\s*,\s*"
     + _ARG_OPTION
     + _Q
-    + r"(?:(?:"
+    + r"(?:"
     + GIT_KEYS
     + r")"
-    + _Q
-    + r"|"
-    + _ALIAS
-    + _Q
-    + r"\s*,\s*"
-    + _Q
-    + r"!|"
-    + _SAFE
-    + _Q
-    + r"\s*,\s*"
-    + _Q
-    + r"\*)",
+    + _Q,
     re.IGNORECASE,
 )
 # `~/.gitconfig` (or the XDG `~/.config/git/config`) written out under the home directory or

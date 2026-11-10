@@ -222,10 +222,8 @@ def test_a_command_the_install_code_may_run_still_counts(code: bytes) -> None:
             "b.js",
         ),
         (b'git(["config", "set", "--global", "init.templateDir", tpl])\n', "b.js"),
-        (b"run('git config --global alias.up \"!sh ./x.sh\"')\n", "b.js"),
-        (b'spawnSync("git", ["config", "--global", "--add", "safe.directory", "*"])\n', "b.js"),
         (b'git config --global include.path "$HOME/.kx/gitconfig"\n', "setup.sh"),
-        (b"git -C /tmp config --global http.proxy http://127.0.0.1:9\n", "setup.sh"),
+        (b"git -C /tmp config --global core.hooksPath /opt/kx/hooks\n", "setup.sh"),
         (b"git config --file ~/.gitconfig core.sshCommand 'ssh -i k'\n", "setup.sh"),
         (b"printf '[core]\\n\\thooksPath = x\\n' >> ~/.gitconfig\n", "setup.sh"),
         (b'fs.appendFileSync(path.join(os.homedir(), ".gitconfig"), "[include]")\n', "b.js"),
@@ -255,6 +253,13 @@ def test_changing_the_global_git_configuration(code: bytes, path: str) -> None:
         (b"git config --global user.email ci@example.invalid\n", "setup.sh"),
         (b"git config --global alias.st status\n", "setup.sh"),
         (b"git config --global --add safe.directory /work\n", "setup.sh"),
+        # v4 (owner 2026-11-10): settings a development tool makes for itself are benign
+        (b"run('git config --global alias.up \"!sh ./x.sh\"')\n", "b.js"),
+        (b'spawnSync("git", ["config", "--global", "--add", "safe.directory", "*"])\n', "b.js"),
+        (b"git -C /tmp config --global http.proxy http://127.0.0.1:9\n", "setup.sh"),
+        (b"git config --global core.editor 'code --wait'\n", "setup.sh"),
+        (b'spawnSync("git", ["config", "--global", "gpg.program", "gpg2"])\n', "b.js"),
+        (b"git config --global merge.tool vimdiff\n", "setup.sh"),
         # shown, not run
         (b'console.log("run: git config --global core.hooksPath ~/.kx/hooks")\n', "b.js"),
         (b"const STEPS = ['git config --global core.hooksPath ~/.kx/hooks'];\n", "b.js"),
@@ -291,12 +296,14 @@ def test_a_global_change_only_a_caller_switches_on() -> None:
     always = installer.replace(b"isGlobal = false", b"isGlobal")
     assert git_forms({**files, "installer.js": always}) == ["git-config"]
     arrow = (
-        b"const set = (g = false) => { if (ok && g) { run('git config --global core.pager x') } }\n"
+        b"const set = (g = false) => "
+        b"{ if (ok && g) { run('git config --global core.hooksPath x') } }\n"
     )
     assert git_forms({"setup.js": arrow + b"set()\n"}) == []
     assert git_forms({"setup.js": arrow + b"set(1)\n"}) == ["git-config"]
     typed = (
-        b"function f(g: boolean = false) { if (g) { run('git config --global core.pager x') } }\n"
+        b"function f(g: boolean = false) "
+        b"{ if (g) { run('git config --global core.hooksPath x') } }\n"
     )
     assert git_forms({"setup.ts": typed}) == []
     assert git_forms({"setup.ts": typed + b"f(true)\n"}) == ["git-config"]
@@ -328,6 +335,6 @@ def test_the_hook_command_line_changing_git_globally() -> None:
 def test_the_rule_names_the_git_change() -> None:
     code = b'spawnSync("git", ["config", "--global", "core.hooksPath", dir])\n'
     (finding,) = RULE.evaluate_code(hooked({"setup.js": code}))
-    assert finding.rule_version == 3
+    assert finding.rule_version == 4
     assert "global git configuration" in finding.explanation
     assert finding.evidence[0].path == "setup.js"
