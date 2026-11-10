@@ -167,3 +167,42 @@ def test_message_through_a_print_function_is_not_a_write() -> None:
 def test_an_echo_that_writes_the_rc_file_is_a_write() -> None:
     script = b"echo 'export PATH=\"$HOME/.kx/bin:$PATH\"' >> ~/.zshrc\n"
     assert forms(script, "install.sh") == ["shell-rc"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # `@juyoungsuh/hanx`: advice in a ternary inside `console.log`
+        b"console.log(p==='darwin'?'Optional: brew install poppler':'sudo apt-get install x')\n",
+        # `argonauts-code@0.2.0`: one command per distribution in a table
+        b'const COMMANDS = [[["debian"], ["apt-get update", "apt-get install xz-utils"]]];\n',
+        # `northstar-browser`: a table of package managers
+        b"const MANAGERS = { apt: { install: 'sudo apt install' } };\n",
+        # `wyrm-mcp@9.4.2`, `symbiot`: returned hints
+        b"function hint(pm) { switch (pm) { case 'apt': return `sudo apt-get install ${x}`; } }\n",
+        b'function o() { return { cmd: "brew install ollama" }; }\n',
+        # `uniwind-pro@1.9.2`: help text pushed line by line
+        b"lines.push('  1. Install it:', '     sudo apt-get install -y gnome-keyring')\n",
+        b"console.log(` Run: ${t.accent('sudo apt install build-essential')}`)\n",
+    ],
+)
+def test_a_command_string_only_shown_or_kept_as_data_is_not_an_install(code: bytes) -> None:
+    """v2 (round 5): a system-package command that JavaScript install code only prints,
+    returns or keeps in a table never runs."""
+    assert forms(code) == []
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        b'execSync(p === "darwin" ? "brew install x" : "sudo apt-get install -y x")\n',
+        b'const cmd = "sudo apt-get install -y ghostscript";\nexecSync(cmd)\n',
+        b'console.log(execSync("brew install x").toString())\n',  # printed, but run first
+        # `gebangautoupload@1.1.4`, `streamgrab@1.3.4` (unwanted): argument lists
+        b'warn("Install: brew install python");\nrun("sudo", ["apt-get", "install", "-y", "x"])\n',
+        b"const r = spawnSync('brew', ['install', ...packages], { stdio: 'inherit' })\n",
+        b'run("winget", ["install", "--id", "Python.Python.3.12", "--silent"])\n',
+    ],
+)
+def test_a_command_the_install_code_may_run_still_counts(code: bytes) -> None:
+    assert forms(code) == ["system-package"]

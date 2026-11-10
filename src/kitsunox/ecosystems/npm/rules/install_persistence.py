@@ -34,7 +34,7 @@ from typing import Final
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts
-from kitsunox.lang.javascript import language_for, mask_comments_and_messages
+from kitsunox.lang.javascript import language_for, mask_comments_and_messages, shown_not_run
 from kitsunox.lang.shell import mask_script_messages
 from kitsunox.rules.static import ShellStartup
 from kitsunox.stages.ast import CodeChange
@@ -114,6 +114,14 @@ SYSTEM_PACKAGE: Final = re.compile(
     r"\s+(?:-\S+\s+)*(?:install|add|-S|-Sy|-Syu)\b",
     re.MULTILINE,
 )
+# v2: the same install command as an argument list: `spawnSync("sudo", ["apt-get", "install",
+# "-y", ...])`, `run("brew", ["install", "ffmpeg"])` (`streamgrab@1.3.4`, `gebangautoupload@1.1.4`,
+# unwanted: their only command strings are messages).
+SYSTEM_PACKAGE_ARGV: Final = re.compile(
+    r"""["'`](?:sudo["'`]\s*,\s*\[\s*(?:["'`]-\w+["'`]\s*,\s*)*["'`])?"""
+    r"(?:apt-get|apt|aptitude|dnf|yum|zypper|apk|pacman|brew|port|winget|choco|scoop|snap)"
+    r"""["'`]\s*,\s*\[?\s*(?:["'`]-[\w-]+["'`]\s*,\s*)*["'`](?:install|add|-S|-Sy|-Syu)["'`]"""
+)
 # Script lines that only talk: comments, `echo`/`printf`/`Write-Host`/`print` messages.
 _SCRIPT_TALK: Final = re.compile(
     r"^\s*(?:#|REM\b|::|@?echo\b|printf\b|Write-(?:Host|Output|Warning)\b|print\().*$",
@@ -136,10 +144,16 @@ ONLY_WHEN_CHANGED: Final = True
 class InstallPersistence(BaseRule):
     """The install code (or an install hook's command line) writes an AI agent's user-wide
     configuration, a shell start-up file, the persistent PATH, or installs system packages
-    (module docstring). Added 2026-11-09 (round 4, `docs/proposals/precision-round4-A.md`)."""
+    (module docstring). Added 2026-11-09 (round 4, `docs/proposals/precision-round4-A.md`).
+
+    v2 (2026-11-10, round 5, `docs/proposals/precision-round5-J.md`): a system package manager's
+    command string that JavaScript install code only shows or keeps as data (printed advice, a
+    per-distribution table, a returned hint) is not an install (`_system_package`); the same
+    command as an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) now counts,
+    which keeps the two unwanted installers whose only command strings are messages."""
 
     id = "npm.install-persistence"
-    version = 1
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code changes the user's machine beyond the project"
@@ -201,9 +215,29 @@ def persistence(
             found.append(("shell-rc", path, startup.line, startup.snippet))
         if match := PERSISTENT_PATH.search(text):
             found.append(("path", path, *_where(text, match.start(), match.end())))
-        if match := SYSTEM_PACKAGE.search(text):
+        if match := _system_package(path, install_files.get(path), text):
             found.append(("system-package", path, *_where(text, match.start(), match.end())))
     return found
+
+
+def _system_package(path: str, data: bytes | None, text: str) -> re.Match[str] | None:
+    """The first system-package install command in `text` that the code may run (v2): an
+    argument list (`SYSTEM_PACKAGE_ARGV`) always; a command string unless, in JavaScript, it is
+    only shown or kept as data (`lang.javascript.shown_not_run`: printed advice, a table of
+    commands per package manager, a returned hint). `argonauts-code@0.2.0`'s `xz-check.js` keeps
+    one per distribution in an array, `wyrm-mcp@9.4.2` returns them, `uniwind-pro@1.9.2` pushes
+    one into its keyring help text: all benign, none run."""
+    if match := SYSTEM_PACKAGE_ARGV.search(text):
+        return match
+    language = language_for(path)
+    # Offsets map back to the bytes only when decoding replaced nothing.
+    mapped = language is not None and data is not None and len(text.encode("utf-8")) == len(data)
+    for match in SYSTEM_PACKAGE.finditer(text):
+        if not mapped or data is None or language is None:
+            return match
+        if not shown_not_run(data, language, len(text[: match.end() - 1].encode("utf-8"))):
+            return match
+    return None
 
 
 # The XDG config home (`$XDG_CONFIG_HOME`, else `~/.config`) and an agent that keeps its

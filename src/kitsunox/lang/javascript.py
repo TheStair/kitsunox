@@ -939,6 +939,73 @@ def mask_comments_and_messages(content: bytes, language: str) -> bytes:
 
 _TEXT_NODES: Final = frozenset({"string", "template_string", "comment", "regex"})
 
+# `shown_not_run` (2026-11-10, `npm.install-persistence` v2): calls that run what they are given,
+# so a string passed to one (even through a printing call) is a command; and the containers a
+# string sits in as data.
+_RUNS: Final = re.compile(r"^(?:exec\w*|spawn\w*|execa\w*|fork|run\w*|sh|shell|\$)$")
+_SHOWN_CALLS: Final = frozenset({"warn", "log", "info", "error", "print", "note", "hint"})
+_DATA_PARENTS: Final = frozenset({"pair", "array", "return_statement", "arrow_function"})
+_STATEMENT_PARENTS: Final = frozenset(
+    {
+        "variable_declarator",
+        "assignment_expression",
+        "augmented_assignment_expression",
+        "expression_statement",
+        "statement_block",
+        "program",
+        "lexical_declaration",
+        "variable_declaration",
+        "if_statement",
+        "switch_case",
+    }
+)
+
+
+def shown_not_run(content: bytes, language: str, offset: int) -> bool:
+    """Whether the string at byte `offset` is only shown or kept as data, never handed to a call
+    that runs it: an argument of a printing call (`PRINTING_CALLS`, a logging method
+    `MESSAGE_METHODS`, or a bare `warn`/`log`/`print`/... function), directly or through `+`,
+    ternaries, templates and styling calls (`chalk.dim(...)`); or a value in an object or array
+    literal (also `.push(...)`), a `return`, or an arrow function's body. Any call on the way
+    named like a runner (`exec*`, `spawn*`, `execa*`, `run*`, `sh`, `shell`) makes it run; a
+    string given to any other call or assigned to a variable is not shown only. Known limit: a
+    table value or returned string that the code later passes to `exec` is not followed."""
+    if len(content) > MAX_SOURCE_BYTES:
+        return False
+    parser, _ = _parser(language)
+    node: ts.Node | None = parser.parse(content).root_node.descendant_for_byte_range(
+        offset, offset + 1
+    )
+    while node is not None and node.type not in ("string", "template_string"):
+        node = node.parent
+    if node is None:
+        return False
+    shown = False
+    while node.parent is not None:
+        parent = node.parent
+        if parent.type == "arguments" and parent.parent is not None:
+            call = parent.parent
+            name = _text(call.child_by_field_name("function"))
+            last = name.rsplit(".", 1)[-1]
+            if _RUNS.match(last):
+                return False
+            if (
+                name in PRINTING_CALLS
+                or last in MESSAGE_METHODS
+                or (name == last and last in _SHOWN_CALLS)
+            ):
+                shown = True
+            elif last in ("push", "unshift"):
+                return True
+            node = call
+            continue
+        if parent.type in _DATA_PARENTS:
+            return True
+        if parent.type in _STATEMENT_PARENTS:
+            return shown
+        node = parent
+    return shown
+
 
 def in_text(content: bytes, language: str, offset: int) -> bool:
     """Whether the byte at `offset` is inside a string, template, regex or comment."""
