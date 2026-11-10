@@ -549,7 +549,7 @@ def test_header_lookups_in_binding_gyp_are_no_command() -> None:
     only print where an installed package's headers are."""
     rule = InstallBuildTool()
     hooked = _hooked({"install": "node-gyp rebuild"}, {"binding.gyp": GYP_HEADERS})
-    assert len(hooked.build_commands) == 5
+    assert len(hooked.build_commands) == 4  # both `nan` spellings decode to one command
     (finding,) = rule.evaluate_code(hooked)
     assert finding.explanation.endswith(
         "and `binding.gyp` only looks up `node-addon-api` or `nan` headers."
@@ -640,7 +640,7 @@ def test_build_tool_v3_more_tools_and_tree_sitter_scanner() -> None:
     newer = b"""{"targets": [{"target_name": "x", "variables": {
       "has_scanner": "<!(node -p \\"fs.existsSync('src/scanner.c')\\")"}}]}"""
     (command,) = gyp_commands({"binding.gyp": newer})
-    assert command == "node -p \"fs.existsSync('src/scanner.c'"  # cut at `)` before the quote
+    assert command == "node -p \"fs.existsSync('src/scanner.c')\""  # v4: the whole command
     assert header_lookup(command)
     assert rule.evaluate_code(_hooked({"install": "node-gyp-build"}, {"binding.gyp": newer}))
     assert not header_lookup("node -p \"fs.existsSync('src/scanner.c'), require('x')\"")

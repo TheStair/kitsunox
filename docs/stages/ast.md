@@ -81,7 +81,7 @@ results are cached by (content hash, language, `EXTRACTOR_VERSION`) under `data/
   flagged in the first live hour were such packages (fixed 2026-10-28).
 - **Build commands** (2026-11-08): `CodeChange.build_commands` holds the commands the
   version's own build files run at install besides its hooks, as the ecosystem finds them
-  (`build_commands=`, npm: `install.gyp_commands`, `binding.gyp`'s actions and command
+  (`build_commands=`, npm: `gyp.gyp_commands`, `binding.gyp`'s actions and command
   expansions). Empty when the ecosystem passes none.
 - **Agent files** (2026-11-08): `CodeChange.agent_files` holds the AI-agent configuration
   the install code may copy, when that code names an agent directory
@@ -160,6 +160,29 @@ builds: each `action`'s command, and each command expansion `<!(...)` / `<!@(...
 code they pass to `node -e` / `-p` is profiled as `binding.gyp#commands.js`.
 `@atedone/workspace-bootstrap@0.0.1` had no install script; a gyp action ran
 `node scripts/write-state.js --install`, which went unread.
+
+**How gyp files are read** (2026-11-10, [round 5, agent I](../proposals/precision-round5-I.md),
+`ecosystems/npm/gyp.py`): until then a regular expression took an expansion only when its `)`
+was followed by a quote, and an action only up to its first `]`, so
+`"<!(node payload.js):target"` ran unseen (round 4 B's owner question 4), and tree-sitter's
+`"<!(node -p \"require('node-addon-api').targets\"):node_addon_api_except"` matched across
+lines into a garbage command. gyp reads the file as a Python literal; `gyp_commands` tokenizes
+and parses it by hand (never evaluated): every Python escape decoded (`\x3c!(` is `<!(`),
+adjacent strings joined, comments dropped. A command expansion is found in any string, key or
+value, wherever it sits in the string and inside another expansion, in each of gyp's phases
+(`<!`, `>!`, `^!`, with or without `@`), and ends where gyp's own bracket matching
+(`FindEnclosingBracketGroup`: every bracket kind counts, quotes don't) ends it; the list form
+`<!(['node', 'x.js'])` and `<!pymod_do_main(module args)` (a Python module the package ships,
+imported by gyp) count too. An `action` list is read whole. A variable a command uses
+(`<(cmd)`, `<@(cmd)`) is replaced by its definitions from any `variables` dict read, and
+node-gyp's `<(module_root_dir)` by the package root, so `'action': ['<@(cmd)']` names what it
+runs. The `.gyp`/`.gypi` files a gyp file names (`includes`, `deps/x.gyp:target`) are read too
+(at most 20, inside the package). A file that doesn't parse is scanned raw; one over 256 KiB
+gives a placeholder command (`gyp.UNREAD`) that no lookup test accepts, where it gave none
+before. Live (all 3,716 verdicted versions): see the proposal's section 2; one benign version
+is newly reported (`@ohos-ports/distringuish@7.0.0-beta.1`: `"<!(echo $HOME)/.harmonybrew/..."`
+was unseen), and the escaped `\'` that the old cut left in inline code no longer reads as
+`dynamic-require` (`@ohos-ports/blake-hash@2.0.0-beta.1`).
 
 **Extractor v4** (2026-10-31): `process.getBuiltinModule("fs")` loads a module as `require` does
 (a computed name is `dynamic-require`), and `Reflect.get(process, "env")` is `process.env`

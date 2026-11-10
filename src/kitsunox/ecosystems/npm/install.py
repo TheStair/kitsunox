@@ -29,7 +29,9 @@ A package with a `binding.gyp` is built with `node-gyp rebuild` on install (npm 
 itself), and gyp runs commands while it builds: an `action`'s command, and a command expansion
 `<!(...)` / `<!@(...)`. Those commands count as install commands (`gyp_commands`), and code they
 pass inline is `binding.gyp#commands.js`. `@atedone/workspace-bootstrap` (2026-10-31) had no
-install script at all; a gyp action ran `node scripts/write-state.js --install`.
+install script at all; a gyp action ran `node scripts/write-state.js --install`. How the gyp
+files are read (every expansion however it is embedded, variables, included files) is
+`ecosystems.npm.gyp`.
 """
 
 from __future__ import annotations
@@ -40,19 +42,15 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Final
 
+from kitsunox.ecosystems.npm.gyp import GYP_FILE
+from kitsunox.ecosystems.npm.gyp import gyp_commands as gyp_commands
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts
 from kitsunox.lang.javascript import language_for, local_paths
 from kitsunox.lang.shell import mask_script_messages
 
 _TOKEN: Final = re.compile(r"[\s;&|()<>]+")
 INLINE_PREFIX: Final = "package.json#scripts."
-GYP_FILE: Final = "binding.gyp"
 GYP_INLINE: Final = f"{GYP_FILE}#commands.js"
-# gyp's own syntax: an action's `'action': ['node', 'x.js']`, and a command expansion
-# `<!(cmd)` or `<!@(cmd)` inside any string (the command may itself contain parentheses).
-_GYP_ACTION: Final = re.compile(r"""["']action["']\s*:\s*\[([^\]]*)\]""")
-_GYP_EXPANSION: Final = re.compile(r"""<!@?\((.*?)\)(?=\\?["'])""")
-_GYP_STRING: Final = re.compile(r""""((?:[^"\\]|\\.)*)"|'([^']*)'""")
 # `node -e <quoted code>`: the code up to the matching unescaped quote (linear: no nesting).
 _INLINE: Final = re.compile(
     r"""\bnode(?:\.exe)?\s++(?:-e|--eval|-p|--print)\s++"""
@@ -73,21 +71,6 @@ def install_commands(files: Mapping[str, bytes]) -> dict[str, str]:
     if not isinstance(manifest, dict):
         return {}
     return {k: v for k, v in scripts(manifest).items() if k in INSTALL_HOOKS}
-
-
-def gyp_commands(files: Mapping[str, bytes]) -> list[str]:
-    """The commands `binding.gyp` makes `node-gyp rebuild` run: each action's, and each command
-    expansion's (a larger file than `MAX_FOLLOWED_BYTES` is not read)."""
-    raw = files.get(GYP_FILE)
-    if raw is None or len(raw) > MAX_FOLLOWED_BYTES:
-        return []
-    text = raw.decode("utf-8", "replace")
-    commands = []
-    for match in _GYP_ACTION.finditer(text):
-        words = [d or q for d, q in _GYP_STRING.findall(match.group(1))]
-        commands.append(" ".join(words))
-    commands.extend(m.group(1).replace('\\"', '"') for m in _GYP_EXPANSION.finditer(text))
-    return commands
 
 
 def _inline_code(command: str) -> list[str]:
