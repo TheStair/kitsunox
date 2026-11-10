@@ -30,8 +30,15 @@ MEDIUM, weight 3. A download piped into a shell from the package's own site (the
 repository's owner) is how many tools install their binary: LOW, weight 1 (`OWN_NOTE`). From a
 raw IP address, a paste site, a tunnel, a URL shortener or a file drop (`RISKY_HOSTS`) it says
 so. On an update only a shape the previous version's install code didn't have counts (by
-shape and host), as for the other install rules. Measured in `docs/stages/ast.md` and
-`docs/proposals/precision-round4-G.md`.
+shape and host), as for the other install rules.
+
+`npm.install-script-exfil` reads the same text for what a script sends away (`EXFIL_SHAPES`):
+command output piped into an upload (`env | curl --data-binary @- ...`), a file uploaded
+(`curl -F file=@/etc/passwd`, `--data-binary @file`, `wget --post-file`), the cloud instance
+metadata service (`169.254.169.254`, `metadata.google.internal`: instance credentials), and
+credential files named (an SSH private key, `~/.npmrc`, `.aws/credentials`, `.git-credentials`,
+`.docker/config.json`, `.kube/config`, `/etc/shadow`). MEDIUM, weight 3, new shapes only.
+Measured in `docs/stages/ast.md` and `docs/proposals/precision-round4-G.md`.
 """
 
 from __future__ import annotations
@@ -173,6 +180,42 @@ SHAPES: Final[tuple[tuple[str, str, re.Pattern[str]], ...]] = (
         ),
     ),
 )
+_HOME: Final = r"(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE|\$env:HOME)[/\\]+"
+EXFIL_SHAPES: Final[tuple[tuple[str, str, re.Pattern[str]], ...]] = (
+    (
+        "upload-output",
+        "pipes command output into an upload",
+        re.compile(
+            r"\|\s*(?:curl|wget)(?:\.exe)?\b[^\n|]*?(?:--data(?:-binary|-raw|-urlencode)?|-d"
+            r"|-T|--upload-file|-F\s*[\"']?[\w-]+=)\s*[\"']?@?-(?=[\s\"']|$)",
+            _I | re.MULTILINE,
+        ),
+    ),
+    (
+        "upload-file",
+        "uploads a file",
+        re.compile(
+            r"\bcurl(?:\.exe)?\b[^\n|]*?(?:-F\s*[\"']?[\w-]+=@|--data-binary\s+[\"']?@(?!-)"
+            r"|(?:-T|--upload-file)\s+[\"']?(?!-))[^\s\"']+|\bwget\b[^\n|]*--post-file",
+            _I,
+        ),
+    ),
+    (
+        "cloud-metadata",
+        "reads the cloud instance metadata service (instance credentials)",
+        re.compile(r"169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200", _I),
+    ),
+    (
+        "credential-files",
+        "names a credential file (an SSH private key, an npm, cloud, git or cluster token store)",
+        re.compile(
+            r"\.ssh[/\\]+id_(?:rsa|ed25519|ecdsa|dsa)\b|\.aws[/\\]+credentials\b"
+            r"|\.git-credentials\b|\.docker[/\\]+config\.json|\.kube[/\\]+config\b|/etc/shadow\b"
+            r"|" + _HOME + r"\.npmrc\b",
+            _I,
+        ),
+    ),
+)
 # Shapes that name where they download from: the host decides how sure the finding is.
 DOWNLOADS: Final = frozenset({"pipe-to-shell", "shell-runs-download", "ps-iex-download"})
 _URL: Final = re.compile(r"\bhttps?://[^\s\"'`)<>|;]+", _I)
@@ -238,14 +281,9 @@ class InstallScriptLoader(BaseRule):
     title = "Install code downloads or decodes code and runs it"
 
     def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
-        found = loader_shapes(change.install_files, _hooks(change.snapshot.manifest))
-        if change.install_files_before is not None:
-            # What the previous version's install code already did ran before: only a shape
-            # (with its host) new to the install code counts.
-            seen = {
-                (shape, host) for shape, host, *_ in loader_shapes(change.install_files_before, {})
-            }
-            found = [f for f in found if (f[0], f[1]) not in seen]
+        # What the previous version's install code already did ran before: only a shape
+        # (with its host) new to the install code counts.
+        found = _new_shapes(change, SHAPES)
         if not found:
             return ()
         own = _own_hosts(change.snapshot.manifest)
@@ -277,9 +315,62 @@ class InstallScriptLoader(BaseRule):
         )
 
 
-_WHAT: Final = {shape: what for shape, what, _ in SHAPES} | {
-    "hidden-padding": "hides code past the edge of the screen"
-}
+class InstallScriptExfil(BaseRule):
+    """A shell, PowerShell or batch install script or a hook command line sends data away or
+    reads credentials (module docstring, `EXFIL_SHAPES`). Added 2026-11-10 (round 4,
+    `docs/proposals/precision-round4-G.md`): three `vm-day1` malicious samples whose hook runs
+    such a script were reported by nothing (`justgetit@1.2.4` links `~/.ssh/id_ed25519` into
+    the package, `ts-form-helpers` 1.0.3 pipes `env` into `curl --data-binary @-`, 1.0.12 reads
+    `metadata.google.internal` for a GCP token)."""
+
+    id = "npm.install-script-exfil"
+    version = 1
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Install script sends data away or reads credentials"
+
+    def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
+        found = _new_shapes(change, EXFIL_SHAPES)
+        if not found:
+            return ()
+        what = "; ".join(sorted({_WHAT[shape] for shape, *_ in found}))
+        return (
+            self.finding(
+                f"`npm install` runs a script that {what}.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=path,
+                        line_start=line,
+                        line_end=line,
+                        snippet=text,
+                    )
+                    for _, _, path, line, text in found[:MAX_SHOWN]
+                ),
+            ),
+        )
+
+
+def _new_shapes(
+    change: CodeChange, table: tuple[tuple[str, str, re.Pattern[str]], ...]
+) -> list[tuple[str, str, str, int, str]]:
+    """`table`'s shapes in the version's install scripts and hook lines; on an update, only a
+    (shape, host) the previous version's install code didn't have."""
+    found = loader_shapes(change.install_files, _hooks(change.snapshot.manifest), table)
+    if change.install_files_before is not None:
+        seen = {
+            (shape, host)
+            for shape, host, *_ in loader_shapes(change.install_files_before, {}, table)
+        }
+        found = [f for f in found if (f[0], f[1]) not in seen]
+    return found
+
+
+_WHAT: Final = (
+    {shape: what for shape, what, _ in SHAPES}
+    | {shape: what for shape, what, _ in EXFIL_SHAPES}
+    | {"hidden-padding": "hides code past the edge of the screen"}
+)
 
 
 def _hooks(manifest: Mapping[str, Any]) -> dict[str, str]:
@@ -288,10 +379,13 @@ def _hooks(manifest: Mapping[str, Any]) -> dict[str, str]:
 
 
 def loader_shapes(
-    install_files: Mapping[str, bytes], hooks: Mapping[str, str]
+    install_files: Mapping[str, bytes],
+    hooks: Mapping[str, str],
+    table: tuple[tuple[str, str, re.Pattern[str]], ...] = SHAPES,
 ) -> list[tuple[str, str, str, int, str]]:
-    """Every loader shape in the install code and hook command lines, as (shape, host or "",
-    path, 1-based line, text around it), comments and messages masked (`loader_text`)."""
+    """Every shape of `table` (default: the loader shapes, plus hidden code) in the install
+    scripts and hook command lines, as (shape, host or "", path, 1-based line, text around
+    it), comments and messages masked (`loader_text`)."""
     texts = {
         path: loader_text(path, data)
         for path, data in sorted(install_files.items())
@@ -303,14 +397,16 @@ def loader_shapes(
     for path, raw in texts.items():
         # A continuation backslash joins two lines; blanks keep the offsets.
         text = _CONTINUATION.sub(lambda m: " " * len(m.group(0)), raw)
-        for shape, _, pattern in SHAPES:
+        for shape, _, pattern in table:
             for match in pattern.finditer(text):
                 host = _host(text, match) if shape in DOWNLOADS else ""
                 line = raw.count("\n", 0, match.start()) + 1
                 start = max(0, match.start() - SNIPPET_RADIUS)
                 snippet = " ".join(text[start : match.end() + SNIPPET_RADIUS].split())
                 found.append((shape, host, path, line, snippet))
-        if path in install_files and (hidden := hidden_in_script(path, install_files[path])):
+        if table is not SHAPES or path not in install_files:
+            continue
+        if hidden := hidden_in_script(path, install_files[path]):
             found.append((HIDDEN, "", path, *hidden))
     return _first_per_key(found)
 
@@ -464,4 +560,4 @@ def _is_ip(host: str) -> bool:
     return True
 
 
-RULES: Final = (InstallScriptLoader(),)
+RULES: Final = (InstallScriptLoader(), InstallScriptExfil())
