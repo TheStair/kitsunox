@@ -322,7 +322,7 @@ no earlier stage captured it. See `docs/stages/sandbox.md`.
 Live evaluation (Phase 9, decision 0019; `evaluation/ledger.py`, `live.py`, `sample.py`):
 `collect` writes each finished run's decision ledger, runs `live-eval` daily before the prune
 (confusion matrices, behaviour truth primary, D = 7), and holds small / reported / sampled
-tarballs 30 days (`core/retention.py`). Rule freeze 2026-11-12 to 2026-11-19 (window B): no
+tarballs 30 days (`core/retention.py`). Rule freeze 2026-11-16 to 2026-11-23 (window B; moved from 11-12..19 on 2026-11-10): no
 rule changes in that week. See `docs/evaluation.md`.
 Stages 4 and 5 and the report stream a run's versions from disk (`CandidateFile`, `RunVersions`):
 never load a whole run's candidates into memory (a 110k-version run was OOM-killed at 21.6 GB).

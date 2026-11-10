@@ -124,7 +124,7 @@ report goes to `data/eval/live/reports/live-<id>.json` and `.md`, and a line to
 **Population.** Each version that entered Stage 4 in a finished run, once, in the first run
 that recorded it. A **window** is the runs whose `as_of` falls in `[start, end)`: A is
 2026-10-29 to 2026-11-04, B (the rule freeze, [0019](decisions/0019-live-evaluation.md)) is
-2026-11-12 to 2026-11-19. `all` is every window together. A version captured more than 6 hours
+2026-11-16 to 2026-11-23 (moved from 11-12..19 on 2026-11-10, decision 0019 addendum). `all` is every window together. A version captured more than 6 hours
 after its release (the first VM run's 24-hour window, the 4-day catch-up of 11-07) is counted
 in a separate `catch-up` group, not in any window: npm may already have removed the malware, so
 its recall is survivor-biased.

@@ -234,13 +234,13 @@ def test_results_page_shows_the_headline_grid_and_every_matrix(library: Library)
     # "all" first, then the report's own windows, as `render_live_markdown` lists them
     assert document.index("<h2>Window all</h2>") < document.index("<h2>Window A</h2>")
     assert document.index("<h2>Window A</h2>") < document.index("<h2>Window B</h2>")
-    assert "<h2>Window B</h2>\n<p>runs from 2026-11-12 to 2026-11-19" in document
+    assert "<h2>Window B</h2>\n<p>runs from 2026-11-16 to 2026-11-23" in document
     assert "No versions yet." in document
     # the same numbers as the Markdown, in the same format
     headline = report.windows["all"].matrices["behaviour"]
     for rate in (headline.recall, headline.precision, headline.fpr):
         assert percent(rate) in document and percent(rate) in render_live_markdown(report)
-    assert "before the rule freeze (window B, 2026-11-12 to 2026-11-19" in document
+    assert "before the rule freeze (window B, 2026-11-16 to 2026-11-23" in document
     assert "1 runs that never finished (1,234 changes)" in document
     assert "unverified 1" in document and "placeholder 1" in document
     for heading in ("Headline by shape", "Funnel", "Why missed", "Label timing", "Upper bounds"):

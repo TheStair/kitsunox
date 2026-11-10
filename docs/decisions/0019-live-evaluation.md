@@ -26,7 +26,8 @@ The owner's four answers (2026-11-08), binding for the presentation:
    label set was fetched at least 7 days after its release, provisional (left out, counted)
    before that. Sensitivity rows for D = 3 and 14, and per window the number of labels that
    came later than 3, 7 and 14 days.
-3. **Rule freeze 2026-11-12 to 2026-11-19 (window B, `[11-12 00:00Z, 11-19 00:00Z)`).** No
+3. **Rule freeze 2026-11-12 to 2026-11-19 (window B, `[11-12 00:00Z, 11-19 00:00Z)`; moved to
+   2026-11-16..23 by the addendum below).** No
    rule changes in that week. The tooling shows which rule versions scored each version: every
    ledger row carries `rule_id@version` of each finding, the header Stage 4's `stage_version`
    and rule fingerprint, and, when `collect` writes the ledger in the tick that ran the stages,
@@ -98,3 +99,16 @@ decided how each one counts:
 - The results log's `malicious` / `reported_malicious` / `recall` are the flag-worthy headline;
   new fields `strict_malicious`, `strict_reported` and `unverified` are added. The ledger is
   unchanged.
+
+## Addendum 2026-11-10: the freeze moves to 2026-11-16..23
+
+The owner moved the rule freeze (window B) from `[2026-11-12, 2026-11-19)` to
+**`[2026-11-16 00:00Z, 2026-11-23 00:00Z)`**, a Monday to a Monday, to leave a week more for rule
+and label work before they get busier; the week after it is for presentation prep and results
+analysis (presentation about 2026-11-29). `evaluation/live.py` `DEFAULT_WINDOWS` and the
+results viewer follow. Nothing else in the decision changes. One consequence of D = 7: a version
+released at the end of window B is benign only once a label set fetched 7 days later exists, so
+the full D = 7 matrix for window B is complete on 2026-11-30, a day after the presentation; the
+analysis can show D = 7 for versions released through 2026-11-22 (labels fetched by 2026-11-29)
+or the D = 3 sensitivity row (complete on 2026-11-26), and says which.
+

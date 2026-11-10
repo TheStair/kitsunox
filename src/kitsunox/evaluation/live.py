@@ -89,10 +89,11 @@ def _day(y: int, m: int, d: int) -> datetime:
 
 
 # Window A: the first week of VM collection with finished runs (mixed rule sets). Window B:
-# the owner's rule freeze, 2026-11-12 00:00Z to 2026-11-19 00:00Z (decision 0019).
+# the owner's rule freeze, 2026-11-16 00:00Z to 2026-11-23 00:00Z (decision 0019; moved on
+# 2026-11-10 from 2026-11-12..19 to leave a week more for rule work).
 DEFAULT_WINDOWS: Final = (
     LiveWindow(name="A", start=_day(2026, 10, 29), end=_day(2026, 11, 4)),
-    LiveWindow(name="B", start=_day(2026, 11, 12), end=_day(2026, 11, 19)),
+    LiveWindow(name="B", start=_day(2026, 11, 16), end=_day(2026, 11, 23)),
 )
 ALL: Final = "all"
 CATCH_UP: Final = "catch-up"

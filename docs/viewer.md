@@ -187,7 +187,7 @@ against either. Definitions are in [evaluation.md](evaluation.md#live-evaluation
 [decision 0019](decisions/0019-live-evaluation.md).
 
 - **Facts:** dataset and its SHA-256 prefix, labels as of (and whether that is before, during
-  or after the rule freeze, window B, 2026-11-12 to 2026-11-19), label set, headline D,
+  or after the rule freeze, window B, 2026-11-16 to 2026-11-23), label set, headline D,
   versions (window `all`, and `catch-up` counted apart), flag-worthy versions and misses,
   operational loss (runs that never finished, with their changes) and pending runs. A
   collapsed "How to read the matrices" explains the cells.
