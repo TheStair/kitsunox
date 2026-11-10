@@ -162,9 +162,15 @@ class ExfilEndpoint(RegexRule):
     # three services where brand names alone count (`"webhook.site", "requestbin", "ngrok"`:
     # a detection rule's substrings, `_in_name_list`). `bot&lt;token&gt;` (HTML for
     # `bot<token>`) is a written placeholder, as v4 decided for `bot<token>`.
+    # v10 (2026-11-11, `docs/proposals/precision-round6-P.md` P1): LOW, weight 1, not on an
+    # install hook's line and whatever else the file does: a tunnel's bare suffix that a host
+    # check compares with or an allowed-hosts setting lists (`_host_check`:
+    # `hostname.endsWith(".trycloudflare.com")`, `allowedHosts: ['.ngrok.app']`,
+    # `ALLOWED_HOSTS=.trycloudflare.com`), which v8 lowered only in a file that collects
+    # nothing.
 
     id = "static.exfil-endpoint"
-    version = 9
+    version = 10
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -215,6 +221,8 @@ class ExfilEndpoint(RegexRule):
                 return QUICK_TUNNEL_NOTE
             if _example_value(match, _host_span(match)[0]):
                 return EXAMPLE_NOTE
+            if _host_check(match):
+                return HOST_CHECK_NOTE
         return _sends_nothing(match)
 
 
@@ -551,6 +559,30 @@ def _not_quick_tunnel(match: re.Match[str]) -> bool:
         return False  # `id + "x.trycloudflare.com"`
     words = label.split("-")
     return not _QUICK_TUNNEL_NAME.fullmatch(label) or len(set(words)) == 1
+
+
+# v10 (round 6, P1): a tunnel's bare domain suffix that a host check compares with, or an
+# allowed-hosts setting lists: `hostname.endsWith(".trycloudflare.com")`, Vite's
+# `allowedHosts: ['.trycloudflare.com']`, `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=.ngrok.app`.
+# Code checks a host it was given against the suffix; nothing connects to a suffix.
+_HOST_CHECK_LEAD: Final = re.compile(
+    r"\.ends?[Ww]ith\(\s*[\"'`]$"
+    r"|(?i:allowed_?hosts?)[\"'`]?\s*[:=]\s*\[[^\]\n]{0,160}[\"'`]$"
+    r"|(?i:allowed_?hosts?)\s*=\s*[\"'`]?$"
+)
+HOST_CHECK_NOTE: Final = (
+    " A tunnel's bare domain suffix that a host check compares with (`endsWith`) or an"
+    " allowed-hosts setting lists: no tunnel's name, not an endpoint."
+)
+
+
+def _host_check(match: re.Match[str]) -> bool:
+    """v10: a bare tunnel suffix (`_TUNNEL_SUFFIXES`, the whole host) right after
+    `_HOST_CHECK_LEAD`."""
+    text, start, end = match.string, match.start(), match.end()
+    if match.group(0).lower() not in _TUNNEL_SUFFIXES or not _HOST_END.match(text, end):
+        return False
+    return _HOST_CHECK_LEAD.search(text, max(0, start - 200), start) is not None
 
 
 # v9 (exfil-endpoint, hardcoded-ip): a URL written as the value of a UI placeholder
@@ -1283,6 +1315,9 @@ CONTEXT_NOTES: Final = (
     TUNNEL_SUFFIX_NOTE,
     IP_COMMENT_NOTE,
     MODULE_WRAPPER_NOTE,
+    # Round 6 (P): the same match can be LOW in one version (a host check) and not in the
+    # next, whose code around it changed.
+    HOST_CHECK_NOTE,
 )
 
 

