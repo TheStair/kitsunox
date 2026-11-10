@@ -2,6 +2,62 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-10: Global git configuration at install: re-review and a precise rescue signal (round 5, agent M)
+
+**Stage(s):** Stage 3 (`npm.install-persistence` v3), reviewer verdicts
+**Context:** Reviewing `signoff-cli@4.2.0` turned up an install hook that runs `git config
+--global core.hooksPath <dir>`, so every git repository on the machine runs the package's
+hooks. Under the owner's 2026-11-10 ruling that a silent system or desktop setting change at
+install is unwanted (`gsettings`), the integrator read user-wide git configuration the same way
+(decision 0015 addendum, pending the owner). Re-reading earlier verdicts with that reading moved
+6 versions benign → unwanted (`signoff-cli` 4.0.0, 4.1.2, 4.1.9; `dsh-signoff` 3.10.0, 3.12.0,
+3.13.0). Five were still reported, but only through noisy install-hook rules; `signoff-cli@4.1.9`
+had been unreported since round 4, so it became a lost positive. The freeze starts 2026-11-12.
+
+### Decisions
+- **A fifth `npm.install-persistence` form, `git-config` (v3, agent M, `31def9f`, `29df52b`)**:
+  install code that changes the global or system git configuration (`--global`, `--system`,
+  `--file ~/.gitconfig`, `git config set`, argument lists such as `spawnSync("git", ["config",
+  "--global", ...])`, or a write to `~/.gitconfig` / `~/.config/git/config`) for a key that
+  decides what git runs or where it sends data (`core.hooksPath`, `credential.helper`,
+  `url.*.insteadOf`, `include.path`, `core.sshCommand`, filters, drivers, signing programs;
+  `alias.*` only with `!`, `safe.directory` only with `*`). Names the behaviour instead of
+  leaving it to generic install rules.
+  - **Rejected:** any `--global` key (`user.*`, plain aliases change nothing git runs); any
+    `core.hooksPath` including local (fires on 4 benign project-hook packages); no default-off
+    parameter check (fires on `@arifbiswas/git-pre-push@1.0.0`, which sets the global hook path
+    only from its CLI); `pager.<cmd>` (only turns paging off).
+  - New helpers `lang/javascript.opt_in_parameter` and `passes_argument`: a change made only
+    inside `if (p)` where `p` defaults to off and no install file passes it doesn't count.
+
+### Challenges
+- **Catastrophic backtracking**: M's first `vm-day1` scan stalled on a sample with long runs of
+  options; the option and scope patterns could split a run of `--global` many ways.
+  - **Resolution:** `29df52b` makes options before the scope exclude the scope, so each run
+    matches one way; regression tests added. The integrator re-timed adversarial inputs (20,000
+    repeated options, quotes, dashes): every pattern ≤ 17 ms.
+  - **Why it worked:** the live replay re-run on the fixed code gives identical findings.
+
+### Evaluation snapshot
+- Live (3,716 verdicted versions, today's verdicts, integrator re-counted with
+  `~/kitsunox-scratch/r5/final/relabel.py`): final main 1,348 reported (1,017 benign, 254
+  unwanted, 47 malicious, 30 unverified; 22.84%) → v3 1,349 (1,017 / 255 / 47 / 30; 22.90%).
+  The form fires on exactly the 6 relabelled versions plus `signoff-cli@4.2.0`;
+  `signoff-cli@4.1.9` regained (score 3 → 6). 0 benign newly reported, 0 positives or
+  unverified lost. Benign 1,022 → 1,017 since the round-5 entry is the re-review, not code.
+- `vm-day1`: fires on none of the 2,319 malicious samples with an install hook; 0 lost, 0
+  gained. Gates: 3,047 tests.
+- Positives lost since round 4 began are back to two: `tmailcli@0.1.5` and
+  `esoftplay@0.0.269-beta96052d3`.
+
+### Open questions / next steps
+- Owner: confirm global git configuration at install = unwanted (else the 7 verdicts go back to
+  benign and v3's form is dropped after the freeze); keep the extra program-running keys
+  (`core.askPass`, `core.gitProxy`, `sequence.editor`, `diff.external`, `merge.*.driver`,
+  `gpg.program`; none fires live) and `safe.directory=*`.
+- Queue review the same evening: 33 versions (15:13-17:13Z ticks) → 32 benign, 1 unwanted probe
+  (`badbunny@1.0.0` opens the user's browser at its author's page on every install; marker-only).
+
 ## 2026-11-10: Precision round 5: five agents, zero-loss, final pre-freeze main measured
 
 **Stage(s):** Stages 1-4 (rules), evaluation (replay harness)
