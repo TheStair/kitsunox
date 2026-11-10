@@ -42,6 +42,30 @@ def test_githead_dropped() -> None:
     assert not rule.evaluate_candidate(cand(snap("2", git_head="d"), snap("1", git_head="a")), ctx)
     assert not rule.evaluate_candidate(cand(snap("2"), snap("1")), ctx)  # never had one
     assert not rule.evaluate_candidate(cand(snap("2")), ctx)  # new package
+    assert (found.weight, found.rule_version) == (2.0, 2)
+
+
+def test_githead_dropped_beside_a_downgrade_weighs_one() -> None:
+    """v2 (round 5, G1): the downgrade already says the release left the CI path; an INFO
+    downgrade finding (none is emitted today) would not count."""
+    rule, ctx = GitHeadDropped(), CorrelationContext(as_of=T0)
+    base = cand(snap("2"), snap("1", git_head="abc123"))
+
+    def downgrade(severity: Severity) -> Finding:
+        return Finding(
+            rule_id="npm.publish-method.downgrade",
+            rule_version=4,
+            severity=severity,
+            weight=3.0,
+            title="t",
+            explanation="1 was published from CI.",
+        )
+
+    for severity, weight in ((Severity.MEDIUM, 1.0), (Severity.LOW, 1.0), (Severity.INFO, 2.0)):
+        with_downgrade = base.model_copy(update={"findings": (downgrade(severity),)})
+        (found,) = rule.evaluate_candidate(with_downgrade, ctx)
+        assert (found.severity, found.weight) == (Severity.LOW, weight)
+        assert found.explanation.endswith("left the CI path.") is (weight == 1.0)
 
 
 def label(

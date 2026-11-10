@@ -65,9 +65,18 @@ class GitHeadDropped(BaseRule):
 
     Most of those malicious releases are flagged anyway; on its own this is corroboration, so
     it is weighted below the report score.
+
+    v2 (2026-11-10, `docs/proposals/precision-round5-K.md` G1): weight 1 when Stage 1's
+    `npm.publish-method.downgrade` fired on the same release. Both then say the release left
+    the CI path, and given a downgrade a dropped `gitHead` doesn't separate: 34 of the 149
+    `vm-day1` malicious samples with a downgrade (23%) have it, against 81 of the 273 live
+    benign verdicts with one (30%). The downgrade already reads it (its watched-package
+    co-signal); counted at 2 beside it, it was the last 2 points of 9 benign score-only
+    reports (`@volter/*`, `@runko/conformance`, `a5-to-geojson`) and of no positive.
     """
 
     id = "npm.provenance.githead-dropped"
+    version = 2
     severity = Severity.LOW
     weight = 2.0
     title = "Published without the git commit the previous release recorded"
@@ -81,13 +90,24 @@ class GitHeadDropped(BaseRule):
         before = change.previous.publish.git_head
         if before is None or change.new.publish.git_head is not None:
             return ()
+        downgraded = any(
+            f.rule_id == DOWNGRADE and f.severity is not Severity.INFO for f in candidate.findings
+        )
         return (
             self.finding(
                 f"{change.previous.ref.version} was published from commit {before[:12]}; this "
-                "release records no commit, so it was not published from a git checkout.",
+                "release records no commit, so it was not published from a git checkout."
+                + (DOWNGRADE_NOTE if downgraded else ""),
                 Evidence(kind=EvidenceKind.METADATA, path="gitHead", before=before, after=None),
+                weight=1.0 if downgraded else None,
             ),
         )
+
+
+DOWNGRADE: Final = "npm.publish-method.downgrade"
+DOWNGRADE_NOTE: Final = (
+    " Weight 1: the publish-method downgrade on this release already says it left the CI path."
+)
 
 
 def _dependency_name(name: str, spec: str) -> str:
