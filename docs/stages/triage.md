@@ -84,7 +84,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
 | `npm.publish-method.downgrade` (v4): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version), or a watched package that also dropped `gitHead`: HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
-| `npm.dependency.non-registry` (v5): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
+| `npm.dependency.non-registry` (v6): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious` (v4): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
 | `npm.dependency.added` | LOW | | | | |
@@ -189,6 +189,17 @@ Live, real code on all 3,716 verdicted versions: 59 fewer reports, all benign; n
 non-registry finding changes. `vm-day1`: none of the malicious samples the rule fires on is
 lost (the proposal, section 5). **Recall risk:** an attacker holding both the npm token and
 write access to the repository can push a tag there (its code is then in that repository).
+
+`npm.dependency.non-registry` v6 (2026-11-10, [round 5 K](../proposals/precision-round5-K.md)
+N2): the registry's own tarball URL of *another* package in the dependent's npm scope is LOW,
+weight 1, with a note (`@atharva-again/pi-coding-agent` takes `@earendil-works/pi-ai` from
+`https://registry.npmjs.org/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz`). It is what
+`npm:@atharva-again/pi-ai@1.3.0` installs, and that is a registry spec and no finding: npm
+fetches the tarball from the registry (takedowns apply), only the scope's owner can publish
+into the scope, and the package is a release in the feed that Stages 1-3 read. A tarball of a
+package in another scope, or of an unscoped one, keeps MEDIUM (Stage 4's dependency lookups
+don't follow URLs, so the alias rules would not see it). Live: 2 benign reports fewer, no
+positive changes; no `vm-day1` sample uses a registry tarball URL.
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10

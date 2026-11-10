@@ -151,6 +151,32 @@ def test_a_scoped_registry_tarball_is_the_registry_and_a_local_path_is_low() -> 
     assert finding.explanation.endswith("A local path: nothing is fetched.")
 
 
+def test_a_registry_tarball_of_an_own_scope_package_is_low() -> None:
+    """v6 (N2): `@atharva-again/pi-coding-agent` takes `@earendil-works/pi-ai` from the
+    registry tarball of `@atharva-again/pi-ai`, as `npm:@atharva-again/pi-ai@1.3.0` would.
+    Another scope's tarball, an unscoped dependent and a look-alike host keep MEDIUM."""
+
+    def nr_scoped(name: str, spec: str) -> Finding:
+        new = snap("1.3.0", {"dependencies": {"@earendil-works/pi-ai": spec}})
+        new = new.model_copy(update={"ref": new.ref.model_copy(update={"name": name})})
+        (finding,) = NonRegistryDependency().evaluate(change(new, snap("1.2.0")), CTX)
+        return finding
+
+    own = "https://registry.npmjs.org/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz"
+    low = nr_scoped("@atharva-again/pi-coding-agent", own)
+    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 6)
+    assert "only the scope's owner can publish" in low.explanation
+    for name, spec in (
+        ("@other/pi-coding-agent", own),
+        ("pi-coding-agent", own),
+        ("@atharva-again/x", "https://registry.npmjs.org/@evil/pi-ai/-/pi-ai-1.3.0.tgz"),
+        ("@atharva-again/x", "https://registry.npmjs.org/pi-ai/-/pi-ai-1.3.0.tgz"),
+        ("@atharva-again/x", own.replace("registry.npmjs.org", "registry.npmjs.org.evil.test")),
+        ("@atharva-again/x", "https://evil.test/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz"),
+    ):
+        assert nr_scoped(name, spec).severity is Severity.MEDIUM, (name, spec)
+
+
 def test_a_dependency_on_the_packages_own_repository_commit_still_fires() -> None:
     """`@opensearch-project/opensearch@3.7.0` (DataDog) pulled its payload from a commit in its
     own repository; "same owner" is the attack, not an excuse (proposal, N2 rejected)."""
@@ -245,7 +271,7 @@ def test_a_dependency_moved_within_the_same_account_is_low() -> None:
     moved = nr(
         "github:uNetworking/uWebSockets.js#v20.71.0", "github:uNetworking/uWebSockets.js#v20.67.0"
     )
-    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 5)
+    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 6)
     assert "The previous release took it from the same account (github.com/unetworking)" in (
         moved.explanation
     )

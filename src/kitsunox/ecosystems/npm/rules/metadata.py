@@ -309,10 +309,20 @@ class NonRegistryDependency(BaseRule):
     (`github:opensearch-project/opensearch-js#d446803f…`, `github:antvis/G2#1916faa3…`,
     `github:tanstack/router#79ac49ee…`); a tag, branch or release asset needs write access
     to that account's repository. A new package has no earlier release to vouch for anything
-    and keeps MEDIUM, as does a dependency from another account than before."""
+    and keeps MEDIUM, as does a dependency from another account than before.
+
+    v6 (2026-11-10, `docs/proposals/precision-round5-K.md` N2): the registry's own tarball URL
+    of *another* package in the dependent's own npm scope is LOW, weight 1
+    (`@atharva-again/pi-coding-agent` takes `@earendil-works/pi-ai` from
+    `https://registry.npmjs.org/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz`). npm fetches it from
+    the registry, where takedowns apply, only the scope's owner can publish into the scope, and
+    that package is a release in the feed like any other, read by Stages 1-3 itself: the same
+    as `npm:@atharva-again/pi-ai@1.3.0`, which is a registry spec and no finding. 2 benign live
+    reports, no positive; no `vm-day1` sample uses a registry tarball URL. A tarball of a
+    package outside the scope keeps MEDIUM: Stage 4's dependency lookups don't follow URLs."""
 
     id = "npm.dependency.non-registry"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -327,15 +337,17 @@ class NonRegistryDependency(BaseRule):
             tarball = _REGISTRY_TARBALL.fullmatch(spec.strip())
             if tarball is not None and tarball["name"] == name:
                 continue
+            own_scope = tarball is not None and _same_scope(tarball["name"], change.new.ref.name)
             local = spec.strip().startswith(_LOCAL)
             vendor = spec.strip().startswith(VENDOR_REGISTRIES)
-            moved = None if local or vendor else trusted_move(change, name, spec)
-            low = local or vendor or moved is not None
+            moved = None if local or vendor or own_scope else trusted_move(change, name, spec)
+            low = local or vendor or own_scope or moved is not None
             findings.append(
                 self.finding(
                     f"Dependency `{name}` comes from `{snippet(spec)}`."
                     + (" A local path: nothing is fetched." if local else "")
                     + (VENDOR_NOTE if vendor else "")
+                    + (OWN_SCOPE_TARBALL_NOTE if own_scope else "")
                     + (moved or ""),
                     _field(f"dependencies.{name}", after=spec, before=old.get(name)),
                     severity=Severity.LOW if low else None,
@@ -343,6 +355,20 @@ class NonRegistryDependency(BaseRule):
                 )
             )
         return findings
+
+
+OWN_SCOPE_TARBALL_NOTE: Final = (
+    " The registry's own tarball of a package in this package's npm scope, which only the "
+    "scope's owner can publish: as an `npm:` alias of it would be."
+)
+
+
+def _same_scope(dependency: str, own: str) -> bool:
+    """Both names are in the same npm scope (`@s/a`, `@s/b`); unscoped names never are."""
+    if not dependency.startswith("@") or not own.startswith("@"):
+        return False
+    scope_of = dependency.split("/", 1)[0]
+    return "/" in dependency and "/" in own and scope_of == own.split("/", 1)[0]
 
 
 MOVED_NOTE: Final = (
