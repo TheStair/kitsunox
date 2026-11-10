@@ -40,10 +40,15 @@ class PaddedCode:
       generated with deep nesting grows its indentation a level at a time (`@motir/cli`'s
       compiled JSON-schema validators, 106 spaces), hidden code jumps there from the margin.
 
+    v2 (2026-11-10, round 4 G): shell code counts as code too, a tail that starts by chaining a
+    command (`;`, `&&`) or pipes into a shell or `iex` (`; curl -s x | sh` has no `(` or `=`).
+    On agent F's scans (every 100/200 run in the verdicted live versions and the `vm-day1`
+    samples it read) it adds no match.
+
     MEDIUM (weight 3), one finding per file: the first such line."""
 
     id: ClassVar[str] = "static.padded-code"
-    version: ClassVar[int] = 1
+    version: ClassVar[int] = 2
     severity: ClassVar[Severity] = Severity.MEDIUM
     weight: ClassVar[float] = 3.0
     title: ClassVar[str] = "Code hidden behind a long run of whitespace"
@@ -54,6 +59,12 @@ class PaddedCode:
     # A run starts where the whitespace does (the lookbehind), so a long run is matched once.
     _RUN: ClassVar[re.Pattern[str]] = re.compile(r"(?<![ \t])[ \t]{100,}(?=\S)")
     _NOT_CODE: ClassVar[re.Pattern[str]] = re.compile(r"(?://|/\*|\*|#|<!--|\||<)")
+    # v2: shell code has neither `(` nor `=`: a tail that chains a command (`; curl -s x | sh`,
+    # `&& ./x`) or pipes into a shell or `iex` is code too.
+    _SHELL_CHAIN: ClassVar[re.Pattern[str]] = re.compile(r"(?:;|&&)\s*[\w./$~\"'-]")
+    _SHELL_PIPE: ClassVar[re.Pattern[str]] = re.compile(
+        r"\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b|\|\s*iex\b", re.IGNORECASE
+    )
 
     def evaluate_text(self, text: str) -> Sequence[FileMatch]:
         line_start = line_end = code_end = -1
@@ -105,7 +116,9 @@ class PaddedCode:
             return False
         if any(lead.count(q) % 2 for q in "\"'`"):
             return False
-        return ("(" in tail or "=" in tail) and any(c in tail for c in ";{)[,")
+        if ("(" in tail or "=" in tail) and any(c in tail for c in ";{)[,"):
+            return True
+        return bool(self._SHELL_CHAIN.match(tail) or self._SHELL_PIPE.search(tail))
 
 
 MAX_LOOK_BACK: Final = 20  # lines
