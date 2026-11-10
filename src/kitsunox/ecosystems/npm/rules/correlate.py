@@ -857,10 +857,18 @@ class RevivedWithNewDependency(BaseRule):
     takeovers it catches on `vm-day1` (`xrpl@2.14.2`, `@mastra/*`) have no provenance. Only on
     this rule: provenance is no explanation for install code, where 37 `vm-day1` samples
     were published from compromised CI (`docs/proposals/precision-round2.md`, F7).
+
+    v4 (2026-11-10, `docs/proposals/precision-round6-N.md` C1): trusted publishing (OIDC from
+    CI) counts as v3's provenance does. npm records a trusted publisher on releases that carry
+    no attestation (`productenv@2.0.0`, `@musedesignsystem/tokens@2.12.2`: published by
+    `GitHub Actions`, `trusted_publisher` github, no provenance; both benign, reported by this
+    rule alone). Trusted publishing is the stronger tie to the repository's CI: no token can
+    stand in for it. No `vm-day1` sample the rule fires on has a trusted publisher without
+    provenance.
     """
 
     id = "npm.combination.revived-with-new-dependency"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 2.0
     title = "Dormant package revived with a new dependency"
@@ -888,11 +896,16 @@ class RevivedWithNewDependency(BaseRule):
                     weight=1.0,
                 ),
             )
-        if change.new.publish.has_provenance:
+        if change.new.publish.has_provenance or change.new.publish.trusted_publisher:
+            how = (
+                "a provenance attestation"
+                if change.new.publish.has_provenance
+                else f"trusted publishing ({change.new.publish.trusted_publisher})"
+            )
             return (
                 self.finding(
-                    f"{revived.explanation} {added.explanation} Published with a provenance "
-                    "attestation (from the repository's CI).",
+                    f"{revived.explanation} {added.explanation} Published with {how} (from "
+                    "the repository's CI).",
                     *revived.evidence,
                     *added.evidence,
                     severity=Severity.LOW,

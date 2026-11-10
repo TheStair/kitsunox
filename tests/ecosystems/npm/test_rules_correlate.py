@@ -184,7 +184,7 @@ def test_revived_by_the_same_account_is_low() -> None:
 
     old = snap("2.14.1", publisher="ckniffen", maintainers=("ckniffen",))
     same = found(snap("2.14.2", publisher="ckniffen", maintainers=("ckniffen",)), old)
-    assert (same.severity, same.weight, same.rule_version) == (Severity.LOW, 1.0, 3)
+    assert (same.severity, same.weight) == (Severity.LOW, 1.0)
     assert "who published the previous release" in same.explanation
     other = found(snap("2.14.2", publisher="mukulljangid", maintainers=("ckniffen",)), old)
     assert (other.severity, other.weight) == (Severity.MEDIUM, 2.0)
@@ -226,6 +226,12 @@ def test_revived_with_provenance_is_low() -> None:
     # the xrpl@2.14.2 shape: another account, no provenance, keeps MEDIUM
     hand = found(snap("2.14.2", publisher="mukulljangid", maintainers=("ckniffen",)))
     assert (hand.severity, hand.weight) == (Severity.MEDIUM, 2.0)
+    # v4: trusted publishing without an attestation (`productenv@2.0.0`)
+    oidc = found(snap("2.14.2", publisher="GitHub Actions", trusted_publisher="github"))
+    assert (oidc.severity, oidc.weight, oidc.rule_version) == (Severity.LOW, 1.0, 4)
+    assert oidc.explanation.endswith(
+        "Published with trusted publishing (github) (from the repository's CI)."
+    )
 
 
 def test_a_unity_package_s_built_in_module_is_low() -> None:
