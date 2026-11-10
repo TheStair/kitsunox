@@ -17,9 +17,18 @@ from typing import Any, Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
-from kitsunox.ecosystems.npm.install import loaded_files
+from kitsunox.ecosystems.npm.install import GYP_INLINE, loaded_files
 from kitsunox.ecosystems.npm.rules.install_persistence import code_text
-from kitsunox.ecosystems.npm.rules.install_shapes import user_wide
+from kitsunox.ecosystems.npm.rules.install_shapes import (
+    DELETES,
+    INERT,
+    OTHER_PACKAGE,
+    RISKY_TEXT,
+    SYSTEM_PATH,
+    plain_text,
+    unreadable,
+    user_wide,
+)
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.lang.agent_config import HOME_REFERENCE, names_agent_dir
 from kitsunox.lang.javascript import (
@@ -799,6 +808,9 @@ BUILD_TOOL_HOOKS: Final = frozenset(
         "opencollective-postinstall",
         "node-gyp-build || node-gyp rebuild",
         "npx @mapbox/node-pre-gyp install --fallback-to-build",
+        # v4: node-gyp-build that may fail quietly, or with a job count.
+        "node-gyp-build || exit 0",
+        "JOBS=${JOBS:-max} node-gyp-build",
     }
 )
 # v3: Playwright's browser download, when the package depends on Playwright (so the
@@ -834,9 +846,10 @@ def tool_shadowed(manifest: Mapping[str, Any], commands: Iterable[str]) -> list[
 
 # v2: what a native add-on's `binding.gyp` asks `node` for so the compiler finds the headers of
 # `node-addon-api` or `nan`: `<!(node -p "require('node-addon-api').include")`,
-# `<!@(node -p "require('node-addon-api').gyp")`, `<!(node -e "require('nan')")` (as
-# `install.gyp_commands` extracts them, up to the first `)` before a quote). It only prints a
-# directory of an installed package; any other command, or any gyp action, still counts.
+# `<!@(node -p "require('node-addon-api').gyp")`, `<!(node -e "require('nan')")`. It only
+# prints a directory of an installed package; any other command, or any gyp action, still
+# counts. (Before v4 `gyp_commands` cut an expansion at its first `)` before a quote, so the
+# closing `)` and quote are optional here; since v4 it reads the whole expansion.)
 HEADER_LOOKUP: Final = re.compile(
     r"""node\s+-[ep]\s+"require\(\\?'(?:node-addon-api|nan)\\?'\)?"""
     r"""(?:\.(?:include|include_dir|gyp|targets))?"?"""
@@ -845,22 +858,95 @@ HEADER_LOOKUP: Final = re.compile(
 # sources when the file exists: `<!@(node -p "fs.existsSync('src/scanner.c') ? 'src/scanner.c'
 # : ''")`, or (newer templates) `"has_scanner": "<!(node -p \"fs.existsSync('src/scanner.c')\")"`
 # beside `<!(node -p "require('node-addon-api').targets")` (v3 adds `.targets` above).
-# `gyp_commands` cuts an expansion at its first `)` before a quote, so the newer form arrives
-# as `node -p "fs.existsSync('src/scanner.c'`: that `)` closes the call and the command.
+# Before v4 the newer form arrived cut as `node -p "fs.existsSync('src/scanner.c'`, so the
+# rest is optional.
 SCANNER_LOOKUP: Final = re.compile(
     r"""node\s+-p\s+"fs\.existsSync\(\\?'src/scanner\.(c|cc)\\?'(?:\)"""
     r"""(?:\s*\?\s*\\?'src/scanner\.\1\\?'\s*:\s*\\?'\\?')?"?)?"""
 )
 
 
+# v4: two more ways to print a directory: `node-addon-api`'s own, without its `index.js`
+# (`@ohos-ports/zlib`), and one of the package's directories as an absolute path
+# (`node -p "require('path').resolve('lib')"`, `pwaos-addon`). Exact forms only.
+PATH_LOOKUP: Final = re.compile(
+    r"""node\s+-e\s+"console\.log\(require\.resolve\('node-addon-api'\)"""
+    r"""\.replace\(/\[\\\\/\]index\.js\$/, ''\)\)\""""
+    r"""|node\s+-p\s+"require\('path'\)\.resolve\('(?!\.\.)[\w-]+(?:/[\w-]+)*'\)\""""
+)
+
+
 def header_lookup(command: str) -> bool:
     """Whether a `binding.gyp` command only looks up `node-addon-api`'s or `nan`'s headers, or
-    (v3) whether tree-sitter's `src/scanner.c` exists."""
+    (v3) whether tree-sitter's `src/scanner.c` exists, or (v4) prints a directory
+    (`PATH_LOOKUP`)."""
     command = command.strip()
     return (
         HEADER_LOOKUP.fullmatch(command) is not None
         or SCANNER_LOOKUP.fullmatch(command) is not None
+        or PATH_LOOKUP.fullmatch(command) is not None
     )
+
+
+# v4: a `binding.gyp` command that runs a package script with constant arguments
+# (`<!@(node scripts/sources.mjs zint)`): how add-ons list the sources of vendored libraries.
+# It counts only when that script (and what it loads) can do nothing but read the package:
+# `gyp_scripts`.
+GYP_NODE_FILE: Final = re.compile(
+    r"node\s+(?:\./)?(?P<path>[\w./-]+\.(?:js|cjs|mjs))(?:\s+[\w.:=-]+)*"
+)
+# What writes, moves or opens a file (or deletes one: `DELETES`). A gyp action that writes is
+# how `@atedone/workspace-bootstrap@0.0.1` (unwanted) left its state behind.
+# The specific names count wherever they appear (`fs["writeFileSync"]`, `Reflect.apply(...)`);
+# the short ones (`open`, `cp`, `link`, `write`) when called or quoted, and `write` not on
+# `process.stdout`/`stderr`.
+WRITES: Final = re.compile(
+    r"\b(?:writeFile|appendFile|createWriteStream|mkdir|mkdtemp|copyFile|rename|symlink|chmod"
+    r"|lchmod|chown|lchown|truncate|ftruncate|utimes|lutimes|futimes|writev|cpSync|openSync"
+    r"|linkSync|writeSync)(?:Sync)?\b"
+    r"|\b(?:open|cp|link)\s*\(|(?<!stdout\.)(?<!stderr\.)\bwrite\s*\("
+    r"""|["'`](?:open|cp|link|write)["'`]"""
+)
+
+
+def gyp_scripts(change: CodeChange) -> list[str] | None:
+    """The package scripts `binding.gyp` runs besides its header lookups, when every one of
+    them is `node <script> <constant args>` and the scripts only read: JavaScript the parser
+    and a reader see (`plain_text`, not `unreadable`), with no capability beyond `INERT`, no
+    package loaded by name, no write (`WRITES`, `DELETES`), and none of S5's text guards
+    (`RISKY_TEXT`, `SYSTEM_PATH`, `OTHER_PACKAGE`, home or agent directories); for an update,
+    no capability the install code didn't have before. None when another command runs."""
+    scripts_run = []
+    for command in change.build_commands:
+        if header_lookup(command):
+            continue
+        match = GYP_NODE_FILE.fullmatch(command.strip())
+        if match is None or match.group("path") not in change.install_files:
+            return None
+        scripts_run.append(match.group("path"))
+    if not scripts_run:
+        return []
+    install = change.install
+    shipped = {p: c for p, c in change.install_files.items() if p != GYP_INLINE}
+    if install is None:
+        return None
+    caps = {u.use.capability for u in install.uses if u.path != GYP_INLINE}
+    text = "\n".join(c.decode("utf-8", "replace") for c in shipped.values())
+    if (
+        not caps <= INERT
+        or any(p.path != GYP_INLINE for p in install.packages)
+        or not all(language_for(p) is not None and plain_text(c) for p, c in shipped.items())
+        or unreadable(text)
+        or any(rx.search(text) for rx in (WRITES, DELETES, RISKY_TEXT, SYSTEM_PATH, OTHER_PACKAGE))
+        or user_wide(change)
+        or names_agent_dir(change.install_files)
+    ):
+        return None
+    if change.before is not None and caps - (
+        change.install_before.capabilities if change.install_before else frozenset()
+    ):
+        return None
+    return sorted(set(scripts_run))
 
 
 def _build_tool(command: str, manifest: Mapping[str, Any]) -> bool:
@@ -904,10 +990,16 @@ class InstallBuildTool(BaseRule):
     and `npx @mapbox/node-pre-gyp install --fallback-to-build` join the list; Playwright's
     browser download (`PLAYWRIGHT_HOOKS`) when the package depends on Playwright; tree-sitter's
     `src/scanner.c` test in `binding.gyp` counts as a lookup (`SCANNER_LOOKUP`); and a tool the
-    package's own `bin` names (`tool_shadowed`) is the package's code, not the tool."""
+    package's own `bin` names (`tool_shadowed`) is the package's code, not the tool.
+
+    v4 (2026-11-10, `docs/proposals/precision-round5-I.md`): `binding.gyp` is read with
+    `ecosystems.npm.gyp` (every command expansion however it is embedded); a gyp command may
+    also run a package script that only reads the package (`gyp_scripts`); and
+    `node-gyp-build || exit 0` and
+    `JOBS=${JOBS:-max} node-gyp-build` join the hook lines."""
 
     id = "npm.install-build-tool"
-    version = 3
+    version = 4
     severity = Severity.INFO
     weight = 0.0
     title = "Install hooks only run a build tool"
@@ -919,10 +1011,12 @@ class InstallBuildTool(BaseRule):
         }
         if (
             not hooks
-            or not all(header_lookup(command) for command in change.build_commands)
             or not all(_build_tool(command, change.snapshot.manifest) for command in hooks.values())
             or tool_shadowed(change.snapshot.manifest, hooks.values())
         ):
+            return ()
+        listed = gyp_scripts(change)
+        if listed is None:
             return ()
         gyp = (
             "only looks up `node-addon-api` or `nan` headers"
@@ -931,6 +1025,11 @@ class InstallBuildTool(BaseRule):
         )
         if any(SCANNER_LOOKUP.fullmatch(c.strip()) for c in change.build_commands):
             gyp = "only looks up headers and whether tree-sitter's `src/scanner.c` exists"
+        if listed:
+            gyp = (
+                "only looks up headers and runs package scripts that read the package and "
+                "print build inputs (" + ", ".join(f"`{p}`" for p in listed) + ")"
+            )
         return (
             self.finding(
                 "Every install hook only runs a build tool ("

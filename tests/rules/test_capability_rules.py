@@ -18,6 +18,7 @@ from kitsunox.ecosystems.npm.rules.install_code import (
     InstallScriptChanged,
     InstallScriptCode,
     InstallScriptObfuscated,
+    gyp_scripts,
     header_lookup,
 )
 from kitsunox.rules.capabilities import CapabilityGained, FunctionConstructor
@@ -678,6 +679,126 @@ def test_playwright_download_needs_playwright_and_a_tool_the_package_names_is_it
             }
         )
     )
+
+
+GYP_SOURCES = b"""{"targets": [{"target_name": "x",
+  "include_dirs": ["<!(node -p \\"require('node-addon-api').include_dir\\")"],
+  "sources": ["<!@(node scripts/sources.mjs zint)", "<!@(node ./scripts/sources.mjs zxing)"]}]}"""
+LISTER = b"""import {readdirSync} from 'node:fs'
+import path from 'node:path'
+const dir = path.join(import.meta.dirname, '..', 'vendor', process.argv[2])
+console.log(readdirSync(dir).filter((f) => f.endsWith('.c')).map((f) => `vendor/${f}`).join(' '))
+"""
+
+
+def test_build_tool_v4_gyp_scripts_that_only_read() -> None:
+    """v4 (round 5, I): `<!@(node scripts/sources.mjs zint)`, a package script that lists the
+    sources of a vendored library, is a lookup when the script can only read the package."""
+    rule = InstallBuildTool()
+    files = {"binding.gyp": GYP_SOURCES, "scripts/sources.mjs": LISTER}
+    hooked = _hooked({"install": "node-gyp rebuild -j max"}, files)
+    assert gyp_scripts(hooked) == ["scripts/sources.mjs"]
+    (finding,) = rule.evaluate_code(hooked)
+    assert "`scripts/sources.mjs`" in finding.explanation
+    assert gyp_scripts(_hooked({"install": "node-gyp rebuild"}, {"binding.gyp": GYP_HEADERS})) == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        # `@atedone/workspace-bootstrap@0.0.1` (unwanted): the gyp step writes local state
+        b"import fs from 'node:fs'; fs.writeFileSync('.state', 'x')",
+        b"const fs = require('fs'); fs.promises.appendFile('x', 'y')",
+        b"const fs = require('fs'); fs['writeFileSync']('x', 'y')",
+        b"const fs = require('fs'); const w = 'write'; fs[w + 'FileSync']('x', 'y')",
+        b"const fs = require('fs'); fs.open('x', 'w', () => {})",
+        b"const fs = require('fs'); fs.rmSync('vendor', {recursive: true})",
+        b"require('fs').readFileSync(require('os').homedir() + '/.npmrc')",
+        b"const fs = require('fs'); fs.readdirSync('/etc')",
+        b"require('child_process').execSync('id')",
+        b"fetch('https://example.invalid/x')",
+        b"require('some-package').list()",
+        b"const fs = require('fs'); fs.readdirSync(require.resolve('other'))",
+        b"const fs = require('fs');" + b" " * 80 + b"fs.readdirSync('.')",
+        b"const fs = require('fs'); " + b"x" * 1200,
+        b"\xff\xfe" + "fs.readdirSync('.')".encode("utf-16-le"),
+    ],
+)
+def test_build_tool_v4_gyp_scripts_that_do_more_are_commands(script: bytes) -> None:
+    files = {"binding.gyp": GYP_SOURCES, "scripts/sources.mjs": script}
+    hooked = _hooked({"install": "node-gyp rebuild"}, files)
+    assert gyp_scripts(hooked) is None
+    assert not InstallBuildTool().evaluate_code(hooked)
+
+
+def test_build_tool_v4_only_constant_node_script_commands() -> None:
+    rule = InstallBuildTool()
+    for command in (
+        "node scripts/sources.mjs $(id)",
+        "node scripts/sources.mjs zint > out.txt",
+        "node scripts/missing.mjs zint",
+        "node -e \"require('./scripts/sources.mjs')\"",
+        "sh scripts/sources.sh",
+    ):
+        gyp = b'{"targets": [{"sources": ["<!@(' + command.replace('"', '\\"').encode() + b')"]}]}'
+        files = {"binding.gyp": gyp, "scripts/sources.mjs": LISTER, "scripts/sources.sh": b"ls"}
+        assert not rule.evaluate_code(_hooked({"install": "node-gyp rebuild"}, files)), command
+    action = b"{'targets': [{'actions': [{'action': ['node', 'scripts/sources.mjs', 'zint']}]}]}"
+    files = {"binding.gyp": action, "scripts/sources.mjs": LISTER}
+    assert rule.evaluate_code(_hooked({"install": "node-gyp rebuild"}, files))
+
+
+def test_build_tool_v4_update_gaining_a_capability_is_not_explained() -> None:
+    files = {"binding.gyp": GYP_SOURCES, "scripts/sources.mjs": LISTER}
+    snapshot = SNAP.model_copy(update={"manifest": {"scripts": {"install": "node-gyp rebuild"}}})
+    before = {"binding.gyp": GYP_SOURCES, "scripts/sources.mjs": b"console.log('a.c')"}
+    tree = dict(PLAIN) | files
+    gained = code_change(
+        snapshot,
+        tree,
+        dict(PLAIN) | before,
+        CACHE,
+        install_sources,
+        "1.0.0",
+        build_commands=gyp_commands,
+    )
+    assert gyp_scripts(gained) is None
+    same = code_change(
+        snapshot, tree, tree, CACHE, install_sources, "1.0.0", build_commands=gyp_commands
+    )
+    assert gyp_scripts(same) == ["scripts/sources.mjs"]
+
+
+def test_build_tool_v4_path_lookups() -> None:
+    assert header_lookup(
+        "node -e \"console.log(require.resolve('node-addon-api').replace(/[\\\\/]index.js$/, ''))\""
+    )
+    assert header_lookup("node -p \"require('path').resolve('lib')\"")
+    assert header_lookup("node -p \"require('path').resolve('src/native')\"")
+    for command in (
+        "node -p \"require('path').resolve('../x')\"",
+        "node -p \"require('path').resolve(process.env.HOME)\"",
+        "node -p \"require('path').resolve('lib'), require('x')\"",
+        "node -e \"console.log(require.resolve('evil').replace(/[\\\\/]index.js$/, ''))\"",
+    ):
+        assert not header_lookup(command), command
+    gyp = (
+        b"""{"targets": [{"include_dirs": ["<!(node -p \\"require('path').resolve('lib')\\")"]}]}"""
+    )
+    assert InstallBuildTool().evaluate_code(
+        _hooked({"install": "node-gyp rebuild"}, {"binding.gyp": gyp})
+    )
+
+
+def test_build_tool_v4_hook_lines() -> None:
+    rule = InstallBuildTool()
+    for command in (
+        "node-gyp-build || exit 0",
+        "JOBS=${JOBS:-max} node-gyp-build",
+    ):
+        assert rule.evaluate_code(_hooked({"install": command})), command
+    for command in ("node-gyp-build || node x.js", "JOBS=$(id) node-gyp-build"):
+        assert not rule.evaluate_code(_hooked({"install": command})), command
 
 
 def test_function_constructor_counts_for_new_packages_and_gains() -> None:
