@@ -273,6 +273,20 @@ def test_an_inert_install_makes_only_the_install_hook_low() -> None:
         assert kept.history[-1].forwarded and kept.findings[1] == other
 
 
+def test_a_missing_hook_target_makes_only_the_install_hook_low() -> None:
+    """Round 6 (Q1): Stage 2's `npm.artifact.install-target-missing` (every hook runs a file
+    the package doesn't ship) explains `npm.install-hook` and nothing else."""
+    hook = finding("npm.install-hook", Severity.MEDIUM, 5.0)
+    missing = finding("npm.artifact.install-target-missing", Severity.INFO, 0.0)
+    result = correlate(candidate("1.0.1", hook, missing), CTX, [])
+    assert not result.history[-1].forwarded
+    assert (result.findings[0].severity, result.findings[0].weight) == (Severity.LOW, 1.0)
+    assert result.findings[0].explanation.endswith("(npm.artifact.install-target-missing).")
+    other = finding("static.obfuscated", Severity.MEDIUM, 3.0)
+    kept = correlate(candidate("1.0.1", hook, other, missing), CTX, [])
+    assert kept.history[-1].forwarded and kept.findings[1] == other
+
+
 def test_run_reads_every_triaged_version(tmp_path: Path) -> None:
     routed, quiet = candidate("1.0.1"), candidate("2.0.0", name="other")
     analysed = routed.model_copy(update={"findings": (finding("s2", Severity.MEDIUM, 3.0),)})
