@@ -107,6 +107,8 @@ is the malicious set.
 | `npm.install-explained` (v2) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
 | `npm.install-persistence` (v1) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
+| `npm.install-script-loader` (v1) | a shell, PowerShell or batch install script (run by a hook or started by install code) or a hook command line, comments and messages aside, fetches or decodes code and runs it, or hides it: `curl ... \| sh`, `bash -c "$(curl ...)"`, `base64 -d \| sh`, `/dev/tcp/`, `-EncodedCommand`, `irm ... \| iex`, `iex` of decoded text, `[char]` chains, `-join` reversals, `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta`, `regsvr32 /i:http`, batch substring chains, code behind 100+ spaces that the hidden-code check skips; only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3); LOW (weight 1) for a download piped into a shell from the package's own site | live: 0 of the 3,716 verdicted versions change (64 have install scripts); 0 fires in a day of 2,044 hooked versions | `vm-day1`: fires on 8 malicious samples, all reported already (one, `@optimystic99/dev-utils@1.0.17`, otherwise only by `npm.install-hook`); 0 of 1,452 benign |
+| `npm.install-script-exfil` (v1) | the same scripts and hook lines pipe command output into an upload, upload a file, read the cloud metadata service, or name a credential file (SSH private key, `~/.npmrc`, `.aws/credentials`, ...); only shapes new to the install code; [below](#shell-powershell-and-batch-loaders-in-install-code-npminstall-script-loader-npminstall-script-exfil-2026-11-10) | MEDIUM (weight 3) | live: as above, 0 | `vm-day1`: fires on 81; **3 newly reported** (`justgetit@1.2.4`, `ts-form-helpers` 1.0.3 and 1.0.12), 0 lost; 0 of 1,452 benign |
 | `agent.hostile-instructions` | agent text the install code may copy (`CodeChange.agent_files`) tells the agent to hide its activity from the user, ignore its earlier instructions, switch off its safeguards, or send credential files away | MEDIUM | live: 0 of the 3,244 reported verdicts, 0 of 3,552 hooked versions in the retained runs (narrowed after 2 benign live and 2 benign unreviewed packages) | `vm-day1`: 0 of 433 (one names an agent directory) |
 | `npm.install-script-obfuscated` (v2) | a file an install hook runs (as `install-script-code` reads them, first 256 KiB each) has 20+ javascript-obfuscator `_0x` identifiers (`static.obfuscated`'s test) or, with identifiers renamed, the tool's string-array rotation prologue (`while(!![]){try{const x=parseInt(`). On updates, only an obfuscated file that is new to the install code or changed | HIGH | `vm-day1`: 0 of 1,500 | `vm-day1`: 100 of 3,444 |
 | `code.function-constructor` (v1) | a version's code reaches the Function constructor through `constructor` (extractor v5). New packages count; on an update, only a form the previous version's code didn't use | MEDIUM (a constructor's constructor, or Node's loader handed over) / LOW (a function literal's otherwise) | `vm-day1`: 2 of 1,500 (both LOW); live: ~3 reports a day | `vm-day1`: 4 of 3,443, all LOW (recall unchanged); live: `txnforge`, `mock-datas-lib` and 3 unreviewed |
@@ -707,6 +709,22 @@ add --scope user`, `codex mcp add`, also as `"$CLAUDE_BIN" plugin install`). Tha
 install` in `install.sh`) are seen; every install rule reads these scripts too. A binary the
 install code runs (`tmailcli`'s `install-skill`) stays unread.
 
+Script masking (2026-11-10, round 4 G, [precision-round4-G](../proposals/precision-round4-G.md)):
+`code_text` reads a shell, PowerShell or batch file with `lang.shell.mask_script_messages`,
+which `npm.install-script-loader` uses too. Two things changed for every install rule that
+reads script text (this one, `install-script-code`'s hidden-code check, `install-script-changed`'s
+`TOUCHED`): a message printed through the script's own print-only function is blanked
+(`@ornexus/neocortex@4.61.5`'s `info "Para persistir: echo 'export ...' >> ~/.bashrc"` was a
+`shell-rc` write), and an `echo` that pipes, writes a file or chains a command is kept
+(`echo 'export PATH=...' >> ~/.zshrc` is the usual rc write; before, every `echo` line was
+blanked). It also fixes a line-number bug: the old pattern's `^\s*` ran from a blank line into
+the comment after it and blanked the newline, so every later line of the script read one off
+(`node-sword-interface@1.0.127`'s changed `git clone` line was compared as the line after it).
+Measured with the real code on the 64 verdicted live versions with install scripts (the only
+ones it can change): **1 benign newly reported**, `node-sword-interface@1.0.127` (that
+`git clone` URL line, now seen by `install-script-changed` v5), no positive changed;
+`vm-day1`: the 4 samples with install scripts decide as before.
+
 It fires only when the install code is new or changed since the previous version
 (`ONLY_WHEN_CHANGED`), where the install rules already look: it names what that code does and
 adds no report for an installer that is the same as in the version before. Two variants were
@@ -849,6 +867,83 @@ configuration edits in `bin/build.js`; the Telegram code that makes the family m
 limits: a change that only edits a value another line runs (a bare command name, a path
 without a lexicon word) or that removes a guard is LOW; install code a hook starts through a
 spawned shell script or a binary is not read at all.
+#### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, `npm.install-script-exfil`, 2026-11-10)
+#### Shell, PowerShell and batch loaders in install code (`npm.install-script-loader`, 2026-11-10)
+
+The owner, 2026-11-10: "the scripts triggered by the package should be analyzed. For example
+if that .ps1 file had obfuscation it should be flagged." A shell, PowerShell or batch script
+is install code when a hook names it (`"postinstall": "sh setup.sh"`, `powershell -File
+x.ps1`: `install.files_named`) or install code starts it by a constant name
+(`install.spawned_scripts`, round 4 A). Before this rule and the script masking above, what read such a script:
+
+| Rule | Reads a `.sh`/`.ps1`/`.bat`/`.cmd` install script? |
+|---|---|
+| Stage 2 file rules (`exfil-endpoint`, `hardcoded-ip`, `encoded-url`, `sensitive-path`, `env-harvest`, `shell-startup`, `encoded-blob` LOW, `padded-code`) | yes: every new text file, whatever its suffix. `static.obfuscated` (`_0x` names), `dynamic-code` (`eval(`), `process-exec` and `network` (`require(...)`) are JavaScript forms and never match a script; `padded-code` needs `(` or `=` in the hidden tail, so `curl ... \| sh` behind spaces is not code to it |
+| `npm.install-script-code` capabilities | no: tree-sitter profiles JavaScript only, so a script has no capability |
+| `npm.install-script-code` v3 hidden code | yes, on `code_text`, which blanked every `echo` line whole: code pushed off screen after an `echo` on the same line was missed (fixed by the script masking above, 2026-11-10) |
+| `npm.install-script-changed` v5 | updates only: its `TOUCHED` lexicon (`curl`, `iex`, `powershell`, `certutil`, `\| sh`, base64 runs) keeps the MEDIUM when a script's changed lines have them; a new package has no base, so nothing |
+| `npm.install-script-obfuscated` | runs on scripts, but its tests (`_0x`, javascript-obfuscator's rotation prologue) never match one |
+| `npm.install-persistence` | yes: agent paths, shell rc, persistent PATH, system packages |
+
+So a new package whose hook runs `install.ps1` with `-EncodedCommand`, `[char]` codes or
+`irm ... | iex` was reported only by `npm.install-hook` (MEDIUM for a new package), and an
+update whose script gained one only by `install-script-changed`. A script run by the hook and
+one spawned from JavaScript get the same reading (both are in `install_sources`); a script that
+another script starts is not followed, and a hook path written Windows-style
+(`.\scripts\x.ps1`) is not resolved (`files_named` strips `./` only).
+
+`npm.install-script-loader` (MEDIUM, weight 3; `ecosystems/npm/rules/install_loader.py`) reads
+the shell, PowerShell and batch install scripts (and a suffix-less file starting `#!`) and the
+hook command lines, with comment lines and message lines blanked (`lang.shell.
+mask_script_messages`: a line starting with `echo`, `printf`, `Write-Host`, or a function the
+script defines that only prints, such as `info() { echo -e "  $1"; }`, when nothing outside its
+quotes pipes, redirects to a file, chains another command or substitutes one; unlike
+`code_text`, `echo <base64> | base64 -d | sh` stays code), for the precise shapes of a loader
+(`SHAPES`):
+
+- shell: a download piped into a shell (`curl ... | sh`, `wget -qO- ... | sudo bash`; not into
+  `jq` or `python -c`), a shell or `eval` running a download (`bash -c "$(curl ...)"`,
+  `sh <(curl ...)`), decoded data run (`... | base64 -d | sh`, `eval "$(... base64 -d)"`,
+  `xxd -r`, `printf '\x..' | sh`), a reverse shell (`/dev/tcp/host/port`, `nc -e /bin/sh`);
+- PowerShell: `-EncodedCommand`/`-enc` with base64, `iex`/`Invoke-Expression` of a download
+  (`irm ... | iex`, `iex (New-Object Net.WebClient).DownloadString(...)`) or of decoded text
+  (`FromBase64String`, `GetString`, `-join`, `[char]`), `[char]` code chains (8+), a string
+  reversed with `-join ... [-1..`, `[Reflection.Assembly]::Load(`;
+- Windows tools: `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta http:`/
+  `vbscript:`, `rundll32 javascript:`, `regsvr32 /i:http`, batch substring chains
+  (`%v:~3,1%` x8);
+- code after 100+ spaces or tabs on a script line (outside quotes, not a comment) that
+  `npm.install-script-code`'s hidden-code check doesn't report (one whose tail starts with a quote, which that check takes for a string's own padding).
+
+A download piped into a shell from the package's own site (its `homepage`, `repository` or
+`bugs` host, or GitHub under the repository's owner) is LOW, weight 1; one from a raw IP, a
+paste site, a tunnel, a shortener or a file drop says so. On an update only a (shape, host) the
+previous version's install code didn't have counts.
+
+`npm.install-script-exfil` (MEDIUM, weight 3, same module and reading) names what such a script
+sends away (`EXFIL_SHAPES`): command output piped into an upload (`env | curl --data-binary @-`,
+`-d @-`, `-T -`), a file uploaded (`curl -F file=@/etc/passwd`, `--data-binary @file`, `-T file`,
+`wget --post-file`), the cloud metadata service (`169.254.169.254`, `metadata.google.internal`,
+`100.100.100.200`: instance credentials), and credential files (`.ssh/id_rsa`/`id_ed25519`/...,
+`~/.npmrc` under the home directory, `.aws/credentials`, `.git-credentials`,
+`.docker/config.json`, `.kube/config`, `/etc/shadow`). It was added for three `vm-day1`
+malicious samples whose hook runs such a script and that nothing reported: `justgetit@1.2.4`
+(links `~/.ssh/id_ed25519` into the package, then prints instructions addressed to an AI
+agent), `ts-form-helpers` 1.0.3 (`{ env; git config --global --list; } | curl --data-binary @-`)
+and 1.0.12 (a GCP token from `metadata.google.internal`). A bare `env` (reading it in a loop,
+`@codyswann/lisa`) is not a shape.
+
+JavaScript install files are not read:
+there the same text is mostly help messages that `mask_comments_and_messages` keeps (strings
+returned or put in arrays: `bun`'s `install.js`, `agentiqa`, `symbiot`, `gloomberb`), and a
+JavaScript installer that runs `curl | sh` has `process` for `npm.install-script-code`.
+Measured in [precision-round4-G](../proposals/precision-round4-G.md): on the 3,716 verdicted
+live versions neither rule changes a decision (64 have install scripts; only
+`@geekbeer/minion@5.28.0` has a shape, `curl -fsSL https://claude.ai/install.sh | bash`, in
+its base too); a day of live hooked versions (23 runs, 2,044 read): 0 fires; `vm-day1`
+(`pipeline+4` on the 103 malicious samples either rule fires on): 100 → 103 reported, 0 lost.
+Only 4 of the 3,444 `vm-day1` malicious samples run an install script at all; the loader
+shapes there are on hook command lines (`curl ... | node`, `bash -i >& /dev/tcp/...`).
 
 ## Evaluation
 
@@ -870,6 +965,12 @@ spawned shell script or a binary is not read at all.
 
 ## Known limits
 
+- `npm.install-script-loader` and `npm.install-script-exfil` are line patterns on script text,
+  not a shell parser: a command split over variables (`c=curl; $c ... | sh`), built from a
+  `case` table, or run by a script another script starts (not followed) is missed, and a
+  message printed by a function that does more than print is read as code. A download's host
+  is the first URL on the line; one held in a variable is "no host" (MEDIUM). JavaScript
+  install files are not read by either (see their section).
 - The agent-configuration checks are text matching (`lang/agent_config.py`): what a copier
   actually copies is not followed, so every agent file in the package counts, and a hook
   script is matched by file name. A templated hook command (`node ${hookPath}`) is not
