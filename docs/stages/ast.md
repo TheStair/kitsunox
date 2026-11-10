@@ -695,6 +695,18 @@ lines; other files the hooks name, such as a README, are data):
   `apt`, `dnf`, `yum`, `zypper`, `apk`, `pacman -S`, `brew`, `port`, `winget`, `choco`, `scoop`,
   `snap`. "Install it with: brew install x" doesn't start a command.
 
+Since 2026-11-10 the install code includes the shell, PowerShell and batch scripts it starts
+(`install.spawned_scripts`: a constant relative path such as `path.join(__dirname,
+"install.sh")`, the constant tail of a `join` naming a script, `join(dir, "claude-code",
+"scripts", "install.sh")`, or a script's bare name used in the code when at most three package
+files have it), read as data; and the `agent` form includes an agent's own CLI installing into
+its user configuration (`claude plugin install`, `claude plugin marketplace add`, `claude mcp
+add --scope user`, `codex mcp add`, also as `"$CLAUDE_BIN" plugin install`). That is how
+`@ornexus/neocortex@4.60.77` (`install.sh`: `${HOME}/.claude/agents`), `@ziniao-open/cli@0.1.0-beta.175`
+(`setup-ziniao-cli.ps1`: the user PATH) and `anolisa-tokenless@0.9.3` (`claude plugin
+install` in `install.sh`) are seen; every install rule reads these scripts too. A binary the
+install code runs (`tmailcli`'s `install-skill`) stays unread.
+
 It fires only when the install code is new or changed since the previous version
 (`ONLY_WHEN_CHANGED`), where the install rules already look: it names what that code does and
 adds no report for an installer that is the same as in the version before. Two variants were

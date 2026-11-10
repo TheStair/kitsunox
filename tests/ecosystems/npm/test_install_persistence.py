@@ -98,6 +98,15 @@ def test_naming_a_package_manager_is_not_running_one(code: bytes) -> None:
     assert forms(code) == []
 
 
+def test_an_agents_own_cli_installing_user_wide() -> None:
+    """`anolisa-tokenless@0.9.3` (unwanted): its install script runs `claude plugin install`."""
+    assert forms(b'"$CLAUDE_BIN" plugin marketplace add "$SRC"\n', "install.sh") == ["agent"]
+    assert forms(b"claude mcp add --scope user kx -- node s.js\n", "install.sh") == ["agent"]
+    assert forms(b'spawnSync("claude", ["plugin", "install", id])\n') == ["agent"]
+    assert forms(b"claude mcp add kx -- node s.js\n", "install.sh") == []  # project scope
+    assert forms(b'echo "then run: claude plugin install kx"\n', "install.sh") == []
+
+
 def test_shell_files_mask_comments_and_echo_lines() -> None:
     script = b'# sudo apt-get install x\necho "then: brew install y"\nmkdir -p "$HOME/.claude"\n'
     assert forms(script, "install.sh") == ["agent"]

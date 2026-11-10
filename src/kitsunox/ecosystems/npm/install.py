@@ -16,6 +16,10 @@ The package files that code loads or runs by a constant path (`require("./lib/x"
 `MAX_FOLLOWED_BYTES` each, so a hook that loads the whole library doesn't make it all install
 code. `@next2012/aistudio-runtime`'s hook only imports `lib/postinstall.js`.
 
+Shell, PowerShell and batch scripts the install code starts by a constant name
+(`spawned_scripts`, 2026-11-10) are install code too: what `install.sh` writes runs at install
+as much as the JavaScript that spawns it.
+
 A package with a `binding.gyp` is built with `node-gyp rebuild` on install (npm adds that hook
 itself), and gyp runs commands while it builds: an `action`'s command, and a command expansion
 `<!(...)` / `<!@(...)`. Those commands count as install commands (`gyp_commands`), and code they
@@ -106,7 +110,72 @@ def install_sources(files: Mapping[str, bytes]) -> dict[str, bytes]:
             sources[f"{INLINE_PREFIX}{hook}.js"] = "\n".join(inline).encode()
     if inline := [code for command in gyp_commands(files) for code in _inline_code(command)]:
         sources[GYP_INLINE] = "\n".join(inline).encode()
-    return sources | followed_files(sources, files)
+    sources |= followed_files(sources, files)
+    return sources | spawned_scripts(sources, files)
+
+
+# Scripts install code starts with a shell (`spawnSync("sh", [path.join(__dirname,
+# "setup.sh")])`, `execFileSync("bash", [join(dir, "scripts", "install.sh")])`): what they do
+# runs at install as much as the JavaScript does (2026-11-10, round 4: four unwanted installers
+# wrote user-wide agent configuration or PATH entries only from such a script).
+SCRIPT_SUFFIXES: Final = (".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd")
+MAX_SPAWNED: Final = 10
+MAX_SAME_NAME: Final = 3  # a bare script name that matches more package files is ambiguous
+_QUOTED: Final = re.compile(r"""["'`]([^"'`\s$]{1,200})["'`]""")
+_JOIN: Final = re.compile(r"""\b(?:join|resolve)\s*\(([^()]{0,400})\)""")
+
+
+def spawned_scripts(sources: Mapping[str, bytes], files: Mapping[str, bytes]) -> dict[str, bytes]:
+    """Shell, PowerShell and batch scripts of the package that install code names, read as
+    data: a constant relative path (`local_paths`, as `followed_files`), the trailing constant
+    arguments of a `join`/`resolve` call (`join(adapterDir, "claude-code", "scripts",
+    "install.sh")` names the package file ending in `claude-code/scripts/install.sh`), or a
+    script's bare name used anywhere (`"setup-ziniao-cli.sh"`) when at most `MAX_SAME_NAME`
+    package files have it. At most `MAX_SPAWNED` scripts of at most `MAX_FOLLOWED_BYTES` each;
+    scripts are not followed further."""
+    scripts_in = sorted(p for p in files if p.lower().endswith(SCRIPT_SUFFIXES))
+    if not scripts_in:
+        return {}
+    found: dict[str, bytes] = {}
+
+    def add(candidates: list[str]) -> None:
+        for path in candidates:
+            if path not in sources and len(files[path]) <= MAX_FOLLOWED_BYTES:
+                found.setdefault(path, files[path])
+
+    for path, content in sorted(sources.items()):
+        language = "javascript" if _virtual(path) else language_for(path)
+        if language is None:
+            continue
+        directory = "" if _virtual(path) else posixpath.dirname(path)
+        for specifier in local_paths(content, language):
+            joined = posixpath.normpath(posixpath.join(directory, specifier))
+            if joined in files and joined.lower().endswith(SCRIPT_SUFFIXES):
+                add([joined])
+        text = content.decode("utf-8", "replace")
+        for call in _JOIN.finditer(text):
+            parts: list[str] = []
+            for argument in reversed(call.group(1).split(",")):
+                quoted = _QUOTED.fullmatch(argument.strip())
+                if quoted is None:
+                    break
+                parts.insert(0, quoted.group(1))
+            if parts and parts[-1].lower().endswith(SCRIPT_SUFFIXES):
+                tail = posixpath.normpath("/".join(parts)).lstrip("./")
+                if "/" in tail:
+                    matches = [p for p in scripts_in if p == tail or p.endswith("/" + tail)]
+                    add(matches[:MAX_SAME_NAME])
+                else:  # a bare name joined to a directory: the importer's own, or the root
+                    add([p for p in (posixpath.join(directory, tail), tail) if p in files])
+        outside = _JOIN.sub(" ", text)  # a name inside a join was resolved above
+        for literal in _QUOTED.findall(outside):
+            if literal.lower().endswith(SCRIPT_SUFFIXES) and "/" not in literal:
+                same = [p for p in scripts_in if posixpath.basename(p) == literal]
+                if len(same) <= MAX_SAME_NAME:
+                    add(same)
+        if len(found) >= MAX_SPAWNED:
+            break
+    return dict(sorted(found.items())[:MAX_SPAWNED])
 
 
 def followed_files(

@@ -22,6 +22,44 @@ def test_entry_files_from_hook_commands() -> None:
     assert install_commands(files) == {"postinstall": "node ./scripts/setup.js && node 'x.cjs'"}
 
 
+def test_scripts_the_install_code_starts_are_install_code() -> None:
+    """Round 4: `@ornexus/neocortex` (`path.join(__dirname, 'install.sh')`), `@ziniao-open/cli`
+    (a bare `"setup-ziniao-cli.sh"`), `anolisa-tokenless` (`join(dir, 'claude-code',
+    'scripts', 'install.sh')`) did their user-wide writes from a shell script."""
+    from kitsunox.ecosystems.npm.install import install_sources
+
+    code = (
+        b"const a = path.join(__dirname, 'install.sh');\n"
+        b'const b = isWin ? "setup.ps1" : "setup.sh";\n'
+        b"const c = join(root, 'claude-code', 'scripts', 'install.sh');\n"
+        b"const d = 'run.sh';\n"
+    )
+    files = tree({"postinstall": "node post.js"}) | {
+        "post.js": code,
+        "install.sh": b"mkdir -p $HOME/.claude",
+        "scripts/setup.sh": b"echo",
+        "scripts/setup.ps1": b"echo",
+        "adapters/claude-code/scripts/install.sh": b"x",
+        "adapters/codex/scripts/install.sh": b"y",
+        "a/run.sh": b"1",
+        "b/run.sh": b"2",
+        "c/run.sh": b"3",
+        "d/run.sh": b"4",
+        "unrelated.sh": b"z",
+    }
+    found = set(install_sources(files))
+    assert {
+        "post.js",
+        "install.sh",
+        "scripts/setup.sh",
+        "scripts/setup.ps1",
+        "adapters/claude-code/scripts/install.sh",
+    } <= found
+    assert "adapters/codex/scripts/install.sh" not in found  # the join names claude-code's
+    assert not any(p.endswith("run.sh") for p in found)  # 4 files named run.sh: ambiguous
+    assert "unrelated.sh" not in found
+
+
 def test_missing_or_hostile_manifests() -> None:
     assert install_entry_files({}) == frozenset()
     assert install_entry_files({"package.json": b"[]"}) == frozenset()

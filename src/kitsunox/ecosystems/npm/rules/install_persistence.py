@@ -216,8 +216,22 @@ XDG_HOME: Final = re.compile(
 )
 
 
+# An agent's own CLI installing into its user configuration: `claude plugin install`,
+# `claude plugin marketplace add` (user scope by default), `claude mcp add --scope user`,
+# `codex mcp add` (`~/.codex/config.toml`); also through a variable holding the CLI
+# (`"$CLAUDE_BIN" plugin install`, `anolisa-tokenless`) or an argument list.
+AGENT_CLI: Final = re.compile(
+    r"(?:\bclaude|\$\{?CLAUDE\w*\}?)[\"']?\s+plugins?\s+(?:install|marketplace\s+add)\b"
+    r"|\bclaude\s+mcp\s+add\b[^\n]{0,200}?(?:--scope[ =]|-s\s+)user\b"
+    r"|\bcodex\s+mcp\s+add\b"
+    r"|[\"'`]claude[\"'`]\s*,\s*\[\s*[\"'`]plugins?[\"'`]\s*,\s*[\"'`](?:install|marketplace)[\"'`]"
+)
+
+
 def _agent_path(text: str) -> re.Match[str] | None:
     if match := AGENT_PATH.search(text):
+        return match
+    if match := AGENT_CLI.search(text):
         return match
     if XDG_HOME.search(text) and (match := XDG_AGENT.search(text)):
         return match
