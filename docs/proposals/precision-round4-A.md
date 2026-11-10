@@ -9,6 +9,68 @@
 > and its addenda of 2026-11-09 (user-wide agent installs, shell rc edits, persistent PATH,
 > system packages and Baileys media tagging are unwanted).
 
+## Update 2026-11-10: rescues for V's losses (commit `81b99d7`), rebased on `main` `4cd4e8a`
+
+The integrator asked for three follow-ups after the first report.
+
+**R1. The install code includes the scripts it starts** (`install.spawned_scripts`, Stage 3,
+zero-loss). A shell, PowerShell or batch script the install code names by a constant relative
+path (`path.join(__dirname, "install.sh")`), by the constant tail of a `join`
+(`join(adapterDir, "claude-code", "scripts", "install.sh")`), or by an unambiguous bare name
+(`"setup-ziniao-cli.sh"`, at most three package files with it) is read as data and becomes
+install code for every install rule. `npm.install-persistence`'s agent form also matches an
+agent's own CLI installing user-wide (`claude plugin install`, `claude plugin marketplace add`,
+`claude mcp add --scope user`, `codex mcp add`, `"$CLAUDE_BIN" plugin install`). Three of V's
+four lost unwanted versions are caught again for what their scripts do:
+`@ornexus/neocortex@4.60.77` (`install.sh` writes `${HOME}/.claude/agents`),
+`@ziniao-open/cli@0.1.0-beta.175` (`setup-ziniao-cli.ps1` sets the user PATH),
+`anolisa-tokenless@0.9.3` (`install.sh` runs `"$CLAUDE_BIN" plugin marketplace add`).
+`tmailcli@0.1.5` stays lost: its Go binary does the install (out of scope). Cost: 2 benign
+reports, both of the ruled-unwanted shape (owner question 3): `@hsusulist/luc@0.3.1` (its
+`install.ps1` adds LUC to the user PATH) and `stock-analyzer-skill@1.30.0` (the postinstall runs
+`claude plugins marketplace add`).
+
+| Live (real code, subset replay merged as before) | Reported | Benign | Unwanted | Malicious | Unverified | Precision |
+|---|---|---|---|---|---|---|
+| round4-base | 1,787 | 1,486 | 224 | 47 | 30 | 15.42% |
+| this branch before R1 | 1,603 | 1,304 | 222 | 47 | 30 | 17.10% |
+| **this branch with R1** | **1,608** | **1,306** | **225** | 47 | 30 | **17.24%** |
+| with R1 + B's install-hook (simulated, section 4b) | 1,489 | 1,189 | 224 | 47 | 29 | 18.56% |
+
+With R1, the branch against round4-base: 187 benign unreported (152 packages), 7 benign newly
+reported; positives lost: `tmailcli@0.1.5` (unwanted) and `hyrox@0.1.6` (unverified); gained: 2
+unwanted (`@myclaw163/clawclaw-cli@0.10.2`, `@phigon/superagent@0.1.4`) and 1 unverified
+(`wkappbot-code@0.3.19`). `vm-day1`: unchanged, 12 of the 18 at-risk samples reported, the 6
+`esoftplay` follow-ons lost (R1 only adds install code, so it can only add findings).
+
+**R2. The 6 `esoftplay` follow-ons: no precise install-path signal.** The install hook is
+`bun ./bin/build.js install`; `bin/build.js` runs `router.js`, `locale.js`, `bun install` and
+`eas update:configure`, never `bin/cli.js`. The install code has no exfil endpoint: its only
+Telegram text is a default project config (`"errorReport": {"telegramIds": ["-1001212227631"]}`).
+The Telegram-bot code (`os.hostname()` and files to `api.telegram.org/bot923808407:...`) is in
+`bin/cli.js`, the package's CLI, which runs only when the user runs `esoftplay`. So "install-run
+code still contains a HIGH exfil match" does not hold for them. The wider guard, "keep V's
+MEDIUM when any file of the package has a HIGH `static.exfil-endpoint` match", was measured on
+the 193 versions V unreports: it keeps 4 benign reported (3 live `esoftplay` 0.0.269 betas,
+reviewed benign though one still carries the same hard-coded bot token, and `colana`'s Telegram
+bridge) and rescues the 6 `vm-day1` samples. It needs the whole package's text in Stage 3
+(today Stage 2 reads only changed files and Stage 3 has no file text outside the install code),
+a cross-stage change; not built. Owner question: the live `esoftplay` betas are benign and
+`vm-day1`'s older versions malicious for the same CLI code.
+
+**R3. `npm.install-persistence` on every version (`ONLY_WHEN_CHANGED = False`)**, replayed
+with the real code on the same subset: 1,654 reported (benign 1,332, unwanted 243, malicious
+47, unverified 32), precision 17.88%, against 17.24% with the default. That is **+18 unwanted,
++2 unverified and +26 benign**. The benign ones are mostly help text: `glimmervoid` x14
+nightlies (a `SetEnvironmentVariable("PATH", ...)` line pushed into a printed array),
+`agentiqa` x4 staging builds, `@mearl/native-host@3.0.5`, `common-context-mcp@3.6.2`. Over the
+verdicted set P then fires on 114 unwanted, 103 benign and 4 unverified versions. Not built.
+
+Commits after the rebase: `15781cf` (P), `47b9cac` (T), `7ffa26e` (H), `ce10495` (V, trade-off),
+`d12c265` (this proposal), `81b99d7` (R1). Gates pass on the rebased tip (2,688 tests). Spot
+check on the rebased code: `hauntview@0.2.9` reported (score 9, two MEDIUMs); all must-keeps
+above reported except `tmailcli@0.1.5` and `hyrox@0.1.6`, as measured.
+
 ## Summary
 
 `npm.install-script-changed` was the decisive rule for 341 benign live reports and for 65
@@ -23,10 +85,10 @@ This round names what those positives do, and then makes the old signal content-
 
 | # | Commit (stage) | What | Benign reports removed | Positives lost (live) | `vm-day1` lost | Kind |
 |---|---|---|---|---|---|---|
-| P | `1aa11ca` `npm.install-persistence` v1 (3), new | install code (new or changed) that works on an AI agent's user-wide configuration, writes a shell start-up file or the persistent PATH, or installs system packages: MEDIUM | 0 (adds 6 benign, 2 unwanted, 1 unverified) | 0 | 0 | **zero-loss** |
-| T | `77d91ec` `static.channel-tagging` v1 (2), new | a Baileys fork that writes a fixed channel into the forwarded-newsletter context of the user's messages: MEDIUM | 0 (adds none) | 0 | 0 | **zero-loss** |
-| H | `300a1cf` `npm.install-script-code` v3 (3) | also code hidden past the edge of the screen (100+ spaces or tabs, then code) in new install code: MEDIUM. For `hauntview@0.2.9` (malicious, after the snapshot) | 0 (fires on no live version in the set) | 0 | 0 | **zero-loss** |
-| V | `2a831b3` `npm.install-script-changed` v5 (3) | the finding stays MEDIUM only when the change touches what an attack needs (processes, network, URLs/hosts, encoded data, credentials, home directory, shell or package-manager commands, whole environment, dynamic code, hidden code, a 4 KB+ literal), or the install code names an agent directory and the home directory; otherwise LOW | **188** (153 packages) | 4 unwanted, 1 unverified | 6 (`esoftplay`) | **trade-off** |
+| P | `15781cf` `npm.install-persistence` v1 (3), new | install code (new or changed) that works on an AI agent's user-wide configuration, writes a shell start-up file or the persistent PATH, or installs system packages: MEDIUM | 0 (adds 6 benign, 2 unwanted, 1 unverified) | 0 | 0 | **zero-loss** |
+| T | `47b9cac` `static.channel-tagging` v1 (2), new | a Baileys fork that writes a fixed channel into the forwarded-newsletter context of the user's messages: MEDIUM | 0 (adds none) | 0 | 0 | **zero-loss** |
+| H | `7ffa26e` `npm.install-script-code` v3 (3) | also code hidden past the edge of the screen (100+ spaces or tabs, then code) in new install code: MEDIUM. For `hauntview@0.2.9` (malicious, after the snapshot) | 0 (fires on no live version in the set) | 0 | 0 | **zero-loss** |
+| V | `ce10495` `npm.install-script-changed` v5 (3) | the finding stays MEDIUM only when the change touches what an attack needs (processes, network, URLs/hosts, encoded data, credentials, home directory, shell or package-manager commands, whole environment, dynamic code, hidden code, a 4 KB+ literal), or the install code names an agent directory and the home directory; otherwise LOW | **188** (153 packages) | 4 unwanted, 1 unverified | 6 (`esoftplay`) | **trade-off** |
 | | **All four** | | **-182 net** | 4 unwanted (+2 gained), 1 unverified (+1 gained) | 6 | |
 
 Live, all four: 1,787 → 1,603 reported, benign 1,486 → 1,304, unwanted 224 → 222, precision
@@ -130,8 +192,8 @@ See [ast.md](../stages/ast.md) (the v5 paragraph).
 | | Reported | Benign | Unwanted | Malicious | Unverified | Precision |
 |---|---|---|---|---|---|---|
 | round4-base (round 3's `fix.jsonl`) | 1,787 | 1,486 | 224 | 47 | 30 | 15.42% |
-| P + T + H (`1aa11ca`, `77d91ec`, `300a1cf`) | 1,796 | 1,492 | 226 | 47 | 31 | 15.47% |
-| P + T + H + V (`2a831b3`) | **1,603** | **1,304** | 222 | 47 | 30 | **17.10%** |
+| P + T + H (`15781cf`, `47b9cac`, `7ffa26e`) | 1,796 | 1,492 | 226 | 47 | 31 | 15.47% |
+| P + T + H + V (`ce10495`) | **1,603** | **1,304** | 222 | 47 | 30 | **17.10%** |
 
 (The replay of the final code was run before H and V's two hidden-code/long-literal kinds were
 added; re-running Stage 3 offline on every dumped `CodeChange` with the final code changes no
@@ -275,7 +337,9 @@ the brief allows for small targeted runs.
    `shieldcortex@5.19.0`, `common-context-mcp@3.6.2`). On the 9 runs of 2026-11-09, which the
    reviewers labelled completely for the user-wide note, it adds 17 unwanted, 3 unverified and
    7 benign: about 7 benign per 9 hourly runs, over the ~5-a-day bar. Not built.
-3. **Benign verdicts that look like the 2026-11-09 unwanted rulings** (P fires on them; most
+3. **Benign verdicts that look like the 2026-11-09 unwanted rulings** (with R1 also
+   `@hsusulist/luc@0.3.1`, user PATH from `install.ps1`, and `stock-analyzer-skill@1.30.0`,
+   `claude plugins marketplace add` at install) (P fires on them; most
    verdicts predate the rulings): `0xray` 4.1.5/4.2.0 (hooks into Grok/Cursor/Codex configs under
    home), `@finebi/finebi-cli@2.0.9` and `@kopplin-co/claude-web-design-skill@0.2.0` (skills
    into `~/.claude/skills`), `agy-statusblocks@0.1.0` (`~/.gemini/antigravity-cli`),
@@ -289,7 +353,7 @@ the brief allows for small targeted runs.
    hard-coded newsletter JID is branding in forwarded-message context") and
    `@lunabotv6/luna-baileys@8.1.0` (unverified, "media uploads carry a Luna-Botv6 newsletter
    attribution") have the shape the 2026-11-09 ruling calls unwanted.
-5. **After the freeze:** follow shell scripts the install code runs by a constant path into the
+5. **Done in R1 (update above):** follow shell scripts the install code runs by a constant path into the
    install code (`ecosystems/npm/install.py`, a shared helper): it would let P see 3 of the 4
    lost installers (`neocortex`, `ziniao`, `anolisa`); `tmailcli`'s Go binary stays unseen.
 6. **For B and the integrator:** in the joint simulation, `@ywabgl/musepool-html-mcp@0.2.0`

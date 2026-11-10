@@ -830,9 +830,10 @@ weight 1, with the note "nothing an attack needs"; the diff stays in the evidenc
 `npm.install-persistence` and `static.channel-tagging` naming the behaviour of the positives that
 relied on this rule (of its 65 unwanted live reports, 51 are now caught by the persistence rule,
 2 by channel tagging, 8 keep v5's MEDIUM), v5 removes **188 benign reports** (153 packages) of
-the 3,716 verdicted live versions and loses **4 unwanted** (`@ornexus/neocortex@4.60.77`,
-`@ziniao-open/cli@0.1.0-beta.175`, `anolisa-tokenless@0.9.3`, `tmailcli@0.1.5`: their
-persistence is in a script or binary the install code spawns, which no rule reads), **1
+the 3,716 verdicted live versions and loses **1 unwanted** (`tmailcli@0.1.5`, whose user-wide
+skill install is done by its Go binary; the other three it lost at first, `@ornexus/neocortex`,
+`@ziniao-open/cli@0.1.0-beta.175` and `anolisa-tokenless`, are caught since the install code
+includes the scripts it starts, 2026-11-10), **1
 unverified** (`hyrox@0.1.6`, a reformatted Node-version check) and **6 `esoftplay`
 follow-ons on `vm-day1`** (0.0.142-m, 0.0.143-w, 0.0.183, 0.0.185, 0.0.256, 0.0.262: build
 configuration edits in `bin/build.js`; the Telegram code that makes the family malicious is in
