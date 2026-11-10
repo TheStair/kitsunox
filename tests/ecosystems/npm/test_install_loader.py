@@ -250,9 +250,20 @@ def test_hidden_code_in_a_script_is_install_script_code() -> None:
 
 
 def test_hidden_code_on_an_echo_line() -> None:
-    """`install_persistence.code_text` blanks every `echo` line, so the v3 check misses code
-    pushed off screen behind one; this rule reports it."""
+    """An `echo` line that goes on to run code (`; rm ...`) is code to `code_text` (script
+    masking, round 4 G), so `npm.install-script-code`'s check reports what hides behind it, and
+    this rule adds nothing."""
     script = b"#!/bin/sh\necho ok" + b"\t" * 150 + b"; rm -rf ./cache\n"
+    change = hooked({"setup.sh": script})
+    (finding,) = InstallScriptCode().evaluate_code(change)
+    assert finding.evidence[0].line_start == 2
+    assert RULE.evaluate_code(change) == ()
+
+
+def test_hidden_code_that_starts_with_a_quote() -> None:
+    """`hidden_code` skips a run followed by a quote (a string's own padding in JavaScript); in
+    a script that is a command: this rule reports it."""
+    script = b"#!/bin/sh\ncd /tmp" + b"\t" * 150 + b'"$P" -c x\n'
     change = hooked({"setup.sh": script})
     assert InstallScriptCode().evaluate_code(change) == ()
     (finding,) = RULE.evaluate_code(change)

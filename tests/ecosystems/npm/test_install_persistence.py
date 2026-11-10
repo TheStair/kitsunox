@@ -142,3 +142,28 @@ def test_the_rule_reports_each_form_once_with_evidence() -> None:
     # Only install code that is new or changed counts (`ONLY_WHEN_CHANGED`).
     assert RULE.evaluate_code(hooked({"setup.js": code}, base=True)) == ()
     assert RULE.evaluate_code(hooked({"setup.js": b"run()\n"})) == ()
+
+
+def test_script_text_keeps_its_lines() -> None:
+    """Round 4 G: `code_text` reads scripts with `lang.shell.mask_script_messages`. The old
+    pattern's `^\\s*` ran from a blank line into the comment after it and blanked the newline,
+    so every later line was one off (`node-sword-interface`'s `build_sword.sh`: the changed
+    `git clone` line read as the next one)."""
+    script = b"fi\n\n# CLONE\ngit clone https://x.invalid/a sword\n"
+    masked = code_text("build.sh", script)
+    assert masked.split("\n")[3] == "git clone https://x.invalid/a sword"
+
+
+def test_message_through_a_print_function_is_not_a_write() -> None:
+    """`@ornexus/neocortex@4.61.5`'s `install.sh:1482` tells the user how to save a key in
+    `~/.bashrc` through its own `info` function; nothing writes the file."""
+    script = (
+        b'info() { echo -e "  $1"; }\n'
+        b'info "Para persistir: echo \'export K=\\"$k\\"\' >> ~/.bashrc"\n'
+    )
+    assert forms(script, "install.sh") == []
+
+
+def test_an_echo_that_writes_the_rc_file_is_a_write() -> None:
+    script = b"echo 'export PATH=\"$HOME/.kx/bin:$PATH\"' >> ~/.zshrc\n"
+    assert forms(script, "install.sh") == ["shell-rc"]

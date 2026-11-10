@@ -333,8 +333,10 @@ _PADDED: Final = re.compile(rf"(?<![ \t])[ \t]{{{HIDDEN_RUN},}}(?=[^\s#])")
 def hidden_in_script(path: str, data: bytes) -> tuple[int, str] | None:
     """In a shell, PowerShell or batch file, code after a run of `HIDDEN_RUN`+ spaces or tabs
     (outside quotes, not a comment) that `npm.install-script-code`'s `hidden_code` doesn't
-    report: one on an `echo` line (`echo ok<150 tabs>; curl ... | sh`), which its masking
-    blanks whole. As (1-based line, the code that follows)."""
+    report: one that starts with a quote (`cd /tmp<150 tabs>"$P" | sh`; in JavaScript a quote
+    there is a string's own padding). Before `code_text` read scripts with
+    `lang.shell.mask_script_messages`, also one on an `echo` line (`echo ok<150 tabs>; curl
+    ... | sh`), which it blanked whole. As (1-based line, the code that follows)."""
     if not is_script(path, data):
         return None
     text = _COMMENT_LINE.sub(_blank, data.decode("utf-8", "replace"))

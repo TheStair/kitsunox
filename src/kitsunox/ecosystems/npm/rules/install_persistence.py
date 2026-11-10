@@ -35,6 +35,7 @@ from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts
 from kitsunox.lang.javascript import language_for, mask_comments_and_messages
+from kitsunox.lang.shell import mask_script_messages
 from kitsunox.rules.static import ShellStartup
 from kitsunox.stages.ast import CodeChange
 
@@ -252,11 +253,16 @@ def _agent_path(text: str) -> re.Match[str] | None:
 
 def code_text(path: str, data: bytes) -> str:
     """An install file's text with comments and messages blanked, offsets and lines kept:
-    JavaScript and TypeScript through `mask_comments_and_messages`; any other file without its
-    comment and `echo`/`print` lines (`_SCRIPT_TALK`)."""
+    JavaScript and TypeScript through `mask_comments_and_messages`; a shell, PowerShell or
+    batch script through `lang.shell.mask_script_messages` (since 2026-11-10: a message printed
+    through the script's own print-only function is blanked too, and an `echo` that pipes or
+    writes a file is kept); any other file without its comment and `echo`/`print` lines
+    (`_SCRIPT_TALK`)."""
     if (language := language_for(path)) is not None:
         return mask_comments_and_messages(data, language).decode("utf-8", "replace")
     text = data.decode("utf-8", "replace")
+    if path.lower().endswith(SCRIPT_SUFFIXES):
+        return mask_script_messages(text)
     return _SCRIPT_TALK.sub(lambda m: " " * len(m.group(0)), text)
 
 
