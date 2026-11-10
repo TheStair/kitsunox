@@ -442,6 +442,38 @@ def test_a_dropped_git_head_is_not_a_cosignal() -> None:
     assert (axios.severity, axios.weight) == (Severity.HIGH, 5.0)
 
 
+def test_a_dependency_is_no_cosignal_for_the_same_account_s_token_ci() -> None:
+    """v6: `@volter/editor-blender@0.1.151`: `aaronvolter` published 0.1.150 from CI with
+    provenance and no trusted publisher (the account's own token), and 0.1.151 by hand with an
+    added dependency. One step lower. An install hook still counts (`@ctrl/*`, `@squawk/*`:
+    the same shape in `vm-day1`), as does another account or a trusted publisher before."""
+    deps = {"dependencies": {"@volter/editor-movie": "0.5.212"}}
+    old = snap(
+        "0.1.150", publisher="aaronvolter", has_provenance=True, maintainers=("aaronvolter",)
+    )
+    new = snap("0.1.151", deps, publisher="aaronvolter", maintainers=("aaronvolter",))
+    (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
+    (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
+    assert (small.severity, small.weight) == (Severity.LOW, 1.0)
+    assert (watched.severity, watched.weight) == (Severity.MEDIUM, 3.0)
+    assert "this account's own token" in small.explanation
+    hook = snap(
+        "0.1.151",
+        deps | {"scripts": {"postinstall": "node bundle.js"}},
+        publisher="aaronvolter",
+        maintainers=("aaronvolter",),
+    )
+    (worm,) = PublishMethodDowngrade().evaluate(change(hook, old), CTX)
+    assert (worm.severity, worm.weight) == (Severity.MEDIUM, 3.0)
+    assert "npm.install-hook" in worm.explanation
+    other = snap("0.1.151", deps, publisher="mallory", maintainers=("aaronvolter", "mallory"))
+    (stolen,) = PublishMethodDowngrade().evaluate(change(other, old), CTX)
+    assert (stolen.severity, stolen.weight) == (Severity.MEDIUM, 3.0)
+    oidc = snap("0.1.150", publisher="aaronvolter", has_provenance=True, trusted_publisher="github")
+    (axios,) = PublishMethodDowngrade().evaluate(change(new, oidc), CTX)
+    assert (axios.severity, axios.weight) == (Severity.MEDIUM, 3.0)
+
+
 def test_a_downgrade_on_a_prerelease_is_low() -> None:
     """v3: `@builder.io/dev-tools@1.95.0-dev.…` and `@koda-sl/baker-cli@0.594.0-dev.…`, built by
     hand between CI releases."""

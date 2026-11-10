@@ -425,6 +425,29 @@ class DependencyAdded(BaseRule):
         ]
 
 
+SAME_ACCOUNT_CI_NOTE: Final = (
+    " A dependency was added, but `{publisher}` also published {previous}, whose provenance "
+    "came from CI with this account's own token (no trusted publishing): the same credential "
+    "used by hand."
+)
+
+
+def token_ci_by_same_account(change: Change) -> bool:
+    """The previous release has a provenance attestation but no trusted publisher (CI
+    published it with an access token) and was published by the account that publishes this
+    release (`PublishMethodDowngrade` v6)."""
+    previous = change.previous
+    if previous is None:
+        return False
+    old = previous.publish
+    return (
+        old.has_provenance
+        and old.trusted_publisher is None
+        and old.publisher is not None
+        and old.publisher == change.new.publish.publisher
+    )
+
+
 class PublishMethodDowngrade(BaseRule):
     """The previous release was published with trusted publishing (OIDC from CI) or carried a
     provenance attestation, and this one has neither. Typical of a stolen token being used from
@@ -462,10 +485,23 @@ class PublishMethodDowngrade(BaseRule):
     `claude-mem`, `@adea-ai/themes`, `@react-native-kakao/user`). The finding still names the
     missing commit; `npm.provenance.githead-dropped` still reports it (weight 1 here). Known
     gap, as v4's: a stolen token used for a code-only release of a watched package is MEDIUM
-    weight 3 here (weak alone) and needs Stages 2-3 to see its code."""
+    weight 3 here (weak alone) and needs Stages 2-3 to see its code.
+
+    v6 (2026-11-10, round 6 N, D2): an added dependency alone is no co-signal when the
+    previous release had provenance *without* trusted publishing and was published by the
+    account that publishes this one (`token_ci_by_same_account`). Such a provenance came from
+    CI running `npm publish --provenance` with that account's own access token, so the account
+    publishing by hand is the same credential used a second way, not a move off OIDC. 13 benign
+    live reports were exactly this (`@volter/*`, `@wenathlan/*` x3, `@oliverames/*` x2,
+    `moshcode`, `pi-graphnav`, ...), each a maintainer's hand release adding a dependency. The
+    38 `vm-day1` worm samples of this shape (`@ctrl/*`, `@squawk/*`, `@nx/*`, `ngx-toastr`)
+    all add or change an install hook, which still counts; the 107 that count on an added
+    dependency (`axios@1.14.1`, `@mastra/*`) left trusted publishing and keep it. A token
+    thief who only adds a dependency in this shape is one step lower here; the dependency's
+    own Stage 4 findings (fresh-foreign, known malware, non-registry) still apply."""
 
     id = "npm.publish-method.downgrade"
-    version = 5
+    version = 6
     severity = Severity.HIGH
     weight = 5.0
     title = "Published without the CI provenance the previous release had"
@@ -488,6 +524,11 @@ class PublishMethodDowngrade(BaseRule):
         if parsed is not None and parsed.is_prerelease:
             severity, weight = Severity.LOW, 1.0
             note = ""
+        elif cosignals == [DependencyAdded.id] and token_ci_by_same_account(change):
+            severity, weight = (Severity.MEDIUM, 3.0) if watched else (Severity.LOW, 1.0)
+            note = SAME_ACCOUNT_CI_NOTE.format(
+                publisher=new.publisher, previous=change.previous.ref.version
+            )
         elif cosignals:
             severity, weight = (None, None) if watched else (Severity.MEDIUM, 3.0)
             note = f" With: {', '.join(cosignals)}."

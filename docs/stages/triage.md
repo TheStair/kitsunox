@@ -83,7 +83,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 | Rule | Sev. | Fires on benign | Recall, shape A | Recall, shape B | Caught by this rule only (A / B) |
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
-| `npm.publish-method.downgrade` (v5): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
+| `npm.publish-method.downgrade` (v6): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5; an added dependency alone is none when the previous release came from token CI by the same account, v6): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
 | `npm.dependency.non-registry` (v6): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious` (v4): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
@@ -211,6 +211,24 @@ commit. Live, real code: 9 benign reports fewer (`@daytona/*` and `@daytonaio/*`
 `claude-mem@15.8.2`, `@adea-ai/themes@0.11.6`, `@react-native-kakao/user@3.2.0`), no positive
 changes; no `vm-day1` sample changes. **Recall risk** (v4's known gap, now for watched
 packages too): a stolen token used for a code-only release needs Stages 2-3 to see its code.
+
+`npm.publish-method.downgrade` v6 (2026-11-10, round 6 N D2): an added dependency alone is
+no co-signal when the previous release had provenance *without* trusted publishing and was
+published by the account that publishes this one (`token_ci_by_same_account`): CI published
+it with that account's own token (`npm publish --provenance`), so a hand publish by the same
+account is the same credential used a second way, not a move off OIDC. One step lower, as
+without a co-signal. Live: 13 benign reports fewer (`@volter/editor-*` x2, `@wenathlan/*` x3,
+`@oliverames/mcp-server-for-*` x2, `@godown/cli`, `@infernetprotocol/cli`,
+`@profullstack/profile`, `moshcode`, `opencode-github-release`, `pi-graphnav`), no positive
+changes. On `vm-day1` the 38 worm samples of this shape (`@ctrl/*`, `@squawk/*`, `@nx/*`,
+`ngx-toastr`) all add or change an install hook, which still counts, and the 107 whose
+co-signal is a new dependency (`axios@1.14.1`, `@mastra/*`) left trusted publishing: none
+changes. As for any LOW downgrade, an unwatched such release is no longer flagged, so Stage 2
+reads its code only through `code_route` (it grew, it has an install hook, or it is at most
+64 KiB): 9 of the 13 lost only LOW Stage 2-3 findings that way. **Recall risk:** a thief with
+such a token who only adds a dependency is one step lower here, and a code-only payload in a
+large unwatched release needs another Stage 1 signal to be read; the dependency's own Stage 4
+findings (fresh-foreign, known malware, non-registry) still apply.
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10
