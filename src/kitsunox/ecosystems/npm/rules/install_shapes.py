@@ -50,10 +50,12 @@ checksum shipped in the same release proves nothing about its author anyway.
   what it is (`uname`, `sysctl`, `ldd --version`), with no shell chaining beyond `&&`/`cd`
   and no `tar` option that runs a command; and no worker, `vm`, WebAssembly or native load runs
   code another way. Every hook is plain `node <file>`, every install file JavaScript; the code
-  loads no package by name (whose code could run anything), never names the home directory or
-  an agent directory, and sends nothing (`method: "POST"`, `.post(`). A downloader that runs
-  what it fetched (`@byteplus/arkcli-probe-*`, unwanted: it then installs skills into every
-  agent) or fetches from someone else's host stays reported.
+  loads no package by name (whose code could run anything) and no package file it doesn't ship
+  (maybe the one it downloaded), has no inline `node -e` code, never names the home directory,
+  an agent directory, another installed package, a system directory or the user's project
+  (comments and messages aside), and sends nothing (`method: "POST"`, `.post(`). A downloader
+  that runs what it fetched (`@byteplus/arkcli-probe-*`, unwanted: it then installs skills into
+  every agent) or fetches from someone else's host stays reported.
 
 (S4, build-tool-only hooks, is `npm.install-build-tool`.) Every shape also needs: no install
 hook that is shell beyond `node <file>` (`curl`, `| sh`, `$(...)`), no command from
