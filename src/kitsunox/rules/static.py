@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import functools
 import ipaddress
+import itertools
 import re
 from collections.abc import Sequence
 from typing import ClassVar, Final
@@ -145,8 +146,25 @@ class ExfilEndpoint(RegexRule):
     # token (`bot7123…:AA…`), a shell `bot$TOKEN` and a `webhook.site` host near a UUID
     # (`hostname: 'webhook.site', path: '/89403f83-…'`).
 
+    # v9 (2026-11-11, `docs/proposals/precision-round5-L.md` L2, L3): LOW, weight 1, for what
+    # can't be the endpoint it names, not on an install hook's line: a `trycloudflare.com` host
+    # that is not a quick tunnel's name (`_not_quick_tunnel`: Cloudflare names every quick
+    # tunnel with hyphen-joined words, `diameter-coins-limitations-parents`; `demo.`, `api.`,
+    # `a.b.`, `word-word-word-word.` are not one), and a URL written as a UI placeholder or an
+    # example (`placeholder: 'cezar.ngrok.app'`, `example: "curl https://webhook.site/…"`,
+    # `e.g. https://…`; `_example_value`). v8's "collects nothing" still asks the whole file,
+    # a bundle too: a window around the match (L4) was rejected by the owner (2026-11-10), as a
+    # bundled drainer's Telegram send naturally sits far from its collection.
+    # Also LOW: `pastebin.com/` with no paste or API after it (`_PASTE`: the site, a user's
+    # page, `doc_api`; a site list's entry); a tunnel host whose label is an ellipsis
+    # (`https://….trycloudflare.com`); `api.telegram.org/bot` followed by a comma (an entry of
+    # a list of service prefixes, with no token); and a whole host literal among literals of
+    # three services where brand names alone count (`"webhook.site", "requestbin", "ngrok"`:
+    # a detection rule's substrings, `_in_name_list`). `bot&lt;token&gt;` (HTML for
+    # `bot<token>`) is a written placeholder, as v4 decided for `bot<token>`.
+
     id = "static.exfil-endpoint"
-    version = 8
+    version = 9
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -179,10 +197,24 @@ class ExfilEndpoint(RegexRule):
             return PLACEHOLDER_NOTE
         if _CORE_JS_PASTE.match(match.string, match.start()):
             return CORE_JS_NOTE
+        if match.group(0).lower() == "pastebin.com/" and not _PASTE.match(
+            match.string, match.end()
+        ):
+            return NO_PASTE_NOTE
         if _host_pattern(match):
             return PATTERN_NOTE
-        if _in_domain_list(match) or _in_separated_list(match):
+        if _in_domain_list(match) or _in_separated_list(match) or _in_name_list(match):
             return LIST_NOTE
+        if (
+            match.group(0).lower().endswith("/bot")
+            and match.string[match.end() : match.end() + 1] == ","
+        ):
+            return LIST_NOTE  # `…,api.telegram.org/bot,hooks.slack.com/…`: no token, a list
+        if not _on_hook_line(match):
+            if _not_quick_tunnel(match):
+                return QUICK_TUNNEL_NOTE
+            if _example_value(match, _host_span(match)[0]):
+                return EXAMPLE_NOTE
         return _sends_nothing(match)
 
 
@@ -191,7 +223,7 @@ class ExfilEndpoint(RegexRule):
 # `foo`; not `sidebar`), or `<...>`, `*`, `${...}`, `{...}`, `..`.
 _PLACEHOLDER_LABEL: Final = re.compile(
     r"(?:(?<![\w-])(?:examples?|x{3,}|your[-_]?[\w-]*|foo|bar|baz|abc\d*|random"
-    r"|my[-_]?(?:app|tunnel|subdomain|domain))|<[^<>\n]*>|\*|\$?\{[^{}\n]*\}|\.{2,})$",
+    r"|my[-_]?(?:app|tunnel|subdomain|domain))|<[^<>\n]*>|\*|\$?\{[^{}\n]*\}|\.{2,}|…)$",
     re.IGNORECASE,
 )
 PLACEHOLDER_NOTE: Final = " A placeholder host: documentation, not an endpoint."
@@ -215,6 +247,15 @@ _OAST_PLACEHOLDER: Final = re.compile(
     r"(?<![\w-])(?:your[-_]?[a-z-]*|x{3,}|examples?|<[a-z_ -]*>)$", re.IGNORECASE
 )
 _CORE_JS_PASTE: Final = re.compile(r"(?i:pastebin\.com)/N21QzeQA(?![\w-])")
+# v9 (L2): what after `pastebin.com/` reads or writes a paste: a paste id (8 letters and
+# digits; 5 to 16 taken, for margin), its raw, download, embed and print views, the API. The
+# site's own pages (`pastebin.com/`, `/u/<user>`, `/doc_api`) hold nothing anyone wrote there.
+_PASTE: Final = re.compile(
+    r"(?:raw|dl|embed\w*|print|api)\b|raw\.php|[A-Za-z0-9]{5,16}(?![\w-])", re.IGNORECASE
+)
+NO_PASTE_NOTE: Final = (
+    " `pastebin.com` itself, a user's page or its documentation: no paste and not the API."
+)
 CORE_JS_NOTE: Final = (
     " The paste core-js cites in a code comment (a Safari debugger crash): not an endpoint."
 )
@@ -231,7 +272,7 @@ _LIST_ENTRY: Final = re.compile(
 )
 _QUOTES: Final = "\"'`"
 # What documentation writes after `api.telegram.org/bot` instead of a token.
-_TELEGRAM_PLACEHOLDER: Final = re.compile(r"<|\[|YOUR_|\.\.\.")
+_TELEGRAM_PLACEHOLDER: Final = re.compile(r"<|&lt;|\[|YOUR_|\.\.\.")
 # A whole string literal naming one exfiltration or OAST service, optionally with a subdomain.
 _SERVICE_LITERAL: Final = re.compile(
     r"""(?P<q>["'`])[\w.-]*?(?P<service>webhook\.site|pipedream\.net|requestbin\.\w+"""
@@ -331,6 +372,34 @@ def _in_domain_list(match: re.Match[str]) -> bool:
     own = text[start:tail].lower()
     others = {m.group(0)[1:-1].lower() for m in _DOMAIN_LITERAL.finditer(text, lo, hi)}
     return len({d for d in others - {own} if not ExfilEndpoint.pattern.search(d)}) >= LIST_DOMAINS
+
+
+# v9: a service named by its brand alone, as a whole string literal (`"ngrok"`, `"oastify"`):
+# what deny lists of substrings write; no host.
+_SERVICE_NAME: Final = re.compile(
+    r"""(?P<q>["'`])(?P<service>webhook|requestbin|pipedream|ngrok|burpcollaborator|oastify"""
+    r"""|interactsh|canarytokens|requestcatcher|beeceptor|hookbin|pastebin|hastebin)(?P=q)""",
+    re.IGNORECASE,
+)
+
+
+def _in_name_list(match: re.Match[str]) -> bool:
+    """v9: a host written as a whole string literal among literals of at least
+    `DENY_LIST_SERVICES` different services, brand names alone counting too (`"webhook.site",
+    "requestbin", "pipedream", "ngrok"`: a detection rule's substrings)."""
+    span = _whole_literal(match)
+    if span is None:
+        return False
+    start, tail = span
+    text = match.string
+    lo = max(0, start - DENY_LIST_WINDOW)
+    hi = min(len(text), tail + DENY_LIST_WINDOW)
+    services = {
+        m.group("service").lower().split(".")[0]
+        for pattern in (_SERVICE_LITERAL, _SERVICE_NAME)
+        for m in pattern.finditer(text, lo, hi)
+    }
+    return len(services) >= DENY_LIST_SERVICES
 
 
 def _in_deny_list(match: re.Match[str]) -> bool:
@@ -441,10 +510,69 @@ def _sends_nothing(match: re.Match[str]) -> str | None:
         note = TUNNEL_SUFFIX_NOTE if bare and _HOST_END.match(text, end) else None
     else:
         note = None
-    line_start = text.rfind("\n", 0, start) + 1
-    if note is None or _HOOK_LINE.search(text, line_start, start) or _collects(text):
+    if note is None or _on_hook_line(match) or _collects(text):
         return None
     return note
+
+
+def _on_hook_line(match: re.Match[str]) -> bool:
+    """Whether `match` is on an install hook's line of a `package.json`."""
+    text, start = match.string, match.start()
+    return _HOOK_LINE.search(text, text.rfind("\n", 0, start) + 1, start) is not None
+
+
+# v9: what Cloudflare names a quick tunnel: words joined by hyphens, four on every one seen
+# (`diameter-coins-limitations-parents`, `gtk-optimize-webpage-tc` on `vm-day1`); at least
+# three are asked for, and digits allowed, for margin.
+_QUICK_TUNNEL_NAME: Final = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){2,}")
+_HOST_LABELS: Final = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.?")
+QUICK_TUNNEL_NOTE: Final = (
+    " Not a quick tunnel's name (Cloudflare names them with hyphen-joined words): a placeholder"
+    " or Cloudflare's own host, which no one else can serve."
+)
+
+
+def _not_quick_tunnel(match: re.Match[str]) -> bool:
+    """A `….trycloudflare.com` host written out whole whose name can't be a quick tunnel's: one
+    word (`demo`, `api`, `u8bcd`), more than one label (`a.b`), fewer than three words
+    (`abc-def`, `travel-calm`) or one word repeated (`word-word-word-word`). Not a name
+    built in code (`${id}x.trycloudflare.com`, `id + "x.trycloudflare.com"`, `"-x.`)."""
+    if match.group(0).lower() != ".trycloudflare.com":
+        return False
+    text, start = match.string, match.start()
+    host_start, _ = _host_span(match)
+    label = text[host_start:start].lower()
+    if not label or not _HOST_LABELS.fullmatch(label) or label[0] == "-":
+        return False
+    before = text[host_start - 1] if host_start > 0 else ""
+    if before and before in "}$)]+{%*\\":  # a name built in code: `${id}x.`, `(a)x.`
+        return False
+    if before and before in "\"'`" and text[: host_start - 1].rstrip().endswith("+"):
+        return False  # `id + "x.trycloudflare.com"`
+    words = label.split("-")
+    return not _QUICK_TUNNEL_NAME.fullmatch(label) or len(set(words)) == 1
+
+
+# v9 (exfil-endpoint, hardcoded-ip): a URL written as the value of a UI placeholder
+# (`placeholder: '…'`, `placeholder="…"`, `tunnelUrlPlaceholder:"…"`) or an `example:` field,
+# up to 80 characters into the string, or right after `e.g.` / `for example`.
+_EXAMPLE_LEAD: Final = re.compile(
+    r"(?:(?i:placeholder)\\{0,3}[\"']?\s*[:=]|(?i:\bexamples?)\\{0,3}[\"']?\s*:)"
+    r"\s*\\{0,3}[\"'`][^\"'`\n]{0,80}$"
+    r"|(?i:\be\.g\.|\bfor example\b)[,:]?\s*[`'\"(]?(?:[a-z]+://)?$"
+)
+EXAMPLE_NOTE: Final = (
+    " Written as a UI placeholder or an example (`placeholder:`, `example:`, `e.g.`): text shown"
+    " to a user, not an endpoint."
+)
+
+
+def _example_value(match: re.Match[str], at: int) -> bool:
+    """Whether the text before `at` (the match's host or URL) on its line, at most 120
+    characters of it, ends in `_EXAMPLE_LEAD`."""
+    text = match.string
+    lo = max(text.rfind("\n", 0, at) + 1, at - 120)
+    return _EXAMPLE_LEAD.search(text, lo, at) is not None
 
 
 def _placeholder_id(webhook_id: str) -> bool:
@@ -668,10 +796,13 @@ class HardcodedIp(RegexRule):
     `docs/proposals/precision-round4-D.md` D4): LOW, weight 1, on a comment line (`//`, `#`,
     a block comment's `/*` or `*` line, `<!--`): a commented-out base URL or a documented
     alternative, which nothing connects to as written. Not a URL after a block comment closes
-    on the same line (`/*! v1 */ fetch("http://…")`)."""
+    on the same line (`/*! v1 */ fetch("http://…")`). v6 (2026-11-11,
+    `docs/proposals/precision-round5-L.md` L3): LOW, weight 1, for a URL written as a UI
+    placeholder or an example (`placeholder: 'http://8.130.134.171'`, `# e.g. http://…`;
+    `_example_value`, as `exfil-endpoint` v9), not on an install hook's line."""
 
     id = "static.hardcoded-ip"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"
@@ -687,6 +818,8 @@ class HardcodedIp(RegexRule):
     def lowered(self, match: re.Match[str]) -> str | None:
         if match.group(1) in EXAMPLE_IPS:
             return EXAMPLE_IP_NOTE
+        if _example_value(match, match.start()) and not _on_hook_line(match):
+            return EXAMPLE_NOTE
         return IP_COMMENT_NOTE if _on_comment_line(match) else None
 
 
@@ -772,13 +905,25 @@ class DynamicCode(RegexRule):
 
 
 class Obfuscated(RegexRule):
-    """javascript-obfuscator style output: many `_0x1a2b3c` identifiers."""
+    """javascript-obfuscator style output: many `_0x1a2b3c` identifiers.
+
+    v2 (2026-11-11, `docs/proposals/precision-round5-L.md` L1): LOW, weight 1, in Emscripten
+    glue whose `_0x` names are a minifier's, not an obfuscator's: a file with Emscripten's
+    runtime (`getCFunc`, `HEAP8`/`HEAP32`, `Module["_" + name]`, at least `EMSCRIPTEN_MARKERS`
+    of them), fewer than `GLUE_NAMES` distinct `_0x` names, and none of javascript-obfuscator's
+    string-array machinery (`_STRING_ARRAY`: a lookup by hex index `_0x1a2b(0x1f3)`, the
+    rotation loop `while(!![])`, `['push'](_0x…['shift']())`, `parseInt(_0x…(`).
+    `emulatorjs-build`'s asm.js unzip workers rename 25 locals of `getCFunc` that way; every
+    obfuscator.io payload on `vm-day1` and live has the string array, and stays MEDIUM."""
 
     id = "static.obfuscated"
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Obfuscated code"
     MIN_IDENTIFIERS: ClassVar[int] = 20
+    EMSCRIPTEN_MARKERS: ClassVar[int] = 20
+    GLUE_NAMES: ClassVar[int] = 100
     pattern = re.compile(r"\b_0x[0-9a-f]{4,6}\b")
 
     def evaluate_text(self, text: str) -> Sequence[FileMatch]:
@@ -787,18 +932,44 @@ class Obfuscated(RegexRule):
             return []
         first = matches[0]
         line, snippet = _line_and_snippet(text, first.start(), first.end())
+        glue = self._emscripten_glue(text, {m.group(0) for m in matches})
         return [
             FileMatch(
                 rule_id=self.id,
                 rule_version=self.version,
-                severity=self.severity,
-                weight=self.weight,
+                severity=Severity.LOW if glue else self.severity,
+                weight=min(self.weight, 1.0) if glue else self.weight,
                 title=self.title,
-                explanation=f"{len(matches)} obfuscator-style identifiers.",
+                explanation=f"{len(matches)} obfuscator-style identifiers."
+                + (EMSCRIPTEN_NOTE if glue else ""),
                 line=line,
                 snippet=snippet,
             )
         ]
+
+    def _emscripten_glue(self, text: str, names: set[str]) -> bool:
+        if len(names) >= self.GLUE_NAMES or _STRING_ARRAY.search(text):
+            return False
+        markers = itertools.islice(_EMSCRIPTEN.finditer(text), self.EMSCRIPTEN_MARKERS)
+        return sum(1 for _ in markers) >= self.EMSCRIPTEN_MARKERS
+
+
+# v2: Emscripten's runtime glue, and javascript-obfuscator's string array (the part of its
+# output that hides strings; renaming alone hides nothing a reader needs).
+_EMSCRIPTEN: Final = re.compile(
+    r"\bgetCFunc\b|\bHEAP(?:U?8|U?16|U?32|F32|F64)\b|Module\[\s*[\"']_[\"']\s*\+|\bSTACKTOP\b"
+    r"|\bwasmMemory\b|\b_emscripten_\w+"
+)
+_STRING_ARRAY: Final = re.compile(
+    r"\b_0x[0-9a-f]{3,8}\(\s*-?(?:0x[0-9a-f]+|[\"']0x[0-9a-f]+[\"'])"
+    r"|while\s*\(\s*!!\[\]\s*\)"
+    r"|\[[\"']push[\"']\]\(\s*_0x[0-9a-f]+\[[\"']shift[\"']\]\(\)\)"
+    r"|\.push\(\s*_0x[0-9a-f]+\.shift\(\)\)|parseInt\(\s*_0x[0-9a-f]+\("
+)
+EMSCRIPTEN_NOTE: Final = (
+    " In Emscripten glue (its runtime, a few renamed locals, no string array): a minifier's"
+    " names, not an obfuscator's."
+)
 
 
 class NpmPublish(RegexRule):

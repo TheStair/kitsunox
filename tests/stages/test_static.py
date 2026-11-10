@@ -311,7 +311,8 @@ def test_a_hashed_chunk_is_compared_with_the_base_chunk_of_the_same_name(tmp_pat
         "1.0.0": {"dist/registry-BX6j2lnF.mjs": note, "dist/other-0HGmZj7D.mjs": b"1"},
         "1.0.1": {
             "dist/registry-CFQBxtE2.mjs": note + b"export const a = 2\n",
-            "dist/other-9QmZk1Pa.mjs": b"fetch('https://x.trycloudflare.com')",  # other name
+            # another chunk name
+            "dist/other-9QmZk1Pa.mjs": b"fetch('https://calm-river-lake-one.trycloudflare.com')",
         },
     }
     one = PackageBatch(

