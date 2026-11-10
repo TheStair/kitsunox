@@ -29,6 +29,7 @@ from kitsunox.ecosystems.npm.rules.metadata import (
     calendar_major,
     calendar_version,
     dependency_source,
+    npm_local_path,
 )
 from kitsunox.stages.triage import (
     MIN_GROWTH_BYTES,
@@ -132,7 +133,7 @@ def test_long_snippets_are_truncated() -> None:
         ("gitlab:x/y", True),
         ("git+ssh://git@github.com/x/y.git", True),
         ("GIT+HTTPS://github.com/x/y.git", True),
-        ("@scope/dep@1.0.0", True),  # no protocol: treated as before
+        ("@scope/dep@1.0.0", True),  # npm reads it as a local path: LOW (v7)
     ],
 )
 def test_non_registry_dependency(spec: str, fires: bool) -> None:
@@ -164,7 +165,7 @@ def test_a_registry_tarball_of_an_own_scope_package_is_low() -> None:
 
     own = "https://registry.npmjs.org/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz"
     low = nr_scoped("@atharva-again/pi-coding-agent", own)
-    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 6)
+    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 7)
     assert "only the scope's owner can publish" in low.explanation
     for name, spec in (
         ("@other/pi-coding-agent", own),
@@ -271,7 +272,7 @@ def test_a_dependency_moved_within_the_same_account_is_low() -> None:
     moved = nr(
         "github:uNetworking/uWebSockets.js#v20.71.0", "github:uNetworking/uWebSockets.js#v20.67.0"
     )
-    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 6)
+    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 7)
     assert "The previous release took it from the same account (github.com/unetworking)" in (
         moved.explanation
     )
@@ -324,6 +325,33 @@ def test_only_the_previous_release_vouches() -> None:
     claimed = snap("1.0.1", {"dependencies": {"dep": spec}, "repository": "attacker/x"})
     (finding,) = NonRegistryDependency().evaluate(change(claimed, snap("1.0.0")), CTX)
     assert finding.severity is Severity.MEDIUM
+
+
+@pytest.mark.parametrize(
+    ("spec", "local"),
+    [
+        ("@ohos-ports/esbuild@0.25.5-beta.1", True),  # OpenHarmony's alias syntax
+        ("@s/x", True),
+        ("./vendor/x", True),
+        ("../x", True),
+        ("/opt/x", True),
+        ("~/x", True),
+        ("@s", False),  # no `/`: a (bad) dist-tag, not a path
+        ("x/y", False),  # GitHub shorthand
+        ("github:x/y", False),
+        ("https://evil.example/@s/x.tgz", False),
+        ("git+ssh://git@github.com:x/y.git", False),
+    ],
+)
+def test_npm_local_path(spec: str, local: bool) -> None:
+    """v7 (S4): what npm-package-arg sends to the file system fetches nothing."""
+    assert npm_local_path(spec) is local
+    if local:
+        (finding,) = NonRegistryDependency().evaluate(
+            change(snap("1.0.1", {"dependencies": {"esbuild": spec}}), snap("1.0.0")), CTX
+        )
+        assert (finding.severity, finding.weight) == (Severity.LOW, 1.0)
+        assert finding.explanation.endswith("A local path: nothing is fetched.")
 
 
 def test_unchanged_non_registry_dependency_is_not_new() -> None:

@@ -319,10 +319,17 @@ class NonRegistryDependency(BaseRule):
     that package is a release in the feed like any other, read by Stages 1-3 itself: the same
     as `npm:@atharva-again/pi-ai@1.3.0`, which is a registry spec and no finding. 2 benign live
     reports, no positive; no `vm-day1` sample uses a registry tarball URL. A tarball of a
-    package outside the scope keeps MEDIUM: Stage 4's dependency lookups don't follow URLs."""
+    package outside the scope keeps MEDIUM: Stage 4's dependency lookups don't follow URLs.
+
+    v7 (2026-11-11, `docs/proposals/precision-round6-S.md` S4): a spec npm reads as a local
+    path is LOW, weight 1, as `file:` is (`npm_local_path`): npm-package-arg sends a spec
+    with a `/` that is neither a URL nor a hosted-git shorthand to the file system, so
+    `"esbuild": "@ohos-ports/esbuild@0.25.5-beta.1"` (OpenHarmony's alias syntax,
+    `@ohos-ports/modern-js-node-bundle-require@2.32.1`) fetches nothing.
+    """
 
     id = "npm.dependency.non-registry"
-    version = 6
+    version = 7
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -338,7 +345,7 @@ class NonRegistryDependency(BaseRule):
             if tarball is not None and tarball["name"] == name:
                 continue
             own_scope = tarball is not None and _same_scope(tarball["name"], change.new.ref.name)
-            local = spec.strip().startswith(_LOCAL)
+            local = spec.strip().startswith(_LOCAL) or npm_local_path(spec)
             vendor = spec.strip().startswith(VENDOR_REGISTRIES)
             moved = None if local or vendor or own_scope else trusted_move(change, name, spec)
             low = local or vendor or own_scope or moved is not None
@@ -361,6 +368,17 @@ OWN_SCOPE_TARBALL_NOTE: Final = (
     " The registry's own tarball of a package in this package's npm scope, which only the "
     "scope's owner can publish: as an `npm:` alias of it would be."
 )
+
+
+def npm_local_path(spec: str) -> bool:
+    """npm-package-arg reads the spec as a path on disk (v7): it has no protocol, isn't a
+    hosted-git shorthand (`owner/repo`, which can't start with `@`, `.`, `/` or `~`) and
+    starts like a path or a scoped name with a `/` (npa's `hasSlashes` sends it to `fromFile`).
+    Nothing is downloaded: the install fails unless that directory exists."""
+    text = spec.strip()
+    if _PROTOCOL.match(text) or "/" not in text:
+        return False
+    return text.startswith(("@", ".", "/", "~"))
 
 
 def _same_scope(dependency: str, own: str) -> bool:
