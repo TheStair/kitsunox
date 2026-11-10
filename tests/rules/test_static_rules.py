@@ -1026,6 +1026,45 @@ def test_an_ip_url_compared_or_hashed_is_low(text: str) -> None:
     assert set(_ips(text)) == {("low", 1.0)}
 
 
+def test_an_ip_url_in_a_json_catalog_is_low() -> None:
+    """`hardcoded-ip` v7 (P4): a JSON directory of 20+ hosts."""
+    rows = [f'{{"name": "s{i}", "url": "https://host{i}.example.org/x"}}' for i in range(25)]
+    station = '{"name": "r", "url": "http://195.150.20.242:8000/a"}'
+    catalog = "[" + ", ".join([*rows, station]) + "]"
+    assert _ips(catalog) == [("low", 1.0)]
+    assert _ips("[" + ", ".join([*rows[:5], station]) + "]") == [("medium", 3.0)]
+    assert _ips(catalog[:-1]) == [("medium", 3.0)]  # not JSON
+
+
+def test_an_ip_lowered_as_a_catalog_entry_is_not_new_where_it_was() -> None:
+    """Round 6 notes depend on the rest of the file: the previous version's catalog (76 hosts)
+    lowered the IP, this version's (14 hosts) doesn't; it is still the same, old match."""
+    from kitsunox.stages.static import _key
+
+    rows = [f'{{"url": "https://host{i}.example.org/x"}}' for i in range(25)]
+    station = '{"url": "http://195.150.20.242:8000/a"}'
+    (before,) = [
+        m
+        for m in analyse(("[" + ", ".join([*rows, station]) + "]").encode())
+        if m.rule_id == "static.hardcoded-ip"
+    ]
+    (after,) = [
+        m
+        for m in analyse(("[" + ", ".join([*rows[:3], station]) + "]").encode())
+        if m.rule_id == "static.hardcoded-ip"
+    ]
+    assert (before.severity.value, after.severity.value) == ("low", "medium")
+    assert _key(before) == _key(after)
+
+
+def test_a_tunnel_in_a_json_catalog_is_low() -> None:
+    """`exfil-endpoint` v10 (P4): the same catalog test."""
+    rows = [f'{{"name": "s{i}", "url": "https://host{i}.example.org/mcp"}}' for i in range(25)]
+    server = '{"name": "t", "url": "https://favor-skilled-ben-plugin.trycloudflare.com/mcp"}'
+    assert _exfil("[" + ", ".join([*rows, server]) + "]") == [("low", 1.0)]
+    assert _exfil("[" + ", ".join([*rows[:3], server]) + "]") == [("high", 5.0)]
+
+
 @pytest.mark.parametrize(
     "text",
     [

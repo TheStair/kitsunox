@@ -11,6 +11,7 @@ import base64
 import functools
 import ipaddress
 import itertools
+import json
 import re
 from collections.abc import Sequence
 from typing import ClassVar, Final
@@ -168,7 +169,9 @@ class ExfilEndpoint(RegexRule):
     # `hostname.endsWith(".trycloudflare.com")`, `allowedHosts: ['.ngrok.app']`,
     # `ALLOWED_HOSTS=.trycloudflare.com`), which v8 lowered only in a file that collects
     # nothing; and a bare service host named in a parenthesised list in prose (`_prose_list`:
-    # "collectors (webhook.site, requestbin, ngrok, interact.sh)").
+    # "collectors (webhook.site, requestbin, ngrok, interact.sh)"); and, as `hardcoded-ip` v7
+    # (P4), a host in a JSON catalog with URLs on `CATALOG_HOSTS` or more hosts (`_catalog`: an
+    # MCP server directory listing a quick tunnel among thousands of servers).
 
     id = "static.exfil-endpoint"
     version = 10
@@ -226,6 +229,8 @@ class ExfilEndpoint(RegexRule):
                 return HOST_CHECK_NOTE
             if _prose_list(match):
                 return PROSE_LIST_NOTE
+            if _catalog(match.string):
+                return CATALOG_NOTE
         return _sends_nothing(match)
 
 
@@ -868,9 +873,10 @@ class HardcodedIp(RegexRule):
     `docs/proposals/precision-round5-L.md` L3): LOW, weight 1, for a URL written as a UI
     placeholder or an example (`placeholder: 'http://8.130.134.171'`, `# e.g. http://…`;
     `_example_value`, as `exfil-endpoint` v9), not on an install hook's line. v7 (2026-11-11,
-    `docs/proposals/precision-round6-P.md` P3, P5): LOW, weight 1, not on an install hook's
+    `docs/proposals/precision-round6-P.md` P3-P5): LOW, weight 1, not on an install hook's
     line, for an environment variable's fallback (`process.env.X || 'http://…'`,
-    `_ENV_DEFAULT`) and a literal compared with or hashed (`=== 'http://…'`, `[…].includes(`,
+    `_ENV_DEFAULT`), a URL in a JSON catalog with URLs on `CATALOG_HOSTS` or more hosts
+    (`_catalog`), and a literal compared with or hashed (`=== 'http://…'`, `[…].includes(`,
     `.update(`; `_compared`)."""
 
     id = "static.hardcoded-ip"
@@ -895,9 +901,43 @@ class HardcodedIp(RegexRule):
                 return EXAMPLE_NOTE
             if _ENV_DEFAULT.search(match.string, max(0, match.start() - 120), match.start()):
                 return ENV_DEFAULT_NOTE
+            if _catalog(match.string):
+                return CATALOG_NOTE
             if _compared(match):
                 return COMPARED_NOTE
         return IP_COMMENT_NOTE if _on_comment_line(match) else None
+
+
+# v7 and `exfil-endpoint` v10 (P4): a JSON document that lists URLs on at least
+# `CATALOG_HOSTS` different hosts: a directory of other people's services (radio stations,
+# MCP servers, threat-intel IOCs, fingerprint rules), not one program's configuration, which
+# names its own few servers.
+CATALOG_HOSTS: Final = 20
+_URL_HOST: Final = re.compile(r"(?i:https?|wss?|tcp)://([A-Za-z0-9.-]+)")
+CATALOG_NOTE: Final = (
+    f" In a JSON document listing URLs on {CATALOG_HOSTS} or more hosts: a catalog of other"
+    " people's services, not one program's configuration."
+)
+
+
+@functools.lru_cache(maxsize=4)
+def _catalog(text: str) -> bool:
+    """v7: `text` is a JSON document (it parses) with URLs on `CATALOG_HOSTS` or more
+    different hosts."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return False
+    hosts: set[str] = set()
+    for m in _URL_HOST.finditer(text):
+        hosts.add(m.group(1).lower())
+        if len(hosts) >= CATALOG_HOSTS:
+            break
+    else:
+        return False
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
 
 
 # v7 (P5): a URL literal that code compares a value with (`url.origin === "http://…"`,
@@ -1406,10 +1446,12 @@ CONTEXT_NOTES: Final = (
     TUNNEL_SUFFIX_NOTE,
     IP_COMMENT_NOTE,
     MODULE_WRAPPER_NOTE,
-    # Round 6 (P): the same match can be LOW in one version (a host check, a comparison) and
-    # not in the next, whose code around it changed.
+    # Round 6 (P): the same match is LOW in a version whose file is a catalog, checks a host
+    # or compares it, and not in one that isn't (`dsh-pick` 0.5.1's catalog has URLs on 76
+    # hosts, 0.5.2's on 14): with the note in its key, 0.5.2's IP was "new".
     HOST_CHECK_NOTE,
     PROSE_LIST_NOTE,
+    CATALOG_NOTE,
     ENV_DEFAULT_NOTE,
     COMPARED_NOTE,
 )
