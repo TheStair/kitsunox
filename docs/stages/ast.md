@@ -104,7 +104,7 @@ is the malicious set.
 | `code.capability-gained` (v4) | an update's code gains capabilities. MEDIUM if it gains `dynamic-code` through `eval`, or `network` together with `process`, `env-all` or `dynamic-code` (not after a base with no capabilities at all) | LOW / MEDIUM | per capability ≤ 0.5% / n/a | env-all 70.9%, dynamic-code 57.3%, network 57.6% / n/a |
 | `npm.install-script-code` (v4) | a file an install hook runs uses `network`, `process`, `env-all`, `dynamic-code` or `dynamic-require`. On updates, only capabilities new to the install code count. v3 (2026-11-10): also code hidden past the edge of the screen (100+ spaces or tabs, then code that is no comment, message or string) in a new install file or one whose previous version had none: `hauntview@0.2.9`, malicious, the only one of 1,710 verdicted versions with install code and 18 `vm-day1` samples. v4 (2026-11-10, round 5): `env-all` doesn't count when every whole-`process.env` reference of each file Stage 3 saw take it is a parameter's default (`function f(env = process.env)`), [below](#round-5-what-the-previous-install-code-already-ran-and-what-is-only-shown-2026-11-10) | MEDIUM | ≤ 0.9% / 0.2% | 70.2% / 33.7% |
 | `npm.install-build-tool` (v3) | every install hook (`preinstall`, `install`, `postinstall`, from the registry manifest) is one of a fixed list of build-tool command lines (`BUILD_TOOL_HOOKS`: `node-gyp-build`, `node-gyp rebuild`, `prebuild-install`, `node-pre-gyp install --fallback-to-build`, `husky`, `npx only-allow pnpm`, `patch-package`, ...; v3 adds `only-allow npm`, `opencollective-postinstall`, `node-gyp-build \|\| node-gyp rebuild`, `npx @mapbox/node-pre-gyp ...`, and Playwright's browser download when the package depends on Playwright), no tool it runs is one of the package's own `bin` names (v3), and `binding.gyp` runs no command but `node-addon-api`/`nan` header lookups (v2) or tree-sitter's `src/scanner.c` test (v3). An explanation for Stage 4, which then makes `npm.install-hook` LOW (`correlate.EXPLAINED`) | INFO | live (with Stage 4): 7 of the 2,208 reports go where the tarball was captured, 12 if the 5 without one (`husky`, `only-allow`, `patch-package` hooks) have no `binding.gyp`; all benign | `vm-day1`: 0 of the 433 reported only through install rules has such hooks; 4 other malicious samples do, decided as before |
-| `npm.install-explained` (v2) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
+| `npm.install-explained` (v4) | the install code is a platform-binary launcher (S1), an own-release download with a checksum (S2), inert (S5, v3), an own-binary download that runs nothing it fetched (S6, v4, [below](#v4-s6-own-binary-downloads-that-run-nothing-they-fetch-2026-11-10-round-5)), or an agent-skill copier whose copied configuration passes the three guards (S3); since v2 (2026-11-09) S3 only for copies into the project: no home-directory reference in the install code or hook line, no package loaded by name; [below](#explained-install-s1-s3-and-agent-configuration). An explanation for Stage 4, which makes the three install rules LOW | INFO | live (with Stage 4, 3,244 reported verdicts): 85 fewer reports (S1 36, S2 34, S3 15; 70 packages), all benign, 0 positives; v2: S3 keeps 23 of the 69 live versions it explained (5.6 days), +7 reports, 16 reviewed benign (14 user-wide copiers) reported again | `vm-day1`: 0 of the 433 malicious samples reported only through install rules |
 | `npm.install-inert` (v1) | a new package whose every install hook only runs package code (`node <file>`, `node -e`, chained with `&&`/`\|\|`/`;`) or a constant `echo`, that Stage 3 read in full and that reaches nothing outside the package; carries agent E's S5 guards (no Baileys `engine-requirements.js`, no `require.resolve`, no placeholder, no risky text, no deleting, readable UTF-8) and refuses probes (`PROBE_TEXT`). An explanation for Stage 4, which makes `npm.install-hook` LOW; [below](#inert-install-hooks-npminstall-inert-round-4) | INFO (weight 0) | live: see below | `vm-day1`: fires on none |
 | `npm.install-agent-user-wide` (v1) | install code that names an agent directory refers to the user's home directory (`os.homedir()`, `process.env.HOME`, `~/`, `$HOME` in the hook line, ...): it may write skills or agent settings user-wide, which the owner rules unwanted (decision 0015, addendum 2026-11-09). A reviewer's note: such code is never S3; [below](#s3-v2-copies-into-the-project-only-2026-11-09) | INFO (weight 0) | live: 311 of 479 versions whose install code names an agent directory (5.6 days), most unreported; reviewed: 148 of 202 | `vm-day1`: 1 of the 433 reported only through install rules (`aicp-tracker@1.0.7`, reported as before) |
 | `npm.install-persistence` (v2) | new or changed install code (or a hook command line), comments and messages aside, writes an AI agent's configuration user-wide, a shell start-up file or the persistent PATH, or installs system packages; v2 (round 5): a system-package command that JavaScript only prints, returns or keeps in a table doesn't count, an argument list (`spawnSync("sudo", ["apt-get", "install", ...])`) does; [below](#install-code-that-changes-the-machine-beyond-the-project-npminstall-persistence-2026-11-09) | MEDIUM (weight 3) | live (reviewed versions with install code): see the round-4 proposal | `vm-day1`: adds findings only |
@@ -529,6 +529,7 @@ by a package's name, description or keywords:
 | S2 own-release download | network; the `repository` is on GitHub; every URL literal (after substituting `const` strings) is that repository's releases (`github.com/<o>/<r>/releases`, `api.github.com/repos/<o>/<r>/releases`), GitHub's release asset hosts, the npm registry or a page link, and one is its own (or cargo-dist's `artifactDownloadUrls` all are); a checksum check (`createHash("sha256"`, `SHA256SUMS`, `checksums.txt`, `.sha256`, `verifyChecksum`), or since v3 cargo-dist's `artifactDownloadUrls` all being its own releases; no URL whose host or owner is a variable |
 | S3 agent-skill copier | no network, no process; the code names an agent directory (`.claude`, `.agents`, `.cursor`, `.codex`, `.gemini`, `.windsurf`, `.opencode`, `SKILL.md`, `AGENTS.md`, `.mcp.json`), and the agent files it may copy pass the three guards below |
 | S5 inert install code (v3) | hooks are plain `node`, install files JavaScript; capabilities only `filesystem` and `os-info`; no package loaded by name; no home, agent, system (`/etc/`, `C:\`, ...) or other-package path (`node_modules`, `require.resolve`); no network- or exec-naming text (`fetch`, `import(`, `"node:https"`, `spawn(`); not upstream Baileys's `engine-requirements.js` |
+| S6 own-binary download, not run (v4) | network; at least one download URL is the package's own: a release (or the release API) of any repository of the declared owner (`github.com/<owner>/<any>/releases`), the `homepage`'s own host (not a code host), or cargo-dist's `artifactDownloadUrls`; every other URL literal is a GitHub asset host, the npm registry, a page link or a file of the owner's repositories (`raw.githubusercontent.com/<owner>/`); a literal version in a download URL is the package's (or its release's); every hook plain `node <file>`, every install file JavaScript; **every** `child_process` call in the install files (`lang.process_calls`, reached or not) runs only `tar`, `unzip`, `7z`, `gzip`, `xz`, `chmod`, `xattr`, `ditto`, PowerShell `Expand-Archive`, or a platform probe (`uname`, `sysctl`, `getconf`, `sw_vers`, `which`, `where`, `ldd --version`), shell lines chained only by `&&`/`\|\|`/`;` with `cd`, no `tar` option that runs a command; no other way to run code (`worker_threads`, `vm`, `module`, WebAssembly, `process.dlopen`); no package loaded by name, no constant `require`/`import` of a file the package doesn't ship, no inline `node -e` code; no home or agent directory, other installed package (`OTHER_PACKAGE`), system directory (`SYSTEM_DIR`: S5's list without the temporary directory) or project path (`INIT_CWD`, git hooks) named, comments and messages aside; nothing sent (`method: "POST"`, `.post(`); no checksum needed |
 | every shape | an install hook that is not shell (`curl`, `wget`, `sh`, `bash`, `python`, `./x`, `\| sh`, `$(...)`, backticks); no `binding.gyp` command; no `env-all`, `dynamic-code` or `dynamic-require` in the install code; for an update, no capability the install code didn't have before; plain UTF-8, no line over 1,000 characters, no whitespace-padded code (v3) |
 
 The **three guards** on S3 (the owner, 2026-11-08: an agent-skill copier is benign as a
@@ -1121,6 +1122,62 @@ the guards cost, in benign reports kept: the Baileys exclusion 15 (without it S5
 `@lunabotv6/luna-baileys@8.1.0`), `OTHER_PACKAGE` 34 (`node-pty` spawn-helper `chmod`,
 `fastmcp` fixes), the text and hook guards 16 (`dotnet build`, `prisma generate`, shell
 scripts, the two above), the `vm-day1` guards 8 and inline code 12.
+
+#### v4: S6 own-binary downloads that run nothing they fetch (2026-11-10, round 5)
+
+Reviewers clear the same installer again and again: a Go, Rust or Zig CLI whose `postinstall`
+downloads the package's own release binary from GitHub, unpacks it with `tar` or `unzip` into
+the package and stops (`herozion`, `@ejklock/living-docs`, `@dac-tech-team-tw/gtm-cli`,
+`translatex`, `untag-cli`). S2 takes these only with a checksum and only from the declared
+repository itself; S6 ([proposal](../proposals/precision-round5-H.md)) takes them without a
+checksum, from any repository of the same owner (a separate `*-releases` repository) or the
+`homepage`'s own host, **because nothing it downloaded runs at install**, which is what turns
+a download into an install-time attack. Shipping the binary in the tarball (S1) is no
+different: either way it runs when the user runs the tool.
+
+What makes "runs nothing" checkable is `lang.process_calls`: every call of `child_process`'s
+runners (`exec`, `execSync`, `execFile`, `execFileSync`, `spawn`, `spawnSync`, `fork`) in every
+install file, reached at load or not (an exported function another install file calls runs at
+install too), with its command as written. A file whose `child_process` use the reader can't
+follow (the module or a runner passed on, `promisify(exec)`, a computed member, a default
+value in a destructuring, the module's name in another string) is not S6. Each command must
+be an archive or file-mode tool (`ARCHIVE_TOOLS`), PowerShell's `Expand-Archive` (no
+`Invoke-`, `iex`, `Start-Process`, `-enc`, chaining) or a platform probe (`PLATFORM_PROBES`,
+`ldd --version` only: `ldd <file>` can run the file); a shell line may chain such commands
+with `&&`, `||`, `;` and `cd`, redirect to `/dev/null`, and nothing else; GNU `tar`'s
+command-running options (`--to-command`, `--checkpoint-action`, `--use-compress-program`,
+...) anywhere in the install code refuse it. A command whose name isn't a literal (a path to
+the downloaded binary) is refused, so is every other way to run code (`RUNS_CODE`: workers,
+`vm`, `module`, WebAssembly, `process.dlopen`) and any package loaded by name (`execa`,
+`cross-spawn`: Stage 3 doesn't see inside it), so is a constant `require` or `import` of a
+package file Stage 3 didn't read (it may be the file just downloaded) and inline `node -e`
+code. Where the fetched file goes is checked too, comments and messages aside: never into
+another installed package (S5's patcher guard), a system directory or the user's project
+(`INIT_CWD`, git hooks), and never under the home directory.
+
+**Measured** (round 5, [proposal](../proposals/precision-round5-H.md)) with the real code on
+the 3,716 verdicted live versions against `main` `cde7f12` (agent K's corrected harness;
+1,402 → 1,386 reported). S6 can only lower the three install
+rules, so it can only unreport the 674 reported versions whose severe rules are install rules
+alone; on the 180 of them whose install code uses the network, S6 fires on 17, all benign, and
+the replay unreports **16** (15 packages; `simflux-cli@0.1.0` is not routed to Stage 3 live):
+`translatex`, `untag-cli`, `@dac-tech-team-tw/gtm-cli`, `@kurarens/tide`, `@owasp-noir/noir`,
+two `@ejfkdev/ddc` releases, `@get-fde/qc` (a separate `qc-releases` repository of the same
+owner), `fluxware@1.1.1`, `vibe-pilot`, ... **No malicious, unwanted or unverified version gains
+the shape.** On the 52 versions verdicted after the replay set was cut it unreports
+`@ejklock/living-docs@0.26.1` (benign) and nothing else. What the guards cost and keep, on
+the 180: the shared guards refuse 103 (a whole-environment read 77, dynamic code or `require`
+5 more; nothing new in an update's install code 46; some both); S6's own conditions refuse
+the other 60 (33 benign), and keep reported all 25 `@byteplus`/`@volcengine` `arkcli-probe`
+builds (unwanted: they download the vendor's binary from its CDN, name the home directory and
+run `arkcli +connect`), `claudecode-ms-teams@0.1.0` (unwanted) and `dependencykfeg@1.5.6`
+(malicious: inline code, no download). Alone, a guard keeps few benign reports: a command
+that isn't an archive tool 3 (`qdd-framework` runs the binary it fetched), another installed
+package named 1 (`fluxware@1.1.6` resolves its platform package), no download S6 can name 1
+(`@ogai/llama.rn`, URLs from a JSON file); the version, unshipped-`require`, system-path and
+project guards 0. `vm-day1`: S6 fires on none of the 2,319 malicious samples with an install
+hook (1,208 with network install code; evaluated with no base, a superset of live), so it
+can't change any sample's report.
 
 ### Inert install hooks: `npm.install-inert` (round 4)
 
