@@ -177,9 +177,23 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   `init`, `zn hooks install`). `stock-analyzer-skill@1.30.0` (runs `claude plugins marketplace
   add` on install) moved to unwanted. `@lunabotv6/luna-baileys@8.1.0` stays unverified: media
   tagging confirmed, but it depends on the obfuscated `@itsliaaa/starforge`, like `hyrox@0.1.6`.
-- **Reviewer precedent, not an owner ruling:** an install hook that patches another installed
-  program's files (`blue-crab`, `dsh-theme-mls-desktop@0.6.13` rewriting DeepSeek Harness
-  Desktop's `app.asar`) is recorded unwanted.
+- **Patching another program is unwanted (the owner, 2026-11-10).** An install hook that
+  silently patches another installed program's or package's files outside the project is
+  **unwanted**; harmful patches stay malicious. This makes the reviewers' precedent a ruling
+  (`blue-crab`, `dsh-theme-mls-desktop@0.6.13` rewriting DeepSeek Harness Desktop's `app.asar`,
+  `dsh-harmonyos@0.16.1` rewriting a DSH plugin under `~/.dsh/profiles` to use DeepSeek's vision
+  model).
+- **Silent system setting changes are unwanted (the owner, 2026-11-10):**
+  `@frontendxlab/opencode-computer-use@0.1.5` enables GNOME toolkit accessibility with
+  `gsettings` on every install.
+- **Refreshing a setup the user agreed to is benign (the owner, 2026-11-10):** `memtrace`,
+  `wyrm-mcp`, `gkg-cli` re-apply hooks or skills a setup command installed earlier, and write
+  nothing if it never ran.
+- **Second re-review** (65 benign versions where `npm.install-persistence` fires, 57 read): 10 more
+  benign → unwanted (`openyida` ×5, `@follenfang/fupload`, `smithue-cli` (global only),
+  `@geekbeer/minion` (Windows user PATH), `dsh-harmonyos`, `@frontendxlab/opencode-computer-use`);
+  47 stay benign (printed advice, read-only checks, installers that ask first, code that never
+  runs at install: the rule's false-fire shapes, handed to round 5).
 
 ## Addendum 2026-11-09: user-wide agent installs are unwanted
 
