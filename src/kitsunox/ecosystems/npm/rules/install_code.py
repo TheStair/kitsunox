@@ -31,6 +31,7 @@ from kitsunox.lang.javascript import (
 from kitsunox.rules.capabilities import evidence
 from kitsunox.rules.static import Obfuscated
 from kitsunox.stages.ast import CodeChange
+from kitsunox.util.text import collapse_runs
 
 C = Capability
 RISKY: Final = frozenset({C.NETWORK, C.PROCESS, C.ENV_ALL, C.DYNAMIC_CODE, C.DYNAMIC_REQUIRE})
@@ -217,7 +218,12 @@ class InstallScriptChanged(BaseRule):
             elif (counted := _counts(old, change.install_files[path])) is None:
                 parts.append(f"{path} (too long to diff)")
             else:
-                parts.append(f"{path} (+{counted[0]} -{counted[1]} lines)")
+                longest = (
+                    f", longest added line {counted[2]:,} characters"
+                    if counted[2] > MAX_DIFF_LINE_CHARS
+                    else ""
+                )
+                parts.append(f"{path} (+{counted[0]} -{counted[1]} lines{longest})")
         minor = all(
             _unremarkable(path, before.get(path), change.install_files[path]) for path in changed
         )
@@ -517,23 +523,28 @@ def _diffable(old: list[str], new: list[str]) -> bool:
     return len(old) <= MAX_DIFFED_LINES and len(new) <= MAX_DIFFED_LINES
 
 
-def _counts(old: bytes, new: bytes) -> tuple[int, int] | None:
-    """Added and removed lines; None for a file too long to diff."""
+def _counts(old: bytes, new: bytes) -> tuple[int, int, int] | None:
+    """Added and removed lines, and the length of the longest added line (the summary names it
+    when a diff line is cut: `hauntview@0.2.9` read "+3 -1 lines" for 12.8 KB of new code);
+    None for a file too long to diff."""
     a, b = _lines(old), _lines(new)
     if not _diffable(a, b):
         return None
-    plus = minus = 0
+    plus = minus = longest = 0
     for line in difflib.unified_diff(a, b, lineterm="", n=0):
         if line.startswith("+") and not line.startswith("+++"):
             plus += 1
+            longest = max(longest, len(line) - 1)
         elif line.startswith("-") and not line.startswith("---"):
             minus += 1
-    return plus, minus
+    return plus, minus, longest
 
 
 def _diff_evidence(path: str, old: bytes | None, new: bytes) -> Evidence:
     """The changed lines as a unified diff (one line of context), cut to MAX_DIFF_LINES lines
-    of MAX_DIFF_LINE_CHARS characters; package text, escaped by every renderer."""
+    of MAX_DIFF_LINE_CHARS characters; package text, escaped by every renderer. Long runs of
+    spaces and tabs are collapsed to a counted marker before the cut (`util.text.collapse_runs`),
+    so code a run pushes off screen is shown (`hauntview@0.2.9`: 266 tabs, then a loader)."""
     if b"\x00" in new[:8192] or (old is not None and b"\x00" in old[:8192]):
         return Evidence(kind=EvidenceKind.FILE_SPAN, path=path, snippet="(binary file changed)")
     a, b = _lines(old or b""), _lines(new)
@@ -542,7 +553,7 @@ def _diff_evidence(path: str, old: bytes | None, new: bytes) -> Evidence:
         return Evidence(kind=EvidenceKind.FILE_SPAN, path=path, snippet=text)
     diff = list(difflib.unified_diff(a, b, lineterm="", n=1))[2:]
     first = next((int(m.group(1)) for h in diff if (m := HUNK.match(h))), None)
-    shown = [line[:MAX_DIFF_LINE_CHARS] for line in diff[:MAX_DIFF_LINES]]
+    shown = [collapse_runs(line)[:MAX_DIFF_LINE_CHARS] for line in diff[:MAX_DIFF_LINES]]
     if len(diff) > MAX_DIFF_LINES:
         shown.append(f"... {len(diff) - MAX_DIFF_LINES} more diff lines")
     return Evidence(

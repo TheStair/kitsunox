@@ -743,6 +743,13 @@ update with an install hook so this rule sees them. On the first VM day it fired
 601 hook updates whose two tarballs were captured (7.8%), and not on `@pulumi/*`, whose
 `install-pulumi-plugin.js` didn't change.
 
+Hidden code in the diff (2026-11-10, report text only, round 4 F): runs of 40 or more spaces or
+tabs in a diff line are shown as a counted marker (`⟨266 tabs⟩`, `util.text.collapse_runs`)
+before the 200-character cut, and the summary names the longest added line when it is longer
+than the cut (`scripts/postinstall.mjs (+3 -1 lines, longest added line 12,699 characters)`).
+`hauntview@0.2.9`'s added line was 266 tabs and then a loader: cut at 200 it showed as a blank
+added line. No severity, weight or decision changes, so the rule keeps its version.
+
 `npm.install-script-changed` v3 (2026-10-31): since install code follows what a hook loads,
 the rule also saw ordinary library changes two files down. A file another install file loads
 (`install.loaded_files`) now counts only when its change adds a line with a risky use
