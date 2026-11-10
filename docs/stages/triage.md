@@ -84,7 +84,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
 | `npm.publish-method.downgrade` (v6): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5; an added dependency alone is none when the previous release came from token CI by the same account, v6): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
-| `npm.dependency.non-registry` (v7): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6); LOW, weight 1, for a spec npm reads as a local path (`@scope/name@1.0.0`, `./x`: v7) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
+| `npm.dependency.non-registry` (v8): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6); LOW, weight 1, for a spec npm reads as a local path (`@scope/name@1.0.0`, `./x`: v7); LOW, weight 1, on an update whose previous release took this dependency from the same account *and* names that GitHub account as its repository, also for a commit (v8) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious` (v4): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
 | `npm.dependency.added` | LOW | | | | |
@@ -230,7 +230,7 @@ such a token who only adds a dependency is one step lower here, and a code-only 
 large unwatched release needs another Stage 1 signal to be read; the dependency's own Stage 4
 findings (fresh-foreign, known malware, non-registry) still apply.
 
-`npm.dependency.non-registry` v7 (2026-11-11, [round 6 S](../proposals/precision-round6-S.md)):
+`npm.dependency.non-registry` v7 and v8 (2026-11-11, [round 6 S](../proposals/precision-round6-S.md)):
 
 - **v7 (S4), a spec npm reads as a local path is LOW, weight 1**, as `file:` is
   (`npm_local_path`). npm-package-arg sends a spec that has a `/`, no protocol and is not a
@@ -238,6 +238,27 @@ findings (fresh-foreign, known malware, non-registry) still apply.
   `"esbuild": "@ohos-ports/esbuild@0.25.5-beta.1"` (OpenHarmony's alias syntax,
   `@ohos-ports/modern-js-node-bundle-require@2.32.1`) downloads nothing; the install fails
   unless that directory exists. Live: 1 benign report fewer.
+- **v8 (S5), a commit bump in the package's own repository account is LOW, weight 1**
+  (`trusted_commit_bump`): on an update, the previous release took the same dependency from
+  the same repository (host, account and name, `dependency_repository`; any reference),
+  *and* the previous release's `repository` names that GitHub account. v5 kept every commit
+  MEDIUM because a fork's commit is served through the parent repository's URLs; here an
+  earlier release vouches for both the dependency's repository and the package's own.
+  Kept MEDIUM: a new dependency name (the `vm-day1` git-dependency attacks:
+  `@antv/setup`, `@opensearch/setup`, `@tanstack/setup` were new in the release), one moved
+  to another repository, a dependency that came from the registry before, and a bump whose
+  previous release names no repository (`lane-m-snackager-probe@1.0.1`, unwanted,
+  `chimz-max/laneh-prepare-probe`). Live: 28 benign reports fewer (`@diffci.com/diffci` ×17,
+  `package-registry-manager` ×3, `@blockrun/*` ×3, `trac-peer` ×2,
+  `@coda-console/plugin-check`, `slack-axi`, `@miragari/dsh-client-canvas`), no positive
+  changes. **Recall risk, measured:** a first version that matched the account only lost
+  `vm-day1`'s `@opensearch-project/opensearch@3.8.0` (malicious), whose previous release
+  3.7.0 (also malicious) already carried `@opensearch/setup` from
+  `opensearch-project/openearch#d446803f`; 3.8.0 moved it to `opensearch-js#d446803f`. The
+  repository's name is what keeps it: an attack that reuses its own earlier malicious pin in
+  the same repository would get LOW. A follow-on release of an attack, or a token holder
+  bumping an existing pin to a fork's commit, is the residual risk; a default-branch check of
+  the pinned commit (round 5 K, section 7) would close it after the freeze.
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10

@@ -326,10 +326,20 @@ class NonRegistryDependency(BaseRule):
     with a `/` that is neither a URL nor a hosted-git shorthand to the file system, so
     `"esbuild": "@ohos-ports/esbuild@0.25.5-beta.1"` (OpenHarmony's alias syntax,
     `@ohos-ports/modern-js-node-bundle-require@2.32.1`) fetches nothing.
-    """
+
+    v8 (2026-11-11, S5): on an update, a commit bump in the package's own repository account
+    is LOW, weight 1 (`trusted_commit_bump`): the previous release already took this
+    dependency from the same repository (`dependency_repository`), *and* the previous
+    release's `repository` names that GitHub account (`@diffci.com/diffci`:
+    `DiffCI/core.git#<commit>` release after release). Both facts come from the earlier
+    release. A new git dependency (the `vm-day1` git-dependency attacks: `@antv/setup`,
+    `@opensearch/setup`, `@tanstack/setup` were new names), one moved to another repository
+    (`@opensearch-project/opensearch@3.8.0`: `opensearch-project/openearch#d446803f` in
+    3.7.0, `opensearch-project/opensearch-js#d446803f` in 3.8.0, both malicious) and a bump
+    with no earlier `repository` (`lane-m-snackager-probe@1.0.1`, unwanted) keep MEDIUM."""
 
     id = "npm.dependency.non-registry"
-    version = 7
+    version = 8
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -348,6 +358,8 @@ class NonRegistryDependency(BaseRule):
             local = spec.strip().startswith(_LOCAL) or npm_local_path(spec)
             vendor = spec.strip().startswith(VENDOR_REGISTRIES)
             moved = None if local or vendor or own_scope else trusted_move(change, name, spec)
+            if moved is None and not (local or vendor or own_scope):
+                moved = trusted_commit_bump(change, name, spec)
             low = local or vendor or own_scope or moved is not None
             findings.append(
                 self.finding(
@@ -379,6 +391,62 @@ def npm_local_path(spec: str) -> bool:
     if _PROTOCOL.match(text) or "/" not in text:
         return False
     return text.startswith(("@", ".", "/", "~"))
+
+
+COMMIT_BUMP_NOTE: Final = (
+    " The previous release took it from the same account ({source}), the account of the "
+    "repository that release names; only the pinned commit changed."
+)
+
+
+def trusted_commit_bump(change: Change, name: str, spec: str) -> str | None:
+    """A note when a commit reference moved within the package's own repository account
+    (v8, S5): the previous release took this dependency from the same repository, and
+    the previous release's `repository` names that account. None otherwise (also for a
+    reference a fork couldn't plant: `trusted_move` covers those)."""
+    if change.previous is None:
+        return None
+    source = dependency_source(spec)
+    if source is None or not source.forkable:
+        return None
+    before = runtime_dependencies(change.previous.manifest).get(name)
+    if before is None or previous_repository_owner(change) != (source.host, source.owner):
+        return None
+    repository = dependency_repository(spec)
+    if repository is None or dependency_repository(before) != repository:
+        return None
+    return COMMIT_BUMP_NOTE.format(source="/".join(repository))
+
+
+_REPOSITORY: Final = (
+    re.compile(r"^(?:github|gitlab|bitbucket):(?P<owner>[^/#\s]+)/(?P<repo>[^/#\s]+)", re.I),
+    re.compile(r"^(?P<owner>[^/#:@.~\s][^/#:@\s]*)/(?P<repo>[^/#\s]+)"),
+    re.compile(
+        r"^(?:git\+)?(?:ssh://)?[^@/\s]+@[^:/\s]+:(?P<owner>[^/\s]+)/(?P<repo>[^/#\s]+)", re.I
+    ),
+    re.compile(
+        r"^(?:git\+)?[a-z]+://(?:[^@/\s]*@)?[^/:#?\s]+(?::\d+)?/(?P<owner>[^/#?\s]+)"
+        r"/(?P<repo>[^/#?\s]+)",
+        re.I,
+    ),
+)
+
+
+def dependency_repository(spec: str) -> tuple[str, str, str] | None:
+    """(host, owner, repository) a git, GitHub-shorthand or URL dependency comes from, lower
+    case and without `.git` (v8): `github:DiffCI/core#<commit>` and
+    `git+https://github.com/DiffCI/core.git#<commit>` are both `github.com/diffci/core`; a
+    codeload, archive or raw URL's second path segment is its repository. None when
+    `dependency_source` has none."""
+    source = dependency_source(spec)
+    if source is None:
+        return None
+    text = spec.strip()
+    for pattern in _REPOSITORY:
+        if (match := pattern.match(text)) is not None:
+            repo = match["repo"].lower().removesuffix(".git")
+            return (source.host, source.owner, repo)
+    return None
 
 
 def _same_scope(dependency: str, own: str) -> bool:
