@@ -66,8 +66,10 @@ STAGE_ID: Final = "correlate"
 # `npm.install-build-tool` for `npm.install-hook`). 14: Stage 3's `npm.install-explained`
 # (S1-S3 shapes) explains the three install rules. 15: packages Stage 3's
 # `npm.undeclared-package` names are looked up after the declared dependencies, and a 404 is
-# `npm.undeclared.missing`. Output without the field is 1.
-STAGE_VERSION: Final = 15
+# `npm.undeclared.missing`. 16: Stage 3's `npm.install-inert` (install hooks that run only
+# inert package code or a constant `echo`) explains `npm.install-hook`. Output without the
+# field is 1.
+STAGE_VERSION: Final = 16
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -302,6 +304,11 @@ def score(findings: Iterable[Finding]) -> float:
 #   configuration passes the owner's three guards (S1-S3). It explains the three install
 #   rules, never a content finding (`npm.install-script-obfuscated`, `static.*`,
 #   `known-signature`) or `code.capability-gained`. Measured in `docs/stages/correlate.md`.
+# - `npm.install-inert` (Stage 3, STAGE_VERSION 16): every install hook only runs package code
+#   Stage 3 read in full that reaches no network, process, environment, dynamic code, native
+#   module, other package or path outside the package, or only echoes a message that isn't a
+#   probe's "it ran". Explains `npm.install-hook` only
+#   (`docs/proposals/precision-round4-B.md`, B1).
 _SHAPE_NOTE: Final = " The install code has an explained shape (npm.install-explained)."
 EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     "npm.install-hook": (
@@ -311,6 +318,11 @@ EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
             " (npm.install-build-tool).",
         ),
         ("npm.install-explained", _SHAPE_NOTE),
+        (
+            "npm.install-inert",
+            " Every install hook only prints a message or runs package code, read in full,"
+            " that reaches nothing outside the package (npm.install-inert).",
+        ),
     ),
     "npm.install-script-changed": (("npm.install-explained", _SHAPE_NOTE),),
     "npm.install-script-code": (("npm.install-explained", _SHAPE_NOTE),),

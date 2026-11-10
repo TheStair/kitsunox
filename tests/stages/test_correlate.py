@@ -255,6 +255,24 @@ def test_an_explained_install_makes_the_three_install_rules_low() -> None:
     assert both[0].explanation.endswith("(npm.install-build-tool).")
 
 
+def test_an_inert_install_makes_only_the_install_hook_low() -> None:
+    """Round 4 (B1): Stage 3's `npm.install-inert` explains `npm.install-hook` and nothing
+    else: the install code's own findings and content findings (`static.channel-follow`, the
+    Baileys forks' follow) still report."""
+    hook = finding("npm.install-hook", Severity.MEDIUM, 5.0)
+    inert = finding("npm.install-inert", Severity.INFO, 0.0)
+    result = correlate(candidate("1.0.1", hook, inert), CTX, [])
+    assert not result.history[-1].forwarded
+    assert (result.findings[0].severity, result.findings[0].weight) == (Severity.LOW, 1.0)
+    assert result.findings[0].explanation.endswith("(npm.install-inert).")
+    for other in (
+        finding("npm.install-script-changed", Severity.MEDIUM, 3.0),
+        finding("static.channel-follow", Severity.MEDIUM, 3.0),
+    ):
+        kept = correlate(candidate("1.0.1", hook, other, inert), CTX, [])
+        assert kept.history[-1].forwarded and kept.findings[1] == other
+
+
 def test_run_reads_every_triaged_version(tmp_path: Path) -> None:
     routed, quiet = candidate("1.0.1"), candidate("2.0.0", name="other")
     analysed = routed.model_copy(update={"findings": (finding("s2", Severity.MEDIUM, 3.0),)})
