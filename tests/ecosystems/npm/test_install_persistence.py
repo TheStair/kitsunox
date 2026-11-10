@@ -302,6 +302,23 @@ def test_a_global_change_only_a_caller_switches_on() -> None:
     assert git_forms({"setup.ts": typed + b"f(true)\n"}) == ["git-config"]
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        b'x("config ' + b"--a " * 400 + b'")\n',
+        b'x("config ' + b"--global " * 4000 + b'")\n',
+        b'x(["config", ' + b'"--a", ' * 400 + b"])\n",
+        b'x(["config", ' + b'"--global", ' * 4000 + b"])\n",
+    ],
+    ids=["dashes", "scopes", "argv-dashes", "argv-scopes"],
+)
+def test_long_option_runs_match_in_linear_time(code: bytes) -> None:
+    """An option could match two ways (`-` + `-a` or `--` + `a`), so a run of them backtracked
+    exponentially; options before the scope can't be the scope, so `--global` runs aren't
+    quadratic either."""
+    assert forms(code) == []
+
+
 def test_the_hook_command_line_changing_git_globally() -> None:
     found = persistence({}, {"postinstall": "git config --global core.hooksPath ./hooks"})
     assert [f for f, *_ in found] == ["git-config"]

@@ -285,14 +285,18 @@ _SAFE: Final = r"safe\.directory"
 _READ_OPTION: Final = (
     r"--(?:get|list|unset|remove|rename|show|name-only|edit|null|default)|-[lez](?![\w-])"
 )
-_OPTION: Final = r"(?:(?!" + _READ_OPTION + r")--?[\w-]+(?:=\S+)?\s+)*"
+# Options before the scope can't be the scope (one way to match: linear, not quadratic, on a
+# line of thousands of `--global`).
+_SCOPE_OPTION: Final = r"|--(?:global|system|file)(?![\w-])|-f(?![\w-])"
+_OPTION: Final = r"(?:(?!" + _READ_OPTION + r")--?\w[\w-]*(?:=\S+)?\s+)*"
+_PRE_OPTION: Final = r"(?:(?!" + _READ_OPTION + _SCOPE_OPTION + r")--?\w[\w-]*(?:=\S+)?\s+)*"
 _HOME_FILE: Final = r"(?:~|\$\{?HOME\}?|%USERPROFILE%)[/\\]+\.gitconfig"
 # As a command string: `git config --global core.hooksPath ~/.x`, `git config set --system ...`,
 # a string starting at `config` (`runGit("config --global ...")`), `git config --file
 # ~/.gitconfig ...`.
 GIT_CONFIG: Final = re.compile(
     r"(?:\bgit(?:\.exe)?[\"']?\s+(?:-C\s+\S+\s+)*|(?<=[\"'`]))config\s+(?:set\s+)?"
-    + _OPTION
+    + _PRE_OPTION
     + r"(?:--(?:global|system)\s+|(?:--file|-f)[\s=]+[\"']?"
     + _HOME_FILE
     + r"[\"']?\s+)"
@@ -308,7 +312,17 @@ GIT_CONFIG: Final = re.compile(
 )
 _Q: Final = r"[\"'`]"
 _ARG_OPTION: Final = (
-    r"(?:" + _Q + r"(?!" + _READ_OPTION + r")--?[\w-]+(?:=[^\"'`]*)?" + _Q + r"\s*,\s*)*"
+    r"(?:" + _Q + r"(?!" + _READ_OPTION + r")--?\w[\w-]*(?:=[^\"'`]*)?" + _Q + r"\s*,\s*)*"
+)
+_PRE_ARG_OPTION: Final = (
+    r"(?:"
+    + _Q
+    + r"(?!"
+    + _READ_OPTION
+    + _SCOPE_OPTION
+    + r")--?\w[\w-]*(?:=[^\"'`]*)?"
+    + _Q
+    + r"\s*,\s*)*"
 )
 # As an argument list: `spawnSync("git", ["config", "--global", "core.hooksPath", dir])`,
 # `git(["config", "set", "--global", ...])`.
@@ -321,7 +335,7 @@ GIT_CONFIG_ARGV: Final = re.compile(
     + r"set"
     + _Q
     + r"\s*,\s*)?"
-    + _ARG_OPTION
+    + _PRE_ARG_OPTION
     + _Q
     + r"--(?:global|system)"
     + _Q
