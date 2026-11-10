@@ -51,7 +51,10 @@ malicious|unwanted|benign|reopened [--note TEXT] [--by NAME] [--probe]`, or `...
 --reason gone|remote|obfuscated|binary`, records the same thing (an analyst records under its
 own name, so the owner can tell its verdicts from theirs and override them), and `kitsunox
 verdicts [KIND]` lists them with the tally. `--reason` is required for `unverified` and refused
-for anything else. Records written before 2026-11-08 as `inconclusive` still load, shown as
+for anything else. `--expect NAME@VERSION` refuses the call unless entry RANK is that version
+and says where it is now: a run's report is rebuilt, and its ranks can move, when Stage 5
+results or a rescore arrive later, so a rank copied earlier can point at another package
+(three re-review records hit the wrong version on 2026-11-10 and were restored). Records written before 2026-11-08 as `inconclusive` still load, shown as
 unverified with "no reason (was inconclusive)" until a newer record reclassifies them.
 
 ### What counts as malicious

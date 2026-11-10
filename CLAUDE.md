@@ -129,7 +129,7 @@ sudo bash tools/sandbox/setup.sh                   # Stage 5 locally: Docker + p
 uv run kitsunox queue                              # review queue across runs, by package (data/queue/)
 uv run kitsunox takedowns                          # npm takedowns seen in the feed (flags only, decision 0016)
 uv run kitsunox view                               # local web viewer on 127.0.0.1:8000: queue, runs, verdicts (docs/viewer.md)
-uv run kitsunox verdict <run_id> <rank> malicious --note "..." --by claude   # record a verdict; `kitsunox verdicts` lists them
+uv run kitsunox verdict <run_id> <rank> malicious --note "..." --by claude --expect NAME@VER   # record a verdict (--expect: ranks move when reports are rebuilt); `kitsunox verdicts` lists them
                                                    # verdicts: malicious|unwanted|benign|unverified (decision 0015)
 uv run kitsunox verdict <run_id> <rank> unverified --reason gone|remote|obfuscated|binary --by claude   # reason required, only here
 uv run kitsunox run --data-dir data-demo --window-hours 1   # whole pipeline once (own data dir: it moves the checkpoint)

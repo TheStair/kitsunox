@@ -644,6 +644,13 @@ def verdict_cmd(
         bool, typer.Option("--probe", help="Tag it a security researcher's probe.")
     ] = False,
     reason: ReasonOption = None,
+    expect: Annotated[
+        str | None,
+        typer.Option(
+            help="NAME@VERSION the entry must be; refuses otherwise (a run's report is "
+            "rebuilt, and its ranks can move, when Stage 5 results or a rescore arrive)."
+        ),
+    ] = None,
     data_dir: DataDirOption = DEFAULT_DATA_DIR,
 ) -> None:
     """Record a verdict on entry RANK of run RUN_ID's report, as the viewer does: the version
@@ -658,6 +665,11 @@ def verdict_cmd(
     entry = next((e for e in report.entries if e.rank == rank), None)
     if entry is None:
         typer.echo(f"run {run_id} has no entry {rank}", err=True)
+        raise typer.Exit(code=2)
+    if expect is not None and f"{entry.name}@{entry.version}" != expect:
+        now = next((e.rank for e in report.entries if f"{e.name}@{e.version}" == expect), None)
+        where = f"; {expect} is entry {now}" if now is not None else f"; {expect} isn't in it"
+        typer.echo(f"entry {rank} of run {run_id} is {entry.name}@{entry.version}{where}", err=True)
         raise typer.Exit(code=2)
     try:
         record = verdict_record(

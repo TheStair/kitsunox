@@ -339,6 +339,14 @@ def test_verdict_records_from_the_shell_and_verdicts_lists_them(tmp_path: Path) 
     assert "evil-pkg@1.0.3 [remote] (owner," in listed.stdout
     pua = runner.invoke(app, ["verdict", run_id, "1", "unwanted", "--probe", *args])
     assert pua.stdout.strip() == "evil-pkg@1.0.3: unwanted [probe] (by owner)"
+    # --expect guards against ranks that moved when the report was rebuilt
+    wrong = runner.invoke(app, ["verdict", run_id, "1", "benign", "--expect", "x@1", *args])
+    assert wrong.exit_code == 2
+    assert "entry 1 of run 20261029T210500Z-npm is evil-pkg@1.0.3; x@1 isn't in it" in (
+        wrong.output
+    )
+    right = ["verdict", run_id, "1", "unwanted", "--expect", "evil-pkg@1.0.3", *args]
+    assert runner.invoke(app, right).exit_code == 0
     for bad in (
         ["verdict", run_id, "1", "reopened", "--probe", *args],
         ["verdict", run_id, "1", "evil", *args],
