@@ -501,7 +501,23 @@ later), B2 +0, none lost.
   publish the previous release (`xrpl@2.14.2`, `vant@2.13.3`), keeps MEDIUM. On `vm-day1`
   it lowers the rule on one sample, `@antv/data-set@0.12.8` (`atool` again, 40 maintainers
   joined), which stays reported through its install hook and five other rules; the recall
-  risk is v2's (an account hijacked as itself). Measured before choosing it: "HIGH or score 6" for every rule would have
+  risk is v2's (an account hijacked as itself). v6 (2026-11-11, [round 7 W](../proposals/precision-round7-W.md)
+  W1, W2) is LOW in two more shapes read from the manifests. **A new major version** (the
+  major grows and is at least 1: `3.6.1` -> `4.0.0`, `0.5.2` -> `1.0.0`): a takeover wants
+  its payload to reach the projects that already depend on the package, and npm resolves
+  their `^`/`~` ranges inside the major they name, so a new major reaches none of them. All
+  36 `vm-day1` samples the rule fires on stay inside their major (`vant@2.13.3`,
+  `xrpl@2.14.2`, `@mastra/*`, the `@antv/*` `1.6.13` -> `1.7.13` bumps); 0.x minor bumps are
+  not counted, because `@antv/g2-extension-3d@0.3.0` (after `0.2.0`) is a takeover. **Every
+  added dependency was a dev or peer dependency of the previous release**: the project
+  already used those packages and now ships them (`imghash-cli@0.0.2`,
+  `@saasquatch/vanilla-components@1.4.2`); `@mastra/speech-*` move `@mastra/core` from dev
+  but add `easy-day-js` too, so keep MEDIUM. Live, real code: 12 benign reports fewer
+  (`@capacitor/assets@4.0.0`, `@livepreso/webpack-deck@4.0.0`, `amphora-html@7.0.0`,
+  `@squareboat/nest-storage@1.0.0`, ...), no positive changes; on `vm-day1` the rule's
+  finding changes on none of its 36 samples, `vant` included. **Recall risk:** a takeover
+  that publishes a new major reaches only new installs and projects that follow `latest`;
+  it now needs its other signals. Measured before choosing it: "HIGH or score 6" for every rule would have
   lost 202 malicious samples (`npm.install-script-code` alone catches 85, new packages'
   install hooks 29, `npm.dependency.non-registry` 12), so the other MEDIUM rules still report
   alone.
@@ -677,7 +693,7 @@ Rules over it:
 |---|---|---|---|
 | `npm.provenance.githead-dropped` (v2) | the previous release recorded `gitHead`, this one doesn't. Weight 1 when Stage 1's `npm.publish-method.downgrade` fired on the same release: both then say it left the CI path, and given a downgrade a dropped `gitHead` is no commoner among malicious samples (34 of 149 `vm-day1` downgrades, 23%) than among live benign verdicts (81 of 273, 30%) (v2, [round 5 K](../proposals/precision-round5-K.md) G1) | LOW | 2 |
 | `npm.dependency.known-malware` (v3) | an added (or re-pointed) runtime dependency, or its `npm:` alias target, is malware in every version per an OSV record published by `as_of`. LOW (weight 1) when the specifier only matches npm's empty `0.0.1-security` holding package (`fs: ^0.0.1-security`, what `npm install fs` writes), or when a Unity (UPM) package (`unity` field) depends on a `com.unity.*` built-in module, which Unity resolves from its own registry while the npm names are malware squats (v3) | HIGH | 5 |
-| `npm.combination.revived-with-new-dependency` (v5) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one: the package's own maintainer coming back (v2; since v5 also when maintainers were added, none of whom published it); LOW (weight 1) too when the release carries a provenance attestation (v3) or was published through trusted publishing (v4) | MEDIUM | 2 |
+| `npm.combination.revived-with-new-dependency` (v6) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one: the package's own maintainer coming back (v2; since v5 also when maintainers were added, none of whom published it); LOW (weight 1) too when the release carries a provenance attestation (v3) or was published through trusted publishing (v4), starts a new major version (v6), or adds only packages the previous release already declared as dev or peer dependencies (v6) | MEDIUM | 2 |
 | `npm.dependency.fresh-foreign` (v4) | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them. LOW (weight 1) when this release is a prerelease, which npm installs only when asked for it (v3, [round 3](../proposals/precision-round3.md) X7), and when the dependency's npm scope also holds a package on the run's watchlist (v4, [round 4 C](../proposals/precision-round4-C.md) F1) | MEDIUM | 3 |
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count), and an alias into JSR's `@jsr/` scope (v2) | MEDIUM | 3 |
 | `npm.undeclared.missing` | a package Stage 3's `npm.undeclared-package` names (loaded at module load, not declared; not own scope, watched or a sibling) was 404 when the run looked it up (Undeclared and missing, above). INFO, weight 0, when the lookup failed or was over the limits | MEDIUM | 3 |

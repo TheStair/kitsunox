@@ -134,7 +134,7 @@ def test_revived_with_new_dependency() -> None:
         )
 
     rule, ctx = RevivedWithNewDependency(), CorrelationContext(as_of=T0)
-    both = cand(snap("2.0.0"), snap("1.0.0")).model_copy(
+    both = cand(snap("1.1.0"), snap("1.0.0")).model_copy(
         update={"findings": (low("npm.dormant-revived"), low("npm.dependency.added"))}
     )
     (found,) = rule.evaluate_candidate(both, ctx)
@@ -190,7 +190,7 @@ def test_revived_by_the_same_account_is_low() -> None:
     assert (other.severity, other.weight) == (Severity.MEDIUM, 2.0)
     # v5: maintainers added, the same account publishing (`@rbbn/distant-web@1.3.0`)
     added = found(snap("2.14.2", publisher="ckniffen", maintainers=("ckniffen", "m")), old)
-    assert (added.severity, added.weight, added.rule_version) == (Severity.LOW, 1.0, 5)
+    assert (added.severity, added.weight, added.rule_version) == (Severity.LOW, 1.0, 6)
     assert added.explanation.endswith(
         "who published the previous release, with maintainers added (m), none of whom published it."
     )
@@ -239,6 +239,69 @@ def test_revived_with_provenance_is_low() -> None:
     assert oidc.explanation.endswith(
         "Published with trusted publishing (github) (from the repository's CI)."
     )
+
+
+def _revived(new: VersionSnapshot, old: VersionSnapshot) -> Finding:
+    fired = tuple(
+        Finding(
+            rule_id=rule_id,
+            rule_version=1,
+            severity=Severity.LOW,
+            weight=1.0,
+            title="t",
+            explanation=f"{rule_id}.",
+        )
+        for rule_id in ("npm.dormant-revived", "npm.dependency.added")
+    )
+    (result,) = RevivedWithNewDependency().evaluate_candidate(
+        cand(new, old).model_copy(update={"findings": fired}), CorrelationContext(as_of=T0)
+    )
+    return result
+
+
+def test_revived_into_a_new_major_is_low() -> None:
+    """v6 (round 7, W1): a new major is outside every range of an earlier release, so it
+    doesn't reach the projects a takeover wants (`@capacitor/assets@4.0.0`). Inside the major
+    (`vant@2.13.3`, `@antv/*` `1.6.13` -> `1.7.13`) and 0.x minors (`@antv/g2-extension-3d`
+    `0.2.0` -> `0.3.0`) keep MEDIUM."""
+    deps: dict[str, Any] = {"dependencies": {"new-dep": "^1.0.0"}}
+    old: dict[str, Any] = {"publisher": "a", "maintainers": ("a", "b")}
+    new: dict[str, Any] = {"publisher": "b", "maintainers": ("a", "b")}
+    for before, after in (("3.0.5", "4.0.0"), ("0.5.2", "1.0.0"), ("0.27.0-next.3", "2.1.8")):
+        found = _revived(snap(after, deps, **new), snap(before, **old))
+        assert (found.severity, found.weight, found.rule_version) == (Severity.LOW, 1.0, 6)
+        assert found.explanation.endswith(
+            f"A new major version after {before}: npm gives it to no project whose range "
+            "names an earlier major."
+        )
+    for before, after in (("2.13.2", "2.13.3"), ("1.6.13", "1.7.13"), ("0.2.0", "0.3.0")):
+        kept = _revived(snap(after, deps, **new), snap(before, **old))
+        assert (kept.severity, kept.weight) == (Severity.MEDIUM, 2.0), after
+
+
+def test_revived_shipping_its_own_dev_dependencies_is_low() -> None:
+    """v6 (W2): every added runtime dependency was a dev or peer dependency of the previous
+    release (`imghash-cli@0.0.2`); one new package among them (`@mastra/speech-*` moving
+    `@mastra/core` but adding `easy-day-js`) keeps MEDIUM."""
+    old_manifest = {
+        "dependencies": {"kept": "^1"},
+        "devDependencies": {"imghash": "^1.1.5"},
+        "peerDependencies": {"react": "^18"},
+    }
+    old = snap("0.0.1", old_manifest, publisher="a", maintainers=("a", "b"))
+
+    def found(added: dict[str, str]) -> Finding:
+        manifest = {"dependencies": {"kept": "^1", **added}}
+        return _revived(snap("0.0.2", manifest, publisher="b", maintainers=("a", "b")), old)
+
+    moved = found({"imghash": "^1.1.5", "react": "^18"})
+    assert (moved.severity, moved.weight) == (Severity.LOW, 1.0)
+    assert moved.explanation.endswith(
+        "Each added dependency was already a dev or peer dependency of 0.0.1: none is new to "
+        "the project."
+    )
+    assert found({"imghash": "^1.1.5", "easy-day-js": "^1.11.21"}).severity is Severity.MEDIUM
+    assert found({"other": "1"}).severity is Severity.MEDIUM
 
 
 def test_a_unity_package_s_built_in_module_is_low() -> None:
