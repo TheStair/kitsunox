@@ -84,7 +84,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
 | `npm.publish-method.downgrade` (v7): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added (since v7 only when an added maintainer publishes the release), unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5; an added dependency alone is none when the previous release came from token CI by the same account, v6): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
-| `npm.dependency.non-registry` (v9): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6); LOW, weight 1, for a spec npm reads as a local path (`@scope/name@1.0.0`, `./x`: v7); LOW, weight 1, on an update whose previous release took this dependency from the same account *and* names that GitHub account as its repository, also for a commit (v8) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
+| `npm.dependency.non-registry` (v10): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4), and for uWebSockets.js's GitHub repository at a tag or branch (v10, owner); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6); LOW, weight 1, for a spec npm reads as a local path (`@scope/name@1.0.0`, `./x`: v7); LOW, weight 1, on an update whose previous release took this dependency from the same account *and* names that GitHub account as its repository, also for a commit (v8) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious` (v4): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
 | `npm.dependency.added` | LOW | | | | |
@@ -246,6 +246,16 @@ no Stage 1 finding of any of the 3,444 malicious samples changes severity or wei
 **Recall risk:** a thief who adds a maintainer (for persistence) and publishes as the old
 account is one step lower here when nothing else changed; `npm.maintainer.added` still adds
 its LOW.
+
+`npm.dependency.non-registry` v10 (2026-11-11, owner, [round 7 W](../proposals/precision-round7-W.md)
+Q2): uWebSockets.js's own GitHub repository is a vendor origin, as SheetJS's CDN is (v4): the
+project publishes only there, never to npm (`VENDOR_REPOSITORIES`, `vendor_repository`). A
+dependency on `uNetworking/uWebSockets.js` (any spec form: `github:`, `git+https:`, bare) at a
+tag, branch or the default branch is LOW, weight 1, with the vendor note; at a commit id or
+pull-request ref it keeps MEDIUM (a fork's commit is served through the parent repository's
+URLs). One literal repository, not a pattern. Live: 3 benign reports fewer
+(`@chubbyts/chubbyts-http-uwebsockets@1.0.0`, `@moussejs/core@1.1.0`,
+`copious-transitions@0.9.1`), no positive changes; no `vm-day1` malicious sample depends on it.
 
 `npm.dependency.non-registry` v9 (2026-11-11, owner): v8's commit bump is LOW only within the
 package's *own* repository, the one the previous release's `repository` names; another

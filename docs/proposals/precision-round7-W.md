@@ -118,6 +118,22 @@ and its install hook keeps it. **Recall risk:** a thief who adds a maintainer fo
 and publishes as the old account, changing nothing else, is one step lower; the LOW
 `npm.maintainer.added` still adds to the score.
 
+### W4. `non-registry` v10: uWebSockets.js's GitHub repository (Stage 1; owner 2026-11-11)
+
+Built after the owner answered question 2. `VENDOR_REPOSITORIES` names one repository,
+`github.com/unetworking/uwebsockets.js`; a dependency on it in any spec form (`github:`,
+`git+https:`, bare `owner/repo`) at a tag, branch or the default branch is LOW, weight 1, with
+the vendor note SheetJS's CDN gets. A commit id or pull-request ref keeps MEDIUM (a fork's
+commit is served through the parent repository's URLs), as do another account's copy and a
+look-alike repository name. Measured on the 234 versions where the rule fires (subset replay,
+branch with W4 against the full replay without it, 0 errors): 3 findings change (MEDIUM → LOW),
+3 benign versions unreported (`@chubbyts/chubbyts-http-uwebsockets@1.0.0`, `@moussejs/core@1.1.0`,
+`copious-transitions@0.9.1`), no version newly reported, and no malicious, unwanted or
+unverified version changes its decision or a finding. With W1-W3 the live count is then
+1,452 reported, 754 benign, precision 46.98% (668 positives unchanged). `vm-day1`: Stage 1 on all
+3,444 malicious samples, no finding changes severity or weight (no sample depends on the
+repository).
+
 ## 4. Live result (real code)
 
 One full replay of the branch (all 3,716 versions, 0 errors), counted with today's verdicts
@@ -188,7 +204,7 @@ agree: the branch against a `main` replay of the same 593 versions unreports the
 
 ## 7. Owner questions
 
-1. **Researchers' empty `99.x` placeholders** (`npm.version.suspicious` alone, new package,
+1. **Owner 2026-11-11: keep reporting them, no change.** **Researchers' empty `99.x` placeholders** (`npm.version.suspicious` alone, new package,
    no install hook, no code beyond `module.exports = {}` / `// blank`): 16 benign live
    reports (`@geneva-testing/*` x9, `@one-thd/*` x4, `@thd-eux/theme-ant`, `logosphere-ui`,
    `service-roles-registry`). `vm-day1` has the same shape labelled malicious and reported by
@@ -201,7 +217,8 @@ agree: the branch against a `main` replay of the same 593 versions unreports the
    project publishes only there, as SheetJS publishes only on its CDN (v4's
    `VENDOR_REGISTRIES`, "each vendor an owner decision"). 3 benign reports
    (`@chubbyts/chubbyts-http-uwebsockets@1.0.0`, `@moussejs/core@1.1.0`,
-   `copious-transitions@0.9.1`), no positive, no `vm-day1` sample uses it. Not built.
+   `copious-transitions@0.9.1`), no positive, no `vm-day1` sample uses it. **Owner
+   2026-11-11: yes. Built as `npm.dependency.non-registry` v10** (section 3, W4).
 3. **Baseline note for the integrator:** `~/kitsunox-scratch/r7/shared/base.jsonl` carries
    `npm.dependency.non-registry` **v8** findings (274 of them; none v9), so it predates
    `697e67c`. It doesn't change the counts: replaying `main` (`8ee117c`, v9) on the 819

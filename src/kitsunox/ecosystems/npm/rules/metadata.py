@@ -364,10 +364,18 @@ class NonRegistryDependency(BaseRule):
     previous release's `repository` names, not just the same account) is LOW. Another
     repository of the same account (`@diffci.com/diffci` pinning `DiffCI/core`) is MEDIUM
     again: a stolen token can bump a pin to any commit of the account's repositories, and
-    the owner judged that recall risk not worth 28 benign reports."""
+    the owner judged that recall risk not worth 28 benign reports.
+
+    v10 (2026-11-11, owner; `docs/proposals/precision-round7-W.md` Q2): uWebSockets.js's
+    own GitHub repository (`VENDOR_REPOSITORIES`: `github:uNetworking/uWebSockets.js#v20.67.0`)
+    is a vendor origin as SheetJS's CDN is (v4): the project publishes only there, never to
+    npm. LOW, weight 1, at a tag, branch or the default branch; a commit id or pull-request
+    ref keeps MEDIUM, since GitHub serves a fork's commit through the parent repository's
+    URLs (`DependencySource.forkable`). 3 benign live reports, no positive; no `vm-day1`
+    sample depends on it."""
 
     id = "npm.dependency.non-registry"
-    version = 9
+    version = 10
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -384,7 +392,7 @@ class NonRegistryDependency(BaseRule):
                 continue
             own_scope = tarball is not None and _same_scope(tarball["name"], change.new.ref.name)
             local = spec.strip().startswith(_LOCAL) or npm_local_path(spec)
-            vendor = spec.strip().startswith(VENDOR_REGISTRIES)
+            vendor = spec.strip().startswith(VENDOR_REGISTRIES) or vendor_repository(spec)
             moved = None if local or vendor or own_scope else trusted_move(change, name, spec)
             if moved is None and not (local or vendor or own_scope):
                 moved = trusted_commit_bump(change, name, spec)
@@ -402,6 +410,20 @@ class NonRegistryDependency(BaseRule):
                 )
             )
         return findings
+
+
+# GitHub repositories (host, account, repository; lower case) a vendor that doesn't publish to
+# npm distributes its package from (v10, owner 2026-11-11).
+VENDOR_REPOSITORIES: Final = frozenset({("github.com", "unetworking", "uwebsockets.js")})
+
+
+def vendor_repository(spec: str) -> bool:
+    """The spec takes a `VENDOR_REPOSITORIES` repository at a reference a fork can't plant
+    (a tag, a branch or the default branch; v10)."""
+    source = dependency_source(spec)
+    if source is None or source.forkable:
+        return False
+    return dependency_repository(spec) in VENDOR_REPOSITORIES
 
 
 OWN_SCOPE_TARBALL_NOTE: Final = (

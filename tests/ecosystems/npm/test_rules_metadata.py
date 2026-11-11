@@ -166,7 +166,7 @@ def test_a_registry_tarball_of_an_own_scope_package_is_low() -> None:
 
     own = "https://registry.npmjs.org/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz"
     low = nr_scoped("@atharva-again/pi-coding-agent", own)
-    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 9)
+    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 10)
     assert "only the scope's owner can publish" in low.explanation
     for name, spec in (
         ("@other/pi-coding-agent", own),
@@ -205,6 +205,31 @@ def test_sheetjs_cdn_is_the_vendors_registry(spec: str, low: bool) -> None:
     (finding,) = NonRegistryDependency().evaluate(change(new, snap("1.0.0")), CTX)
     assert (finding.severity, finding.weight) == (
         (Severity.LOW, 1.0) if low else (Severity.MEDIUM, 3.0)
+    )
+    assert finding.explanation.endswith("only there.") is low
+
+
+@pytest.mark.parametrize(
+    ("spec", "low"),
+    [
+        ("github:uNetworking/uWebSockets.js#v20.67.0", True),
+        ("git+https://github.com/uNetworking/uWebSockets.js.git#v20.71.0", True),
+        ("uNetworking/uWebSockets.js", True),
+        # a commit id: a fork's commit is served through the parent repository's URLs
+        ("github:uNetworking/uWebSockets.js#951738fd737b740b705d4f8fa495c2d8c43b0c29", False),
+        ("github:attacker/uWebSockets.js#v20.67.0", False),
+        ("github:uNetworking/uWebSockets.js-evil#v20.67.0", False),
+        ("https://evil.example/uNetworking/uWebSockets.js.tgz", False),
+    ],
+)
+def test_uwebsockets_github_is_a_vendor_origin(spec: str, low: bool) -> None:
+    """v10 (owner 2026-11-11): uWebSockets.js publishes only on GitHub (`@chubbyts/*`,
+    `@moussejs/core`, `copious-transitions`: 3 benign live reports)."""
+    (finding,) = NonRegistryDependency().evaluate(
+        change(snap("1.0.0", {"dependencies": {"uWebSockets.js": spec}})), CTX
+    )
+    assert (finding.severity, finding.weight, finding.rule_version) == (
+        (Severity.LOW, 1.0, 10) if low else (Severity.MEDIUM, 3.0, 10)
     )
     assert finding.explanation.endswith("only there.") is low
 
@@ -269,12 +294,11 @@ def nr(new_dep: str, old_dep: str | None = None, *, repository: Any = None) -> F
 
 def test_a_dependency_moved_within_the_same_account_is_low() -> None:
     """v5 (round 4, N1): the previous release took it from the same account; only the tag or
-    release changed (`@activeledger/*`: uWebSockets.js `#v20.67.0` -> `#v20.71.0`)."""
-    moved = nr(
-        "github:uNetworking/uWebSockets.js#v20.71.0", "github:uNetworking/uWebSockets.js#v20.67.0"
-    )
-    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 9)
-    assert "The previous release took it from the same account (github.com/unetworking)" in (
+    release changed (`@activeledger/*`: uWebSockets.js `#v20.67.0` -> `#v20.71.0`; a vendor
+    origin itself since v10, so another account here)."""
+    moved = nr("github:someone/some-lib#v20.71.0", "github:someone/some-lib#v20.67.0")
+    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 10)
+    assert "The previous release took it from the same account (github.com/someone)" in (
         moved.explanation
     )
     release = "https://github.com/Signet-AI/signetai/releases/download/v{}/s.tgz"
@@ -368,7 +392,7 @@ def test_a_commit_bump_in_the_packages_own_repository_is_low() -> None:
     assert nr(new, old, repository=sibling).severity is Severity.MEDIUM  # v8 had LOW
     repo = {"type": "git", "url": "git+https://github.com/DiffCI/core.git"}
     bumped = nr(new, old, repository=repo)
-    assert (bumped.severity, bumped.weight, bumped.rule_version) == (Severity.LOW, 1.0, 9)
+    assert (bumped.severity, bumped.weight, bumped.rule_version) == (Severity.LOW, 1.0, 10)
     assert "only the pinned commit changed" in bumped.explanation
     assert (
         nr("github:DiffCI/core#909d79d", "github:DiffCI/core#8d832eb", repository=repo).weight
