@@ -6,8 +6,6 @@ shapes reviewers recognise at a glance (`docs/proposals/precision-round2.md`, S1
 - **S1 platform-binary launcher.** The package ships its binary as per-platform packages in
   `optionalDependencies` (`<name>-linux-x64`, `@scope/<name>-darwin-arm64`), and the install
   code only picks or checks the right one: no network beyond the npm registry.
-- **S2 own-release download.** The install code downloads a binary from the package's own
-  GitHub repository's releases and checks its checksum, and fetches nothing else.
 - **S3 agent-skill copier.** The install code copies the package's skills, hooks or agent
   settings into an AI coding agent's directory (`.claude`, `.agents`, ...) in the project, and
   reaches neither the network nor other processes. Install code (or an install hook's command
@@ -34,28 +32,12 @@ shapes reviewers recognise at a glance (`docs/proposals/precision-round2.md`, S1
   The intrusive installs the owner rules unwanted (user-wide agent writes, shell rc edits,
   PATH changes, system package installs, beacons) all need one of those.
 
-S2 needs no checksum when every download is named in `package.json` as the package's own
-releases (cargo-dist's `artifactDownloadUrls`, v3): its npm installer checks none, and a
-checksum shipped in the same release proves nothing about its author anyway.
-
-- **S6 own-binary download, not run** (v4, round 5). The install code downloads from the
-  package's own releases: its GitHub repository's or its owner's other repositories'
-  (`github.com/<owner>/<any>/releases`, the release API), or the `homepage`'s own host when
-  that is not a code host; every other URL it names is a GitHub asset host, the npm registry, a
-  page link or a file of the owner's repositories (`raw.githubusercontent.com/<owner>/`), and a
-  version in a download URL is the package's (or its release's, for a prerelease). It needs
-  no checksum, because what it fetched never runs at install: every `child_process` call in
-  every install file (reached or not, `lang.process_calls`) runs an archive or file-mode tool
-  (`tar`, `unzip`, `chmod`, `xattr`, PowerShell's `Expand-Archive`, ...) or asks the platform
-  what it is (`uname`, `sysctl`, `ldd --version`), with no shell chaining beyond `&&`/`cd`
-  and no `tar` option that runs a command; and no worker, `vm`, WebAssembly or native load runs
-  code another way. Every hook is plain `node <file>`, every install file JavaScript; the code
-  loads no package by name (whose code could run anything) and no package file it doesn't ship
-  (maybe the one it downloaded), has no inline `node -e` code, never names the home directory,
-  an agent directory, another installed package, a system directory or the user's project
-  (comments and messages aside), and sends nothing (`method: "POST"`, `.post(`). A downloader
-  that runs what it fetched (`@byteplus/arkcli-probe-*`, unwanted: it then installs skills into
-  every agent) or fetches from someone else's host stays reported.
+**No download shape since v6** (2026-11-11, round 6 R, the owner's strict ruling in decision
+0015: install-time downloads of code are unwanted, the package's own binary from its own
+release or CDN included). S2 (own-release download with a checksum, round 2; cargo-dist,
+round 4) and S6 (own-binary download not run, round 5 H) explained such downloads and are
+gone; `npm.install-download` (MEDIUM) names them. S1's registry fallback (fetching the
+package's own platform package from the registry) stays explained.
 
 (S4, build-tool-only hooks, is `npm.install-build-tool`.) Every shape also needs: no install
 hook that is shell beyond `node <file>` (`curl`, `| sh`, `$(...)`), no command from
@@ -73,7 +55,6 @@ never a content finding (`npm.install-script-obfuscated`, `static.exfil-endpoint
 
 from __future__ import annotations
 
-import posixpath
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
@@ -94,7 +75,6 @@ from kitsunox.lang.agent_config import (
     widening,
 )
 from kitsunox.lang.javascript import Capability, language_for, mask_comments_and_messages
-from kitsunox.lang.process_calls import process_calls
 from kitsunox.stages.ast import CodeChange
 
 C = Capability
@@ -217,11 +197,6 @@ BAILEYS_ENGINE_CHECK: Final = re.compile(r"(?:^|/)engine-requirements\.js$")
 MIN_PLATFORM_BUILDS: Final = 2
 MAX_SHOWN: Final = 3
 URL: Final = re.compile(r"""https?://[^\s"'`)<>\\]+""")
-CHECKSUM: Final = re.compile(
-    r"""createHash\(\s*['"`]sha(?:256|384|512)|sha256sums|checksums?\.txt|\.sha256\b|"""
-    r"""verifyChecksum""",
-    re.IGNORECASE,
-)
 _CONST: Final = re.compile(
     r"""\b(?:const|let|var)\s+(\w+)\s*=\s*['"`]([\w.-]+(?:/[\w.-]+)?)['"`]"""
 )
@@ -247,7 +222,7 @@ _GITHUB_PAGE: Final = re.compile(
 
 
 class InstallExplained(BaseRule):
-    """The version's install code has one of the explained shapes S1-S6 (module docstring).
+    """The version's install code has one of the explained shapes S1, S3, S5 (module docstring).
 
     Added 2026-11-08 (`docs/proposals/precision-round2.md`, S1-S3, with the owner's three
     guards on S3), measured with Stage 4 on the live verdicts and on all 433 `vm-day1`
@@ -267,10 +242,13 @@ class InstallExplained(BaseRule):
     the home directory or a URL besides the npm registry and page links. And S1 never holds
     when the install code names a download program or call (`DOWNLOAD_TOOL`: `curl`, `wget`,
     `Invoke-WebRequest`, ...) unless every URL it names is the npm registry (owner,
-    2026-11-10: no download from outside the registry)."""
+    2026-11-10: no download from outside the registry).
+    v6 (2026-11-11, round 6 R, `docs/proposals/precision-round6-R.md`): S2 and S6 removed, by
+    the owner's strict ruling (install-time downloads of code are unwanted, own binaries
+    included): no download is an explained shape (module docstring)."""
 
     id = "npm.install-explained"
-    version = 5
+    version = 6
     severity = Severity.INFO
     weight = 0.0
     title = "Install code has an explained shape"
@@ -374,50 +352,6 @@ def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] |
                     kind=EvidenceKind.MANIFEST_FIELD,
                     path="package.json:optionalDependencies",
                     after=snippet(", ".join(builds)),
-                ),
-            ],
-        )
-    repo = own_repo(manifest)
-    kinds = [_url_kind(u, repo) for u in urls]
-    downloads = _own_download_urls(manifest, repo)
-    checksum = CHECKSUM.search(text)
-    if (
-        C.NETWORK in caps
-        and repo is not None
-        and None not in kinds
-        and ("own" in kinds or downloads)
-        and (checksum is not None or downloads)
-        and (downloads or not _templated(urls))
-    ):
-        own = [u for u, k in zip(urls, kinds, strict=True) if k == "own"] or downloads
-        checked = (
-            f"checks a checksum (`{checksum.group(0)}`)"
-            if checksum is not None
-            else "names every download in `package.json` (cargo-dist's `artifactDownloadUrls`)"
-        )
-        return (
-            f"S2 own-release download: the install code downloads from the package's own "
-            f"repository's GitHub releases ({repo[0]}/{repo[1]}) and {checked}; every URL it "
-            f"names is that, GitHub's asset hosts or the npm registry; it uses {uses}.",
-            [
-                *hook_evidence,
-                Evidence(kind=EvidenceKind.METADATA, snippet=snippet(", ".join(own[:3]))),
-            ],
-        )
-    if C.NETWORK in caps and not own_binary_concerns(change, urls):
-        found = own_binary_urls(urls, manifest)
-        return (
-            "S6 own-binary download, not run: the install code downloads from the package's "
-            f"own releases ({', '.join(sorted({h for _, h in found}))}); every URL it names is "
-            "that, a file of the owner's repositories, GitHub's asset hosts, the npm registry or a "
-            "page link; it runs no command "
-            "but an archive or platform tool (never what it downloaded), loads no package by "
-            f"name, never names the home directory and sends nothing; it uses {uses}.",
-            [
-                *hook_evidence,
-                Evidence(
-                    kind=EvidenceKind.METADATA,
-                    snippet=snippet(", ".join(u for u, _ in found[:MAX_SHOWN])),
                 ),
             ],
         )
@@ -653,96 +587,6 @@ def _url_kind(url: str, repo: tuple[str, str] | None) -> str | None:
     return None
 
 
-def _own_download_urls(manifest: Mapping[str, Any], repo: tuple[str, str] | None) -> list[str]:
-    """cargo-dist's `artifactDownloadUrls`, when every one is the package's own releases."""
-    urls = manifest.get("artifactDownloadUrls")
-    if not isinstance(urls, list) or not urls:
-        return []
-    if all(isinstance(u, str) and _url_kind(u, repo) == "own" for u in urls):
-        return [str(u) for u in urls]
-    return []
-
-
-ARCHIVE_TOOLS: Final = frozenset(
-    {"tar", "unzip", "7z", "7za", "gzip", "gunzip", "xz", "chmod", "xattr", "ditto"}
-)
-PLATFORM_PROBES: Final = frozenset({"uname", "sysctl", "getconf", "sw_vers", "which", "where"})
-POWERSHELL: Final = frozenset({"powershell", "pwsh"})
-_SHELL_SPLIT: Final = re.compile(r"&&|\|\||;")
-_DEV_NULL: Final = re.compile(r"\d?>\s*/dev/null|2>&1|\d?>\s*nul\b", re.IGNORECASE)
-_SHELL_META: Final = re.compile(r"[|<>`]|\$\(")
-_PS_RISKY: Final = re.compile(
-    r"invoke-|\biex\b|start-process|download|-enc|encodedcommand|[;&|`]|\$\(", re.IGNORECASE
-)
-# GNU tar can run commands itself (`--to-command`, `--checkpoint-action=exec=...`).
-TAR_EXEC: Final = re.compile(
-    r"to-command|checkpoint-action|use-compress-program|rsh-command|info-script|"
-    r"new-volume-script",
-    re.IGNORECASE,
-)
-# Code that runs code without `child_process`: workers, `vm`, WebAssembly, native addons.
-RUNS_CODE: Final = re.compile(
-    r"""["'`](?:node:)?(?:worker_threads|vm|cluster|inspector|module|wasi)["'`]"""
-    r"""|\bnew\s+Worker\s*\(|\bWebAssembly\b|\bprocess\s*\.\s*(?:binding|dlopen)\b"""
-)
-# Install code that sends rather than downloads.
-SENDS: Final = re.compile(
-    r"""\bmethod\s*:\s*["'`](?:POST|PUT|PATCH)["'`]|\.(?:post|put|patch)\s*\(""",
-    re.IGNORECASE,
-)
-# Where S6's install code may not write what it fetched: a system directory (the temporary
-# directory is where downloads are staged, so it is allowed here, unlike S5), or the user's
-# project (`INIT_CWD`, git hooks). Another installed package is `OTHER_PACKAGE`.
-SYSTEM_DIR: Final = re.compile(
-    r"""["'`](?:/(?:etc|usr|bin|sbin|opt|var|Library|System|Applications|private)"""
-    r"""(?:/|["'`])|[A-Za-z]:(?:\\\\|\\|/))"""
-)
-# Decoding a string: how a URL or a command the checks above should see is hidden.
-DECODES: Final = re.compile(
-    r"""\batob\s*\(|\bBuffer\s*\.\s*from\s*\([^()]*["'`](?:base64|base64url|hex)["'`]\s*\)"""
-)
-# A runner told to use a shell (`spawn("tar", args, { shell: true })`): its arguments are a
-# shell line too.
-SHELL_OPTION: Final = re.compile(r"""\bshell\s*:\s*(?:true|["'`])""")
-PROJECT: Final = re.compile(r"""\bINIT_CWD\b|\.git[/\\]+hooks|["'`]\.git["'`]""")
-_VERSION_IN_URL: Final = re.compile(r"/v?(\d+\.\d+\.\d+(?:[-+][\w.]+)?)(?=/|$)")
-
-
-def _first_word(segment: str) -> str:
-    word = segment.strip().split(" ", 1)[0].strip("\"'")
-    word = re.split(r"[/\\]", word)[-1].lower()
-    return word.removesuffix(".exe")
-
-
-def allowed_command(command: str, shell: bool) -> bool:
-    """`command` only unpacks an archive, sets file modes or attributes, or asks the platform
-    what it is: never runs a downloaded file or anything else."""
-    if not command or "…" in command.split(" ", 1)[0]:
-        return False
-    if TAR_EXEC.search(command):
-        return False
-    segments = [command]
-    if shell:
-        text = _DEV_NULL.sub("", command)
-        segments = _SHELL_SPLIT.split(text)
-        if _SHELL_META.search(_SHELL_SPLIT.sub(" ", text)):
-            return False
-    for segment in segments:
-        word = _first_word(segment)
-        if "${" in word or "…" in word:
-            return False
-        if word in POWERSHELL:
-            rest = segment.strip().split(" ", 1)[-1]
-            if "expand-archive" not in rest.lower() or "…" in rest or _PS_RISKY.search(rest):
-                return False
-        elif word == "ldd":
-            if segment.split() != ["ldd", "--version"]:
-                return False
-        elif word not in ARCHIVE_TOOLS | PLATFORM_PROBES | ({"cd"} if shell else set()):
-            return False
-    return True
-
-
 def _own_kind(url: str, repo: tuple[str, str] | None, home: str | None) -> str | None:
     """`_url_kind`, plus 'org' (a release or the release API of any of the repository
     owner's repositories), 'raw' (a file of one, `raw.githubusercontent.com/<owner>/`: never
@@ -780,115 +624,6 @@ def _home_host(manifest: Mapping[str, Any]) -> str | None:
     if host in ("github.com", "www.github.com", "gitlab.com", "npmjs.com", "www.npmjs.com"):
         return None
     return host or None
-
-
-def own_binary_urls(urls: Sequence[str], manifest: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The download URLs of S6, as (url, owner or host)."""
-    repo = own_repo(manifest)
-    home = _home_host(manifest)
-    out = []
-    for u in urls:
-        kind = _own_kind(u, repo, home)
-        if kind in ("own", "org") and repo is not None:
-            out.append((u, repo[0]))
-        elif kind == "home" and home is not None:
-            out.append((u, home))
-    return out + [(u, repo[0]) for u in _own_download_urls(manifest, repo) if repo is not None]
-
-
-_LOCAL_LOAD: Final = re.compile(
-    r"""\b(?:require|import)\s*\(\s*["'`](\.{1,2}/[^"'`]+)["'`]\s*\)"""
-    r"""|\bfrom\s+["'](\.{1,2}/[^"']+)["']"""
-)
-_LOADABLE: Final = ("", ".js", ".cjs", ".mjs", ".ts", ".cts", ".mts", "/index.js", "/index.mjs")
-
-
-def unshipped_loads(path: str, text: str, change: CodeChange) -> list[str]:
-    """Package files `text` (the install file at `path`) loads by a constant relative path that
-    are not among the install files Stage 3 read: maybe the file it just downloaded, which
-    `require` would run. JSON is data."""
-    out = []
-    for match in _LOCAL_LOAD.finditer(text):
-        spec = match.group(1) or match.group(2)
-        target = posixpath.normpath(posixpath.join(posixpath.dirname(path), spec))
-        if target.endswith(".json"):
-            continue
-        if not any(target + suffix in change.install_files for suffix in _LOADABLE):
-            out.append(spec)
-    return out
-
-
-def own_binary_concerns(change: CodeChange, urls: Sequence[str]) -> list[str]:
-    """Why the install code is not S6 (an own-binary download that runs nothing it fetched);
-    empty when it is."""
-    manifest = change.snapshot.manifest
-    install = change.install
-    repo = own_repo(manifest)
-    home = _home_host(manifest)
-    concerns = []
-    if install is None:
-        return ["no install profile"]
-    hooks = _hooks(manifest)
-    concerns += [f"hook: {c[:80]}" for c in hooks.values() if not node_only(c)]
-    # A shipped installer, not inline `node -e` code (`dependencykfeg@1.5.6`, malicious: an
-    # inline DNS exfiltration `preinstall` with no URL).
-    concerns += [f"inline: {p}" for p in change.install_files if p.startswith(INLINE_PREFIX)]
-    concerns += [f"url: {u[:100]}" for u in urls if _own_kind(u, repo, home) is None]
-    found = own_binary_urls(urls, manifest)
-    if not found:
-        concerns.append("no own download")
-    version = change.snapshot.ref.version
-    release = re.split(r"[-+]", version, maxsplit=1)[0]
-    for u, _ in found:
-        literal = [v for v in _VERSION_IN_URL.findall(u.split("?", 1)[0]) if "${" not in v]
-        if literal and not {version, release} & set(literal):
-            concerns.append(f"version: {u[:100]}")
-    if install.packages:
-        concerns.append("packages: " + ",".join(sorted({p.load.name for p in install.packages})))
-    if user_wide(change):
-        concerns.append("home")
-    if names_agent_dir(change.install_files):
-        concerns.append("agent dir")
-    # Comments and messages aside ("the binary lives in node_modules/<name>/", `herozion`).
-    text = "\n".join(
-        mask_comments_and_messages(c, language).decode("utf-8", "replace")
-        if (language := language_for(p)) is not None
-        else c.decode("utf-8", "replace")
-        for p, c in change.install_files.items()
-    )
-    for name, pattern in (
-        ("other package", OTHER_PACKAGE),
-        ("system path", SYSTEM_DIR),
-        ("project", PROJECT),
-    ):
-        if m := pattern.search(text):
-            concerns.append(f"{name}: {m.group(0)}")
-    for path, content in sorted(change.install_files.items()):
-        language = language_for(path)
-        if language is None:
-            concerns.append(f"not javascript: {path}")
-            continue
-        text = content.decode("utf-8", "replace")
-        if m := RUNS_CODE.search(text):
-            concerns.append(f"runs code: {m.group(0)}")
-        if m := SENDS.search(text):
-            concerns.append(f"sends: {m.group(0)}")
-        if m := TAR_EXEC.search(text):
-            concerns.append(f"tar exec: {m.group(0)}")
-        if m := DECODES.search(text):
-            concerns.append(f"decodes: {m.group(0)[:40]}")
-        concerns += [f"loads unshipped: {spec}" for spec in unshipped_loads(path, text, change)]
-        calls = process_calls(content, language)
-        if calls is None:
-            concerns.append(f"process unreadable: {path}")
-            continue
-        shell = bool(SHELL_OPTION.search(text))
-        concerns += [
-            f"runs: {c.command[:80] or c.runner}"
-            for c in calls
-            if not allowed_command(c.command, c.shell or shell)
-        ]
-    return concerns
 
 
 RULES: Final = (InstallExplained(), InstallAgentUserWide())

