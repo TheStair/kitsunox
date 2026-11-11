@@ -13,7 +13,7 @@ import ipaddress
 import itertools
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import ClassVar, Final
 
 from kitsunox.core.models import Severity
@@ -172,9 +172,14 @@ class ExfilEndpoint(RegexRule):
     # "collectors (webhook.site, requestbin, ngrok, interact.sh)"); and, as `hardcoded-ip` v7
     # (P4), a host in a JSON catalog with URLs on `CATALOG_HOSTS` or more hosts (`_catalog`: an
     # MCP server directory listing a quick tunnel among thousands of servers).
+    # v11 (round 7, `docs/proposals/precision-round7-X.md` X3, X4): LOW, weight 1, not on an
+    # install hook's line, for a host anywhere inside the value of an `example` / `examples`
+    # field (`_in_example`: an OpenAPI document's sample webhook log), and v8's handed
+    # Telegram token written over two statements, the API's prefix assigned to a name on its
+    # own (`BASE_URL='https://api.telegram.org/bot',`), only in a file that collects nothing.
 
     id = "static.exfil-endpoint"
-    version = 10
+    version = 11
     severity = Severity.HIGH
     weight = 5.0
     title = "Known exfiltration endpoint"
@@ -225,6 +230,8 @@ class ExfilEndpoint(RegexRule):
                 return QUICK_TUNNEL_NOTE
             if _example_value(match, _host_span(match)[0]):
                 return EXAMPLE_NOTE
+            if _in_example(match.string, _host_span(match)[0]):
+                return EXAMPLE_SCOPE_NOTE
             if _host_check(match):
                 return HOST_CHECK_NOTE
             if _prose_list(match):
@@ -439,6 +446,13 @@ def _in_deny_list(match: re.Match[str]) -> bool:
 # expression (`"…/bot" + token`, PHP's `'…/bot'.$token`). Not a shell `bot$TOKEN`: hooks and
 # scripts write that.
 _HANDED_TOKEN: Final = re.compile(r"""\$\{|\{\{|\{[A-Za-z_]|%s|["'`]\s*[+.]""")
+# Round 7 (X4, `exfil-endpoint` v11): the API's prefix assigned to a name on its own, a
+# constant the token is joined to later (`BASE_URL='https://api.telegram.org/bot',`,
+# `const PREFIX = "…/bot";`): v8's handed token, written over two statements, and so also
+# only in a file that collects nothing. An entry of a string array (`['…/bot', 'includes']`,
+# obfuscator output, whose collection is hidden in the array too) is not assigned and stays.
+_PREFIX_NAME: Final = re.compile(r"""(?<![\w$.])[A-Za-z_$][\w$]*\s*=\s*["'`](?:https?://)?$""")
+_PREFIX_END: Final = re.compile(r"""["'`]\s*(?:[,;]|\r?\n)""")
 # A Telegram bot token written out: `123456789:AA` and 33 more characters.
 _TOKEN_LITERAL: Final = re.compile(r"(?<!\d)\d{8,10}:AA[A-Za-z0-9_-]{30,}")
 # A webhook.site token: the UUID that names a bin (`/89403f83-77bf-4ccb-8ba0-e5a652841e0a`),
@@ -517,7 +531,10 @@ def _sends_nothing(match: re.Match[str]) -> str | None:
     found = match.group(0).lower()
     before = text[start - 1] if start > 0 else ""
     if found.endswith("/bot"):
-        note = TELEGRAM_NOTE if _HANDED_TOKEN.match(text, end) else None
+        handed = _HANDED_TOKEN.match(text, end) or (
+            _PREFIX_END.match(text, end) and _PREFIX_NAME.search(text, max(0, start - 80), start)
+        )
+        note = TELEGRAM_NOTE if handed else None
     elif found == "webhook.site":
         near = _UUID.search(text, max(0, start - TOKEN_WINDOW), end + TOKEN_WINDOW)
         note = None if near or before.isalnum() or before in "-." else WEBHOOK_SITE_NOTE
@@ -646,6 +663,48 @@ def _example_value(match: re.Match[str], at: int) -> bool:
     text = match.string
     lo = max(text.rfind("\n", 0, at) + 1, at - 120)
     return _EXAMPLE_LEAD.search(text, lo, at) is not None
+
+
+# Round 7 (X3; `exfil-endpoint` v11, `hardcoded-ip` v8): a URL anywhere inside the value of an
+# `example` / `examples` field, an object or array opened right after the key: a parameter
+# schema's sample call (`example: { server: "http://…", file: "…" }`), an OpenAPI document's
+# `"examples": {"Example 1": {"value": {…}}}`, a form's `examples: [['http://…', 'what it
+# does']]`. v9's `_example_value` asks only about the text right before the URL on its line.
+_EXAMPLE_KEY: Final = re.compile(r"(?i:\b(?:x-)?examples?)\\{0,3}[\"']?\s*:\s*\\{0,3}[\"']?$")
+EXAMPLE_SCOPE: Final = 2000
+EXAMPLE_SCOPE_NOTE: Final = (
+    " Inside the value of an `example` / `examples` field (a schema's or API document's sample"
+    " data): shown to a user, not an endpoint."
+)
+
+
+def _openers(text: str, at: int, limit: int) -> Iterator[int]:
+    """The positions of the brackets (`(`, `[`, `{`) still open at `at`, innermost first,
+    within `limit` characters before it. Brackets are counted as written, strings and
+    comments included: a balanced pair inside a string (`"{{ json data }}"`) changes nothing,
+    an unbalanced one can only end the scan early or misplace it by a level."""
+    depth = 0
+    for i in range(at - 1, max(0, at - limit) - 1, -1):
+        char = text[i]
+        if char in ")]}":
+            depth += 1
+        elif char in "([{":
+            if depth:
+                depth -= 1
+            else:
+                yield i
+
+
+def _in_example(text: str, at: int) -> bool:
+    """X3: some object or array enclosing `at` (within `EXAMPLE_SCOPE` characters) is the
+    value of an `example(s)` key, and no call's argument list is open in between: a URL
+    handed to a function (`example: { x: get("http://…") }`) is used, not shown."""
+    for i in _openers(text, at, EXAMPLE_SCOPE):
+        if text[i] == "(":
+            return False
+        if _EXAMPLE_KEY.search(text, max(0, i - 40), i):
+            return True
+    return False
 
 
 def _placeholder_id(webhook_id: str) -> bool:
@@ -877,10 +936,17 @@ class HardcodedIp(RegexRule):
     line, for an environment variable's fallback (`process.env.X || 'http://…'`,
     `_ENV_DEFAULT`), a URL in a JSON catalog with URLs on `CATALOG_HOSTS` or more hosts
     (`_catalog`), and a literal compared with or hashed (`=== 'http://…'`, `[…].includes(`,
-    `.update(`; `_compared`)."""
+    `.update(`; `_compared`). v8 (round 7, `docs/proposals/precision-round7-X.md` X2, X3,
+    X5): LOW, weight 1, not on an install hook's line, for the default of a declared option
+    or field (`{ name, type, default: 'http://…' }`, `.default('http://…')`;
+    `_option_default`), a URL inside the value of an `example` / `examples` field
+    (`_in_example`) and an entry of a set only asked `.has(` (`_set_member`), P5's searched
+    array written as a `Set`; and (X1, its own commit) a constant used only as an environment
+    variable's fallback (`const DEFAULT = 'http://…'` and `process.env.X || DEFAULT`;
+    `_named_env_default`)."""
 
     id = "static.hardcoded-ip"
-    version = 7
+    version = 8
     severity = Severity.MEDIUM
     weight = 3.0
     title = "URL with a hardcoded public IP address"
@@ -899,11 +965,17 @@ class HardcodedIp(RegexRule):
         if not _on_hook_line(match):
             if _example_value(match, match.start()):
                 return EXAMPLE_NOTE
+            if _in_example(match.string, match.start()):
+                return EXAMPLE_SCOPE_NOTE
+            if _option_default(match):
+                return OPTION_DEFAULT_NOTE
             if _ENV_DEFAULT.search(match.string, max(0, match.start() - 120), match.start()):
+                return ENV_DEFAULT_NOTE
+            if _named_env_default(match):
                 return ENV_DEFAULT_NOTE
             if _catalog(match.string):
                 return CATALOG_NOTE
-            if _compared(match):
+            if _compared(match) or _set_member(match):
                 return COMPARED_NOTE
         return IP_COMMENT_NOTE if _on_comment_line(match) else None
 
@@ -971,6 +1043,35 @@ def _compared(match: re.Match[str]) -> bool:
     return bool(_ARRAY_BEFORE.search(text, lo, start) and _ARRAY_AFTER.match(text, end, hi))
 
 
+# v8 (round 7, X5): P5's searched array written as a set: `LEGACY_URLS = /* @__PURE__ */ new
+# Set(["http://…"])` whose name is used only as `LEGACY_URLS.has(x)`, a membership check
+# (a legacy-address migration). A set the code also iterates (`for (u of S)`, `[...S]`,
+# `S.forEach`) stays MEDIUM.
+_SET_BEFORE: Final = re.compile(
+    r"(?<![\w$.])(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:/\*[^*\n]{0,40}\*/\s*)?new\s+Set\(\s*\[\s*"
+    r"(?:[\"'`][^\"'`\n]{0,200}[\"'`]\s*,\s*){0,8}[\"'`]$"
+)
+_SET_AFTER: Final = re.compile(
+    r"[^\"'`\n]{0,200}[\"'`]\s*(?:,\s*[\"'`][^\"'`\n]{0,200}[\"'`]\s*){0,8},?\s*\]\s*\)"
+)
+
+
+def _set_member(match: re.Match[str]) -> bool:
+    """X5: `match` (a URL) is an entry of a set of string literals assigned to a name that
+    the file uses, outside its declaration, only to ask `.has(`."""
+    text, start, end = match.string, match.start(), match.end()
+    declared = _SET_BEFORE.search(text, max(0, start - 2000), start)
+    if declared is None or not _SET_AFTER.match(text, end, min(len(text), end + 2000)):
+        return False
+    name = declared.group("name")
+    uses = [
+        m.end()
+        for m in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text)
+        if m.start() != declared.start("name")
+    ]
+    return bool(uses) and all(text.startswith(".has(", at) for at in uses)
+
+
 # v7 (round 6, P3): a URL that is an environment variable's fallback, as a configurable
 # product writes its default backend: `process.env.X || 'http://…'`,
 # `process.env["X"]?.trim() || "…"`, `process.env.X ?? …`, Python's
@@ -984,6 +1085,87 @@ ENV_DEFAULT_NOTE: Final = (
     " The fallback of an environment variable (`process.env.X || '…'`): a configurable"
     " product's default server, which the user can point elsewhere."
 )
+# v8 (round 7, X1): P3's fallback written through a constant, `const DEFAULT_API_BASE =
+# 'http://…'` and then `process.env.OMNI_API_BASE_URL || DEFAULT_API_BASE` (or `??`,
+# `os.environ.get("X", NAME)`). Only when the constant is declared with the URL as its whole
+# value and every other use of its name in the file is such a fallback: a constant the code
+# also connects to directly (`fetch(C2 + path)`) stays MEDIUM.
+_NAMED_URL: Final = re.compile(
+    r"(?:\b(?:const|let|var)\s+|^[ \t]*)(?P<name>[A-Za-z_$][\w$]*)\s*=\s*[\"'`]$"
+)
+_ENV_LEAD: Final = re.compile(
+    r"(?:process\.env(?:\.\w+|\[\s*[\"'`]\w+[\"'`]\s*\])(?:\?\.\w+\(\))?\s*(?:\|\||\?\?)\s*"
+    r"|os\.(?:environ\.get|getenv)\(\s*[\"']\w+[\"']\s*,\s*)$"
+)
+_STATEMENT_END: Final = re.compile(r"\s*;?\s*(?:(?://|#).*)?\r?$")
+
+
+def _named_env_default(match: re.Match[str]) -> bool:
+    """X1: `match` (a URL) is the whole value of a constant (`_NAMED_URL`, the literal ends
+    right after the URL's path) whose name is used, outside its declaration, only as an
+    environment variable's fallback (`_ENV_LEAD` right before it), at least once."""
+    text, start = match.string, match.start()
+    line_start = text.rfind("\n", 0, start) + 1
+    declared = _NAMED_URL.search(text[line_start:start])
+    if declared is None:
+        return False
+    quote = text[start - 1]
+    close = text.find(quote, match.end(), match.end() + 400)
+    if close < 0 or "\n" in text[match.end() : close]:
+        return False
+    line_end = text.find("\n", close)
+    if not _STATEMENT_END.match(text[close + 1 : len(text) if line_end < 0 else line_end]):
+        return False  # `= 'http://…' + path`: more than the literal
+    name = declared.group("name")
+    uses = [
+        m.start()
+        for m in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text)
+        if not line_start <= m.start() < close
+    ]
+    return bool(uses) and all(_ENV_LEAD.search(text, max(0, at - 120), at) for at in uses)
+
+
+# v8 (round 7, X2): a URL that is the default of a declared option or field, the same kind of
+# overridable setting as P3's environment fallback: `{ displayName: 'B46 URL', name: 'b46Url',
+# type: 'string', default: 'http://…' }` (an n8n credential), `{ name: "bugUrl", label: "…",
+# default: "http://…" }` (a form input), zod's `z.string().default("http://…")`. A `default:`
+# key counts only in an object that also declares the option (`_OPTION_KEY`: its name, type,
+# label or description), so a bare `{ default: 'http://…' }` lookup table stays MEDIUM.
+_DEFAULT_KEY: Final = re.compile(r"(?<![\w$.])[\"']?default[\"']?\s*:\s*[\"'`]$")
+_DEFAULT_CALL: Final = re.compile(r"\.default\(\s*[\"'`]$")
+_OPTION_KEY: Final = re.compile(
+    r"[{,\s][\"']?(?:name|type|label|displayName|description|desc|describe|title|help)[\"']?\s*:"
+)
+OPTION_SCOPE: Final = 400
+OPTION_DEFAULT_NOTE: Final = (
+    " The default value of a declared option or field (`{ name, type, default: '…' }`,"
+    " `.default('…')`): a setting the user can change."
+)
+
+
+def _option_default(match: re.Match[str]) -> bool:
+    """X2: `match` (a URL) is the string after `.default(`, or after a `default:` key in an
+    object (the innermost bracket open at the URL is a `{`, within `OPTION_SCOPE` characters)
+    that also has an `_OPTION_KEY` before or after it."""
+    text, start = match.string, match.start()
+    lo = max(0, start - 120)
+    if _DEFAULT_CALL.search(text, lo, start):
+        return True
+    if not _DEFAULT_KEY.search(text, lo, start):
+        return False
+    opener = next(_openers(text, start, OPTION_SCOPE), None)
+    if opener is None or text[opener] != "{":
+        return False
+    depth, close = 0, min(len(text), match.end() + OPTION_SCOPE)
+    for i in range(match.end(), close):  # the object's end: its keys after the default too
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            if not depth:
+                close = i
+                break
+            depth -= 1
+    return _OPTION_KEY.search(text, opener, close) is not None
 
 
 # v5: a line that is a comment where the match is: `//`, `# ` (not a shebang or a CSS `#id`
@@ -1454,6 +1636,10 @@ CONTEXT_NOTES: Final = (
     CATALOG_NOTE,
     ENV_DEFAULT_NOTE,
     COMPARED_NOTE,
+    # Round 7 (X): an enclosing `example` object or an option declaration can sit outside the
+    # snippet and change between versions while the URL doesn't.
+    EXAMPLE_SCOPE_NOTE,
+    OPTION_DEFAULT_NOTE,
 )
 
 
