@@ -436,3 +436,67 @@ def test_an_added_hook_is_judged_like_a_new_package_for_s1_s3_s5_only() -> None:
     home = LAUNCHER + b'\nconst dir = require("os").homedir();\n'
     assert shape(change({"install.js": home}, platforms)) == "S1"
     assert shape(change({"install.js": home}, platforms, base={})) is None
+
+
+def test_s8_install_guard() -> None:
+    """v7 (round 7 V): inline `node -e` code that only checks Node's version, the platform or
+    named environment variables and exits, printing only when it fails the install; or that
+    does nothing at all."""
+    version = (
+        "node -e \"const [major] = process.versions.node.split('.').map(Number); "
+        "if (major < 22) { console.error('kx needs Node 22'); process.exit(1); }\""
+    )
+    (finding,) = RULE.evaluate_code(change(LIB, {"scripts": {"preinstall": version}}))
+    assert finding.explanation.startswith("S8 ")
+    for command in (
+        'node -e ""',
+        'node -e "process.exit(0)"',
+        "node -e \"if(process.env.npm_config_global==='true'){console.error('no global');"
+        'process.exit(1)}"',
+    ):
+        assert shape(change(LIB, hook(command))) == "S8", command
+    # A banner on every install is not a guard (`shoal-cli@0.4.5`, `vm-day1` malicious).
+    for command in (
+        "node -e \"console.log('kx installed. Run kx setup.')\"",
+        "node -e \"if (process.env.CI) process.exit(0); console.log('Run kx setup')\"",
+        "node -e \"require('child_process').execSync('id')\"",
+    ):
+        assert shape(change(LIB, hook(command))) is None, command
+    # Inline only: a guard in a file is S5's to judge (and upstream Baileys's
+    # `engine-requirements.js` is left to report the forks that keep it).
+    guard = b"if (Number(process.versions.node.split('.')[0]) < 20) process.exit(1);"
+    baileys = change({**LIB, "engine-requirements.js": guard}, hook("node engine-requirements.js"))
+    assert shape(baileys) is None
+    # A package that is nothing but its hook, and a hook that runs more than the guard.
+    assert shape(change({}, hook('node -e "process.exit(0)"'))) is None
+    assert shape(change(LIB, hook('node -e "process.exit(0)" && node index.js'))) is None
+
+
+def test_environment_read_by_name_is_not_the_whole_environment() -> None:
+    """v7 (round 7 V): install code that takes `process.env` whole only to read named
+    variables (`erin-report@0.1.0`: `isCI(process.env)`) doesn't count as `env-all`."""
+    guide = b"""
+export function isCI(env) { return Boolean(env.CI && env.CI.toLowerCase() !== "false"); }
+if (!isCI(process.env) && process.env.npm_command !== "exec") console.log("Run kx init");
+"""
+    manifest = hook("node scripts/guide.mjs")
+    assert shape(change({**LIB, "scripts/guide.mjs": guide}, manifest)) == "S5"
+    harvest = guide.replace(b"isCI(process.env)", b"isCI(process.env) && dump(process.env)")
+    assert shape(change({**LIB, "scripts/guide.mjs": harvest}, manifest)) is None
+
+
+def test_a_computed_require_of_json_is_not_dynamic_code() -> None:
+    """v7 (round 7 V): a `require` of a computed `.json` path loads data (`tttt-ts@3.0.0`
+    reads its platform package's version), so it doesn't refuse a shape; a computed `require`
+    of anything else still does."""
+    launcher = (
+        LAUNCHER
+        + b"""
+const manifest = require.resolve(`${pkg}/package.json`);
+if (require(manifest).version !== require("./package.json").version) process.exit(0);
+"""
+    )
+    manifest = hook(optionalDependencies=PLATFORMS)
+    assert shape(change({"install.js": launcher}, manifest)) == "S1"
+    code = launcher.replace(b"require(manifest)", b"require(pkg + '/lib/x')")
+    assert shape(change({"install.js": code}, manifest)) is None

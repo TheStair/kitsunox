@@ -39,6 +39,20 @@ round 4) and S6 (own-binary download not run, round 5 H) explained such download
 gone; `npm.install-download` (MEDIUM) names them. S1's registry fallback (fetching the
 package's own platform package from the registry) stays explained.
 
+- **S8 install guard** (v7, round 7 V). Every install hook is `node -e <code>` and the code is
+  a guard (`lang.effects.guard_only`): values from Node's version, the platform, the CPU and
+  named environment variables, `if` tests on them, `process.exit(<number>)`, and printing only
+  in a branch that then fails the install (`process.exit(<non-zero>)`); or nothing at all
+  (`node -e ""`, `process.exit(0)`). A banner printed on every install is not a guard
+  (`shoal-cli@0.4.5`, `vm-day1` malicious, is reported only by its inline banner), nor is a
+  guard in a file (S5 judges those, and upstream Baileys's `engine-requirements.js` stays
+  reported), nor a package that is nothing but its hooks.
+
+Since v7 `env-all` refuses no shape when every install file that takes `process.env` whole
+only reads named variables from it (`capabilities`, `lang.effects.env_read_by_name`:
+`const env = process.env; env.CI`, `isCI(process.env)` with `env.CI` inside): harvesting the
+environment is what `env-all` stands for, and such code can't.
+
 (S4, build-tool-only hooks, is `npm.install-build-tool`.) Every shape also needs: no install
 hook that is shell beyond `node <file>` (`curl`, `| sh`, `$(...)`), no command from
 `binding.gyp`, no whole-environment read, dynamic code or dynamic `require` in the install
@@ -56,7 +70,7 @@ never a content finding (`npm.install-script-obfuscated`, `static.exfil-endpoint
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
@@ -74,8 +88,13 @@ from kitsunox.lang.agent_config import (
     script_concerns,
     widening,
 )
+from kitsunox.lang.effects import (
+    env_read_by_name,
+    guard_only,
+    requires_only_json,
+)
 from kitsunox.lang.javascript import Capability, language_for, mask_comments_and_messages
-from kitsunox.stages.ast import CodeChange
+from kitsunox.stages.ast import CodeChange, Profile
 
 C = Capability
 # Never part of an explained shape (the install-code rule's RISKY, less network and process,
@@ -222,7 +241,8 @@ _GITHUB_PAGE: Final = re.compile(
 
 
 class InstallExplained(BaseRule):
-    """The version's install code has one of the explained shapes S1, S3, S5 (module docstring).
+    """The version's install code has one of the explained shapes S1, S3, S5, S8 (module
+    docstring).
 
     Added 2026-11-08 (`docs/proposals/precision-round2.md`, S1-S3, with the owner's three
     guards on S3), measured with Stage 4 on the live verdicts and on all 433 `vm-day1`
@@ -245,10 +265,13 @@ class InstallExplained(BaseRule):
     2026-11-10: no download from outside the registry).
     v6 (2026-11-11, round 6 R, `docs/proposals/precision-round6-R.md`): S2 and S6 removed, by
     the owner's strict ruling (install-time downloads of code are unwanted, own binaries
-    included): no download is an explained shape (module docstring)."""
+    included): no download is an explained shape (module docstring).
+    v7 (2026-11-11, round 7 V, `docs/proposals/precision-round7-V.md`): S8 (inline
+    install guard), and `env-all` that only reads named variables
+    (`capabilities`) no longer refuses a shape (module docstring)."""
 
     id = "npm.install-explained"
-    version = 6
+    version = 7
     severity = Severity.INFO
     weight = 0.0
     title = "Install code has an explained shape"
@@ -262,9 +285,10 @@ class InstallExplained(BaseRule):
 
 
 # v5 (round 6, Q2): the shapes an update whose install hook is new (no install code before)
-# may have, judged like a new package's: S1, S3 and S5 only. A download (S2, S6) never: the
-# owner rules install-time downloads of code unwanted (decision 0015, 2026-11-10).
-ADDED_HOOK_SHAPES: Final = ("S1 ", "S3 ", "S5 ")
+# may have, judged like a new package's: S1, S3, S5 (and since v7 S8) only. A download
+# (S2, S6) never: the owner rules install-time downloads of code unwanted (decision 0015,
+# 2026-11-10).
+ADDED_HOOK_SHAPES: Final = ("S1 ", "S3 ", "S5 ", "S8 ")
 
 
 def hook_added(change: CodeChange) -> bool:
@@ -302,27 +326,25 @@ def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] |
     """v4's shapes; with `added`, an update whose hook is new skips the new-capability test."""
     hooks = _hooks(change.snapshot.manifest)
     install = change.install
+    if install is None:
+        return None
+    caps = capabilities(install, change.install_files)
     if (
-        install is None
-        or not change.install_files
+        not change.install_files
         or not hooks
         or change.build_commands
         or any(SHELL_HOOK.search(command) for command in hooks.values())
-        or install.capabilities & EXCLUDED
+        or caps & EXCLUDED
     ):
         return None
     if (
         change.before is not None
         and not (added and hook_added(change))
-        and (
-            install.capabilities
-            - (change.install_before.capabilities if change.install_before else frozenset())
-        )
+        and (caps - capabilities(change.install_before, change.install_files_before or {}))
     ):
         return None  # an update whose install code does something new
     if names_agent_dir(change.install_files) and agent_concerns(change):
         return None
-    caps = install.capabilities
     text = "\n".join(c.decode("utf-8", "replace") for c in change.install_files.values())
     if unreadable(text) or not all(plain_text(c) for c in change.install_files.values()):
         return None  # v3: code the parser or a reader can't see is never an explained shape
@@ -394,7 +416,70 @@ def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] |
             "the package.",
             hook_evidence,
         )
+    if install_guard(change, caps):
+        return (
+            "S8 install guard: every install hook is inline `node -e` code that only tests "
+            "Node's version, the platform or named environment variables and exits, printing "
+            "only when it fails the install: no capability, no file, nothing else runs.",
+            hook_evidence,
+        )
     return None
+
+
+def install_guard(change: CodeChange, caps: frozenset[Capability]) -> bool:
+    """S8 (v7, round 7 V): every install hook is `node -e <code>` and the code is an install
+    guard (`lang.effects.guard_only`): a Node-version, platform or global-install check, or
+    nothing (`node -e ""`, `process.exit(0)`). Inline code only: upstream Baileys's
+    `engine-requirements.js` (a file) is the same check, and the owner keeps it reported
+    (`BAILEYS_ENGINE_CHECK`). A banner that prints on every install (`shoal-cli@0.4.5`,
+    `vm-day1` malicious) is not a guard."""
+    hooks = _hooks(change.snapshot.manifest)
+    return (
+        not caps
+        and bool(hooks)
+        and all(node_only(command) for command in hooks.values())
+        and all(path.startswith(INLINE_PREFIX) for path in change.install_files)
+        and len(change.install_files) == len(hooks)
+        and not placeholder(change)
+        and all(guard_only(code, "javascript") for code in change.install_files.values())
+    )
+
+
+# v7 (round 7 V): what `env-all` means is harvesting the environment. Install code that takes
+# `process.env` whole only to read named variables from it (`const env = process.env;
+# env.CI`, `isCI(process.env)` with `env.CI` inside; `lang.effects.env_read_by_name`) can't
+# harvest anything, so for the shapes it doesn't count: `erin-report@0.1.0` and
+# `erinyu-slides@0.1.1` print an install guide unless `env.CI` is set. Likewise
+# `dynamic-require` stands for loading code the analysis can't name; a computed `require` of a
+# `.json` file (`require(require.resolve(`${pkg}/package.json`))`, `tttt-ts@3.0.0` reading its
+# platform package's version; `lang.effects.requires_only_json`) loads data.
+REFINED: Final = (
+    (C.ENV_ALL, env_read_by_name),
+    (C.DYNAMIC_REQUIRE, requires_only_json),
+)
+
+
+def capabilities(profile: Profile | None, files: Mapping[str, bytes]) -> frozenset[Capability]:
+    """`profile`'s capabilities, without `env-all` when every install file that has it only
+    reads named variables from the environment (`env_read_by_name`), and without
+    `dynamic-require` when every install file that has it only requires `.json` files
+    (`requires_only_json`)."""
+    if profile is None:
+        return frozenset()
+    caps = profile.capabilities
+    for capability, harmless in REFINED:
+        if capability not in caps:
+            continue
+        paths = {u.path for u in profile.where(capability)}
+        if all(_holds(harmless, path, files) for path in paths):
+            caps = caps - {capability}
+    return caps
+
+
+def _holds(check: Callable[[bytes, str], bool], path: str, files: Mapping[str, bytes]) -> bool:
+    language = "javascript" if path.startswith(INLINE_PREFIX) else language_for(path)
+    content = files.get(path)
+    return language is not None and content is not None and check(content, language)
 
 
 class InstallAgentUserWide(BaseRule):
