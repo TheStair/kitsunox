@@ -83,7 +83,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 | Rule | Sev. | Fires on benign | Recall, shape A | Recall, shape B | Caught by this rule only (A / B) |
 |---|---|---|---|---|---|
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
-| `npm.publish-method.downgrade` (v6): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added, unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5; an added dependency alone is none when the previous release came from token CI by the same account, v6): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
+| `npm.publish-method.downgrade` (v7): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added (since v7 only when an added maintainer publishes the release), unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5; an added dependency alone is none when the previous release came from token CI by the same account, v6): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
 | `npm.dependency.non-registry` (v9): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6); LOW, weight 1, for a spec npm reads as a local path (`@scope/name@1.0.0`, `./x`: v7); LOW, weight 1, on an update whose previous release took this dependency from the same account *and* names that GitHub account as its repository, also for a commit (v8) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
 | `npm.version.suspicious` (v4): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
@@ -229,6 +229,23 @@ reads its code only through `code_route` (it grew, it has an install hook, or it
 such a token who only adds a dependency is one step lower here, and a code-only payload in a
 large unwatched release needs another Stage 1 signal to be read; the dependency's own Stage 4
 findings (fresh-foreign, known malware, non-registry) still apply.
+
+`npm.publish-method.downgrade` v7 (2026-11-11, [round 7 W](../proposals/precision-round7-W.md)
+W3): an added maintainer is a co-signal only when an added maintainer publishes the release
+(`publisher_was_added`). The co-signals say that what gets installed, or who publishes it,
+changed too; a maintainer who joined the list but didn't publish this release changes neither,
+and one who did is `npm.publisher.unfamiliar`'s as well (unless they published the previous
+release). All 7 live versions with this co-signal are benign; the decisive ones are Expo's
+stable releases, published by hand by a listed maintainer after a CI canary of the same
+version two months older, while the maintainer list grew (`@expo/plist@0.8.2`,
+`install-expo-modules@0.16.1`, `uri-scheme@2.2.1`). Live: 2 benign reports fewer
+(`uri-scheme` stays reported: one step lower, MEDIUM weight 3, still reaches the score with its
+LOWs), no positive changes. `vm-day1`: the one downgrade sample with this co-signal,
+`@ensdomains/ensjs@4.0.3`, keeps its install-hook co-signal (only the finding's text changes);
+no Stage 1 finding of any of the 3,444 malicious samples changes severity or weight.
+**Recall risk:** a thief who adds a maintainer (for persistence) and publishes as the old
+account is one step lower here when nothing else changed; `npm.maintainer.added` still adds
+its LOW.
 
 `npm.dependency.non-registry` v9 (2026-11-11, owner): v8's commit bump is LOW only within the
 package's *own* repository, the one the previous release's `repository` names; another

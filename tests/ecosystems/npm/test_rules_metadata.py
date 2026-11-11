@@ -484,7 +484,12 @@ def test_a_downgrade_without_a_cosignal_is_one_step_lower() -> None:
             "2.0.0",
             "npm.dependency.non-registry",
         ),
-        (({}, {}), {"maintainers": ("alice", "mallory")}, "2.0.0", "npm.maintainer.added"),
+        (
+            ({}, {}),
+            {"publisher": "mallory", "maintainers": ("alice", "mallory")},
+            "2.0.0",
+            "npm.maintainer.added, npm.publisher.unfamiliar",
+        ),
         (({}, {}), {"publisher": "mallory"}, "2.0.0", "npm.publisher.unfamiliar"),
         (({}, {}), {}, "99.0.0", "npm.version.suspicious"),
     ],
@@ -556,6 +561,35 @@ def test_a_dependency_is_no_cosignal_for_the_same_account_s_token_ci() -> None:
     oidc = snap("0.1.150", publisher="aaronvolter", has_provenance=True, trusted_publisher="github")
     (axios,) = PublishMethodDowngrade().evaluate(change(new, oidc), CTX)
     assert (axios.severity, axios.weight) == (Severity.MEDIUM, 3.0)
+
+
+def test_a_maintainer_who_does_not_publish_is_no_cosignal() -> None:
+    """v7 (round 7, W3): `uri-scheme@2.2.1`, published by hand by `alanhughes` after a CI
+    canary whose maintainer list was shorter. Who publishes didn't change: one step lower.
+    The added maintainer publishing keeps it (and is `npm.publisher.unfamiliar` too)."""
+    team = ("alanhughes", "brentvatne")
+    old = snap(
+        "2.2.1-canary-20260909-ea7a89a",
+        publisher="GitHub Actions",
+        trusted_publisher="github",
+        maintainers=team,
+    )
+    new = snap("2.2.1", publisher="alanhughes", maintainers=(*team, "newcomer"))
+    (watched,) = PublishMethodDowngrade().evaluate(change(new, old, watched=True), CTX)
+    (small,) = PublishMethodDowngrade().evaluate(change(new, old), CTX)
+    assert (watched.severity, watched.weight, watched.rule_version) == (Severity.MEDIUM, 3.0, 7)
+    assert (small.severity, small.weight) == (Severity.LOW, 1.0)
+    assert "npm.maintainer.added" not in watched.explanation
+    joined = snap("2.2.1", publisher="newcomer", maintainers=(*team, "newcomer"))
+    (handover,) = PublishMethodDowngrade().evaluate(change(joined, old, watched=True), CTX)
+    assert (handover.severity, handover.weight) == (Severity.HIGH, 5.0)
+    assert "With: npm.maintainer.added, npm.publisher.unfamiliar." in handover.explanation
+    # the previous release's publisher, newly listed as a maintainer, publishing
+    listed = snap("1.0.0", publisher="ci-bot", trusted_publisher="github", maintainers=team)
+    back = snap("1.0.1", publisher="ci-bot", maintainers=(*team, "ci-bot"))
+    (again,) = PublishMethodDowngrade().evaluate(change(back, listed), CTX)
+    assert (again.severity, again.weight) == (Severity.MEDIUM, 3.0)
+    assert "With: npm.maintainer.added." in again.explanation
 
 
 def test_a_downgrade_on_a_prerelease_is_low() -> None:
