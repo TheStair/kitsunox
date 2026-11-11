@@ -602,3 +602,18 @@ def test_history_is_the_earlier_runs_within_the_window(tmp_path: Path) -> None:
     pinned = follow_on_history(data, "now", manifest("now", now), reuse=True)
     assert pinned[("flip", "2.0.1")].run_id == "a"
     assert follow_on_history(data, "now", manifest("now", now))[("flip", "2.0.1")].run_id == "b"
+
+
+def test_a_damaged_earlier_index_is_skipped(tmp_path: Path) -> None:
+    """One cut-short index (a crash) or unreadable manifest doesn't stop a later run."""
+    data = DataDir(tmp_path)
+    now = T0 + timedelta(days=10)
+    write_index(data, "a", now - timedelta(days=2), earlier_entry("2.0.1", "a"))
+    write_index(data, "b", now - timedelta(hours=2), earlier_entry("2.0.2", "b"))
+    (data.run_dir("b") / FOLLOW_ON_INDEX).write_bytes(b'{"release": {"ref": ')
+    data.run_dir("c").mkdir()
+    (data.run_dir("c") / FOLLOW_ON_INDEX).write_bytes(b"\n")
+    (data.run_dir("c") / "manifest.json").write_bytes(b"{")
+    data.run_dir("now").mkdir()
+    history = follow_on_history(data, "now", manifest("now", now))
+    assert sorted(history) == [("flip", "2.0.1")]

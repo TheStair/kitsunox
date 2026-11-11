@@ -399,7 +399,10 @@ def follow_on_history(
             index, path = other / FOLLOW_ON_INDEX, other / "manifest.json"
             if other.name == run_id or not index.exists() or not path.exists():
                 continue
-            seen = RunManifest.load_json(path.read_bytes())
+            try:
+                seen = RunManifest.load_json(path.read_bytes())
+            except OSError, ValueError:
+                continue  # an unreadable earlier run (a crash, a prune under way) is skipped
             if seen.ecosystem == manifest.ecosystem and (
                 manifest.as_of - window <= seen.as_of < manifest.as_of
             ):
@@ -407,11 +410,23 @@ def follow_on_history(
         files = [index for _, index in sorted(earlier)]
     entries: dict[tuple[str, str], ReportedRelease] = {}
     for index in files:
-        for line in index.read_bytes().splitlines():
-            if line.strip():
-                entry = ReportedRelease.model_validate_json(line)
-                entries[(entry.release.ref.name, entry.release.ref.version)] = entry
+        for entry in _index_entries(index):
+            entries[(entry.release.ref.name, entry.release.ref.version)] = entry
     return entries
+
+
+def _index_entries(index: Path) -> list[ReportedRelease]:
+    """A follow-on index's entries, or none when the file can't be read whole: one damaged
+    earlier run (a disk-full crash leaves renamed files empty or cut short) must not stop every
+    later run's Stage 4. The entries a run did use are pinned in its own FOLLOW_ON_HISTORY."""
+    try:
+        return [
+            ReportedRelease.model_validate_json(line)
+            for line in index.read_bytes().splitlines()
+            if line.strip()
+        ]
+    except OSError, ValueError:
+        return []
 
 
 def run_watchlist(data: DataDir, manifest: RunManifest) -> Watchlist | None:
