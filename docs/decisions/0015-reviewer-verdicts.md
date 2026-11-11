@@ -258,6 +258,16 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
     flow is benign** (`@rel-time/mcp-server`'s payment-invoice instructions): it acts on the
     user's side, at the user's request; harmful or covert instructions stay covered by the
     2026-11-08 agent rulings.
+  - **A data-only download at install is benign** (later the same day): an install hook that
+    fetches data which is validated and never executed (`free-email-domains@1.16.1` refreshes
+    its disposable-domain list from six hosts, each entry checked against a strict hostname
+    pattern) is not "code" under the strict download rule. Note prefix "Owner ruling 2026-11-11
+    (data-only download at install = benign):". `npm.install-download` still reports it; a
+    data-only exception is post-freeze work.
+  - **The registry used as hidden hosting is unwanted**, even when nothing runs for the
+    installer: `lumen-lib@2.1.8` (a fake utility library whose disguised SVG and asset folder
+    carry a content-filter-evasion web proxy served through jsDelivr/unpkg, with four sibling
+    fakes) is deceptive but harms no installer.
 - **Command expansion in `binding.gyp` that enumerates the user's environment stays reported
   (the owner, 2026-11-10).** `<!(echo $HOME)` matches enumeration (`@ohos-ports/distringuish`;
   agent I's `npm.install-build-tool` v4 keeps it).
