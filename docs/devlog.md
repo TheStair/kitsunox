@@ -2,6 +2,86 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-11: Precision round 6, the strict download ruling, and a live credential stealer
+
+**Stage(s):** Stages 1-4 (rules), reviewer verdicts, live evaluation, CLI
+**Context:** The owner asked to cut the benign reports "drastically" and to keep improving
+results; mid-round they moved the rule freeze to 2026-11-16..23 (decision 0019 addendum) and,
+while answering review questions, ruled that install-time downloads of code are unwanted,
+including the package's own binary (decision 0015). Seven agents (N, P, Q, R, S, T, U) worked
+in worktrees under the zero-loss bar; a dozen reviewer agents relabelled about 950 verdicts.
+
+### Decisions
+- **Strict install-time downloads (owner, 2026-11-10; decision 0015).** First "third-party
+  only" (own-binary downloads benign), then, after weighing the risk ("an npm package
+  shouldn't just download and run binaries"), strict: any fetch of files, scripts or binaries
+  from outside the npm registry at install is unwanted, own GitHub release or CDN included;
+  binaries in the tarball or in the package's own registry platform packages stay benign. The
+  narrower reading stays as a sensitivity row. An install hook running a Windows executable is
+  "malicious at worst, unwanted at best" (`@pro-gram/flux`, analysed statically: a .NET
+  installer matching its shipped source, an official ffmpeg build).
+- **Other owner rulings:** global git config at install unwanted (confirmed; only hooks, ssh,
+  credential helpers, URL rewrites, includes; dev-tool settings benign: `npm.install-persistence`
+  v4); `<!(echo $HOME)` in `binding.gyp` stays reported; the wider "own" host reading.
+- **Rules merged (each measured with the real code; 0 positives lost):**
+  - N (Stage 1/4): publish-method downgrade v5/v6, revived-with-new-dependency v4/v5: -33 benign.
+  - P (Stage 2): exfil-endpoint v10, hardcoded-ip v7 (tunnel suffixes in host checks, prose
+    lists, env-var fallbacks, compared/hashed literals, URL catalogs): -18 benign.
+  - S (Stages 1/3/4): non-registry v7/v8, dependency.missing v2 (JSR), install-persistence v5
+    with a small data-flow helper (`lang/flow.py`): -29 benign.
+  - Q (Stages 2-4): `npm.artifact.install-target-missing`, install-explained v5 (updates that
+    gain their first hook; S1 never explains a downloader): -21 benign.
+  - U (Stage 4): a follow-on pass (`correlate.follow-on`, decision 0007 addendum): a release
+    that keeps a reported release's payload byte for byte is reported (owner took A+B1+B2+C).
+  - T (Stage 2): `static.disguised-file` (script or executable under a font/image/media
+    name); carried by follow-ons (integrator).
+  - R (Stage 3): `npm.install-download` (forms own, fetch, downloader, prebuilt, tool, npx,
+    npm, exe, guard) and install-explained v6 without the own-download shapes (owner took it
+    and kept `guard` and `prebuilt`).
+  - Owner, after the round: S's v8 commit-bump exemption is narrowed to the package's own
+    repository (`npm.dependency.non-registry` v9): +11 benign reported again, recall risk closed.
+- **More owner rulings (2026-11-11):** transparent wrapper packages (openly installing a named
+  tool from its official releases) are benign; a background process an install hook leaves
+  running is unwanted (`great-cto`); completion files that don't touch PATH or rc files are
+  benign (`opencli`); an MCP server's tool text steering the user's agent through its own
+  payment flow is benign (`@rel-time/mcp-server`).
+- **`kitsunox verdict --expect NAME@VERSION`**: reports are rebuilt when Stage 5 results or
+  rescores arrive and ranks move; five re-review records landed on the wrong package before
+  the reviewers caught it (all restored).
+
+### Challenges
+- **A real stealer, found by review, missed on its follow-on.** `pdf-html5-page-flip` 2.0.1
+  and 2.0.2 (2026-11-10) ship `dist/lib/fonts/fa-solid-400.woff2`, 1.8 KB of JavaScript that
+  steals cloud, npm, git, SSH and AI-tool credentials to `193.32.204.199:8080` and installs a
+  */5 crontab `curl | bash`. 2.0.1 was reported only by `static.hardcoded-ip` (score 6); 2.0.2
+  (same file) not at all. The owner reported it to npm.
+  - **Resolution:** T's disguised-file rule (HIGH on exactly these two of 230,290 tarballs) and
+    U's follow-on pass. Also a standing practice: every new malicious verdict is checked
+    against the registry and live ones go to the owner at once (six packages were still live).
+- **Agent Q's first v5 dropped v4's S5 explanation** on 6 benign versions; Q measured only
+  where its new shapes fire. Found by the integrator's full-set relabel, fixed (v5 additive).
+- **Heavy-job congestion:** one shared lock for full replays; several agents measured on
+  exhaustive subsets instead. A full replay of main after N+P+S matched their predictions
+  exactly (80 benign fewer, 0 newly reported, 0 positives changed), and Q's 21 likewise.
+- **Disk:** 89 -> 57.7 GB in an afternoon; the collector's own low-disk prune freed 19.7 GB.
+
+### Evaluation snapshot
+- Live, 3,716 verdicted versions, today's verdicts. Label changes alone (same rules): benign
+  reported 1,017 -> 851, precision 22.90% -> 35.48%. Rules, round 6: 1,349 reported / 851
+  benign / 421 unwanted / 47 malicious / 30 unverified (35.48%) -> 1,458 / 755 / 625 / 48 / 30
+  (47.13%) with all seven agents -> **1,469 / 766 / 625 / 48 / 30 (46.77%)** after the owner's
+  narrowing of S's commit-bump exemption. Download and Windows-exe positives reported: 151 -> 329 of 334.
+- `vm-day1`: 0 lost by any change; +12 (U) and +24 (R) malicious samples gained.
+- Rounds 4-6: benign reported 1,463 (round 4 start, older labels) -> 766.
+
+### Open questions / next steps
+- Owner questions of this round (wrappers, detached servers, completion files, agent-steering
+  MCP text, S's commit bump) were all answered on 2026-11-11 (Decisions above); the wrapper
+  verdicts are being re-reviewed for transparency.
+- Post-freeze: "obfuscated by its own declared build" signal; hook paths without an extension
+  (`node ./scripts/postinstall`); following `npm run`; R's 5 misses (URLs from data, never
+  routed); a follow-on-aware `vm-day1` predictor; viewer `--data-dir` relative to the cwd.
+
 ## 2026-11-10: Global git configuration at install: re-review and a precise rescue signal (round 5, agent M)
 
 **Stage(s):** Stage 3 (`npm.install-persistence` v3), reviewer verdicts

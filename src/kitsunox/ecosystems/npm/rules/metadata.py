@@ -273,6 +273,19 @@ def previous_repository_owner(change: Change) -> tuple[str, str] | None:
     return None if source is None else (source.host, source.owner)
 
 
+def previous_repository(change: Change) -> tuple[str, str, str] | None:
+    """(host, owner, repository) of the GitHub repository the previous release's manifest
+    names (lower case, no `.git`; `dependency_repository`'s form), as
+    `previous_repository_owner` reads it; None when it has none."""
+    if previous_repository_owner(change) is None or change.previous is None:
+        return None
+    repo = change.previous.manifest.get("repository")
+    if isinstance(repo, Mapping):
+        repo = repo.get("url")
+    url = normalize_repository_url(repo) if isinstance(repo, str) else None
+    return None if url is None else dependency_repository(url)
+
+
 class NonRegistryDependency(BaseRule):
     """A new dependency resolved from a URL, git repository, GitHub shorthand or local path
     instead of the registry: it bypasses registry-side malware takedowns and is often used to
@@ -336,10 +349,16 @@ class NonRegistryDependency(BaseRule):
     `@opensearch/setup`, `@tanstack/setup` were new names), one moved to another repository
     (`@opensearch-project/opensearch@3.8.0`: `opensearch-project/openearch#d446803f` in
     3.7.0, `opensearch-project/opensearch-js#d446803f` in 3.8.0, both malicious) and a bump
-    with no earlier `repository` (`lane-m-snackager-probe@1.0.1`, unwanted) keep MEDIUM."""
+    with no earlier `repository` (`lane-m-snackager-probe@1.0.1`, unwanted) keep MEDIUM.
+
+    v9 (2026-11-11, owner): only a bump within the package's *own* repository (the one the
+    previous release's `repository` names, not just the same account) is LOW. Another
+    repository of the same account (`@diffci.com/diffci` pinning `DiffCI/core`) is MEDIUM
+    again: a stolen token can bump a pin to any commit of the account's repositories, and
+    the owner judged that recall risk not worth 28 benign reports."""
 
     id = "npm.dependency.non-registry"
-    version = 8
+    version = 9
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -394,16 +413,17 @@ def npm_local_path(spec: str) -> bool:
 
 
 COMMIT_BUMP_NOTE: Final = (
-    " The previous release took it from the same account ({source}), the account of the "
+    " The previous release took it from the same repository ({source}), the package's own "
     "repository that release names; only the pinned commit changed."
 )
 
 
 def trusted_commit_bump(change: Change, name: str, spec: str) -> str | None:
-    """A note when a commit reference moved within the package's own repository account
-    (v8, S5): the previous release took this dependency from the same repository, and
-    the previous release's `repository` names that account. None otherwise (also for a
-    reference a fork couldn't plant: `trusted_move` covers those)."""
+    """A note when a commit reference moved within the package's own repository (v9): the
+    previous release took this dependency from the same repository, and that is the
+    repository the previous release's `repository` names (v8 accepted any repository of
+    that account). None otherwise (also for a reference a fork couldn't plant:
+    `trusted_move` covers those)."""
     if change.previous is None:
         return None
     source = dependency_source(spec)
@@ -414,6 +434,8 @@ def trusted_commit_bump(change: Change, name: str, spec: str) -> str | None:
         return None
     repository = dependency_repository(spec)
     if repository is None or dependency_repository(before) != repository:
+        return None
+    if repository != previous_repository(change):
         return None
     return COMMIT_BUMP_NOTE.format(source="/".join(repository))
 

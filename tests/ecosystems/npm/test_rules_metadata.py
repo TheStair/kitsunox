@@ -166,7 +166,7 @@ def test_a_registry_tarball_of_an_own_scope_package_is_low() -> None:
 
     own = "https://registry.npmjs.org/@atharva-again/pi-ai/-/pi-ai-1.3.0.tgz"
     low = nr_scoped("@atharva-again/pi-coding-agent", own)
-    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 8)
+    assert (low.severity, low.weight, low.rule_version) == (Severity.LOW, 1.0, 9)
     assert "only the scope's owner can publish" in low.explanation
     for name, spec in (
         ("@other/pi-coding-agent", own),
@@ -273,7 +273,7 @@ def test_a_dependency_moved_within_the_same_account_is_low() -> None:
     moved = nr(
         "github:uNetworking/uWebSockets.js#v20.71.0", "github:uNetworking/uWebSockets.js#v20.67.0"
     )
-    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 8)
+    assert (moved.severity, moved.weight, moved.rule_version) == (Severity.LOW, 1.0, 9)
     assert "The previous release took it from the same account (github.com/unetworking)" in (
         moved.explanation
     )
@@ -355,16 +355,20 @@ def test_npm_local_path(spec: str, local: bool) -> None:
         assert finding.explanation.endswith("A local path: nothing is fetched.")
 
 
-def test_a_commit_bump_in_the_previous_releases_repository_account_is_low() -> None:
-    """v8 (S5): `@diffci.com/diffci` moves `@diffci.com/core` from one `DiffCI/core` commit to
-    the next, and the previous release names `github.com/DiffCI/diffci`. Without that
-    `repository` (`lane-m-snackager-probe@1.0.1`, unwanted), from another account, or as a new
-    dependency (`@opensearch/setup`, the `vm-day1` attack shape) the commit stays MEDIUM."""
+def test_a_commit_bump_in_the_packages_own_repository_is_low() -> None:
+    """v9 (owner, narrowing v8's S5): a pin that moves from one commit of the package's own
+    repository (the previous release's `repository`) to the next is LOW. Another repository of
+    the same account (`@diffci.com/diffci` pinning `DiffCI/core` while naming
+    `DiffCI/diffci`), no earlier `repository` (`lane-m-snackager-probe@1.0.1`, unwanted),
+    another account, or a new dependency (`@opensearch/setup`, the `vm-day1` attack shape)
+    stays MEDIUM."""
     old = "git+https://github.com/DiffCI/core.git#8d832eb5a0a56bf57847e6425bc313ea9e575f59"
     new = "git+https://github.com/DiffCI/core.git#909d79d40e0c3d813c80dcad21b8cefcc2c55674"
-    repo = {"type": "git", "url": "git+https://github.com/DiffCI/diffci.git"}
+    sibling = {"type": "git", "url": "git+https://github.com/DiffCI/diffci.git"}
+    assert nr(new, old, repository=sibling).severity is Severity.MEDIUM  # v8 had LOW
+    repo = {"type": "git", "url": "git+https://github.com/DiffCI/core.git"}
     bumped = nr(new, old, repository=repo)
-    assert (bumped.severity, bumped.weight, bumped.rule_version) == (Severity.LOW, 1.0, 8)
+    assert (bumped.severity, bumped.weight, bumped.rule_version) == (Severity.LOW, 1.0, 9)
     assert "only the pinned commit changed" in bumped.explanation
     assert (
         nr("github:DiffCI/core#909d79d", "github:DiffCI/core#8d832eb", repository=repo).weight
