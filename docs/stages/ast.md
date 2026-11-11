@@ -1304,7 +1304,12 @@ the install code names the home directory or any URL besides the npm registry an
 The explanation says the hook is new. The common case is the first real release after a `0.0.0`
 name-holding placeholder (`@square/cli@0.3.0`, `@nlayer/cli@0.2.0`, `@deadbolt/cli`), or a CLI
 that moves to per-platform npm packages (`@octane-xplat/cli`, `braintentacle_cli`). Measured in
-[round 6 Q](../proposals/precision-round6-Q.md) (V5_RESULT).
+[round 6 Q](../proposals/precision-round6-Q.md): 13 benign live versions unreported, no
+positive; on all 255 versions v4 explains, nothing changes (v5 asks v4's shapes first and only
+adds). v5 also closes a download gap in S1 (owner, 2026-11-10): S1 refuses install code that
+names a download program or call (`DOWNLOAD_TOOL`: `curl`, `wget`, `Invoke-WebRequest`, ...,
+comments and messages aside) unless every URL it names is the npm registry; live it removes S1
+from `@openlatch/client@0.11.7` only (unwanted, still unreported through its other LOW findings).
 
 ### Inert install hooks: `npm.install-inert` (round 4)
 

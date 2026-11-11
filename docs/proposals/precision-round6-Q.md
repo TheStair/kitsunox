@@ -6,7 +6,7 @@
 > **Result on `main` `79958e6`/`b767898`, real code, 3,716 verdicted live versions, today's
 > verdicts: 1,349 → 1,328 reported, all 21 benign; no malicious, unwanted or unverified version
 > changes.** Precision 34.80% → 35.36% (the verdicts re-labelled under the strict download
-> ruling already moved the baseline from 22.90%). `vm-day1`: DD_RESULT. Zero-loss.
+> ruling already moved the baseline from 22.90%). `vm-day1`: the changes fire on 15 of the 2,325 malicious samples with an install hook; `pipeline+4` on those with `main` and with the fix: 0 lost (the first Q1 lost 4, the broken-attack guard keeps them). Zero-loss.
 > **Builds on:** [round 3](precision-round3.md) (method), rounds 4 and 5 (agents B, E, H, I, J),
 > decision [0015](../decisions/0015-reviewer-verdicts.md) with all addenda, including the
 > owner's strict ruling of 2026-11-10 (install-time downloads of code are unwanted, own
@@ -16,13 +16,19 @@
 
 | # | Change | Benign removed | Positives at risk → lost | Unverified lost | `vm-day1` fired → lost |
 |---|---|---|---|---|---|
-| Q1 | Stage 2 `npm.artifact.install-target-missing` (INFO), explaining `npm.install-hook` in Stage 4 (`EXPLAINED`, `STAGE_VERSION` 17): every hook is `node <file>` and the whole tarball has no such file | **8** (fires on 9; `agent-god-view@0.1.0` stays reported by `npm.repo.install-script-not-in-repo`) | 0 → 0 (fires on no positive) | 0 | DD_Q1 |
-| Q2 | Stage 3 `npm.install-explained` v5: an update whose hook is new is judged like a new package, S1/S3/S5 only, no home directory, no URL but the registry | **13** (fires on 14; `@octane-xplat/cli@0.20.0` stays reported by `npm.repo.install-script-not-in-repo`) | 0 → 0 (fires on no positive) | 0 | DD_Q2 |
+| Q1 | Stage 2 `npm.artifact.install-target-missing` (INFO), explaining `npm.install-hook` in Stage 4 (`EXPLAINED`, `STAGE_VERSION` 17): every hook is `node <file>` and the whole tarball has no such file | **8** (fires on 9; `agent-god-view@0.1.0` stays reported by `npm.repo.install-script-not-in-repo`) | 0 → 0 (fires on no positive) | 0 | 10 of 2,325 (first version) → 0 (4 lost before the broken-attack guard) |
+| Q2 | Stage 3 `npm.install-explained` v5: an update whose hook is new is judged like a new package, S1/S3/S5 only, no home directory, no URL but the registry | **13** (fires on 14; `@octane-xplat/cli@0.20.0` stays reported by `npm.repo.install-script-not-in-repo`) | 0 → 0 (fires on no positive) | 0 | 5 of 2,325 → 0 |
 
 **Commits** (on `worktree-agent-a2badfee15539caac`, on `b767898`): `ac9812f` (Stage 2: Q1 rule
 and tests), `70d3ec7` (Stage 4: `EXPLAINED` entry, `STAGE_VERSION` 17, test), `1ff56b9`
 (Stage 3: Q2, `npm.install-explained` v5, tests); docs in a separate commit. Both zero-loss; no
-trade-off commit. `correlate.decide`, `WEAK_ALONE` and `REPORT_SCORE` are unchanged (section 5).
+trade-off commit. Later commits (after review): `87b8788`, `ab28c5d` (Q1 guards from the
+`vm-day1` check), `eff5b1c` (v5 only *adds* to v4: the first v5 applied its added-hook limits
+to every added hook, so six benign versions v4 explained as S5 lost it, among them
+`react-lottie@2.0.0` and `feloapi-cli@0.1.1`, whose banners name a URL; caught by the
+integrator), `9efb494` + `aa7f590` (Q3, the owner's answer: S1 never holds when the install
+code names a download program or call, unless every URL it names is the npm registry).
+`correlate.decide`, `WEAK_ALONE` and `REPORT_SCORE` are unchanged (section 5).
 
 ## 1. Method
 
@@ -171,6 +177,25 @@ Benign unreported (13): S1 `@anysola/code@0.2.0`, `@deadbolt/cli@0.0.0-dev-134`,
 S5 `@cheezmil/aek-websearch@1.1.11`, `@contentsquare/react-native-bridge@6.6.0`.
 `@octane-xplat/cli@0.20.0` gets S1 and stays reported (`npm.repo.install-script-not-in-repo`).
 
+v5 only adds (`eff5b1c`): `explain` first asks v4's shapes unchanged (`_explain(added=False)`)
+and returns what they give; only when v4 refuses an added-hook update does it ask again with
+the new-capability test skipped and apply the three limits above. Checked on all 255 live
+versions where v4's `npm.install-explained` fires plus the 23 above: 0 explanations lost by
+Q2, 14 gained.
+
+**S1 and downloads (Q3, owner's answer of 2026-11-10).** S1 checked URLs only when the install
+code has the network capability, so a launcher that downloads through `child_process` (`curl`,
+PowerShell's `Invoke-WebRequest`) passed. S1 now refuses install code that names a download
+program or call (`DOWNLOAD_TOOL`: `curl`, `wget`, `aria2c`, `bitsadmin`, `certutil`,
+`Invoke-WebRequest`/`Invoke-RestMethod`/`iwr`/`irm`, `Start-BitsTransfer`, `DownloadFile`,
+`DownloadString`; comments and messages aside) unless every URL it names is the npm registry
+(`@kprint/kprint@0.60.5` fetches its platform package's tarball from the registry with a pinned
+hash and stays S1). On the 278 versions above it removes S1 from one: `@openlatch/client@0.11.7`
+(unwanted under the strict ruling: it curls its binaries from its GitHub releases when the
+platform package is missing). That version stays unreported all the same, as on `main`: its
+only other install finding is `npm.install-script-changed` at LOW (the changed lines are a
+comment and a file list). A miss for the download rule (agent R), not a change here.
+
 Why it is safe to judge a new hook as a new package's: the guards of each shape are the ones
 the owner accepted for new packages; an update is not more dangerous for having a hook it
 didn't have, *given* the code is S1/S3/S5 (registry-only launchers, project-only agent copies,
@@ -202,7 +227,25 @@ before. Named: `@nuri.yavuz.tr.2/my-unique-pinger@1.0.0` (unwanted) and `@1.0.2`
 `@patchgg/cli@0.4.0`, `@safetech/inheriti-cli@0.0.21-dev.0`, `rl-workspaces@0.7.0`;
 `@nareshramesh/code-walkthrough@1.0.2`. No rescue rule was needed.
 
-DD_SECTION
+## 4a. DataDog check (`vm-day1`)
+
+`ddq.py` (files decrypted in memory, nothing run): of the 3,444 malicious samples, 2,325 have an
+install hook; the first Q1 fires on 10, Q2 on 5 (15 in all). `pipeline+4`
+(`dd.py`, the real predictor) on those 15 with `main` `6137971` and with the fix:
+
+| Sample | `main` | first Q1 | final |
+|---|---|---|---|
+| `@testcarrot/supply9@1.0.2` (no JavaScript at all) | reported | **lost** | reported |
+| `modern-react@17.2.6` (its `main` is missing too) | reported | **lost** | reported |
+| `parashaxmgflhg@0.33.4` (ships `instal.js`) | reported | **lost** | reported |
+| `@vampirchik147/libxmljs2@0.19.7` (ships `postinstall.js`) | reported | **lost** | reported |
+| `company-ts@1.0.3` (`node lib\\index.js`) | reported | reported (another finding) | reported; Q1 no longer fires |
+| `@automagik/genie` ×3, `npm-ghost-htb`, `testing-package-xdsfdsfsc`, `vite-css-icon` | reported | reported | reported (other findings) |
+| `bcryptkit`, `bingo-logger`, `react-query-core-utils`, `stardrop` | not reported | not reported | not reported |
+
+Final: **0 lost**. The S1 guard and the additive fix can only keep more reported (they remove
+explanations or restore v4's), so they can't lose a sample.
+
 
 
 ## 5. Rejected or not built
