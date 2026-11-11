@@ -1075,7 +1075,10 @@ def test_a_tunnel_in_a_json_catalog_is_low() -> None:
     "text",
     [
         "get('http://45.33.32.156:8080/p')",
-        "const C2 = 'http://45.33.32.156'; fetch(process.env.X || C2)",
+        # a constant that is a fallback but also used directly (X1 needs every use a fallback)
+        "const C2 = 'http://45.33.32.156';\nfetch(process.env.X || C2); get(C2 + '/p')",
+        "const C2 = 'http://45.33.32.156' + path;\nfetch(process.env.X || C2)",
+        "const C2 = 'http://45.33.32.156';\nfetch(C2)",
         # a `default:` key that declares no option, a URL handed to a call inside an example
         "const pick = { default: 'http://45.33.32.156' }; get(pick.default)",
         'const example = { u: "http://45.33.32.156" }; fetch(example.u)',
@@ -1087,6 +1090,22 @@ def test_a_tunnel_in_a_json_catalog_is_low() -> None:
 )
 def test_an_ip_url_that_is_used_stays_medium(text: str) -> None:
     assert ("medium", 3.0) in _ips(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "const DEFAULT_API_BASE = 'http://150.158.162.17:9501';\n"
+        "export function getApiBaseUrl() {\n"
+        "    const raw = (process.env.OMNI_API_BASE_URL || DEFAULT_API_BASE).trim();\n}",
+        "const DEFAULT_BASE_URL = 'http://8.148.80.161';\r\nclass A { constructor() {\r\n"
+        "  this.baseUrl = (process.env.VIBE_SHOWCASE_URL ?? DEFAULT_BASE_URL).replace(/x/, '');",
+        "API = 'http://45.33.32.156'  # the default\nbase = os.environ.get('API_URL', API)",
+    ],
+)
+def test_an_ip_constant_used_only_as_an_environment_fallback_is_low(text: str) -> None:
+    """`hardcoded-ip` v8 (round 7, X1): P3's fallback written through a constant."""
+    assert _ips(text) == [("low", 1.0)]
 
 
 @pytest.mark.parametrize(

@@ -941,7 +941,9 @@ class HardcodedIp(RegexRule):
     or field (`{ name, type, default: 'http://…' }`, `.default('http://…')`;
     `_option_default`), a URL inside the value of an `example` / `examples` field
     (`_in_example`) and an entry of a set only asked `.has(` (`_set_member`), P5's searched
-    array written as a `Set`."""
+    array written as a `Set`; and (X1, its own commit) a constant used only as an environment
+    variable's fallback (`const DEFAULT = 'http://…'` and `process.env.X || DEFAULT`;
+    `_named_env_default`)."""
 
     id = "static.hardcoded-ip"
     version = 8
@@ -968,6 +970,8 @@ class HardcodedIp(RegexRule):
             if _option_default(match):
                 return OPTION_DEFAULT_NOTE
             if _ENV_DEFAULT.search(match.string, max(0, match.start() - 120), match.start()):
+                return ENV_DEFAULT_NOTE
+            if _named_env_default(match):
                 return ENV_DEFAULT_NOTE
             if _catalog(match.string):
                 return CATALOG_NOTE
@@ -1081,6 +1085,44 @@ ENV_DEFAULT_NOTE: Final = (
     " The fallback of an environment variable (`process.env.X || '…'`): a configurable"
     " product's default server, which the user can point elsewhere."
 )
+# v8 (round 7, X1): P3's fallback written through a constant, `const DEFAULT_API_BASE =
+# 'http://…'` and then `process.env.OMNI_API_BASE_URL || DEFAULT_API_BASE` (or `??`,
+# `os.environ.get("X", NAME)`). Only when the constant is declared with the URL as its whole
+# value and every other use of its name in the file is such a fallback: a constant the code
+# also connects to directly (`fetch(C2 + path)`) stays MEDIUM.
+_NAMED_URL: Final = re.compile(
+    r"(?:\b(?:const|let|var)\s+|^[ \t]*)(?P<name>[A-Za-z_$][\w$]*)\s*=\s*[\"'`]$"
+)
+_ENV_LEAD: Final = re.compile(
+    r"(?:process\.env(?:\.\w+|\[\s*[\"'`]\w+[\"'`]\s*\])(?:\?\.\w+\(\))?\s*(?:\|\||\?\?)\s*"
+    r"|os\.(?:environ\.get|getenv)\(\s*[\"']\w+[\"']\s*,\s*)$"
+)
+_STATEMENT_END: Final = re.compile(r"\s*;?\s*(?:(?://|#).*)?\r?$")
+
+
+def _named_env_default(match: re.Match[str]) -> bool:
+    """X1: `match` (a URL) is the whole value of a constant (`_NAMED_URL`, the literal ends
+    right after the URL's path) whose name is used, outside its declaration, only as an
+    environment variable's fallback (`_ENV_LEAD` right before it), at least once."""
+    text, start = match.string, match.start()
+    line_start = text.rfind("\n", 0, start) + 1
+    declared = _NAMED_URL.search(text[line_start:start])
+    if declared is None:
+        return False
+    quote = text[start - 1]
+    close = text.find(quote, match.end(), match.end() + 400)
+    if close < 0 or "\n" in text[match.end() : close]:
+        return False
+    line_end = text.find("\n", close)
+    if not _STATEMENT_END.match(text[close + 1 : len(text) if line_end < 0 else line_end]):
+        return False  # `= 'http://…' + path`: more than the literal
+    name = declared.group("name")
+    uses = [
+        m.start()
+        for m in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text)
+        if not line_start <= m.start() < close
+    ]
+    return bool(uses) and all(_ENV_LEAD.search(text, max(0, at - 120), at) for at in uses)
 
 
 # v8 (round 7, X2): a URL that is the default of a declared option or field, the same kind of

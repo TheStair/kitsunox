@@ -92,7 +92,7 @@ attributed.
 | `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v8) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6); LOW as an environment variable's fallback (`process.env.X || 'http://…'`), a literal compared or hashed (`=== 'http://…'`, `[…].includes(`, `.update(`) and in a JSON catalog with URLs on 20+ hosts (v7); LOW inside an `example(s)` field's value, as a declared option's default (`{ name, type, default: '…' }`, `.default('…')`) and in a set only asked `.has(` (v8) | MEDIUM |
+| `static.hardcoded-ip` (v8) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6); LOW as an environment variable's fallback (`process.env.X || 'http://…'`), a literal compared or hashed (`=== 'http://…'`, `[…].includes(`, `.update(`) and in a JSON catalog with URLs on 20+ hosts (v7); LOW inside an `example(s)` field's value, as a declared option's default (`{ name, type, default: '…' }`, `.default('…')`), as a constant used only as an environment fallback, and in a set only asked `.has(` (v8) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
 | `static.obfuscated` (v2) | many `_0x`-style identifiers (javascript-obfuscator output); LOW (weight 1) in Emscripten glue with fewer than 100 such names and no obfuscator string array (v2) | MEDIUM |
@@ -768,9 +768,9 @@ each names a use that is not a connection.
   searched with `.includes(`: an allow-list check or a legacy-address migration, which
   nothing connects to. An array that code iterates over and fetches stays MEDIUM.
 
-### Round 7: examples, option defaults, prefixes, sets (2026-11-11)
+### Round 7: examples, option defaults, named fallbacks, prefixes, sets (2026-11-11)
 
-From [precision round 7, agent X](../proposals/precision-round7-X.md) (X2-X5), for the
+From [precision round 7, agent X](../proposals/precision-round7-X.md) (X1-X5), for the
 versions `exfil-endpoint` and `hardcoded-ip` still reported on their own after round 6. As
 in round 6, each lowered match is LOW, weight 1, with a note, never on an install hook's
 line, and the notes join `CONTEXT_NOTES` (what they test can sit outside the snippet).
@@ -787,6 +787,12 @@ line, and the notes join `CONTEXT_NOTES` (what they test can sit outside the sni
   `type`, `label`, `displayName`, `description` or `title` key): an n8n credential's
   `{ displayName: 'B46 URL', name: 'b46Url', type: 'string', default: 'http://…' }`, a form
   input's default. A bare `{ default: 'http://…' }` lookup stays MEDIUM.
+- **`hardcoded-ip` v8 (X1): P3's fallback through a constant.** `const DEFAULT_API_BASE =
+  'http://…';` (the literal is the whole value) whose name is used, everywhere else in the
+  file, only as an environment variable's fallback (`process.env.X || DEFAULT_API_BASE`,
+  `?? `, `os.environ.get("X", NAME)`). A constant also used directly (`get(C2 + '/p')`) stays
+  MEDIUM. This reverses round 6's choice to keep `const C2 = '…'; process.env.X || C2`
+  MEDIUM, which is the same code as P3's `process.env.X || '…'`.
 - **`hardcoded-ip` v8 (X5): a set only asked `.has(`.** P5's searched array written as
   `LEGACY_URLS = new Set(["http://…"])`, the name used only as `LEGACY_URLS.has(x)`. A set
   the code iterates (`for … of`, `[...S]`) stays MEDIUM.
