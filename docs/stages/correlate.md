@@ -12,7 +12,10 @@
 > `STAGE_VERSION` 12. An earlier stage's explanation finding makes the finding it explains LOW
 > since the same day (`EXPLAINED`, [Decision and score](#decision-and-score)); `STAGE_VERSION` 13.
 > Stage 3's explained-install shapes (`npm.install-explained`, S1-S3) explain the three install
-> rules since the same day; `STAGE_VERSION` 14.
+> rules since the same day; `STAGE_VERSION` 14. A follow-on release that keeps a reported
+> release's payload unchanged is reported as such since 2026-11-11 (`correlate.follow-on`,
+> [Follow-on releases](#follow-on-releases-correlatefollow-on-stage-version-18));
+> `STAGE_VERSION` 18.
 
 ## Purpose
 
@@ -49,6 +52,10 @@ uv run kitsunox eval run <dataset> --predictor pipeline+4   # end to end: what w
   files come from the blob store (Stage 2 fetched them). For dependencies a release adds that
   aren't its own, its scope's or watched: their packument (see
   [Dependency lookups](#dependency-lookups)), recorded in the same snapshot.
+- **Follow-on pass:** the files of a reported release and of its follow-ons, through the
+  same fetcher (see [Follow-on releases](#follow-on-releases-correlatefollow-on-stage-version-18));
+  almost always already in the blob store. Also reads earlier runs' `follow-on.jsonl` and
+  writes the run's own, with `follow-on-history.jsonl` (the earlier entries it used).
 - **Also reads:** the run's watchlist (the one Stage 0 recorded in `manifest.json`, checked
   against its SHA-256): watched dependencies are exempt, and its popular names are what
   `name-embeds-popular` compares with.
@@ -356,6 +363,97 @@ has a name npm lacks; 2 malicious ones would get the finding after the exemption
 (`react-tmedia@2.1.4` and `tailwind-state@1.0.3`, whose code loads the undeclared
 `bingo-logger-abstract-transport`), both reported already: recall unchanged.
 
+## Follow-on releases (`correlate.follow-on`; stage version 18)
+
+Stages 1-3 judge what a release *changes*. A release that keeps a reported release's payload
+byte for byte therefore shows nothing: Stage 2 reads only contents the base doesn't have
+(and, in a batch, attributes a content to the first version holding it), and Stage 3 counts
+only capabilities new to the install code. `pdf-html5-page-flip@2.0.2` (malicious) was
+published 15 minutes after 2.0.1 with the same credential stealer in
+`dist/lib/fonts/fa-solid-400.woff2`; 2.0.1 was reported at score 6, 2.0.2 scored 3. Stage 2's
+`ALWAYS_NEW` (known signatures, WhatsApp channel follow and tagging) never reaches an
+unchanged file either, so a Baileys fork's second release went unreported. Decision 0007 kept
+such *follow-on* releases in their own `vm-day1` cells for this reason; this pass is the
+pipeline's answer ([round 6 U](../proposals/precision-round6-U.md), decision 0007 addendum).
+Built in four commits, A (zero-cost) and B1, B2, C (trade-offs for the owner); this section
+describes all four.
+
+**The pass.** `correlate_run(follow_on=..., history=...)` correlates every version as
+before, then runs a second pass over the versions whose previous release is in the same run
+or in `history` (earlier runs' reported releases, part C):
+
+1. While correlating, it notes each version's place and previous release, and each reported
+   release's **payload evidence** (`reported_release`, `payload_evidence`, below).
+2. A version whose previous release is in the run waits until that release is settled (not
+   itself waiting); one whose previous release is an earlier run's is ready at once. If that
+   release was reported with payload evidence and the version was published at most
+   `FOLLOW_ON_WINDOW` (7 days) after it, it is checked (`ReleaseFollowOn`): a file is still
+   there when the version has the same bytes at the same path, a manifest field when it has
+   the same value (`stages/review.manifest_field` reads npm's `package.json:scripts.<hook>`
+   and `package.json:dependencies.<name>` paths).
+3. A version that still holds some of it is correlated again with what it holds
+   (`ctx.follow_on`). `correlate.follow-on` (MEDIUM, weight 3) names the earlier release
+   (and its run, when not this one), the hours between them and that release's decision, and
+   lists each file or field. Its carried evidence becomes its own payload evidence, so a
+   chain of follow-ons (2.0.1 → 2.0.2 → 2.0.3) carries it on. A version already reported gets
+   the finding too, as context.
+4. Those lines of `correlate.jsonl` are replaced (streamed through a synced temp file);
+   `correlate.json` counts the pass under `follow_on`: `in_run` and `earlier_runs` (versions
+   whose previous release is in the run, or only in an earlier run's index), `checked`,
+   `carried`, `reported`, `newly_reported`, `not_evaluated`, `retry_passes`, and `errors` by
+   version.
+5. The run writes its own reported releases with payload evidence to `follow-on.jsonl`
+   (`FOLLOW_ON_INDEX`), and the earlier runs' entries its pass used to
+   `follow-on-history.jsonl` (`FOLLOW_ON_HISTORY`). `review.follow_on_history` gives the next
+   runs the indices of the runs of the same ecosystem whose `as_of` is within the window before
+   theirs (a later run's entry for the same release wins); a seeded re-score reads the run's
+   own `follow-on-history.jsonl` instead, so it doesn't depend on what earlier runs hold now
+   (re-scored or pruned since).
+
+Every pass takes the ready versions in run order and the checks are pure functions of the two
+releases, so the output doesn't depend on thread scheduling (tested with 1 and 4 workers and a
+chain written backwards; the run order is the change feed's, not publish order). Release
+files come through the run's fetcher under Stage 2's size limits, so they are recorded in
+`correlate-snapshot.json` and a re-score reads the same bytes; most are already in the blob
+store (a reported release always is: Stage 2 read it, and retention holds reported tarballs
+30 days). A check that fails on the network is retried like the other lookups; one whose files
+still can't be read gives an INFO `Not evaluated:` finding (counted as `not_evaluated`), never
+a silent skip. Nothing here reads the clock or a verdict.
+
+**What is carried** is narrow on purpose (`payload_evidence`):
+
+| Part | Carried (MEDIUM-or-above evidence of the reported release) | Same-run live, newly reported |
+|---|---|---|
+| A | `static.known-signature`, `static.channel-follow`, `static.channel-tagging` (`FOLLOW_ON_ALONE`; the owner wants them on every release, Stage 2's `ALWAYS_NEW`) | +10 unwanted, 0 benign |
+| B1 | a `static.hardcoded-ip` or `static.exfil-endpoint` file (`FOLLOW_ON_DESTINATION`) that a LOW-or-above `static.sensitive-path` / `static.env-harvest` or install-code finding (`npm.install-script-code`, `-loader`, `-exfil`, `npm.install-persistence`; `FOLLOW_ON_COMPANION`) of the same release also names | +3 malicious (`pdf-html5-page-flip@2.0.2`, `template-cards@16.1.2`, `template-pictogram@9.1.3`), +2 benign (`chuxin-agentdesk@0.1.1`, `@prismatic-io/components-bigcommerce@0.1.0`) |
+| B2 | `npm.install-persistence` (owner rulings, decision 0015), in `FOLLOW_ON_ALONE` | +22 unwanted, +4 benign (`agy-statusblocks@0.1.1`, `repilot@0.3.1`, `basinfy@1.3.14`, `@c0dingbear/termius-mcp@0.6.2`), +1 unverified (`wkappbot-code@0.3.8`) |
+| C | the same, from earlier runs within 7 days | over A-B2: +27 unwanted, +1 benign (`memtrace@1.2.14`), +1 unverified; over A alone: +5 unwanted |
+
+A destination alone is not carried: benign CLIs with a bundled ngrok table or a default server
+IP release every few hours. Rules about a *change* (`npm.install-script-changed`,
+`code.capability-gained`, a new maintainer or publisher, a revived package) are never carried:
+an unchanged follow-on doesn't have their evidence. Neither are Stage 1's install hook and
+non-registry dependency, nor obfuscation and other content rules. On the same follow-ons,
+same run: every severe content finding would add 65 positives and 64 benign versions; with
+install hooks and non-registry dependencies 80 and 171; parts A-B2 plus an added (HIGH)
+install hook 45 and 65.
+
+**Measured** (2026-11-11, real code, verdicts of that day): the 812 follow-ons of the live
+runs whose previous release was reported (recorded, or by the main replay) and that the main
+replay doesn't report, each pair replayed through Stages 1-4 with this code
+(`~/kitsunox-scratch/r6/U/scripts/u_follow.py`). Most follow-ons were never reported, so never
+reviewed: their truth is the earlier release's verdict ("inherited": the carried evidence is
+identical, byte for byte), except where they have their own (`pdf-html5-page-flip@2.0.2`
+malicious, `aum-framework@1.8.2` unwanted, `chuxin-agentdesk@0.1.1` benign). On the 3,716
+verdicted versions of the replay set, parts A-B2 change two decisions: `aum-framework@1.8.2`
+(unwanted) and `chuxin-agentdesk@0.1.1` (benign) become reported; no positive is lost (the pass
+only adds findings). The real `correlate_run` over every live run's recorded Stage 1-3 output
+(149 runs, older rules for older runs; part C off) changes 20 lines, 16 newly reported; on
+`20261110T205323Z-npm` (5,016 versions) the pass took 0.85 s. `vm-day1` (`pipeline+4` per sample plus the pass, on the 82 malicious follow-ons
+whose previous version is a sample and that round 3 didn't report): A +0, B1 +12
+(`@operato/*`, `@things-factory/email-base`: the same install-time `bundle.js`, 6-27 minutes
+later), B2 +0, none lost.
+
 ## Decision and score
 
 - **Report** a version when any finding is MEDIUM or above, or its score reaches
@@ -592,6 +690,7 @@ Rules over it:
 | `repo.code-not-in-repo` | shipped code files are *unexplained* (above). Since `STAGE_VERSION` 6 a file whose content is elsewhere in the repository, byte for byte, is explained (a build copied it) | LOW | 2 |
 | `npm.repo.install-script-not-in-repo` (v2) | the release's install hook isn't in the repository's `package.json` (or has another command). INFO instead when the repository's build writes it (`ManifestDifference.built_by`): every package file the command names is in the repository byte for byte, and another repository file holds the command (the release's version may be a placeholder there). First VM day: `@nutui/nutui-react-taro` (`scripts/build-taro.mjs`) and `@opencode/cli` (`script/pack.ts`); `@pulumi/*` still fire, since Pulumi's code generator, not the repository, writes their hook. With `repository.directory` only that directory is searched. v3: LOW, weight 1, when the previous release shipped the same hook (its version string aside), so a generated hook that is in every release (`@pulumi/*`) stops counting; the release that adds a hook still fires HIGH | HIGH | 5 |
 | `npm.repo.dependency-not-in-repo` | a runtime dependency the repository's `package.json` doesn't name in any section | LOW | 1 |
+| `correlate.follow-on` | the previous release, published at most 7 days earlier, was reported by this run or (part C) an earlier one with payload evidence (`payload_evidence`) that this release still holds unchanged: the same bytes at the same path, or the same manifest value (Follow-on releases, above). INFO "not evaluated" when the files couldn't be read | MEDIUM | 3 |
 
 ## Evaluation
 
@@ -703,6 +802,15 @@ for ~1.4 extra benign reports a day.
 
 ## Known limits
 
+- **Follow-ons.** A follow-on more than 7 days after the reported release is judged on its
+  changes alone, as before; so is one whose payload moved to another path or changed by a
+  byte, one whose earlier release was reported for evidence the pass doesn't carry (an install
+  hook, obfuscation, a non-registry dependency), and (without part C) one in a later run. With
+  part C, an earlier run whose Stage 4 hadn't finished when a later run's did (a Stage 2
+  retry) is missing from that run's history; the history the run used is recorded, so a
+  re-score agrees with it. A release reported only after the fact (Stage 5's results) isn't
+  in the index. The evaluation predictor (`pipeline+4`) scores samples one at a time and
+  doesn't run the pass; the `vm-day1` figure above comes from the round-6 harness.
 - **An established match can't see a compromised repository.** A malicious commit pushed to
   a real repository (a stolen maintainer account, a merged pull request, CI tampering) matches
   cleanly, and its install code would be cleared. That is what watching commits is for
