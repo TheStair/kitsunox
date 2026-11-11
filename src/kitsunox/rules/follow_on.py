@@ -26,11 +26,11 @@ from kitsunox.stages.correlate import (
 
 
 class FollowOnRelease(BaseRule):
-    """The previous release, reported by this run, had payload evidence (`payload_evidence`)
-    that this release still holds unchanged: a file with the same bytes at the same path, or a
-    manifest field with the same value. MEDIUM, so it reports the
-    release on its own: the reviewer sees the same payload again, named as such. When the
-    files couldn't be read, an INFO finding says the follow-on was not checked."""
+    """The previous release, reported by this run or an earlier one (within the window), had
+    payload evidence (`payload_evidence`) that this release still holds unchanged: a file with
+    the same bytes at the same path, or a manifest field with the same value. MEDIUM, so it
+    reports the release on its own: the reviewer sees the same payload again, named as such.
+    When the files couldn't be read, an INFO finding says the follow-on was not checked."""
 
     id = FOLLOW_ON
     version = 1
@@ -45,12 +45,13 @@ class FollowOnRelease(BaseRule):
         if follow is None:
             return ()
         name = candidate.change.new.ref.name
+        by = f"run {follow.previous_run}" if follow.previous_run else "this run"
         if not follow.carried:
             if follow.unavailable is None:
                 return ()
             return (
                 self.finding(
-                    f"{NOT_EVALUATED}follow-on of {name}@{follow.previous}, which this run"
+                    f"{NOT_EVALUATED}follow-on of {name}@{follow.previous}, which {by}"
                     f" reported ({follow.previous_reason}): {follow.unavailable}.",
                     severity=Severity.INFO,
                     weight=0.0,
@@ -66,7 +67,7 @@ class FollowOnRelease(BaseRule):
         return (
             self.finding(
                 f"Follow-on of {name}@{follow.previous}, published {follow.hours:g} hours"
-                f" earlier and reported by this run ({follow.previous_reason}). Unchanged"
+                f" earlier and reported by {by} ({follow.previous_reason}). Unchanged"
                 f" since: {listed}.{unchecked}",
                 *(item.evidence for item in shown),
             ),

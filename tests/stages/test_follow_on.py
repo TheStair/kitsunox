@@ -21,7 +21,9 @@ from kitsunox.core.models import (
     Severity,
     StageDecision,
     VersionSnapshot,
+    Window,
 )
+from kitsunox.core.run import DataDir, RunManifest
 from kitsunox.rules.follow_on import FollowOnRelease
 from kitsunox.stages.correlate import (
     ABSENT,
@@ -29,6 +31,8 @@ from kitsunox.stages.correlate import (
     FOLLOW_ON,
     FOLLOW_ON_COMPANION,
     FOLLOW_ON_EVIDENCE,
+    FOLLOW_ON_HISTORY,
+    FOLLOW_ON_INDEX,
     NOT_EVALUATED,
     STAGE_ID,
     CarriedEvidence,
@@ -42,7 +46,7 @@ from kitsunox.stages.correlate import (
     reported_release,
 )
 from kitsunox.stages.ingest import write_jsonl
-from kitsunox.stages.review import CORRELATION_RULES, manifest_field
+from kitsunox.stages.review import CORRELATION_RULES, follow_on_history, manifest_field
 from kitsunox.stages.static import Unavailable
 
 T0 = datetime(2026, 11, 10, 20, 0, tzinfo=UTC)
@@ -420,6 +424,7 @@ def test_a_chain_of_follow_ons_is_reported_whatever_the_run_order(
     info = json.loads((tmp_path / CORRELATE_INFO).read_text())["follow_on"]
     assert info == {
         "in_run": 2,
+        "earlier_runs": 0,
         "checked": 2,
         "carried": 2,
         "reported": 2,
@@ -526,3 +531,74 @@ def test_what_the_default_policy_carries() -> None:
     assert [c.rule_id for c in payload_evidence(channel)] == ["static.channel-follow"]
     assert [c.rule_id for c in payload_evidence(STEALER_FINDINGS)] == ["static.hardcoded-ip"]
     assert [c.rule_id for c in payload_evidence(persists)] == ["npm.install-persistence"]
+
+
+# Follow-ons of earlier runs' reported releases.
+
+
+def earlier_entry(version: str = "2.0.1", run_id: str = "r1") -> ReportedRelease:
+    entry = reported_release(release(version, 0, *RUN_FINDINGS, forwarded=True))
+    assert entry is not None
+    return entry.model_copy(update={"run_id": run_id})
+
+
+def test_a_follow_on_of_an_earlier_runs_release(tmp_path: Path) -> None:
+    run_dir = tmp_path / "r2"
+    run_dir.mkdir()
+    second = release("2.0.2", 90, previous=snapshot("2.0.1", 0))
+    write_jsonl(run_dir / "triage.jsonl", [second])
+    (run_dir / "ast.jsonl").write_bytes(b"")
+    history = {("flip", "2.0.1"): earlier_entry(), ("flip", "1.0.0"): earlier_entry("1.0.0")}
+    out = correlate_run(run_dir, CTX, RULES, follow_on=lookup(TREES), history=history)
+    (found,) = (f for f in out[0].findings if f.rule_id == FOLLOW_ON)
+    assert out[0].history[-1].forwarded and "reported by run r1" in found.explanation
+    info = json.loads((run_dir / CORRELATE_INFO).read_text())["follow_on"]
+    assert info["in_run"] == 0 and info["earlier_runs"] == 1 and info["newly_reported"] == 1
+    used = (run_dir / FOLLOW_ON_HISTORY).read_bytes().splitlines()
+    assert [ReportedRelease.model_validate_json(x) for x in used] == [history[("flip", "2.0.1")]]
+    (index,) = (run_dir / FOLLOW_ON_INDEX).read_bytes().splitlines()
+    mine = ReportedRelease.model_validate_json(index)
+    assert mine.release.ref.version == "2.0.2" and mine.run_id == "r2"
+    out.close()
+
+
+def manifest(run_id: str, as_of: datetime, ecosystem: str = "npm") -> RunManifest:
+    return RunManifest(
+        run_id=run_id,
+        tool_version="t",
+        ecosystem=ecosystem,
+        as_of=as_of,
+        window=Window(start=as_of - timedelta(hours=1), end=as_of),
+        cursor_since=0,
+        cursor_until=1,
+        snapshot_sha256="0",
+        changes_sha256="0",
+        change_count=0,
+        skipped_count=0,
+        packages_seen=0,
+    )
+
+
+def write_index(data: DataDir, run_id: str, as_of: datetime, *entries: ReportedRelease) -> None:
+    run_dir = data.run_dir(run_id)
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_bytes(manifest(run_id, as_of).model_dump_json().encode())
+    write_jsonl(run_dir / FOLLOW_ON_INDEX, entries)
+
+
+def test_history_is_the_earlier_runs_within_the_window(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    now = T0 + timedelta(days=10)
+    write_index(data, "old", now - timedelta(days=8), earlier_entry("0.9.0", "old"))
+    write_index(data, "a", now - timedelta(days=2), earlier_entry("2.0.1", "a"))
+    write_index(data, "b", now - timedelta(hours=1), earlier_entry("2.0.1", "b"))
+    write_index(data, "later", now + timedelta(hours=1), earlier_entry("3.0.0", "later"))
+    data.run_dir("now").mkdir()
+    history = follow_on_history(data, "now", manifest("now", now))
+    assert sorted(history) == [("flip", "2.0.1")] and history[("flip", "2.0.1")].run_id == "b"
+    assert follow_on_history(data, "now", manifest("now", now, ecosystem="pypi")) == {}
+    # A seeded re-score reads the entries the run used, whatever the earlier runs hold now.
+    write_jsonl(data.run_dir("now") / FOLLOW_ON_HISTORY, [earlier_entry("2.0.1", "a")])
+    pinned = follow_on_history(data, "now", manifest("now", now), reuse=True)
+    assert pinned[("flip", "2.0.1")].run_id == "a"
+    assert follow_on_history(data, "now", manifest("now", now))[("flip", "2.0.1")].run_id == "b"

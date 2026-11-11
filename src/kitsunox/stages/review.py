@@ -11,6 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from typing import Final
 
 import httpx
@@ -33,6 +34,9 @@ from kitsunox.rules.follow_on import FollowOnRelease
 from kitsunox.rules.repo import RULES as REPO_RULES
 from kitsunox.stages.correlate import (
     ABSENT,
+    FOLLOW_ON_HISTORY,
+    FOLLOW_ON_INDEX,
+    FOLLOW_ON_WINDOW,
     CandidateFile,
     CorrelationContext,
     CorrelationRule,
@@ -41,6 +45,7 @@ from kitsunox.stages.correlate import (
     DependencyVersion,
     ReleaseFollowOn,
     RepoLookup,
+    ReportedRelease,
     correlate_run,
 )
 from kitsunox.stages.repo import (
@@ -369,6 +374,46 @@ def follow_on_lookup(fetcher: HttpFetcher) -> ReleaseFollowOn:
     return ReleaseFollowOn(ArtifactFiles(NpmEcosystem(fetcher)), manifest_field)
 
 
+def follow_on_history(
+    data: DataDir,
+    run_id: str,
+    manifest: RunManifest,
+    *,
+    reuse: bool = False,
+    window: timedelta = FOLLOW_ON_WINDOW,
+) -> dict[tuple[str, str], ReportedRelease]:
+    """The reported releases of earlier runs a run's follow-on pass checks against: every
+    `FOLLOW_ON_INDEX` of the runs of the same ecosystem whose `as_of` is within `window` before
+    this run's (a later run's entry for the same release wins). With `reuse` (a seeded
+    re-score), the run's own `FOLLOW_ON_HISTORY`, when it has one: exactly the entries its
+    first Stage 4 used, so a re-score doesn't depend on what earlier runs hold now (one of them
+    may have been re-scored since, or pruned)."""
+    run_dir = data.run_dir(run_id)
+    pinned = run_dir / FOLLOW_ON_HISTORY
+    files: list[Path] = []
+    if reuse and pinned.exists():
+        files = [pinned]
+    else:
+        earlier = []
+        for other in sorted(run_dir.parent.iterdir()):
+            index, path = other / FOLLOW_ON_INDEX, other / "manifest.json"
+            if other.name == run_id or not index.exists() or not path.exists():
+                continue
+            seen = RunManifest.load_json(path.read_bytes())
+            if seen.ecosystem == manifest.ecosystem and (
+                manifest.as_of - window <= seen.as_of < manifest.as_of
+            ):
+                earlier.append((seen.as_of, index))
+        files = [index for _, index in sorted(earlier)]
+    entries: dict[tuple[str, str], ReportedRelease] = {}
+    for index in files:
+        for line in index.read_bytes().splitlines():
+            if line.strip():
+                entry = ReportedRelease.model_validate_json(line)
+                entries[(entry.release.ref.name, entry.release.ref.version)] = entry
+    return entries
+
+
 def run_watchlist(data: DataDir, manifest: RunManifest) -> Watchlist | None:
     """The watchlist the run's Stage 0 used (checked against its recorded SHA-256), if any."""
     if manifest.watchlist_id is None:
@@ -419,6 +464,7 @@ def run_correlate_stage(
                 repo=repo_lookup(fetcher, pool=pool, token=github_token),
                 workers=workers,
                 follow_on=follow_on_lookup(fetcher),
+                history=follow_on_history(data, run_id, manifest, reuse=seed is not None),
             )
     finally:
         fetcher.close()

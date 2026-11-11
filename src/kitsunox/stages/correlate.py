@@ -210,12 +210,14 @@ class CarriedEvidence(Record):
 
 
 class ReportedRelease(Record):
-    """A release of this run that Stage 4 reported, with the evidence a follow-on release can
-    carry (`carried_evidence`). Kept in memory for the follow-on pass only."""
+    """A release Stage 4 reported, with the evidence a follow-on release can carry
+    (`reported_release`). `run_id`: the run that reported it, when not the current one (an
+    earlier run's `FOLLOW_ON_INDEX`)."""
 
     release: VersionSnapshot
     reason: str
     evidence: tuple[CarriedEvidence, ...]
+    run_id: str | None = None
 
 
 class FollowOn(Record):
@@ -227,6 +229,7 @@ class FollowOn(Record):
     previous: str
     previous_reason: str
     hours: float
+    previous_run: str | None = None
     carried: tuple[CarriedEvidence, ...] = ()
     unavailable: str | None = None
     transient: bool = False
@@ -594,6 +597,10 @@ FOLLOW_ON_COMPANION: Final = frozenset(
         "npm.install-persistence",
     }
 )
+# A run's reported releases with payload evidence (one `ReportedRelease` a line), read by later
+# runs' follow-on passes, and the earlier runs' entries this run's pass used (its input).
+FOLLOW_ON_INDEX: Final = "follow-on.jsonl"
+FOLLOW_ON_HISTORY: Final = "follow-on-history.jsonl"
 # A follow-on is checked only when published at most this long after the reported release.
 FOLLOW_ON_WINDOW: Final = timedelta(days=7)
 # Evidence items listed in one follow-on finding at most.
@@ -728,6 +735,7 @@ class ReleaseFollowOn:
         return FollowOn(
             previous=earlier.release.ref.version,
             previous_reason=earlier.reason,
+            previous_run=earlier.run_id,
             hours=round((after - before) / timedelta(hours=1), 2),
             carried=tuple(carried),
             unavailable=f"files {unavailable.reason}"[:300] if unavailable else None,
@@ -746,6 +754,7 @@ def correlate_run(
     retry_passes: int = RETRY_PASSES,
     max_comparisons: int = MAX_REPO_COMPARISONS,
     follow_on: FollowOnLookup | None = None,
+    history: Mapping[tuple[str, str], ReportedRelease] | None = None,
 ) -> CandidateFile:
     """Stage 4 over a run Stage 3 has processed. Reads every triaged version
     (`triage.jsonl`), taking Stages 2-3's version of those routed to them (`ast.jsonl`); writes
@@ -766,6 +775,10 @@ def correlate_run(
     (`reported_release`) is checked against it and correlated again with what it still holds
     (`ctx.follow_on`), in dependency order, so a chain of follow-ons carries the evidence on.
     Those lines of `correlate.jsonl` are replaced; `correlate.json` counts them as `follow_on`.
+    `history` holds earlier runs' reported releases (their `FOLLOW_ON_INDEX`): a version whose
+    previous release is there instead of in this run is checked against it the same way. The
+    run writes its own reported releases with payload evidence to `FOLLOW_ON_INDEX` and the
+    `history` entries it used to `FOLLOW_ON_HISTORY`, so a re-score can read exactly those.
 
     Versions are read from disk when needed (`RunVersions`) and written as they are
     correlated, never all held at once: a 110k-version run's candidates take ~4 GB as objects,
@@ -837,7 +850,7 @@ def correlate_run(
             )
             write_jsonl(run_dir / "correlate.jsonl", _in_order(pool, one, len(versions)))
             if follow_on is not None:
-                follow_info = _follow_ons(
+                follow_info, used = _follow_ons(
                     pool,
                     follow_on,
                     releases,
@@ -845,9 +858,18 @@ def correlate_run(
                     correlated,
                     totals,
                     retry_passes,
+                    history or {},
                 )
                 if follow_info.pop("replaced"):
                     _replace_lines(run_dir / "correlate.jsonl", releases.replaced)
+                _write_records(run_dir / FOLLOW_ON_HISTORY, [(history or {})[k] for k in used])
+                _write_records(
+                    run_dir / FOLLOW_ON_INDEX,
+                    [
+                        r.model_copy(update={"run_id": run_dir.name})
+                        for _, r in sorted(releases.reported.items())
+                    ],
+                )
     finally:
         versions.close()
     errors = network.pop("errors")  # last in `repo_network`, after the counts
@@ -945,30 +967,46 @@ def _follow_ons(
     correlated: Callable[[int, FollowOn | None], Candidate],
     totals: _Totals,
     retry_passes: int,
-) -> dict[str, object]:
+    history: Mapping[tuple[str, str], ReportedRelease],
+) -> tuple[dict[str, object], list[tuple[str, str]]]:
     """The follow-on pass of `correlate_run`. A version whose previous release is in the run
     waits until that release is settled (not itself still waiting), then, if that release is
     reported with evidence to carry, is checked (`lookup`; network failures retried like the
     other lookups) and, when it still holds some of it or couldn't be checked, correlated again
-    with the result: it may be reported now, and carry the evidence on to its own follow-on.
-    Deterministic: every pass takes the ready versions in run order. Returns the counts for
-    `correlate.json` (`replaced`: whether any line changed)."""
+    with the result: it may be reported now, and carry the evidence on to its own follow-on. A
+    version whose previous release is not in the run but in `history` (earlier runs' reported
+    releases) is checked against that entry. Deterministic: every pass takes the ready
+    versions in run order. Returns the counts for `correlate.json` (`replaced`: whether any
+    line changed) and the `history` keys checked against."""
     pending = {
         i: ((name, previous), (name, version))
         for i, name, version, previous in sorted(releases.followers)
-        if (name, previous) in releases.index and releases.index.get((name, version)) == i
+        if ((name, previous) in releases.index or (name, previous) in history)
+        and releases.index.get((name, version)) == i
     }
-    counts = {"in_run": len(pending), "checked": 0, "carried": 0, "reported": 0}
-    counts |= {"newly_reported": 0, "not_evaluated": 0, "retry_passes": 0}
+    in_run = sum(previous in releases.index for previous, _ in pending.values())
+    counts = {"in_run": in_run, "earlier_runs": len(pending) - in_run, "checked": 0}
+    counts |= {"carried": 0, "reported": 0, "newly_reported": 0, "not_evaluated": 0}
+    counts["retry_passes"] = 0
     errors: dict[str, str] = {}
+    used: set[tuple[str, str]] = set()
+
+    def earlier(previous: tuple[str, str]) -> ReportedRelease | None:
+        if previous in releases.index:
+            return releases.reported.get(previous)
+        return history.get(previous)
+
     while pending:
         waiting = {key for _, key in pending.values()}
-        reported = [i for i, (previous, _) in pending.items() if previous in releases.reported]
+        reported = {
+            i: entry for i, (previous, _) in pending.items() if (entry := earlier(previous))
+        }
         # A cycle of previous releases (never seen) would wait forever: take them as they are.
-        ready = [i for i in reported if pending[i][0] not in waiting] or reported
+        ready = [i for i in reported if pending[i][0] not in waiting] or list(reported)
         if not ready:
             break  # the rest follow releases that weren't reported
-        pairs = [(releases.reported[pending[i][0]], i) for i in sorted(ready)]
+        pairs = [(reported[i], i) for i in sorted(ready)]
+        used.update(pending[i][0] for i in ready if pending[i][0] not in releases.index)
 
         def check(pair: tuple[ReportedRelease, int]) -> FollowOn | None:
             return lookup(pair[0], version_at(pair[1]))
@@ -999,7 +1037,13 @@ def _follow_ons(
             release = reported_release(new, follow)
             if release is not None:
                 releases.reported[key] = release
-    return {**counts, "replaced": bool(releases.replaced), "errors": dict(sorted(errors.items()))}
+    info = {**counts, "replaced": bool(releases.replaced), "errors": dict(sorted(errors.items()))}
+    return info, sorted(used)
+
+
+def _write_records(path: Path, records: Iterable[Record]) -> None:
+    """Small JSONL files later runs read (`FOLLOW_ON_INDEX`): written whole or not at all."""
+    atomic_write(path, b"".join(r.model_dump_json().encode() + b"\n" for r in records))
 
 
 def _replace_lines(path: Path, replaced: Mapping[int, Candidate]) -> None:
