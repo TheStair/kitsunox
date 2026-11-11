@@ -568,6 +568,11 @@ FOLLOW_ON: Final = "correlate.follow-on"
 # - A: a finding of a rule the owner wants on every release (`FOLLOW_ON_ALONE`): a known
 #   family's signature, a WhatsApp fork's channel follow or tagging (Stage 2's `ALWAYS_NEW`,
 #   which an unchanged file never reaches). +10 unwanted, 0 benign.
+# - B1: a hard-coded destination (`FOLLOW_ON_DESTINATION`, MEDIUM or above) in a file that
+#   the same release also found reading secrets or running at install (`FOLLOW_ON_COMPANION`,
+#   any severity): the stealer in `pdf-html5-page-flip`'s font file, `template-cards`'s
+#   install-time beacon. +3 malicious, +2 benign (`chuxin-agentdesk@0.1.1`,
+#   `@prismatic-io/components-bigcommerce@0.1.0`).
 FOLLOW_ON_ALONE: Final = frozenset(
     {
         "static.known-signature",
@@ -575,8 +580,7 @@ FOLLOW_ON_ALONE: Final = frozenset(
         "static.channel-tagging",
     }
 )
-# B1 (not in A): `static.hardcoded-ip`, `static.exfil-endpoint`.
-FOLLOW_ON_DESTINATION: Final[frozenset[str]] = frozenset()
+FOLLOW_ON_DESTINATION: Final = frozenset({"static.hardcoded-ip", "static.exfil-endpoint"})
 FOLLOW_ON_COMPANION: Final = frozenset(
     {
         "static.sensitive-path",

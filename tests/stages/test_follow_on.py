@@ -524,5 +524,5 @@ def test_what_the_default_policy_carries() -> None:
     channel = (file_finding("static.channel-follow", "lib/Socket/index.js"),)
     persists = (file_finding("npm.install-persistence", "scripts/link.mjs"),)
     assert [c.rule_id for c in payload_evidence(channel)] == ["static.channel-follow"]
-    assert [c.rule_id for c in payload_evidence(STEALER_FINDINGS)] == []
+    assert [c.rule_id for c in payload_evidence(STEALER_FINDINGS)] == ["static.hardcoded-ip"]
     assert [c.rule_id for c in payload_evidence(persists)] == []
