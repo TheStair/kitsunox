@@ -170,6 +170,7 @@ def test_stage_of_rules() -> None:
     assert stage_of("npm.dependency.name-embeds-popular") == "Stage 4: correlation"
     assert stage_of("npm.dependency.added") == "Stage 1: metadata"
     assert stage_of("repo.code-differs") == "Stage 4: repository"
+    assert stage_of("correlate.follow-on") == "Stage 4: correlation"
 
 
 def test_untrusted_text_cannot_escape() -> None:

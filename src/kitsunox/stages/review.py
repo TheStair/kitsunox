@@ -26,16 +26,20 @@ from kitsunox.ecosystems.npm.rules.correlate import (
     foreign_added_dependencies,
     undeclared_lookups,
 )
+from kitsunox.ecosystems.npm.rules.metadata import runtime_dependencies, scripts
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import GitHub
+from kitsunox.rules.follow_on import FollowOnRelease
 from kitsunox.rules.repo import RULES as REPO_RULES
 from kitsunox.stages.correlate import (
+    ABSENT,
     CandidateFile,
     CorrelationContext,
     CorrelationRule,
     DependencyRecord,
     DependencyStatus,
     DependencyVersion,
+    ReleaseFollowOn,
     RepoLookup,
     correlate_run,
 )
@@ -53,7 +57,11 @@ from kitsunox.stages.triage import at_least
 from kitsunox.util.http import FetchError, FetchMode, HttpFetcher, Snapshot, TransientFetchError
 
 NPM: Final = "npm"
-CORRELATION_RULES: Final[tuple[CorrelationRule, ...]] = (*NPM_CORRELATION_RULES, *REPO_RULES)
+CORRELATION_RULES: Final[tuple[CorrelationRule, ...]] = (
+    *NPM_CORRELATION_RULES,
+    *REPO_RULES,
+    FollowOnRelease(),
+)
 # Explanations of a lookup that failed on the network: the same text for every version that
 # needed the failed request (e.g. `network: o/r refs unavailable`), so `correlate.jsonl` doesn't
 # depend on which worker thread asked first. The errors are in `correlate.json`.
@@ -338,6 +346,29 @@ def dependency_record(packument: Packument) -> DependencyRecord:
     )
 
 
+def manifest_field(manifest: Mapping[str, object], path: str) -> object:
+    """The value at a manifest-field evidence path of the npm rules (`package.json:scripts.
+    postinstall`, `package.json:dependencies.<name>`), or `ABSENT`. A dependency is looked up
+    where npm installs it from by default (`dependencies` and `optionalDependencies`, as
+    `npm.dependency.non-registry` reads them); any other path as `<field>.<key>`."""
+    field, _, key = path.removeprefix("package.json:").partition(".")
+    if field == "scripts" and key:
+        return scripts(manifest).get(key, ABSENT)
+    if field == "dependencies" and key:
+        return runtime_dependencies(manifest).get(key, ABSENT)
+    value = manifest.get(field, ABSENT)
+    if not key:
+        return value
+    return value.get(key, ABSENT) if isinstance(value, Mapping) else ABSENT
+
+
+def follow_on_lookup(fetcher: HttpFetcher) -> ReleaseFollowOn:
+    """Follow-on checks for npm (`correlate_run`'s follow-on pass): release files through the
+    run's fetcher, under Stage 2's size limits (recorded in `correlate-snapshot.json`, so a
+    replay reads the same bytes; Stage 2 fetched most of them already), and `manifest_field`."""
+    return ReleaseFollowOn(ArtifactFiles(NpmEcosystem(fetcher)), manifest_field)
+
+
 def run_watchlist(data: DataDir, manifest: RunManifest) -> Watchlist | None:
     """The watchlist the run's Stage 0 used (checked against its recorded SHA-256), if any."""
     if manifest.watchlist_id is None:
@@ -387,6 +418,7 @@ def run_correlate_stage(
                 CORRELATION_RULES,
                 repo=repo_lookup(fetcher, pool=pool, token=github_token),
                 workers=workers,
+                follow_on=follow_on_lookup(fetcher),
             )
     finally:
         fetcher.close()

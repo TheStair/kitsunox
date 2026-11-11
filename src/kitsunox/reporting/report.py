@@ -41,6 +41,7 @@ STAGE_NAMES: Final = {
     "code.": "Stage 3: capabilities",
     "agent.": "Stage 3: capabilities",
     "repo.": "Stage 4: repository",
+    "correlate.": "Stage 4: correlation",
     "sandbox.": "Stage 5: sandbox",
 }
 STAGE_OF_RULE: Final = {

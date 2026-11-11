@@ -24,23 +24,34 @@ Like the other stages, nothing here reads the clock: "known by" means known by t
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Protocol, overload
 
-from kitsunox.core.models import Candidate, Finding, PackageBatch, Severity, StageDecision
+from kitsunox.core.models import (
+    Candidate,
+    Evidence,
+    EvidenceKind,
+    Finding,
+    PackageBatch,
+    Record,
+    Severity,
+    StageDecision,
+    VersionSnapshot,
+)
 from kitsunox.core.rules import rules_fingerprint
 from kitsunox.core.watchlist import Watchlist
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.repo import NetworkRequests, RepoComparison
 from kitsunox.stages.triage import at_least
-from kitsunox.util.files import LineFile, atomic_write
+from kitsunox.util.files import LineFile, atomic_write, sync_file
 
 STAGE_ID: Final = "correlate"
 # Stage 4's own behaviour, apart from its rules (whose versions `rules_fingerprint` covers),
@@ -69,8 +80,11 @@ STAGE_ID: Final = "correlate"
 # `npm.undeclared.missing`. 16: Stage 3's `npm.install-inert` (install hooks that run only
 # inert package code or a constant `echo`) explains `npm.install-hook`. 17: Stage 2's
 # `npm.artifact.install-target-missing` (every hook runs a file the package doesn't ship)
-# explains `npm.install-hook`. Output without the field is 1.
-STAGE_VERSION: Final = 17
+# explains `npm.install-hook`. 18: a follow-on pass (`correlate_run(follow_on=...)`): a
+# release whose previous release the run reported, still holding that report's payload
+# evidence, is correlated again with it (`correlate.follow-on`), and `correlate.json` counts
+# the pass under `follow_on`. Output without the field is 1.
+STAGE_VERSION: Final = 18
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -185,17 +199,59 @@ class DependencyLookup(Protocol):
         ...
 
 
+class CarriedEvidence(Record):
+    """One piece of a reported release's evidence that a later release may still hold: a
+    flagged file (same path, same bytes) or a flagged manifest field (same value). `rule_id`
+    and `severity` are those of the finding it came from."""
+
+    rule_id: str
+    severity: Severity
+    evidence: Evidence
+
+
+class ReportedRelease(Record):
+    """A release of this run that Stage 4 reported, with the evidence a follow-on release can
+    carry (`carried_evidence`). Kept in memory for the follow-on pass only."""
+
+    release: VersionSnapshot
+    reason: str
+    evidence: tuple[CarriedEvidence, ...]
+
+
+class FollowOn(Record):
+    """What a follow-on release still holds of the reported release before it (`previous`):
+    the carried evidence that is unchanged. `unavailable`: some of it could not be checked
+    (files too large or not fetched); `transient`: because of a network failure, so a retry
+    may work."""
+
+    previous: str
+    previous_reason: str
+    hours: float
+    carried: tuple[CarriedEvidence, ...] = ()
+    unavailable: str | None = None
+    transient: bool = False
+
+
+class FollowOnLookup(Protocol):
+    """Checks which of a reported release's evidence a later release of the same package still
+    holds (must be thread-safe). None: not a follow-on to check (e.g. too long after it)."""
+
+    def __call__(self, earlier: ReportedRelease, candidate: Candidate, /) -> FollowOn | None: ...
+
+
 @dataclass(frozen=True)
 class CorrelationContext:
     """What correlation rules may know besides the candidate: the run's `as_of`, outside
     knowledge, the run's watchlist, registry records of dependencies, and (per candidate) the
-    comparison with its source repository."""
+    comparison with its source repository and, for a follow-on of a release this run reported,
+    what it still holds of that release's evidence (`follow_on`)."""
 
     as_of: datetime
     known_bad: KnownBad | None = None
     repo: RepoComparison | None = None
     watchlist: Watchlist | None = None
     dependencies: DependencyLookup | None = None
+    follow_on: FollowOn | None = None
 
 
 class RepoLookup(Protocol):
@@ -494,6 +550,184 @@ def _cleared_by_repo(
     )
 
 
+# Follow-on releases (decision 0007 addendum, `docs/proposals/precision-round6-U.md`). Stages
+# 1-3 judge what a release changes, so a release that keeps a reported release's payload
+# unchanged shows nothing: `pdf-html5-page-flip@2.0.2` (published 15 minutes after 2.0.1 with
+# the same stealer file, byte for byte) scored 3 while 2.0.1 was reported. After the run's
+# decisions, a release whose previous release this run reported, and which still holds a piece
+# of that report's severe evidence, gets `correlate.follow-on` (MEDIUM): the earlier release
+# named, the evidence listed.
+FOLLOW_ON: Final = "correlate.follow-on"
+# What a follow-on carries is narrow on purpose (`payload_evidence`). Live (replay of 812
+# follow-ons of reported releases, 2026-11-11, round 6 U), carrying every severe content
+# finding of a reported release onto its unchanged same-run follow-ons would have reported 65
+# more positives and 64 more benign versions (with install hooks and non-registry
+# dependencies: 80 and 171): benign packages reported once publish often (`@wirecat/*` CLIs
+# with a bundled ngrok table, hooks that only build). Carried, in parts (each its own commit,
+# measured on the same follow-ons):
+# - A: a finding of a rule the owner wants on every release (`FOLLOW_ON_ALONE`): a known
+#   family's signature, a WhatsApp fork's channel follow or tagging (Stage 2's `ALWAYS_NEW`,
+#   which an unchanged file never reaches). +10 unwanted, 0 benign.
+FOLLOW_ON_ALONE: Final = frozenset(
+    {
+        "static.known-signature",
+        "static.channel-follow",
+        "static.channel-tagging",
+    }
+)
+# B1 (not in A): `static.hardcoded-ip`, `static.exfil-endpoint`.
+FOLLOW_ON_DESTINATION: Final[frozenset[str]] = frozenset()
+FOLLOW_ON_COMPANION: Final = frozenset(
+    {
+        "static.sensitive-path",
+        "static.env-harvest",
+        "npm.install-script-code",
+        "npm.install-script-loader",
+        "npm.install-script-exfil",
+        "npm.install-persistence",
+    }
+)
+# A follow-on is checked only when published at most this long after the reported release.
+FOLLOW_ON_WINDOW: Final = timedelta(days=7)
+# Evidence items listed in one follow-on finding at most.
+FOLLOW_ON_EVIDENCE: Final = 10
+
+
+def _carried_kind(evidence: Evidence) -> bool:
+    return bool(evidence.path) and evidence.kind in (
+        EvidenceKind.FILE_SPAN,
+        EvidenceKind.MANIFEST_FIELD,
+    )
+
+
+def payload_evidence(
+    findings: Sequence[Finding],
+    *,
+    alone: frozenset[str] = FOLLOW_ON_ALONE,
+    destinations: frozenset[str] = FOLLOW_ON_DESTINATION,
+    companions: frozenset[str] = FOLLOW_ON_COMPANION,
+) -> list[CarriedEvidence]:
+    """The evidence of `findings` (a reported release's) that a follow-on carries: each file or
+    manifest field of a severe finding of `alone`, and each file of a severe finding of
+    `destinations` that a finding of `companions` (LOW or above) of the same release also
+    names."""
+    paired = {
+        e.path
+        for f in findings
+        if f.rule_id in companions and f.severity is not Severity.INFO
+        for e in f.evidence
+        if e.kind is EvidenceKind.FILE_SPAN and e.path
+    }
+    items = []
+    for f in findings:
+        if not _severe(f):
+            continue
+        for e in f.evidence:
+            if not _carried_kind(e):
+                continue
+            if f.rule_id in alone or (
+                f.rule_id in destinations and e.kind is EvidenceKind.FILE_SPAN and e.path in paired
+            ):
+                items.append(CarriedEvidence(rule_id=f.rule_id, severity=f.severity, evidence=e))
+    return items
+
+
+CarryPolicy = Callable[[Sequence[Finding]], list[CarriedEvidence]]
+
+
+def reported_release(
+    candidate: Candidate,
+    follow_on: FollowOn | None = None,
+    carry: CarryPolicy = payload_evidence,
+) -> ReportedRelease | None:
+    """`candidate` (correlated) as a reported release a follow-on can carry evidence from: what
+    `carry` takes of its findings, plus what it carried itself as a follow-on (`follow_on`, when
+    that is a severe finding of it). None when Stage 4 didn't report it or there is nothing to
+    carry. One item per (kind, path), the first in finding order."""
+    decision = candidate.history[-1] if candidate.history else None
+    if decision is None or decision.stage != STAGE_ID or not decision.forwarded:
+        return None
+    items = carry(candidate.findings)
+    if follow_on is not None and any(
+        f.rule_id == FOLLOW_ON and _severe(f) for f in candidate.findings
+    ):
+        items.extend(follow_on.carried)
+    unique: dict[tuple[str, str | None], CarriedEvidence] = {}
+    for item in items:
+        unique.setdefault((item.evidence.kind.value, item.evidence.path), item)
+    if not unique:
+        return None
+    return ReportedRelease(
+        release=candidate.change.new, reason=decision.reason, evidence=tuple(unique.values())
+    )
+
+
+# An absent manifest field (`ManifestField`'s answer when a path names nothing).
+ABSENT: Final = object()
+ManifestField = Callable[[Mapping[str, object], str], object]
+ReleaseFiles = Callable[[VersionSnapshot], "Mapping[str, bytes] | FilesUnavailable"]
+
+
+class FilesUnavailable(Protocol):
+    """Why a release's files could not be read (`stages.static.Unavailable`)."""
+
+    @property
+    def reason(self) -> str: ...
+
+    @property
+    def transient(self) -> bool: ...
+
+
+class ReleaseFollowOn:
+    """A `FollowOnLookup` over the releases' files (`files`, e.g. Stage 2's `ArtifactFiles`
+    through the run's fetcher, so a replay reads the same bytes) and manifests (`field`: the
+    value at an evidence path such as `package.json:scripts.postinstall`, or `ABSENT`; the
+    ecosystem's own format). A file is still there when the later release has the same bytes at
+    the same path; a manifest field when it has the same value."""
+
+    def __init__(
+        self,
+        files: ReleaseFiles,
+        field: ManifestField,
+        *,
+        window: timedelta = FOLLOW_ON_WINDOW,
+    ) -> None:
+        self.files = files
+        self.field = field
+        self.window = window
+
+    def __call__(self, earlier: ReportedRelease, candidate: Candidate) -> FollowOn | None:
+        new = candidate.change.new
+        before, after = earlier.release.publish.published_at, new.publish.published_at
+        if before is None or after is None or not timedelta(0) <= after - before <= self.window:
+            return None
+        trees: tuple[Mapping[str, bytes], Mapping[str, bytes]] | None = None
+        unavailable: FilesUnavailable | None = None
+        if any(i.evidence.kind is EvidenceKind.FILE_SPAN for i in earlier.evidence):
+            old, now = self.files(earlier.release), self.files(new)
+            if isinstance(old, Mapping) and isinstance(now, Mapping):
+                trees = (old, now)
+            else:
+                unavailable = old if not isinstance(old, Mapping) else now  # type: ignore[assignment]
+        carried = []
+        for item in earlier.evidence:
+            path = item.evidence.path or ""
+            if item.evidence.kind is EvidenceKind.MANIFEST_FIELD:
+                value = self.field(earlier.release.manifest, path)
+                if value is not ABSENT and value == self.field(new.manifest, path):
+                    carried.append(item)
+            elif trees is not None and path in trees[0] and trees[1].get(path) == trees[0][path]:
+                carried.append(item)
+        return FollowOn(
+            previous=earlier.release.ref.version,
+            previous_reason=earlier.reason,
+            hours=round((after - before) / timedelta(hours=1), 2),
+            carried=tuple(carried),
+            unavailable=f"files {unavailable.reason}"[:300] if unavailable else None,
+            transient=bool(unavailable and unavailable.transient),
+        )
+
+
 def correlate_run(
     run_dir: Path,
     ctx: CorrelationContext,
@@ -504,6 +738,7 @@ def correlate_run(
     workers: int = 8,
     retry_passes: int = RETRY_PASSES,
     max_comparisons: int = MAX_REPO_COMPARISONS,
+    follow_on: FollowOnLookup | None = None,
 ) -> CandidateFile:
     """Stage 4 over a run Stage 3 has processed. Reads every triaged version
     (`triage.jsonl`), taking Stages 2-3's version of those routed to them (`ast.jsonl`); writes
@@ -518,6 +753,12 @@ def correlate_run(
     `ctx.dependencies`, if given, is planned with every version, its planned names are looked
     up before the rules run and retried the same way (with their own outage guard), and its
     counts go to `correlate.json` as `dependency_lookups`.
+
+    With `follow_on`, a second pass follows (`_follow_ons`): every version whose previous
+    release is in this run and was reported with evidence a follow-on can carry
+    (`reported_release`) is checked against it and correlated again with what it still holds
+    (`ctx.follow_on`), in dependency order, so a chain of follow-ons carries the evidence on.
+    Those lines of `correlate.jsonl` are replaced; `correlate.json` counts them as `follow_on`.
 
     Versions are read from disk when needed (`RunVersions`) and written as they are
     correlated, never all held at once: a 110k-version run's candidates take ~4 GB as objects,
@@ -539,17 +780,27 @@ def correlate_run(
     deps = ctx.dependencies
     indices = range(len(versions))
     totals = _Totals()
+    releases = _RunReleases()
 
-    def one(i: int) -> Candidate:
+    def correlated(i: int, follow: FollowOn | None = None) -> Candidate:
         comparison = comparisons[i]
         candidate = correlate(
-            versions[i], replace(ctx, repo=comparison), rules, report_score=report_score
+            versions[i],
+            replace(ctx, repo=comparison, follow_on=follow),
+            rules,
+            report_score=report_score,
         )
         if i in plan.over_budget:
             *earlier, decision = candidate.history
             noted = decision.model_copy(update={"reason": decision.reason + BUDGET_UNCOMPARED})
             candidate = candidate.model_copy(update={"history": (*earlier, noted)})
+        return candidate
+
+    def one(i: int) -> Candidate:
+        candidate = correlated(i)
         totals.add(candidate)
+        if follow_on is not None:
+            releases.add(i, candidate)
         return candidate
 
     try:
@@ -578,6 +829,18 @@ def correlate_run(
                 else {}
             )
             write_jsonl(run_dir / "correlate.jsonl", _in_order(pool, one, len(versions)))
+            if follow_on is not None:
+                follow_info = _follow_ons(
+                    pool,
+                    follow_on,
+                    releases,
+                    lambda i: versions[i],
+                    correlated,
+                    totals,
+                    retry_passes,
+                )
+                if follow_info.pop("replaced"):
+                    _replace_lines(run_dir / "correlate.jsonl", releases.replaced)
     finally:
         versions.close()
     errors = network.pop("errors")  # last in `repo_network`, after the counts
@@ -609,6 +872,8 @@ def correlate_run(
             "versions_not_evaluated": totals.not_evaluated,
             "errors": dependency_errors,
         }
+    if follow_on is not None:
+        info["follow_on"] = follow_info
     atomic_write(run_dir / CORRELATE_INFO, json.dumps(info, indent=2).encode())
     return CandidateFile(run_dir / "correlate.jsonl")
 
@@ -631,11 +896,122 @@ class _Totals:
         self.network_uncompared = 0
         self.not_evaluated = 0
 
-    def add(self, candidate: Candidate) -> None:
+    def add(self, candidate: Candidate, sign: int = 1) -> None:
         uncompared, unchecked = repo_network_failures([candidate]), unevaluated([candidate])
         with self._lock:
-            self.network_uncompared += uncompared
-            self.not_evaluated += unchecked
+            self.network_uncompared += sign * uncompared
+            self.not_evaluated += sign * unchecked
+
+
+class _RunReleases:
+    """What the follow-on pass needs from the first pass (thread-safe): where each release of
+    the run is, the versions whose previous release is named, and the reported releases with
+    evidence to carry (`reported_release`). Then the candidates the pass replaced."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.index: dict[tuple[str, str], int] = {}
+        self.followers: list[tuple[int, str, str, str]] = []  # (index, name, version, previous)
+        self.reported: dict[tuple[str, str], ReportedRelease] = {}
+        self._reported_at: dict[tuple[str, str], int] = {}
+        self.replaced: dict[int, Candidate] = {}
+
+    def add(self, i: int, candidate: Candidate) -> None:
+        change = candidate.change
+        key = (change.new.ref.name, change.new.ref.version)
+        release = reported_release(candidate)
+        with self._lock:
+            # A version in the run twice (two batches) counts at its first place.
+            self.index[key] = min(self.index.get(key, i), i)
+            if change.previous is not None:
+                self.followers.append((i, *key, change.previous.ref.version))
+            if release is not None and self._reported_at.get(key, i) >= i:
+                self._reported_at[key] = i
+                self.reported[key] = release
+
+
+def _follow_ons(
+    pool: ThreadPoolExecutor,
+    lookup: FollowOnLookup,
+    releases: _RunReleases,
+    version_at: Callable[[int], Candidate],
+    correlated: Callable[[int, FollowOn | None], Candidate],
+    totals: _Totals,
+    retry_passes: int,
+) -> dict[str, object]:
+    """The follow-on pass of `correlate_run`. A version whose previous release is in the run
+    waits until that release is settled (not itself still waiting), then, if that release is
+    reported with evidence to carry, is checked (`lookup`; network failures retried like the
+    other lookups) and, when it still holds some of it or couldn't be checked, correlated again
+    with the result: it may be reported now, and carry the evidence on to its own follow-on.
+    Deterministic: every pass takes the ready versions in run order. Returns the counts for
+    `correlate.json` (`replaced`: whether any line changed)."""
+    pending = {
+        i: ((name, previous), (name, version))
+        for i, name, version, previous in sorted(releases.followers)
+        if (name, previous) in releases.index and releases.index.get((name, version)) == i
+    }
+    counts = {"in_run": len(pending), "checked": 0, "carried": 0, "reported": 0}
+    counts |= {"newly_reported": 0, "not_evaluated": 0, "retry_passes": 0}
+    errors: dict[str, str] = {}
+    while pending:
+        waiting = {key for _, key in pending.values()}
+        reported = [i for i, (previous, _) in pending.items() if previous in releases.reported]
+        # A cycle of previous releases (never seen) would wait forever: take them as they are.
+        ready = [i for i in reported if pending[i][0] not in waiting] or reported
+        if not ready:
+            break  # the rest follow releases that weren't reported
+        pairs = [(releases.reported[pending[i][0]], i) for i in sorted(ready)]
+
+        def check(pair: tuple[ReportedRelease, int]) -> FollowOn | None:
+            return lookup(pair[0], version_at(pair[1]))
+
+        results = list(pool.map(check, pairs))
+        retried = _retry_transient(
+            pool, check, lambda r: r is not None and r.transient, None, pairs, results, retry_passes
+        )
+        counts["retry_passes"] = max(counts["retry_passes"], int(str(retried["retry_passes"])))
+        for (_, i), follow in zip(pairs, results, strict=True):
+            key = pending.pop(i)[1]
+            if follow is None:
+                continue
+            counts["checked"] += 1
+            counts["carried"] += bool(follow.carried)
+            if follow.unavailable is not None:
+                counts["not_evaluated"] += 1
+                errors[f"{key[0]}@{key[1]}"] = follow.unavailable
+            if not follow.carried and follow.unavailable is None:
+                continue
+            old, new = correlated(i, None), correlated(i, follow)
+            totals.add(old, -1)
+            totals.add(new)
+            releases.replaced[i] = new
+            forwarded = new.history[-1].forwarded
+            counts["reported"] += forwarded
+            counts["newly_reported"] += forwarded and not old.history[-1].forwarded
+            release = reported_release(new, follow)
+            if release is not None:
+                releases.reported[key] = release
+    return {**counts, "replaced": bool(releases.replaced), "errors": dict(sorted(errors.items()))}
+
+
+def _replace_lines(path: Path, replaced: Mapping[int, Candidate]) -> None:
+    """`path` (JSONL, one record a line) with the lines at `replaced`'s indices rewritten,
+    streamed through a synced temp file and renamed into place."""
+    lines = LineFile(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with tmp.open("wb") as out:
+            for i in range(len(lines)):
+                candidate = replaced.get(i)
+                out.write(lines[i] if candidate is None else candidate.model_dump_json().encode())
+                if candidate is not None:
+                    out.write(b"\n")
+        sync_file(tmp)
+        os.replace(tmp, path)
+    finally:
+        lines.close()
+        tmp.unlink(missing_ok=True)
 
 
 class CandidateFile(Sequence[Candidate]):
