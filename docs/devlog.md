@@ -2,6 +2,63 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-11: Precision round 7 (agents V, W, X), two more owner rulings, a 247-version queue
+
+**Stage(s):** Stages 1-4 (rules), reviewer verdicts, live sample
+**Context:** Five days before the freeze (2026-11-16), the largest remaining reported-benign
+clusters on main were install hooks Stage 3 could not explain (about 370 benign), Stage 1
+metadata rules firing alone (about 150) and Stage 2 endpoint/IP rules alone (about 60). Three
+agents worked them under the zero-loss bar; eight reviewer agents cleared the queue and the
+2026-11-10 label-blind sample.
+
+### Decisions
+- **V, `npm.install-explained` v7** ([proposal](proposals/precision-round7-V.md)): S7, an
+  install that only makes shipped files executable (fixed mode, no other write, process or
+  network; owner: take it, a mode change is not a content patch); S8, inline `node -e` guards
+  that only check the Node version, platform or a named variable and print only on failure
+  (refused when the hook calls itself a probe); `env-all` no longer blocks a shape that reads
+  named variables, and a computed `require` of a `.json` file is not dynamic code. -21 benign.
+- **W** ([proposal](proposals/precision-round7-W.md)): `npm.publish-method.downgrade` v7 (an
+  added maintainer is a co-signal only when one publishes the release); revived-with-new-dependency
+  v6 (LOW for a new major, or when every added dependency was already a dev/peer dependency);
+  `npm.dependency.non-registry` v10 (uWebSockets.js's GitHub repository is a vendor origin,
+  owner). -17 benign. Owner kept the 99.x researcher placeholders reported: exempting them
+  would remove 16 benign but lose 4 DataDog samples of the same shape.
+- **X** ([proposal](proposals/precision-round7-X.md)): `static.exfil-endpoint` v11 and
+  `static.hardcoded-ip` v8: URLs inside `example(s)` fields, declared option defaults, `Set`
+  entries only tested with `.has(`, a lone Telegram API prefix in a file that collects nothing,
+  and (owner: yes, consistent with round 6's P3) a constant used only as an environment
+  variable's fallback are LOW. -8 benign.
+- **Owner rulings (decision 0015):** a data-only download at install (validated, never
+  executed: `free-email-domains@1.16.1`) is benign, its download-rule exception is post-freeze
+  work; the registry used as hidden hosting (`lumen-lib@2.1.8`, a fake library carrying a
+  filter-evasion web proxy for jsDelivr/unpkg) is unwanted.
+
+### Challenges
+- **Additivity:** each agent measured against the same base; a full replay of the merged tree
+  (`~/kitsunox-scratch/r7/shared/integ.jsonl`) removed exactly 17 + 8 + 21 = 46 benign, nothing
+  newly reported, no positive changed.
+- **A "patched Chromium" from an anonymous file share** (`celest-browser@1.0.0`, new account):
+  the reviewer could not see the payload. The integrator fetched it as data (never run): the
+  host serves `chromedriver.exe` for every platform, byte-identical to Google's ChromeDriver
+  108.0.5359.71. Recorded unwanted (download at install from a mutable host), not malicious.
+- **A sample miss explained:** `@risacakep/risayap@7.0.0-rc25.7` (Baileys channel follow, U2)
+  came 14 minutes after reported rc25.6, in a run before the follow-on pass went live.
+
+### Evaluation snapshot
+- Live, 3,716 verdicted versions, today's verdicts: 1,469 reported / 771 benign / 620 unwanted /
+  48 malicious / 30 unverified (46.42%) -> **1,423 / 725 / 620 / 48 / 30 (47.95%)**.
+- `vm-day1`: 0 lost (V: 205 samples per sample through `pipeline+4`; W: 37; X: rule level on
+  1,323).
+- Rounds 4-7: benign reported 1,463 (round 4 start, older labels) -> 725.
+- Queue: 247 versions, 91 benign / 156 unwanted / 0 malicious. Sample 2026-11-10: 55 versions,
+  53 benign / 2 unwanted (`@risacakep/risayap`, `lumen-lib`).
+
+### Open questions / next steps
+- Post-freeze: a data-only exception for `npm.install-download`; S1 limited to the platform
+  binary; following `npm run` for hook targets not shipped; extensionless hook targets.
+- Out of Stage 3's reach: 64 benign hooks are in tarballs over the fetch limit, 18 not captured.
+
 ## 2026-11-11: Precision round 6, the strict download ruling, and a live credential stealer
 
 **Stage(s):** Stages 1-4 (rules), reviewer verdicts, live evaluation, CLI
