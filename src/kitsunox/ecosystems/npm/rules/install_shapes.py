@@ -293,13 +293,17 @@ def hook_added(change: CodeChange) -> bool:
 
 
 def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
-    """The shape the version's install code has, as (explanation, evidence), or None. An
-    update whose install hook is new (`hook_added`) is judged like a new package, for the
-    shapes `ADDED_HOOK_SHAPES` only, never for install code that names the home directory or a
-    URL other than the npm registry or a page link."""
-    shaped = _explain(change)
-    if shaped is None or not hook_added(change):
+    """The shape the version's install code has, as (explanation, evidence), or None. v5 only
+    adds: what v4 explains is returned unchanged; an update whose install hook is new
+    (`hook_added`) that v4 refuses (its new-capability test) is then judged like a new
+    package, for the shapes `ADDED_HOOK_SHAPES` only, never for install code that names the
+    home directory or a URL other than the npm registry or a page link."""
+    shaped = _explain(change, added=False)
+    if shaped is not None or not hook_added(change):
         return shaped
+    shaped = _explain(change, added=True)
+    if shaped is None:
+        return None
     text = "\n".join(c.decode("utf-8", "replace") for c in change.install_files.values())
     if (
         not shaped[0].startswith(ADDED_HOOK_SHAPES)
@@ -313,7 +317,8 @@ def explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
     )
 
 
-def _explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
+def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] | None:
+    """v4's shapes; with `added`, an update whose hook is new skips the new-capability test."""
     hooks = _hooks(change.snapshot.manifest)
     install = change.install
     if (
@@ -327,7 +332,7 @@ def _explain(change: CodeChange) -> tuple[str, list[Evidence]] | None:
         return None
     if (
         change.before is not None
-        and not hook_added(change)
+        and not (added and hook_added(change))
         and (
             install.capabilities
             - (change.install_before.capabilities if change.install_before else frozenset())

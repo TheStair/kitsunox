@@ -554,6 +554,12 @@ def test_an_added_hook_is_judged_like_a_new_package_for_s1_s3_s5_only() -> None:
     )
     assert shape(change({"install.js": linked}, platforms)) == "S1"
     assert shape(change({"install.js": linked}, platforms, base={})) is None
+    # v5 only adds: what v4 explained stays explained, unchanged. An added hook whose code has
+    # no capability passed v4's new-capability test; a banner naming a homepage URL is still
+    # S5 (`react-lottie@2.0.0`, `feloapi-cli@0.1.1`, benign; the first v5 refused them).
+    banner = {**LIB, "install.js": b'console.log("Thanks! Docs: https://kx.dev/docs");'}
+    (kept,) = RULE.evaluate_code(change(banner, hook(), base={}))
+    assert kept.explanation.startswith("S5 ") and "new in this update" not in kept.explanation
     home = LAUNCHER + b'\nconst dir = require("os").homedir();\n'
     assert shape(change({"install.js": home}, platforms)) == "S1"
     assert shape(change({"install.js": home}, platforms, base={})) is None
