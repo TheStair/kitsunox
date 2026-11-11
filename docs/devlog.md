@@ -73,11 +73,18 @@ in worktrees under the zero-loss bar; a dozen reviewer agents relabelled about 9
   narrowing of S's commit-bump exemption. Download and Windows-exe positives reported: 151 -> 329 of 334.
 - `vm-day1`: 0 lost by any change; +12 (U) and +24 (R) malicious samples gained.
 - Rounds 4-6: benign reported 1,463 (round 4 start, older labels) -> 766.
+- Wrapper re-review (owner 2026-11-11, transparent wrappers benign): 10 versions re-checked, 7
+  moved unwanted -> benign (`@atlassian/cloudflared`, `@b12k/caddy`, `@ohos-ports/fuel-ts-fuel-core`,
+  `@ohos-ports/hugo-extended`, `@swelte/vvm@0.1.0`, `hugo-bin-extended`, `msedgedriver`), 3 stay
+  unwanted (`@swelte/vvm@0.1.1` also fetches Zig; `usingopen` 18.8.9/18.8.11 are rebrands). Same
+  rules (main `8e5112c`): **1,469 / 771 / 620 / 48 / 30 (46.42%)**. The newly benign wrappers
+  that `npm.install-download` reports are its false positives now, the expected cost of the
+  exception.
 
 ### Open questions / next steps
 - Owner questions of this round (wrappers, detached servers, completion files, agent-steering
   MCP text, S's commit bump) were all answered on 2026-11-11 (Decisions above); the wrapper
-  verdicts are being re-reviewed for transparency.
+  verdicts were re-reviewed for transparency (snapshot above).
 - Post-freeze: "obfuscated by its own declared build" signal; hook paths without an extension
   (`node ./scripts/postinstall`); following `npm run`; R's 5 misses (URLs from data, never
   routed); a follow-on-aware `vm-day1` predictor; viewer `--data-dir` relative to the cwd.
