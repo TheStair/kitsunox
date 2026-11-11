@@ -455,7 +455,12 @@ def install_guard(change: CodeChange, caps: frozenset[Capability]) -> bool:
     nothing (`node -e ""`, `process.exit(0)`). Inline code only: upstream Baileys's
     `engine-requirements.js` (a file) is the same check, and the owner keeps it reported
     (`BAILEYS_ENGINE_CHECK`). A banner that prints on every install (`shoal-cli@0.4.5`,
-    `vm-day1` malicious) is not a guard."""
+    `vm-day1` malicious) is not a guard, nor is code that says it is a probe
+    (`install_inert.PROBE_TEXT`: "poc", "pwned", "security research", ...), even when it fails
+    the install."""
+    # Imported here: `install_inert` imports this module.
+    from kitsunox.ecosystems.npm.rules.install_inert import PROBE_TEXT
+
     hooks = _hooks(change.snapshot.manifest)
     return (
         not caps
@@ -464,6 +469,7 @@ def install_guard(change: CodeChange, caps: frozenset[Capability]) -> bool:
         and all(path.startswith(INLINE_PREFIX) for path in change.install_files)
         and len(change.install_files) == len(hooks)
         and not placeholder(change)
+        and not any(PROBE_TEXT.search(command) for command in hooks.values())
         and all(guard_only(code, "javascript") for code in change.install_files.values())
     )
 

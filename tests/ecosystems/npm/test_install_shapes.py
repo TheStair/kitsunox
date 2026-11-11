@@ -521,6 +521,9 @@ def test_s8_install_guard() -> None:
         "node -e \"console.log('kx installed. Run kx setup.')\"",
         "node -e \"if (process.env.CI) process.exit(0); console.log('Run kx setup')\"",
         "node -e \"require('child_process').execSync('id')\"",
+        # A probe saying it ran, even one that fails the install.
+        "node -e \"if (process.platform) { console.error('PoC: preinstall ran'); "
+        'process.exit(1); }"',
     ):
         assert shape(change(LIB, hook(command))) is None, command
     # Inline only: a guard in a file is S5's to judge (and upstream Baileys's
