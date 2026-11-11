@@ -20,6 +20,7 @@ from kitsunox.core.rules import BaseRule
 from kitsunox.core.watchlist import Watchlist
 from kitsunox.ecosystems.npm import semver
 from kitsunox.ecosystems.npm.rules.metadata import (
+    declared_only_for_development,
     is_registry_spec,
     only_version_changed,
     runtime_dependencies,
@@ -892,10 +893,32 @@ class RevivedWithNewDependency(BaseRule):
     sample, `@antv/data-set@0.12.8` (`atool` again, after 40 maintainers joined the org's
     packages); it stays reported through its install hook and five other rules. The recall
     risk is v2's: an account hijacked as itself is LOW here.
+
+    v6 (2026-11-11, `docs/proposals/precision-round7-W.md` W1, W2): LOW, weight 1, in two
+    more shapes, both read from the two manifests:
+    - **A new major version** (`new_major`: the major grows and is at least 1; `3.6.1` ->
+      `4.0.0`, `0.5.2` -> `1.0.0`). A takeover of a dormant package wants the payload to
+      reach the projects that already depend on it, and npm gives those the highest version
+      inside their range (`^3.6.1`, `~3.6.1`), which a new major is outside of. Every one of
+      the 36 `vm-day1` malicious samples this rule fires on stays inside its major
+      (`vant@2.13.2` -> `2.13.3`, `xrpl@2.14.1` -> `2.14.2`, `@mastra/*` patches, the
+      `@antv/*` `1.6.13` -> `1.7.13` and `0.11.8` -> `0.12.8` bumps); of the 3,444 `vm-day1`
+      malicious samples, the 108 updates with a new major are the attackers' own packages
+      (`workflows-templates@9.0.0`, `zeitwerk@61.1.3`), none dormant. 0.x minor bumps are
+      not counted: `@antv/g2-extension-3d@0.3.0` (after `0.2.0`) is one of the takeovers.
+      10 benign live reports (`@capacitor/assets@4.0.0`, `@livepreso/webpack-deck@4.0.0`,
+      `amphora-html@7.0.0`, `@squareboat/nest-storage@1.0.0`, ...).
+    - **Every added dependency was already in the previous release's manifest** as a dev or
+      peer dependency (`declared_only_for_development`): the project already used those
+      packages and now ships them, so the release brings no package new to it
+      (`imghash-cli@0.0.2`: `imghash`; `@saasquatch/vanilla-components@1.4.2`: its Apollo
+      stack). A payload would have to be in a package the maintainers chose before the
+      takeover, whose own compromise is a release of its own in the feed. No `vm-day1`
+      sample: `@mastra/speech-*` move `@mastra/core` from dev but add `easy-day-js` too.
     """
 
     id = "npm.combination.revived-with-new-dependency"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 2.0
     title = "Dormant package revived with a new dependency"
@@ -946,6 +969,17 @@ class RevivedWithNewDependency(BaseRule):
                     weight=1.0,
                 ),
             )
+        why = _outside_takeover_reach(change)
+        if why is not None:
+            return (
+                self.finding(
+                    f"{revived.explanation} {added.explanation} {why}",
+                    *revived.evidence,
+                    *added.evidence,
+                    severity=Severity.LOW,
+                    weight=1.0,
+                ),
+            )
         return (
             self.finding(
                 f"{revived.explanation} {added.explanation}",
@@ -953,6 +987,37 @@ class RevivedWithNewDependency(BaseRule):
                 *added.evidence,
             ),
         )
+
+
+def new_major(change: Change) -> bool:
+    """The release starts a new major version (v6): its major is above the previous
+    release's and at least 1. A dependent's `^x.y.z` or `~x.y.z` range of an earlier release
+    doesn't include it."""
+    if change.previous is None:
+        return False
+    old, new = semver.parse(change.previous.ref.version), semver.parse(change.new.ref.version)
+    return old is not None and new is not None and new.major > old.major and new.major >= 1
+
+
+def _outside_takeover_reach(change: Change) -> str | None:
+    """Why the revived release is not the shape of a takeover pulling a payload in (v6), as a
+    note for the finding, or None."""
+    previous = change.previous
+    if previous is None:
+        return None
+    if new_major(change):
+        return (
+            f"A new major version after {previous.ref.version}: npm gives it to no project "
+            "whose range names an earlier major."
+        )
+    old = runtime_dependencies(previous.manifest)
+    added = set(runtime_dependencies(change.new.manifest)) - set(old)
+    if added and added <= declared_only_for_development(previous.manifest):
+        return (
+            f"Each added dependency was already a dev or peer dependency of "
+            f"{previous.ref.version}: none is new to the project."
+        )
+    return None
 
 
 def _previous_publisher_returns(change: Change) -> bool:

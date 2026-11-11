@@ -566,7 +566,9 @@ by a package's name, description or keywords:
 | S3 agent-skill copier | no network, no process; the code names an agent directory (`.claude`, `.agents`, `.cursor`, `.codex`, `.gemini`, `.windsurf`, `.opencode`, `SKILL.md`, `AGENTS.md`, `.mcp.json`), and the agent files it may copy pass the three guards below |
 | S5 inert install code (v3) | hooks are plain `node`, install files JavaScript; capabilities only `filesystem` and `os-info`; no package loaded by name; no home, agent, system (`/etc/`, `C:\`, ...) or other-package path (`node_modules`, `require.resolve`); no network- or exec-naming text (`fetch`, `import(`, `"node:https"`, `spawn(`); not upstream Baileys's `engine-requirements.js` |
 | S6 own-binary download, not run (v4) | network; at least one download URL is the package's own: a release (or the release API) of any repository of the declared owner (`github.com/<owner>/<any>/releases`), the `homepage`'s own host (not a code host), or cargo-dist's `artifactDownloadUrls`; every other URL literal is a GitHub asset host, the npm registry, a page link or a file of the owner's repositories (`raw.githubusercontent.com/<owner>/`); a literal version in a download URL is the package's (or its release's); every hook plain `node <file>`, every install file JavaScript; **every** `child_process` call in the install files (`lang.process_calls`, reached or not) runs only `tar`, `unzip`, `7z`, `gzip`, `xz`, `chmod`, `xattr`, `ditto`, PowerShell `Expand-Archive`, or a platform probe (`uname`, `sysctl`, `getconf`, `sw_vers`, `which`, `where`, `ldd --version`), shell lines chained only by `&&`/`\|\|`/`;` with `cd`, no `tar` option that runs a command; no other way to run code (`worker_threads`, `vm`, `module`, WebAssembly, `process.dlopen`); no package loaded by name, no constant `require`/`import` of a file the package doesn't ship, no inline `node -e` code; no home or agent directory, other installed package (`OTHER_PACKAGE`), system directory (`SYSTEM_DIR`: S5's list without the temporary directory) or project path (`INIT_CWD`, git hooks) named, comments and messages aside; nothing sent (`method: "POST"`, `.post(`); no checksum needed |
-| every shape | an install hook that is not shell (`curl`, `wget`, `sh`, `bash`, `python`, `./x`, `\| sh`, `$(...)`, backticks); no `binding.gyp` command; no `env-all`, `dynamic-code` or `dynamic-require` in the install code; for an update, no capability the install code didn't have before; plain UTF-8, no line over 1,000 characters, no whitespace-padded code (v3) |
+| S7 permission fix (v7) | hooks `node <file>` or `node -e`, install files JavaScript; capabilities only `filesystem` and `os-info`; at least one `chmod`, every one with a constant mode that has the owner's execute bit and nothing beyond `0o777`; no other write or delete; no package loaded by name, `createRequire` only for `.resolve`; S5's text guards except `module`, and another installed package may be named (node-pty's `spawn-helper`); not a placeholder |
+| S8 install guard (v7) | every hook `node -e <code>`, no other install file; the code only computes values from Node's version, the platform, the CPU and named environment variables, tests them and calls `process.exit(<number>)`, printing only in a branch that ends in `process.exit(<non-zero>)` (or is empty); not a placeholder |
+| every shape | an install hook that is not shell (`curl`, `wget`, `sh`, `bash`, `python`, `./x`, `\| sh`, `$(...)`, backticks); no `binding.gyp` command; no `env-all` (since v7: unless every such file only reads named variables), `dynamic-code` or `dynamic-require` in the install code; for an update, no capability the install code didn't have before; plain UTF-8, no line over 1,000 characters, no whitespace-padded code (v3) |
 
 The **three guards** on S3 (the owner, 2026-11-08: an agent-skill copier is benign as a
 verdict, decision 0015, but the rule may stay quiet only when the code proves the plain shape),
@@ -1317,6 +1319,59 @@ adds). v5 also closes a download gap in S1 (owner, 2026-11-10): S1 refuses insta
 names a download program or call (`DOWNLOAD_TOOL`: `curl`, `wget`, `Invoke-WebRequest`, ...,
 comments and messages aside) unless every URL it names is the npm registry; live it removes S1
 from `@openlatch/client@0.11.7` only (unwanted, still unreported through its other LOW findings).
+
+#### v7: permission fixes, inline install guards, the environment read by name (2026-11-11, round 7)
+
+Round 7 V ([proposal](../proposals/precision-round7-V.md)) asked, for every reported benign
+version whose only MEDIUMs are the install rules (387 on `main`), why no shape explains it.
+82 are out of Stage 3's reach (64 never routed: tarballs over the fetch limit, e.g. 14
+`@bitfun-test/bitfun` platform builds; 18 whose tarball wasn't captured); most others do
+something no shape may explain (a process, patching another package, user-wide writes,
+downloads, Baileys's Node check). Two shapes and two precise readings were missing; each is
+a complete description of what the install code does, read from the parse tree
+(`lang/effects.py`), not from names:
+
+- **S7 permission fix.** The install code's only change to the machine is file modes: at
+  least one `chmod`, every one with a constant mode that has the owner's execute bit and
+  nothing beyond `0o777` (`0o755`, `info.mode | 0o111`; no setuid, setgid or sticky bit;
+  `chmod_modes`), and no other write or delete; `filesystem`/`os-info` only, every hook
+  `node <file>` or `node -e`, no package loaded by name, `createRequire` only to locate files
+  (`requires_only_resolve`: `createRequire(...)("x")` would load a package the profile's
+  package list doesn't see), no home, agent or system directory, not a placeholder. S5's
+  other text guards hold, except that `module` may be named (`createRequire`). Unlike S5 it
+  may name another installed package: its shape is node-pty's prebuilt `spawn-helper`,
+  shipped without its execute bit (node-pty#850), which reviewed benign packages fix at
+  install (`@easyx/ucode`, `coban`, `unfold-deploy`, `@setupsworks/office`,
+  `@codeyam/codeyam-cli` staging builds). Making a file executable runs nothing; running it
+  needs a process, which S7 refuses. Round 4 kept these reported as "patchers"
+  (`precision-round4-B.md`); S7 is its own commit so the owner can take or leave it.
+- **S8 install guard.** Every install hook is `node -e <code>` and the code is a guard
+  (`guard_only`): values from Node's version, the platform, the CPU and named environment
+  variables, `if` tests on them, `process.exit(<number>)`, and printing only in a branch that
+  then fails the install (`process.exit(<non-zero>)`), or nothing at all (`node -e ""`,
+  `process.exit(0)`). Calls are limited to a list of string, array and number helpers
+  (`GUARD_METHODS`, `GUARD_FUNCTIONS`). A banner printed on every install is not a guard:
+  that is why round 4's E3 (S5 for inline code) was dropped (`shoal-cli@0.4.5`, `vm-day1`
+  malicious, is reported only through its inline banner). Inline only: a guard in a file is
+  S5's to judge, and upstream Baileys's `engine-requirements.js` (the same check) stays
+  reported (`BAILEYS_ENGINE_CHECK`).
+- **`env-all` read by name.** `env-all` stands for harvesting the environment. Install code
+  that takes `process.env` whole only to read named variables (`const env = process.env;
+  env.CI`, `isCI(process.env)` with `env.CI` inside; also through `||`, `??` and ternaries)
+  can't, so the shapes no longer count it (`capabilities`, `env_read_by_name`). A spread,
+  `Object.keys(env)`, `JSON.stringify(env)`, `{ env: process.env }` for a child process, a
+  call of a function the file doesn't declare, `arguments`, `Reflect.get(process, "env")` or
+  `process["env"]` keep it.
+- **`dynamic-require` of JSON.** A computed `require` whose path ends in a constant `.json`
+  (`path.join(here, "package.json")`, `require.resolve(`${pkg}/package.json`)`, directly or
+  through a name given that one value; `requires_only_json`) loads data, so it refuses no
+  shape: `tttt-ts@3.0.0` and `lockpicks@0.8.0-go.11` compare their platform package's version
+  (S1). `import(...)` of a computed path, and any file naming `require.extensions`, keep it.
+
+S7 and S8 join the shapes an update whose hook is new may have (`ADDED_HOOK_SHAPES`). Measured
+with the replay harness on the live verdicts and on `vm-day1` (numbers in the proposal): 21
+benign versions explained (S7 9, S8 7, the two refinements 5), no positive or unverified
+version and no `vm-day1` malicious sample changes.
 
 ### Install-time downloads: `npm.install-download` (round 6)
 

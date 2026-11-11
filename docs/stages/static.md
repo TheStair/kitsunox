@@ -86,13 +86,13 @@ attributed.
 
 | Rule | Looks for | Severity |
 |---|---|---|
-| `static.exfil-endpoint` (v10) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8); a `trycloudflare.com` host that is not a quick tunnel's name (`demo.`, `api.`, `a.b.`, `abc-def.`), `pastebin.com/` with no paste or API after it, an ellipsis label, a `/bot,` list entry, a list of three services' names, and a URL written as a UI placeholder or example (`placeholder:`, `example:`, `e.g.`), anywhere (v9); a bare tunnel suffix in a host check or allowed-hosts setting (`endsWith(".trycloudflare.com")`, `allowedHosts: [".ngrok.app"]`), a service named in a parenthesised prose list (`collectors (webhook.site, interact.sh)`) and a host in a JSON catalog with URLs on 20+ hosts, anywhere (v10) | HIGH |
+| `static.exfil-endpoint` (v11) | Discord webhooks with a 17-20-digit id, Slack webhooks with `T…/B…` ids (not placeholders such as `123/abc`, `xxx/xxx` or `T00000000`), Telegram bot API, pastebins, request bins, OAST and tunnelling hosts; not a written Telegram placeholder (v4) or a deny list of 3+ services (v5); LOW (weight 1) for a tunnel host with a placeholder label or a host in a list of domains (v6), and for core-js's cited paste `pastebin.com/N21QzeQA`, a host pattern `*.host`, an entry of a newline/tab/comma-separated domain list and an OAST host with a placeholder label (v7); in a file that collects nothing to send (no machine identity, environment dump, directory walk or upload, process, credential store or token literal), also for a Telegram bot API URL with a handed token (`bot${config.token}`), a `webhook.site` mention with no bin id near it and a tunnel's bare suffix or `api.trycloudflare.com` (v8); a `trycloudflare.com` host that is not a quick tunnel's name (`demo.`, `api.`, `a.b.`, `abc-def.`), `pastebin.com/` with no paste or API after it, an ellipsis label, a `/bot,` list entry, a list of three services' names, and a URL written as a UI placeholder or example (`placeholder:`, `example:`, `e.g.`), anywhere (v9); a bare tunnel suffix in a host check or allowed-hosts setting (`endsWith(".trycloudflare.com")`, `allowedHosts: [".ngrok.app"]`), a service named in a parenthesised prose list (`collectors (webhook.site, interact.sh)`) and a host in a JSON catalog with URLs on 20+ hosts, anywhere (v10); a host inside an `example(s)` field's value, anywhere, and the Telegram API prefix assigned to a name on its own in a file that collects nothing (v11) | HIGH |
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
-| `static.hardcoded-ip` (v7) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6); LOW as an environment variable's fallback (`process.env.X || 'http://…'`), a literal compared or hashed (`=== 'http://…'`, `[…].includes(`, `.update(`) and in a JSON catalog with URLs on 20+ hosts (v7) | MEDIUM |
+| `static.hardcoded-ip` (v8) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6); LOW as an environment variable's fallback (`process.env.X || 'http://…'`), a literal compared or hashed (`=== 'http://…'`, `[…].includes(`, `.update(`) and in a JSON catalog with URLs on 20+ hosts (v7); LOW inside an `example(s)` field's value, as a declared option's default (`{ name, type, default: '…' }`, `.default('…')`), as a constant used only as an environment fallback, and in a set only asked `.has(` (v8) | MEDIUM |
 | `static.encoded-blob` | base64 or hex runs ≥ 200 characters (excluding image and font data URIs) | LOW (v2; was MEDIUM) |
 | `static.dynamic-code` | `eval(`, `new Function(`, `vm.runIn*` (excluding the common `Function("return this")` polyfill) | LOW (v2; was MEDIUM) |
 | `static.obfuscated` (v2) | many `_0x`-style identifiers (javascript-obfuscator output); LOW (weight 1) in Emscripten glue with fewer than 100 such names and no obfuscator string array (v2) | MEDIUM |
@@ -767,6 +767,45 @@ each names a use that is not a connection.
   `===`/`!==`/`==`/`!=`, hashed (`.update("…")`), or an entry of an array of string literals
   searched with `.includes(`: an allow-list check or a legacy-address migration, which
   nothing connects to. An array that code iterates over and fetches stays MEDIUM.
+
+### Round 7: examples, option defaults, named fallbacks, prefixes, sets (2026-11-11)
+
+From [precision round 7, agent X](../proposals/precision-round7-X.md) (X1-X5), for the
+versions `exfil-endpoint` and `hardcoded-ip` still reported on their own after round 6. As
+in round 6, each lowered match is LOW, weight 1, with a note, never on an install hook's
+line, and the notes join `CONTEXT_NOTES` (what they test can sit outside the snippet).
+
+- **Both rules (X3): inside an `example`.** A URL anywhere inside an object or array that is
+  the value of an `example` / `examples` / `x-examples` key, within 2,000 characters
+  (`_in_example`, a bracket count outwards from the URL): a parameter schema's sample call
+  (`example: { server: "http://…", file: "…" }`), a form's `examples: [['http://…', 'what it
+  does']]`, an OpenAPI document's `"examples": {"Example 1": {"value": …}}` holding a
+  `webhook.site` log. v9's test asked only about the text right before the URL on its line.
+  An open call between the URL and the key (`example: { x: get("http://…") }`) keeps it.
+- **`hardcoded-ip` v8 (X2): a declared option's default.** The string after `.default(` (zod,
+  yup) or after a `default:` key in an object that also declares the option (a `name`,
+  `type`, `label`, `displayName`, `description` or `title` key): an n8n credential's
+  `{ displayName: 'B46 URL', name: 'b46Url', type: 'string', default: 'http://…' }`, a form
+  input's default. A bare `{ default: 'http://…' }` lookup stays MEDIUM.
+- **`hardcoded-ip` v8 (X1): P3's fallback through a constant.** `const DEFAULT_API_BASE =
+  'http://…';` (the literal is the whole value) whose name is used, everywhere else in the
+  file, only as an environment variable's fallback (`process.env.X || DEFAULT_API_BASE`,
+  `?? `, `os.environ.get("X", NAME)`). A constant also used directly (`get(C2 + '/p')`) stays
+  MEDIUM. This reverses round 6's choice to keep `const C2 = '…'; process.env.X || C2`
+  MEDIUM, which is the same code as P3's `process.env.X || '…'`.
+- **`hardcoded-ip` v8 (X5): a set only asked `.has(`.** P5's searched array written as
+  `LEGACY_URLS = new Set(["http://…"])`, the name used only as `LEGACY_URLS.has(x)`. A set
+  the code iterates (`for … of`, `[...S]`) stays MEDIUM.
+- **`exfil-endpoint` v11 (X4): the Telegram prefix as a constant.** v8's handed token,
+  written over two statements: `BASE_URL='https://api.telegram.org/bot',` or `const PREFIX =
+  "…/bot";` (the prefix assigned to a name on its own), only in a file that collects
+  nothing, as v8. An entry of an obfuscator's string array (`['…/bot', 'includes', …]`) is
+  not assigned and stays HIGH (`@eooce/sbx@2.0.8` on `vm-day1` has exactly that).
+
+Measured (full replay, today's verdicts): 1,469 → 1,461 reported, the 8 removed all benign
+(X3 2, X2 2, X1 2, X5 1, X4 1), no positive or unverified version changes; precision
+46.42% → 46.68%. `vm-day1`: none of the 1,881 cluster-rule matches in the 1,202 malicious
+samples where either rule fires changes.
 
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 

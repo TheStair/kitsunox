@@ -42,6 +42,15 @@ def runtime_dependencies(manifest: Mapping[str, object]) -> dict[str, str]:
     return _strings(manifest.get("dependencies")) | _strings(manifest.get("optionalDependencies"))
 
 
+def declared_only_for_development(manifest: Mapping[str, object]) -> set[str]:
+    """Names the manifest declares as `devDependencies` or `peerDependencies`: packages the
+    project already uses (to build and test it, or expects its host to provide; npm 7 and
+    later installs peers itself) without listing them as its own runtime dependencies."""
+    return set(_strings(manifest.get("devDependencies"))) | set(
+        _strings(manifest.get("peerDependencies"))
+    )
+
+
 def is_registry_spec(spec: str) -> bool:
     """True for semver ranges, dist-tags and `npm:` aliases; False for anything npm fetches
     from elsewhere (`git+https:`, `http(s):`, `file:`, `github:`, or `user/repo` shorthand)."""
@@ -355,10 +364,18 @@ class NonRegistryDependency(BaseRule):
     previous release's `repository` names, not just the same account) is LOW. Another
     repository of the same account (`@diffci.com/diffci` pinning `DiffCI/core`) is MEDIUM
     again: a stolen token can bump a pin to any commit of the account's repositories, and
-    the owner judged that recall risk not worth 28 benign reports."""
+    the owner judged that recall risk not worth 28 benign reports.
+
+    v10 (2026-11-11, owner; `docs/proposals/precision-round7-W.md` Q2): uWebSockets.js's
+    own GitHub repository (`VENDOR_REPOSITORIES`: `github:uNetworking/uWebSockets.js#v20.67.0`)
+    is a vendor origin as SheetJS's CDN is (v4): the project publishes only there, never to
+    npm. LOW, weight 1, at a tag, branch or the default branch; a commit id or pull-request
+    ref keeps MEDIUM, since GitHub serves a fork's commit through the parent repository's
+    URLs (`DependencySource.forkable`). 3 benign live reports, no positive; no `vm-day1`
+    sample depends on it."""
 
     id = "npm.dependency.non-registry"
-    version = 9
+    version = 10
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency installed from outside the registry"
@@ -375,7 +392,7 @@ class NonRegistryDependency(BaseRule):
                 continue
             own_scope = tarball is not None and _same_scope(tarball["name"], change.new.ref.name)
             local = spec.strip().startswith(_LOCAL) or npm_local_path(spec)
-            vendor = spec.strip().startswith(VENDOR_REGISTRIES)
+            vendor = spec.strip().startswith(VENDOR_REGISTRIES) or vendor_repository(spec)
             moved = None if local or vendor or own_scope else trusted_move(change, name, spec)
             if moved is None and not (local or vendor or own_scope):
                 moved = trusted_commit_bump(change, name, spec)
@@ -393,6 +410,20 @@ class NonRegistryDependency(BaseRule):
                 )
             )
         return findings
+
+
+# GitHub repositories (host, account, repository; lower case) a vendor that doesn't publish to
+# npm distributes its package from (v10, owner 2026-11-11).
+VENDOR_REPOSITORIES: Final = frozenset({("github.com", "unetworking", "uwebsockets.js")})
+
+
+def vendor_repository(spec: str) -> bool:
+    """The spec takes a `VENDOR_REPOSITORIES` repository at a reference a fork can't plant
+    (a tag, a branch or the default branch; v10)."""
+    source = dependency_source(spec)
+    if source is None or source.forkable:
+        return False
+    return dependency_repository(spec) in VENDOR_REPOSITORIES
 
 
 OWN_SCOPE_TARBALL_NOTE: Final = (
@@ -606,10 +637,20 @@ class PublishMethodDowngrade(BaseRule):
     all add or change an install hook, which still counts; the 107 that count on an added
     dependency (`axios@1.14.1`, `@mastra/*`) left trusted publishing and keep it. A token
     thief who only adds a dependency in this shape is one step lower here; the dependency's
-    own Stage 4 findings (fresh-foreign, known malware, non-registry) still apply."""
+    own Stage 4 findings (fresh-foreign, known malware, non-registry) still apply.
+
+    v7 (2026-11-11, `docs/proposals/precision-round7-W.md` W3): an added maintainer is a
+    co-signal only when an added maintainer publishes this release (`publisher_was_added`).
+    The co-signals say what gets installed or *who publishes* changed; a maintainer who joined
+    but didn't publish this release changes neither, while one who did is also
+    `npm.publisher.unfamiliar`'s. All 7 live versions with this co-signal are benign: Expo's
+    stable releases published by hand after a CI canary of the same version two months older
+    (`@expo/plist@0.8.2`, `uri-scheme@2.2.1`, `install-expo-modules@0.16.1`: the maintainer
+    list grew in between), and the one `vm-day1` sample with it, `@ensdomains/ensjs@4.0.3`,
+    keeps its install-hook co-signal. `npm.maintainer.added` itself still adds its LOW."""
 
     id = "npm.publish-method.downgrade"
-    version = 6
+    version = 7
     severity = Severity.HIGH
     weight = 5.0
     title = "Published without the CI provenance the previous release had"
@@ -625,7 +666,12 @@ class PublishMethodDowngrade(BaseRule):
         before = f"trusted_publisher={old.trusted_publisher}, provenance={old.has_provenance}"
         parsed = semver.parse(change.new.ref.version)
         watched = _watched(change)
-        cosignals = [rule.id for rule in DOWNGRADE_COSIGNALS if rule.evaluate(change, ctx)]
+        cosignals = [
+            rule.id
+            for rule in DOWNGRADE_COSIGNALS
+            if rule.evaluate(change, ctx)
+            and (rule.id != MaintainerAdded.id or publisher_was_added(change))
+        ]
         git_head_dropped = old.git_head is not None and new.git_head is None
         severity: Severity | None
         weight: float | None
@@ -660,6 +706,17 @@ class PublishMethodDowngrade(BaseRule):
                 weight=weight,
             )
         ]
+
+
+def publisher_was_added(change: Change) -> bool:
+    """This release's publisher is a maintainer the previous release didn't list."""
+    previous, publisher = change.previous, change.new.publish.publisher
+    if previous is None or publisher is None:
+        return False
+    return (
+        publisher in change.new.publish.maintainers
+        and publisher not in previous.publish.maintainers
+    )
 
 
 class UnfamiliarPublisher(BaseRule):
