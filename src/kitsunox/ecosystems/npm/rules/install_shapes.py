@@ -266,7 +266,8 @@ class InstallExplained(BaseRule):
     it), for S1, S3 and S5 only (`ADDED_HOOK_SHAPES`), and never when the install code names
     the home directory or a URL besides the npm registry and page links. And S1 never holds
     when the install code names a download program or call (`DOWNLOAD_TOOL`: `curl`, `wget`,
-    `Invoke-WebRequest`, ...; owner, 2026-11-10: no download from outside the registry)."""
+    `Invoke-WebRequest`, ...) unless every URL it names is the npm registry (owner,
+    2026-11-10: no download from outside the registry)."""
 
     id = "npm.install-explained"
     version = 5
@@ -360,14 +361,8 @@ def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] |
     if (
         len(builds) >= MIN_PLATFORM_BUILDS
         and not _templated(urls)
-        and not download_tool(change)
-        and (
-            C.NETWORK not in caps
-            or (
-                all(_url_kind(u, None) in ("registry", "page") for u in urls)
-                and any(_url_kind(u, None) == "registry" for u in urls)
-            )
-        )
+        and not (download_tool(change) and not _registry_only(urls))
+        and (C.NETWORK not in caps or _registry_only(urls))
     ):
         return (
             f"S1 platform-binary launcher: {len(builds)} platform builds of the package in "
@@ -564,12 +559,20 @@ def _hooks(manifest: Mapping[str, Any]) -> dict[str, str]:
 # v5: a program or call that downloads (outside `fetch`/`https`, which the capability analysis
 # sees as the network): S1 is for platform builds from the npm registry only, and the owner rules
 # install-time downloads of code from anywhere else unwanted, by any means (decision 0015,
-# 2026-11-10). Comments and messages aside ("or install with curl ...").
+# 2026-11-10). Comments and messages aside ("or install with curl ..."). A download tool whose
+# every URL is the npm registry is still S1 (`@kprint/kprint@0.60.5` fetches its platform
+# package's tarball from the registry with a pinned hash).
 DOWNLOAD_TOOL: Final = re.compile(
     r"\b(?:curl|wget|aria2c|bitsadmin|certutil|Invoke-WebRequest|Invoke-RestMethod|iwr|irm"
     r"|Start-BitsTransfer|DownloadFile|DownloadString)\b",
     re.IGNORECASE,
 )
+
+
+def _registry_only(urls: Sequence[str]) -> bool:
+    """Every URL is the npm registry or a page link, and at least one is the registry."""
+    kinds = [_url_kind(u, None) for u in urls]
+    return all(k in ("registry", "page") for k in kinds) and "registry" in kinds
 
 
 def download_tool(change: CodeChange) -> str | None:

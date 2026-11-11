@@ -105,6 +105,9 @@ def test_s1_platform_binary_launcher() -> None:
         b'execFileSync("powershell", ["-c", "Invoke-WebRequest " + url]);',
     ):
         assert shape(change({"install.js": LAUNCHER + fetch}, manifest)) is None, fetch
+    # From the npm registry only (`@kprint/kprint@0.60.5`: its platform package's tarball).
+    registry = b'execFileSync("curl", ["-o", "t.tgz", "https://registry.npmjs.org/@kx/tool-linux-x64/-/x.tgz"]);'
+    assert shape(change({"install.js": LAUNCHER + registry}, manifest)) == "S1"
     told = LAUNCHER + b'console.log("No binary? Install it with curl from the docs.");'
     assert shape(change({"install.js": told}, manifest)) == "S1"
     assert platform_builds("tool", {"optionalDependencies": {"tool-win32-x64": "1"}}) == [
