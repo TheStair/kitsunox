@@ -1,17 +1,52 @@
-"""`lang.effects`: JSON-only requires, named environment reads, install guards
+"""`lang.effects`: chmod modes, `createRequire` uses, named environment reads, install guards
 (small, inert JavaScript; nothing here runs)."""
 
 import pytest
 
 from kitsunox.lang.effects import (
+    chmod_modes,
     env_read_by_name,
     guard_only,
     requires_only_json,
+    requires_only_resolve,
 )
 
 
 def js(code: str) -> bytes:
     return code.encode()
+
+
+def test_chmod_modes() -> None:
+    code = js(
+        'fs.chmodSync(p, 0o755); chmod(q, "755"); fs.promises.chmod(r, info.mode | 0o111);\n'
+        "fs.lchmodSync(s, 493); fs.chmodSync(t, 0755); fs.chmodSync(u, mode);"
+    )
+    assert chmod_modes(code, "javascript") == (0o755, 0o755, 0o111, 0o755, 0o755, None)
+    assert chmod_modes(js("fs.chmodSync(p)"), "javascript") == (None,)
+    assert chmod_modes(js('console.log("chmod it")'), "javascript") == ()
+    assert chmod_modes(js("fs.chmodSync(p, 0o4755)"), "javascript") == (0o4755,)
+    assert chmod_modes(js("fs.chmodSync(p, 0o755"), "javascript") is None  # parse error
+
+
+@pytest.mark.parametrize(
+    ("code", "ok"),
+    [
+        ('const require = createRequire(import.meta.url); require.resolve("node-pty");', True),
+        ('createRequire(import.meta.url).resolve("node-pty/package.json")', True),
+        (
+            'const r = createRequire(createRequire(import.meta.url).resolve("a")); r.resolve("b")',
+            True,
+        ),
+        ('const require = createRequire(import.meta.url); require("evil");', False),
+        ('createRequire(import.meta.url)("evil")', False),
+        ("const r = createRequire(import.meta.url); load(r);", False),
+        ("const { resolve } = createRequire(import.meta.url);", False),
+        ("const r = createRequire(import.meta.url); r.resolve.call(null, 'x')", False),
+        ('import { createRequire } from "node:module";', True),
+    ],
+)
+def test_requires_only_resolve(code: str, ok: bool) -> None:
+    assert requires_only_resolve(js(code), "javascript") is ok
 
 
 @pytest.mark.parametrize(

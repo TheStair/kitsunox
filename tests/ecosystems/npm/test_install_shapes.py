@@ -438,6 +438,67 @@ def test_an_added_hook_is_judged_like_a_new_package_for_s1_s3_s5_only() -> None:
     assert shape(change({"install.js": home}, platforms, base={})) is None
 
 
+# v7 (round 7 V): `@easyx/ucode@0.5.0`'s shape, inert: node-pty's prebuilt `spawn-helper` lost
+# its execute bit; the hook puts it back.
+SPAWN_HELPER = b"""
+import { chmodSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+const require = createRequire(import.meta.url);
+let root;
+try { root = dirname(require.resolve("node-pty/package.json")); } catch { process.exit(0); }
+const helper = join(root, "prebuilds", `${process.platform}-${process.arch}`, "spawn-helper");
+if (existsSync(helper)) chmodSync(helper, 0o755);
+console.log("node-pty: spawn-helper made executable");
+"""
+
+
+def test_s7_permission_fix() -> None:
+    """v7 (round 7 V): install code whose only change to the machine is making files
+    executable (`chmod` with a constant mode that has the owner's execute bit, nothing beyond
+    `0o777`), with no other write or delete, no network or process, no package loaded and
+    `createRequire` used only to locate files."""
+    manifest = hook("node scripts/fix-pty.mjs")
+    files = {**LIB, "scripts/fix-pty.mjs": SPAWN_HELPER}
+    (finding,) = RULE.evaluate_code(change(files, manifest))
+    assert finding.explanation.startswith("S7 ") and "0o755" in finding.explanation
+    inline = hook(
+        "node -e \"try{require('fs').chmodSync(require.resolve('node-pty/package.json')"
+        ".replace('package.json','prebuilds/linux-x64/spawn-helper'),0o755)}catch{}\""
+    )
+    assert shape(change(LIB, inline)) == "S7"
+    keeps = SPAWN_HELPER.replace(b"0o755", b"info.mode | 0o111")
+    assert shape(change({**LIB, "scripts/fix-pty.mjs": keeps}, manifest)) == "S7"
+    for swap in (
+        (b"0o755", b"0o4755"),  # setuid
+        (b"0o755", b"0o644"),  # not executable
+        (b"0o755", b"mode"),  # a mode it can't read
+        (b'require.resolve("node-pty/package.json")', b'require("node-pty")'),  # loads it
+        (b"require.resolve(", b"globalThis.kx = require; require.resolve("),  # handed on
+        (b"chmodSync(helper, 0o755)", b'chmodSync("/usr/local/bin/kx", 0o755)'),  # system
+        (b"chmodSync(helper, 0o755)", b'chmodSync(require("os").homedir() + "/kx", 0o755)'),
+    ):
+        changed = SPAWN_HELPER.replace(*swap)
+        assert changed != SPAWN_HELPER, swap
+        assert shape(change({**LIB, "scripts/fix-pty.mjs": changed}, manifest)) is None, swap
+    for extra in (
+        b'import { writeFileSync } from "node:fs"; writeFileSync(helper, "#!/bin/sh\\nid");',
+        b'import { copyFileSync } from "node:fs"; copyFileSync("x", helper);',
+        b'import { unlinkSync } from "node:fs"; unlinkSync(helper);',
+        b'import { execFileSync } from "node:child_process"; execFileSync(helper);',
+        b'await fetch("https://kx.example.invalid/ping");',
+        b'const r2 = createRequire(import.meta.url); r2("kx-postinstall");',
+    ):
+        c = change({**LIB, "scripts/fix-pty.mjs": SPAWN_HELPER + extra}, manifest)
+        assert shape(c) is None, extra
+    # A package that is nothing but its install code, and a hook that runs more than `node`.
+    assert shape(change({"scripts/fix-pty.mjs": SPAWN_HELPER}, manifest)) is None
+    assert shape(change(files, hook("node scripts/fix-pty.mjs && ./setup"))) is None
+    # No `chmod` at all is not S7 (inert code is S5's).
+    quiet = SPAWN_HELPER.replace(b"if (existsSync(helper)) chmodSync(helper, 0o755);", b"")
+    assert shape(change({**LIB, "scripts/fix-pty.mjs": quiet}, manifest)) is None
+
+
 def test_s8_install_guard() -> None:
     """v7 (round 7 V): inline `node -e` code that only checks Node's version, the platform or
     named environment variables and exits, printing only when it fails the install; or that

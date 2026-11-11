@@ -1,9 +1,16 @@
 """What install code does with things the capability profile counts coarsely.
 
 Added 2026-11-11 for `npm.install-explained` v7 (`docs/proposals/precision-round7-V.md`).
-The capability profile (`lang.javascript`) says *that* install code loads through a computed
-`require` or takes the whole environment; these helpers say *how*, so a shape can rest on it:
+The capability profile (`lang.javascript`) says *that* install code changes file modes, loads
+through `createRequire` or a computed `require`, or takes the whole environment; these helpers
+say *how*, so a shape can rest on it:
 
+- `chmod_modes`: the mode of every `chmod` call (`fs.chmodSync(p, 0o755)`, `chmod(p, mode |
+  0o111)`, `fs.promises.chmod`), when it is a constant (or a constant `|`-ed onto another
+  value); S7 needs every one to add the owner's execute bit and set nothing beyond `0o777`.
+- `requires_only_resolve`: every `createRequire(...)` result is only used to *locate* a file
+  (`.resolve(...)`), never to load one (`req("x")` loads a package the profile's package list
+  doesn't see).
 - `requires_only_json`: every `require` of a computed path loads a `.json` file
   (`require(path.join(dir, "package.json"))`, `require(require.resolve(`${pkg}/package.json`))`
   through a `const`): Node parses JSON, it runs nothing, so it isn't `dynamic-require`.
@@ -27,6 +34,7 @@ import tree_sitter as ts
 
 from kitsunox.lang.javascript import MAX_SOURCE_BYTES, _parser, _text
 
+CHMOD_CALLS: Final = frozenset({"chmod", "chmodSync", "lchmod", "lchmodSync"})
 _FUNCTION_VALUES: Final = frozenset({"arrow_function", "function_expression", "function"})
 
 
@@ -70,6 +78,101 @@ def _number(node: ts.Node | None) -> int | None:
         return int(text)
     except ValueError:
         return None
+
+
+def _mode(node: ts.Node | None) -> int | None:
+    """A mode argument's constant bits: a number, an octal string (`"755"`), or `x | <number>`
+    (the constant part; the other operand keeps bits the file already has)."""
+    if node is None:
+        return None
+    if node.type == "parenthesized_expression" and node.named_child_count == 1:
+        return _mode(node.named_children[0])
+    if node.type == "string":
+        text = "".join(_text(c) for c in node.named_children if c.type == "string_fragment")
+        return int(text, 8) if text and len(text) <= 4 and set(text) <= set("01234567") else None
+    if node.type == "binary_expression" and _text(node.child_by_field_name("operator")) == "|":
+        right = _number(node.child_by_field_name("right"))
+        left = _number(node.child_by_field_name("left"))
+        return right if right is not None else left
+    return _number(node)
+
+
+def chmod_modes(content: bytes, language: str) -> tuple[int | None, ...] | None:
+    """The mode of each `chmod`-like call (`CHMOD_CALLS`, as a bare call or a method) in source
+    order, None for one whose mode isn't a constant; None if the file doesn't parse cleanly."""
+    root = _root(content, language)
+    if root is None:
+        return None
+    modes: list[int | None] = []
+    for node in _nodes(root):
+        if node.type != "call_expression":
+            continue
+        function = node.child_by_field_name("function")
+        name = _text(function).rsplit(".", 1)[-1]
+        if name in CHMOD_CALLS:
+            arguments = _arguments(node)
+            modes.append(_mode(arguments[1]) if len(arguments) >= 2 else None)
+    return tuple(modes)
+
+
+def requires_only_resolve(content: bytes, language: str) -> bool:
+    """Every `createRequire(...)` call's result is used only to resolve a path: called as
+    `createRequire(...).resolve(...)`, given to another `createRequire`, or bound to a name
+    (`const require = createRequire(...)`) whose every other use in the file is
+    `require.resolve(...)`. False if the file doesn't parse cleanly."""
+    root = _root(content, language)
+    if root is None:
+        return False
+    names: set[str] = set()
+    for node in _nodes(root):
+        if node.type != "call_expression" or _text(node.child_by_field_name("function")).rsplit(
+            ".", 1
+        )[-1] != ("createRequire"):
+            continue
+        parent = node.parent
+        if parent is None:
+            return False
+        if parent.type == "member_expression" and _resolve_call(parent):
+            continue
+        if parent.type == "arguments" and parent.parent is not None:
+            outer = _text(parent.parent.child_by_field_name("function")).rsplit(".", 1)[-1]
+            if outer == "createRequire":
+                continue
+            return False
+        if parent.type == "variable_declarator" and parent.child_by_field_name("value") == node:
+            name = parent.child_by_field_name("name")
+            if name is None or name.type != "identifier":
+                return False
+            names.add(_text(name))
+            continue
+        return False
+    for node in _nodes(root):
+        if node.type != "identifier" or _text(node) not in names:
+            continue
+        parent = node.parent
+        if parent is None:
+            return False
+        if parent.type == "variable_declarator" and parent.child_by_field_name("name") == node:
+            continue
+        if (
+            parent.type == "member_expression"
+            and parent.child_by_field_name("object") == node
+            and _resolve_call(parent)
+        ):
+            continue
+        return False
+    return True
+
+
+def _resolve_call(member: ts.Node) -> bool:
+    """`member` is `<x>.resolve` and is called."""
+    call = member.parent
+    return (
+        _text(member.child_by_field_name("property")) == "resolve"
+        and call is not None
+        and call.type == "call_expression"
+        and call.child_by_field_name("function") == member
+    )
 
 
 def requires_only_json(content: bytes, language: str) -> bool:

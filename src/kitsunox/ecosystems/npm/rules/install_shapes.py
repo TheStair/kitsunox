@@ -39,6 +39,18 @@ round 4) and S6 (own-binary download not run, round 5 H) explained such download
 gone; `npm.install-download` (MEDIUM) names them. S1's registry fallback (fetching the
 package's own platform package from the registry) stays explained.
 
+- **S7 permission fix** (v7, round 7 V). The install code's only change to the machine is
+  file modes: at least one `chmod` (`chmodSync`, `fs.promises.chmod`, `lchmod`), each with a
+  constant mode that has the owner's execute bit and nothing beyond `0o777` (`0o755`, `mode |
+  0o111`; `lang.effects.chmod_modes`), and no other write (`install_code.WRITES`) or delete
+  (`DELETES`); `INERT` capabilities, every hook `node <file>` or `node -e`, no package loaded by
+  name, `createRequire` only to locate files (`lang.effects.requires_only_resolve`), and S5's
+  text guards except that `module` may be named for `createRequire` (`RISKY_BUT_MODULE`): no
+  home, agent or system directory, not a placeholder. It may name another installed package:
+  the shape is node-pty's prebuilt `spawn-helper`, which ships without its execute bit and
+  which a dozen reviewed benign packages fix at install (`@easyx/ucode`, `coban`,
+  `unfold-deploy`). Making a file executable runs nothing; code that then runs it needs a
+  process, which S7 refuses.
 - **S8 install guard** (v7, round 7 V). Every install hook is `node -e <code>` and the code is
   a guard (`lang.effects.guard_only`): values from Node's version, the platform, the CPU and
   named environment variables, `if` tests on them, `process.exit(<number>)`, and printing only
@@ -89,9 +101,11 @@ from kitsunox.lang.agent_config import (
     widening,
 )
 from kitsunox.lang.effects import (
+    chmod_modes,
     env_read_by_name,
     guard_only,
     requires_only_json,
+    requires_only_resolve,
 )
 from kitsunox.lang.javascript import Capability, language_for, mask_comments_and_messages
 from kitsunox.stages.ast import CodeChange, Profile
@@ -241,7 +255,7 @@ _GITHUB_PAGE: Final = re.compile(
 
 
 class InstallExplained(BaseRule):
-    """The version's install code has one of the explained shapes S1, S3, S5, S8 (module
+    """The version's install code has one of the explained shapes S1, S3, S5, S7, S8 (module
     docstring).
 
     Added 2026-11-08 (`docs/proposals/precision-round2.md`, S1-S3, with the owner's three
@@ -266,8 +280,8 @@ class InstallExplained(BaseRule):
     v6 (2026-11-11, round 6 R, `docs/proposals/precision-round6-R.md`): S2 and S6 removed, by
     the owner's strict ruling (install-time downloads of code are unwanted, own binaries
     included): no download is an explained shape (module docstring).
-    v7 (2026-11-11, round 7 V, `docs/proposals/precision-round7-V.md`): S8 (inline
-    install guard), and `env-all` that only reads named variables
+    v7 (2026-11-11, round 7 V, `docs/proposals/precision-round7-V.md`): S7 (permission fix)
+    and S8 (inline install guard), and `env-all` that only reads named variables
     (`capabilities`) no longer refuses a shape (module docstring)."""
 
     id = "npm.install-explained"
@@ -285,10 +299,10 @@ class InstallExplained(BaseRule):
 
 
 # v5 (round 6, Q2): the shapes an update whose install hook is new (no install code before)
-# may have, judged like a new package's: S1, S3, S5 (and since v7 S8) only. A download
+# may have, judged like a new package's: S1, S3, S5 (and since v7 S7, S8) only. A download
 # (S2, S6) never: the owner rules install-time downloads of code unwanted (decision 0015,
 # 2026-11-10).
-ADDED_HOOK_SHAPES: Final = ("S1 ", "S3 ", "S5 ", "S8 ")
+ADDED_HOOK_SHAPES: Final = ("S1 ", "S3 ", "S5 ", "S7 ", "S8 ")
 
 
 def hook_added(change: CodeChange) -> bool:
@@ -416,6 +430,15 @@ def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] |
             "the package.",
             hook_evidence,
         )
+    if (modes := mode_fix(change, caps, text)) is not None:
+        return (
+            f"S7 permission fix: the install code's only change to the machine is file modes "
+            f"({len(modes)} `chmod` call(s), each making a file executable: "
+            f"{', '.join(sorted({oct(m) for m in modes}))}); it uses {uses}: no network, no "
+            "process, no other write or delete, loads no package by name and only locates "
+            "files with `createRequire`, so it can make a file executable but never run it.",
+            hook_evidence,
+        )
     if install_guard(change, caps):
         return (
             "S8 install guard: every install hook is inline `node -e` code that only tests "
@@ -480,6 +503,58 @@ def _holds(check: Callable[[bytes, str], bool], path: str, files: Mapping[str, b
     language = "javascript" if path.startswith(INLINE_PREFIX) else language_for(path)
     content = files.get(path)
     return language is not None and content is not None and check(content, language)
+
+
+# v7 (round 7 V), S7: modes that make a file executable by its owner (`0o755`, `mode | 0o111`)
+# and set no bit beyond `0o777` (no setuid, setgid or sticky bit).
+OWNER_EXECUTE: Final = 0o100
+MAX_MODE: Final = 0o777
+# `createRequire` comes from `module`, which `RISKY_TEXT` refuses: S7 allows it alone when the
+# result only locates files (`requires_only_resolve`).
+RISKY_BUT_MODULE: Final = re.compile(
+    RISKY_TEXT.pattern.replace("|cluster|inspector|module|", "|cluster|inspector|")
+)
+
+
+def mode_fix(change: CodeChange, caps: frozenset[Capability], text: str) -> list[int] | None:
+    """S7: the modes the install code's `chmod` calls set, when changing file modes is all it
+    does to the machine (module docstring); None otherwise."""
+    # Imported here: `install_code` imports this module (`INERT`, `user_wide`, ...).
+    from kitsunox.ecosystems.npm.rules.install_code import WRITES
+
+    install = change.install
+    hooks = _hooks(change.snapshot.manifest)
+    if (
+        install is None
+        or not caps <= INERT
+        or not all(node_only(command) for command in hooks.values())
+        or install.packages
+        or names_agent_dir(change.install_files)
+        or user_wide(change)
+        or placeholder(change)
+        or SYSTEM_PATH.search(text)
+        or DELETES.search(text)
+        or RISKY_BUT_MODULE.search(text)
+        or WRITES.search(_CHMOD_NAMES.sub("", text))
+    ):
+        return None
+    modes: list[int] = []
+    for path, content in change.install_files.items():
+        language = "javascript" if path.startswith(INLINE_PREFIX) else language_for(path)
+        if language is None:
+            return None
+        if "createRequire" in content.decode("utf-8", "replace") and not requires_only_resolve(
+            content, language
+        ):
+            return None
+        found = chmod_modes(content, language)
+        if found is None or any(m is None or m > MAX_MODE or not m & OWNER_EXECUTE for m in found):
+            return None
+        modes.extend(m for m in found if m is not None)
+    return modes or None
+
+
+_CHMOD_NAMES: Final = re.compile(r"\bl?chmod(?:Sync)?\b")
 
 
 class InstallAgentUserWide(BaseRule):
