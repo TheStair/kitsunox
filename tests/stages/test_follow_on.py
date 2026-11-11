@@ -525,4 +525,4 @@ def test_what_the_default_policy_carries() -> None:
     persists = (file_finding("npm.install-persistence", "scripts/link.mjs"),)
     assert [c.rule_id for c in payload_evidence(channel)] == ["static.channel-follow"]
     assert [c.rule_id for c in payload_evidence(STEALER_FINDINGS)] == ["static.hardcoded-ip"]
-    assert [c.rule_id for c in payload_evidence(persists)] == []
+    assert [c.rule_id for c in payload_evidence(persists)] == ["npm.install-persistence"]

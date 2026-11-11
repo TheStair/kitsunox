@@ -573,11 +573,14 @@ FOLLOW_ON: Final = "correlate.follow-on"
 #   any severity): the stealer in `pdf-html5-page-flip`'s font file, `template-cards`'s
 #   install-time beacon. +3 malicious, +2 benign (`chuxin-agentdesk@0.1.1`,
 #   `@prismatic-io/components-bigcommerce@0.1.0`).
+# - B2: install code that persists (`npm.install-persistence`, owner rulings in decision
+#   0015), in `FOLLOW_ON_ALONE`. +22 unwanted, +4 benign, +1 unverified.
 FOLLOW_ON_ALONE: Final = frozenset(
     {
         "static.known-signature",
         "static.channel-follow",
         "static.channel-tagging",
+        "npm.install-persistence",
     }
 )
 FOLLOW_ON_DESTINATION: Final = frozenset({"static.hardcoded-ip", "static.exfil-endpoint"})
