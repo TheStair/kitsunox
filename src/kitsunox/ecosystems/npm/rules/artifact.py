@@ -27,6 +27,7 @@ from typing import Final
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity, VersionSnapshot
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
+from kitsunox.rules.disguised import DisguisedFile
 
 SIZE_TOLERANCE_BYTES: Final = 1024
 SIZE_TOLERANCE_RATIO: Final = 0.01
@@ -276,4 +277,11 @@ def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
     return abs(real - declared) <= max(SIZE_TOLERANCE_BYTES, SIZE_TOLERANCE_RATIO * declared)
 
 
-RULES: Final = (HiddenInstallScript(), DeclaredSizeMismatch(), InstallTargetMissing())
+# `static.disguised-file` (ecosystem-agnostic, `rules/disguised.py`) runs here because it reads
+# every file of every version, not only the contents an update adds.
+RULES: Final = (
+    HiddenInstallScript(),
+    DeclaredSizeMismatch(),
+    InstallTargetMissing(),
+    DisguisedFile(),
+)

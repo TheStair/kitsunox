@@ -182,6 +182,8 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 | `npm.artifact.size-mismatch` | files total more than `dist.unpackedSize` by over 1 KiB and 1% (understated only: overstating gains an attacker nothing) | MEDIUM |
 | `npm.artifact.install-target-missing` (2026-11-11) | every install hook is `node <file>` (optionally `\|\| true` / `\|\| exit 0`) and the tarball has no such file: not the path, nor the path with a suffix, nor a directory of that name, compared without case (Node finds `x` as `x.js`; macOS and Windows ignore case). Only on the whole package: the tarball's hooks are the registry's, no `binding.gyp` (npm adds `node-gyp rebuild`), nothing skipped (links, unsafe paths), no tar anomaly or duplicate, and the files add up to the declared unpacked size (a sample set's zip with files missing does not); no backslash in the line (Windows runs `node lib\\index.js`); and not a broken attack (no JavaScript at all, a declared `main` missing too, or a JavaScript file named like an install script at the root or beside the target: the next release fixes the hook). Round 6, [Q1](../proposals/precision-round6-Q.md). An explanation for Stage 4 (`correlate.EXPLAINED`): `npm.install-hook` becomes LOW | INFO |
 
+| `static.disguised-file` (2026-11-11, ecosystem-agnostic, `rules/disguised.py`) | a file named as a binary format (font, image, audio/video, `.wasm`, native module or program, archive, PDF, `.bin`/`.dat`) whose bytes are no binary format but a script (JavaScript, shell, PowerShell, Python, batch; also base64-encoded), or a native executable under a non-program name, or an archive under a font/image/media name. Every file of every version, so a follow-on that still ships the file is flagged; [below](#files-disguised-as-a-binary-format-staticdisguised-file-2026-11-11) | HIGH for a script that uses process execution, the network, credentials or dynamic code, and for an executable; MEDIUM for a script a code file names; LOW otherwise and for an archive; INFO for a launcher script under a program name (`.exe`, `.dll`, `.so`, `.dylib`) |
+
 On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
 every time, and no tarball hid an install hook. The 9 script differences were npm's own
 normalisation (a stripped `node_modules/.bin/` prefix; `install: node-gyp rebuild` added to
@@ -438,6 +440,68 @@ there; it exists for the shape, not for a measured sample.
 
 Known limit: the indentation exception can be gamed (indent the line before as deep), and a
 payload padded with other characters (non-breaking spaces, form feeds) is not matched.
+
+### Files disguised as a binary format (`static.disguised-file`, 2026-11-11)
+
+`pdf-html5-page-flip` 2.0.1 and 2.0.2 (live run `20261110T205323Z-npm`, malicious) ship
+`dist/lib/fonts/fa-solid-400.woff2`: not a font but 1.8 KB of JavaScript that reads cloud, npm,
+git and SSH credentials and AI-tool OAuth files, posts them to a bare IP and installs a
+`*/5` crontab `curl | bash`. Nothing in the package loads it: a dormant payload for a later
+loader. The file rules saw it only as text in an odd place (2.0.1 was reported by one MEDIUM
+`static.hardcoded-ip`, score 6), and 2.0.2, which ships the same file unchanged, was not
+reported at all: file rules see only the contents an update adds.
+
+The rule (`rules/disguised.py`, registered with the npm artifact rules so that it reads every
+file of every version Stage 2 reads) checks files whose extension claims a binary format. A
+file whose first bytes match the claimed format, or any other binary format (a WebP named
+`.png`, a CFF font named `.ttf`), is left alone. Short magic numbers that text can start with
+(`BM`, `MZ`, MP3 frame sync) count only for content that isn't text. What is left:
+
+| Content | Severity |
+|---|---|
+| a native executable (ELF, PE, Mach-O) under a name that isn't a native module or program | HIGH |
+| a script (two markers of one language, or a shebang), also base64-encoded, that uses process execution, the network, credentials or dynamic code (the patterns of `process-exec`, `network`, `sensitive-path`, `env-harvest`, `npm-publish`, `dynamic-code`, plus `fetch`, URLs, `curl`/`wget`, `| sh`, `crontab`, PowerShell and Python equivalents) | HIGH (weight 5) |
+| such a script without those, named by a code file of the package (a loader; CSS and markup naming a font don't count) | MEDIUM (weight 3) |
+| such a script, named by nothing | LOW |
+| an archive (zip, gzip, ...) under a font, image or media name | LOW |
+| a script under a program's name (`.exe`, `.dll`, `.so`, `.dylib`) that reads no credentials and builds no code | INFO |
+| markup (an SVG named `.png`, a saved HTML error page), a Git LFS pointer, JSON, base64 of a binary format, empty files, other text, unknown binary | nothing |
+
+At most five findings per version, most severe first.
+
+**False shapes, from data.** Over every npm tarball still on disk (230,290 distinct tarballs
+from the live runs, 125,826 checked files with a claimed binary extension: 66,225 `.png`,
+17,549 `.woff2`, 2,618 `.node`, 1,365 `.exe`, ...), the first version of the rule fired on 133
+tarballs. 131 were `.exe` scripts in 39 packages: the launcher or placeholder that
+platform-binary packages ship at the program's path and replace at `postinstall`
+(`@deepseeksi/cli`'s `bin/dscode.exe`: `#!/bin/sh echo "Error: dscode native binary not
+installed."`; `@vercel/vc-native`'s Node fallback launcher; `lockpicks`, `@polar-sh/cli`,
+`rlm-harness`, `glasspane-harness`). Three of them were HIGH by process execution or a
+`curl | bash` hint in an error message. Hence INFO under program names unless the script reads
+credentials or builds code, which none of them does. The other two were the
+`pdf-html5-page-flip` versions. No SVG, LFS pointer, HTML page, base64 font, `.node`
+placeholder or test fixture fired: they are all recognised and left alone (none has script
+markers), and no `.node` file in the live data is a script.
+
+**Follow-ons.** The rule fires on 2.0.2 because Stage 2 read it: its declared size grew by
+69,134 bytes, 3,598 over the 64 KiB routing bar. A follow-on that ships the same disguised file
+but neither grows by 64 KiB nor is small, hooked, watched or flagged by Stage 1 is never read
+(`code_route`), so the rule can't see it. Within one run a package's versions are read
+together whenever one of them is routed, so this only matters across runs.
+
+Measured with the real code (round 6 T, [precision-round6-T](../proposals/precision-round6-T.md)):
+
+- **Live replay** (3,716 verdicted versions plus the two `pdf-html5-page-flip` versions):
+  the rule fires on 38 versions; one decision changes, `pdf-html5-page-flip@2.0.2`
+  (malicious) is now reported (score 3 → 8); 2.0.1 goes from score 6 to 11. No benign version
+  is newly reported (the 35 `.exe` launchers are INFO), and nothing is lost: the rule only
+  adds findings.
+- **`vm-day1`**: see the proposal.
+
+Known limits: a payload in a format the rule doesn't know (an encrypted blob, a text claim such
+as `.txt` or `.json`) is not classified, nor is a polyglot (a real PNG with code appended); the
+script classifier is markers, not a parser, so a payload written to avoid them (one long line
+of obfuscated code with no `require`, `function` or `=>`) is not a script to it.
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
