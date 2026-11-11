@@ -264,7 +264,9 @@ class InstallExplained(BaseRule):
     is new (`hook_added`: its previous version ran no install code) is judged like a new
     package instead of failing the new-capability test outright (every capability is new to
     it), for S1, S3 and S5 only (`ADDED_HOOK_SHAPES`), and never when the install code names
-    the home directory or a URL besides the npm registry and page links."""
+    the home directory or a URL besides the npm registry and page links. And S1 never holds
+    when the install code names a download program or call (`DOWNLOAD_TOOL`: `curl`, `wget`,
+    `Invoke-WebRequest`, ...; owner, 2026-11-10: no download from outside the registry)."""
 
     id = "npm.install-explained"
     version = 5
@@ -358,6 +360,7 @@ def _explain(change: CodeChange, *, added: bool) -> tuple[str, list[Evidence]] |
     if (
         len(builds) >= MIN_PLATFORM_BUILDS
         and not _templated(urls)
+        and not download_tool(change)
         and (
             C.NETWORK not in caps
             or (
@@ -556,6 +559,30 @@ def _script_concerns(change: CodeChange, path: str) -> list[str]:
 def _hooks(manifest: Mapping[str, Any]) -> dict[str, str]:
     declared = scripts(manifest)
     return {h: declared[h].strip() for h in INSTALL_HOOKS if declared.get(h, "").strip()}
+
+
+# v5: a program or call that downloads (outside `fetch`/`https`, which the capability analysis
+# sees as the network): S1 is for platform builds from the npm registry only, and the owner rules
+# install-time downloads of code from anywhere else unwanted, by any means (decision 0015,
+# 2026-11-10). Comments and messages aside ("or install with curl ...").
+DOWNLOAD_TOOL: Final = re.compile(
+    r"\b(?:curl|wget|aria2c|bitsadmin|certutil|Invoke-WebRequest|Invoke-RestMethod|iwr|irm"
+    r"|Start-BitsTransfer|DownloadFile|DownloadString)\b",
+    re.IGNORECASE,
+)
+
+
+def download_tool(change: CodeChange) -> str | None:
+    """The first download program or call the install code names (`DOWNLOAD_TOOL`), comments
+    and messages aside; None when it names none."""
+    for path, content in sorted(change.install_files.items()):
+        language = language_for(path)
+        text = (
+            mask_comments_and_messages(content, language) if language is not None else content
+        ).decode("utf-8", "replace")
+        if match := DOWNLOAD_TOOL.search(text):
+            return match.group(0)
+    return None
 
 
 def platform_builds(name: str, manifest: Mapping[str, Any]) -> list[str]:

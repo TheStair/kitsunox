@@ -98,6 +98,15 @@ def test_s1_platform_binary_launcher() -> None:
     # v3: code hidden after a run of tabs (or on a very long line) is no shape at all.
     hidden = LAUNCHER + b"\t" * 200 + b'require("child_process").execSync("id");\n'
     assert shape(change({"install.js": hidden}, manifest)) is None
+    # v5: S1 is for builds from the npm registry; a download program or call, however it runs,
+    # is not (owner, 2026-11-10). Named only in a message, it doesn't count.
+    for fetch in (
+        b'execFileSync("curl", ["-fsSL", url, "-o", "bin/tool"]);',
+        b'execFileSync("powershell", ["-c", "Invoke-WebRequest " + url]);',
+    ):
+        assert shape(change({"install.js": LAUNCHER + fetch}, manifest)) is None, fetch
+    told = LAUNCHER + b'console.log("No binary? Install it with curl from the docs.");'
+    assert shape(change({"install.js": told}, manifest)) == "S1"
     assert platform_builds("tool", {"optionalDependencies": {"tool-win32-x64": "1"}}) == [
         "tool-win32-x64"
     ]
