@@ -802,6 +802,11 @@ line, and the notes join `CONTEXT_NOTES` (what they test can sit outside the sni
   nothing, as v8. An entry of an obfuscator's string array (`['…/bot', 'includes', …]`) is
   not assigned and stays HIGH (`@eooce/sbx@2.0.8` on `vm-day1` has exactly that).
 
+Measured (full replay, today's verdicts): 1,469 → 1,461 reported, the 8 removed all benign
+(X3 2, X2 2, X1 2, X5 1, X4 1), no positive or unverified version changes; precision
+46.42% → 46.68%. `vm-day1`: none of the 1,881 cluster-rule matches in the 1,202 malicious
+samples where either rule fires changes.
+
 ### `exfil-endpoint` forms checked against the first live day (2026-10-30; no change)
 
 On `20261029T221803Z-npm`, 128 reported versions were HIGH through this rule alone, and live
