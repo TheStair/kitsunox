@@ -427,6 +427,7 @@ a silent skip. Nothing here reads the clock or a verdict.
 | A | `static.known-signature`, `static.channel-follow`, `static.channel-tagging` (`FOLLOW_ON_ALONE`; the owner wants them on every release, Stage 2's `ALWAYS_NEW`) | +10 unwanted, 0 benign |
 | B1 | a `static.hardcoded-ip` or `static.exfil-endpoint` file (`FOLLOW_ON_DESTINATION`) that a LOW-or-above `static.sensitive-path` / `static.env-harvest` or install-code finding (`npm.install-script-code`, `-loader`, `-exfil`, `npm.install-persistence`; `FOLLOW_ON_COMPANION`) of the same release also names | +3 malicious (`pdf-html5-page-flip@2.0.2`, `template-cards@16.1.2`, `template-pictogram@9.1.3`), +2 benign (`chuxin-agentdesk@0.1.1`, `@prismatic-io/components-bigcommerce@0.1.0`) |
 | B2 | `npm.install-persistence` (owner rulings, decision 0015), in `FOLLOW_ON_ALONE` | +22 unwanted, +4 benign (`agy-statusblocks@0.1.1`, `repilot@0.3.1`, `basinfy@1.3.14`, `@c0dingbear/termius-mcp@0.6.2`), +1 unverified (`wkappbot-code@0.3.8`) |
+| T | `static.disguised-file` (round 6 T, MEDIUM or HIGH: a script or executable under a font, image or media name), in `FOLLOW_ON_ALONE`, `STAGE_VERSION` 19: a follow-on too small for Stage 2's routing still reports | 0 benign (its only severe findings on 230,290 tarballs are `pdf-html5-page-flip` 2.0.1/2.0.2) |
 | C | the same, from earlier runs within 7 days | over A-B2: +27 unwanted, +1 benign (`memtrace@1.2.14`), +1 unverified; over A alone: +5 unwanted |
 
 A destination alone is not carried: benign CLIs with a bundled ngrok table or a default server

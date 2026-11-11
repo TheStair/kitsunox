@@ -83,8 +83,9 @@ STAGE_ID: Final = "correlate"
 # explains `npm.install-hook`. 18: a follow-on pass (`correlate_run(follow_on=...)`): a
 # release whose previous release the run reported, still holding that report's payload
 # evidence, is correlated again with it (`correlate.follow-on`), and `correlate.json` counts
-# the pass under `follow_on`. Output without the field is 1.
-STAGE_VERSION: Final = 18
+# the pass under `follow_on`. 19: `static.disguised-file` (Stage 2) is carried by follow-ons
+# (`FOLLOW_ON_ALONE`). Output without the field is 1.
+STAGE_VERSION: Final = 19
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -578,12 +579,17 @@ FOLLOW_ON: Final = "correlate.follow-on"
 #   `@prismatic-io/components-bigcommerce@0.1.0`).
 # - B2: install code that persists (`npm.install-persistence`, owner rulings in decision
 #   0015), in `FOLLOW_ON_ALONE`. +22 unwanted, +4 benign, +1 unverified.
+# - T (round 6, integrator): a disguised file (`static.disguised-file`, MEDIUM or HIGH: a
+#   script or executable under a font/image/media name) is carried on its own, so a follow-on
+#   too small for Stage 2's routing still reports. Live cost 0: across 230,290 tarballs its
+#   only severe findings are `pdf-html5-page-flip` 2.0.1/2.0.2; INFO launchers aren't carried.
 FOLLOW_ON_ALONE: Final = frozenset(
     {
         "static.known-signature",
         "static.channel-follow",
         "static.channel-tagging",
         "npm.install-persistence",
+        "static.disguised-file",
     }
 )
 FOLLOW_ON_DESTINATION: Final = frozenset({"static.hardcoded-ip", "static.exfil-endpoint"})

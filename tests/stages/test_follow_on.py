@@ -531,6 +531,11 @@ def test_what_the_default_policy_carries() -> None:
     assert [c.rule_id for c in payload_evidence(channel)] == ["static.channel-follow"]
     assert [c.rule_id for c in payload_evidence(STEALER_FINDINGS)] == ["static.hardcoded-ip"]
     assert [c.rule_id for c in payload_evidence(persists)] == ["npm.install-persistence"]
+    font = "dist/lib/fonts/fa-solid-400.woff2"
+    disguised = (file_finding("static.disguised-file", font, Severity.HIGH),)
+    assert [c.rule_id for c in payload_evidence(disguised)] == ["static.disguised-file"]
+    launcher = (file_finding("static.disguised-file", "bin/x.exe", Severity.INFO),)
+    assert payload_evidence(launcher) == []
 
 
 # Follow-ons of earlier runs' reported releases.
