@@ -179,6 +179,14 @@ class InstallTargetMissing(BaseRule):
     entries), it has no tar anomaly or duplicate entry, and its files add up to the size the
     registry declares (a sample set's archive with files missing, like DataDog's, does not).
 
+    A hook that runs nothing can still be a broken attack, and the next release fixes it; such a
+    package keeps its `npm.install-hook` finding (`broken_attack`): one with no JavaScript at
+    all (a probe placeholder, `@testcarrot/supply9@1.0.2`), one whose declared `main` is not
+    shipped either (an emptied package, `modern-react@17.2.6`), and one that ships the
+    install script the hook misnames (`instal.js` beside `node install.js`:
+    `parashaxmgflhg@0.33.4`; `postinstall.js` beside `node install.js`:
+    `@vampirchik147/libxmljs2@0.19.7`; all `vm-day1` malicious).
+
     Added 2026-11-11 (`docs/proposals/precision-round6-Q.md`, Q1)."""
 
     id = "npm.artifact.install-target-missing"
@@ -207,6 +215,9 @@ class InstallTargetMissing(BaseRule):
         targets = {hook: hook_target(command) for hook, command in sorted(hooks.items())}
         if any(t is None or shipped(t, files) for t in targets.values()):
             return ()
+        named = [t for t in targets.values() if t is not None]
+        if broken_attack(packed, named, files):
+            return ()
         return (
             self.finding(
                 "Every install hook runs a file the package doesn't ship ("
@@ -223,6 +234,34 @@ class InstallTargetMissing(BaseRule):
                 ),
             ),
         )
+
+
+# A JavaScript file Node could run: what a placeholder ships none of.
+_JAVASCRIPT: Final = (".js", ".cjs", ".mjs")
+
+
+def broken_attack(
+    manifest: Mapping[str, object], targets: Sequence[str], files: Mapping[str, bytes]
+) -> bool:
+    """Whether a package whose hooks run missing files looks like a broken attack rather than a
+    packaging slip: it ships no JavaScript, its declared `main` is missing too, or it ships a
+    JavaScript file named like an install script (`instal` in the name, any case) at its root
+    or beside a missing target, which the hook was meant to run."""
+    if not any(p.lower().endswith(_JAVASCRIPT) for p in files):
+        return True
+    main = manifest.get("main")
+    if (
+        isinstance(main, str)
+        and main.strip()
+        and not shipped(main.strip().removeprefix("./"), files)
+    ):
+        return True
+    dirs = {""} | {t.rsplit("/", 1)[0] if "/" in t else "" for t in targets}
+    for path in files:
+        folder, _, name = path.rpartition("/")
+        if folder in dirs and "instal" in name.lower() and name.lower().endswith(_JAVASCRIPT):
+            return True
+    return False
 
 
 def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:

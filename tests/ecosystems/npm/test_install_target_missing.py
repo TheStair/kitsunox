@@ -140,3 +140,34 @@ def test_hook_target_and_shipped_helpers() -> None:
     assert hook_target("node x.js || exit 1") is None
     assert shipped("a/b", {"a/b.json": b""})
     assert not shipped("a/b", {"a/bc.js": b""})
+
+
+@pytest.mark.parametrize(
+    ("hooks", "files", "manifest"),
+    [
+        # a placeholder: no JavaScript at all (`@testcarrot/supply9@1.0.2`)
+        ({"postinstall": "node poc.js"}, {"README.md": b"x"}, {}),
+        # an emptied package: its declared `main` is gone too (`modern-react@17.2.6`)
+        ({"postinstall": "node tests/x.js"}, {"lib/a.js": b"1"}, {"main": "dist/index.js"}),
+        # the install script the hook misnames (`parashaxmgflhg@0.33.4`, `libxmljs2@0.19.7`)
+        ({"install": "node install.js"}, {"instal.js": b"1"}, {}),
+        ({"install": "node install.js"}, {"PostInstall.js": b"1"}, {}),
+        ({"postinstall": "node scripts/setup.js"}, {"scripts/install-deps.mjs": b"1"}, {}),
+    ],
+)
+def test_a_broken_attack_keeps_its_hook_finding(
+    hooks: dict[str, str], files: dict[str, bytes], manifest: dict[str, Any]
+) -> None:
+    tree = {"package.json": json.dumps({"name": "kx", "scripts": hooks, **manifest}).encode()}
+    tree |= files
+    snapshot = snap(hooks, sum(len(c) for c in tree.values()))
+    assert InstallTargetMissing().evaluate_artifact(snapshot, tree) == ()
+
+
+def test_install_named_code_elsewhere_and_a_shipped_main_are_fine() -> None:
+    hooks = {"postinstall": "node scripts/sync.mjs"}
+    manifest = {"name": "kx", "scripts": hooks, "main": "./dist/index.js"}
+    tree = {"package.json": json.dumps(manifest).encode()}
+    tree |= {"dist/install.js": b"1", "install.sh": b"echo", "dist/index.js": b"1"}
+    snapshot = snap(hooks, sum(len(c) for c in tree.values()))
+    assert len(InstallTargetMissing().evaluate_artifact(snapshot, tree)) == 1
