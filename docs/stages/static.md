@@ -496,7 +496,13 @@ Measured with the real code (round 6 T, [precision-round6-T](../proposals/precis
   (malicious) is now reported (score 3 → 8); 2.0.1 goes from score 6 to 11. No benign version
   is newly reported (the 35 `.exe` launchers are INFO), and nothing is lost: the rule only
   adds findings.
-- **`vm-day1`**: see the proposal.
+- **All 230,290 live tarballs on disk**: HIGH on the two `pdf-html5-page-flip` versions only,
+  INFO on 133 `.exe` launchers, nothing else.
+- **`vm-day1`**: fires on none of the 3,444 malicious samples (9,837 claimed-binary files):
+  the DataDog set has no such disguise, so nothing is gained or lost there.
+- **Follow-ons since round 6 U:** `correlate.follow-on` reports `pdf-html5-page-flip@2.0.2` as
+  a follow-on of 2.0.1 too; this rule is what flags such a file on first sight, whatever it
+  holds besides.
 
 Known limits: a payload in a format the rule doesn't know (an encrypted blob, a text claim such
 as `.txt` or `.json`) is not classified, nor is a polyglot (a real PNG with code appended); the
