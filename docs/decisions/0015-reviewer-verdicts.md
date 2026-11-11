@@ -240,6 +240,24 @@ out of both, with best- and worst-case bounds ([0019](0019-live-evaluation.md), 
   the user, every string literal in the shipped C# source, an app with no network classes, and
   an `ffmpeg.exe` byte-identical to the official gyan.dev 9.0.2 build, so unwanted, not
   malicious. Checking the package's own CLI with `--version` is not covered.
+- **Rulings of 2026-11-11 (the owner):**
+  - **Transparent wrapper packages are benign** ("probably benign"): a package that openly
+    exists to install a named tool and, at install, downloads only that tool from its official
+    release host, doing nothing else. Rebranded resellers (`usingopen` selling oh-my-pi) and
+    silent fallbacks to another project's binaries are not transparent and stay unwanted. Note
+    prefix "Owner ruling 2026-11-11 (transparent wrapper = benign):". This is the one exception
+    to the strict download rule above; the download rule still reports them (false positives
+    the reviewer clears).
+  - **A background process an install hook starts and leaves running is unwanted**
+    (`great-cto` 3.75.6/3.76.1: a detached local board server on 127.0.0.1:3141 that outlives
+    the install), whether or not it persists across reboots.
+  - **Shell completion files are benign** when they edit no rc file and no PATH and need the
+    user to source them, or are loaded by the shell only on demand
+    (`@ohos-ports/jackwener-opencli`).
+  - **An MCP server's tool output that steers the user's own agent through the package's own
+    flow is benign** (`@rel-time/mcp-server`'s payment-invoice instructions): it acts on the
+    user's side, at the user's request; harmful or covert instructions stay covered by the
+    2026-11-08 agent rulings.
 - **Command expansion in `binding.gyp` that enumerates the user's environment stays reported
   (the owner, 2026-11-10).** `<!(echo $HOME)` matches enumeration (`@ohos-ports/distringuish`;
   agent I's `npm.install-build-tool` v4 keeps it).
