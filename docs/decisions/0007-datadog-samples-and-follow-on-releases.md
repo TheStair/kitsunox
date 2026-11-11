@@ -39,3 +39,26 @@ includes `_npmUser`, maintainers, `dist`, the `time` map and earlier versions.
   reproducible from the recorded snapshot.
 - Not imported yet: the other ~23k shape-B samples. Code-level stages will also want the package
   files, which are already on disk, still encrypted.
+
+## Addendum 2026-11-11: follow-ons are reported in operation (round 6 U)
+
+Stage 4 now has a follow-on pass (`correlate.follow-on`, MEDIUM, weight 3; `STAGE_VERSION`
+18; [round 6 U](../proposals/precision-round6-U.md)). A release whose previous release was
+reported with payload evidence, and which still holds the same bytes at the same path (or the
+same manifest fields), gets the finding, naming the earlier release; chains carry it on. The
+previous release is looked up in the same run and, within 7 days, in earlier runs'
+`follow-on.jsonl` (each run pins the entries it used in its `follow-on-history.jsonl`, so a
+re-score reads exactly those; an unreadable earlier index is skipped). Deterministic from the
+run's inputs: never the clock or a verdict. Payload evidence: always-new rules (known
+signatures, channel follow/tagging; part A, zero-cost), a hard-coded destination in a file that
+also reads secrets or runs at install (B1), install persistence (B2). The owner took A, B1, B2
+and C (2026-11-11) and kept the finding on already-reported follow-ons. Measured live: +3
+malicious (`pdf-html5-page-flip@2.0.2`, `template-cards@16.1.2`, `template-pictogram@9.1.3`),
++59 unwanted, +7 benign, +2 unverified over the follow-ons of reported releases (most never
+reviewed, labels inherited through the byte-identical evidence); `vm-day1`: +12 malicious
+follow-ons with B1; nothing lost. Not carried (measured, about one benign per positive or
+worse): install hooks, non-registry dependencies, generic content rules. `esoftplay@0.0.269-
+beta96052d3` is not rescued: its earlier betas were reported for another file. The
+`vm-day1` follow-on cells still use `pipeline+4` per sample; a follow-on-aware predictor is a
+post-freeze question.
+
