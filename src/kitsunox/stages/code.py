@@ -13,6 +13,7 @@ from kitsunox.ecosystems.npm.entry import load_sources
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.rules.install_code import RULES as NPM_CODE_RULES
+from kitsunox.ecosystems.npm.rules.install_download import RULES as NPM_DOWNLOAD_RULES
 from kitsunox.ecosystems.npm.rules.install_inert import RULES as NPM_INERT_RULES
 from kitsunox.ecosystems.npm.rules.install_loader import RULES as NPM_LOADER_RULES
 from kitsunox.ecosystems.npm.rules.install_persistence import RULES as NPM_PERSISTENCE_RULES
@@ -29,6 +30,7 @@ CODE_RULES: Final[tuple[CodeRule, ...]] = (
     *NPM_CODE_RULES,
     *NPM_SHAPE_RULES,
     *NPM_PERSISTENCE_RULES,
+    *NPM_DOWNLOAD_RULES,
     *NPM_LOADER_RULES,
     *NPM_INERT_RULES,
     *NPM_UNDECLARED_RULES,

@@ -1014,6 +1014,67 @@ def shown_not_run(content: bytes, language: str, offset: int) -> bool:
     return shown
 
 
+# `handed_to_runner` (2026-11-10, round 6 R, `npm.install-download-foreign`): the expressions a
+# command string may pass through on its way to a runner.
+_TO_RUNNER: Final = frozenset(
+    {
+        "binary_expression",
+        "template_string",
+        "template_substitution",
+        "ternary_expression",
+        "parenthesized_expression",
+    }
+)
+
+
+def handed_to_runner(content: bytes, language: str, offset: int) -> bool:
+    """Whether the string at byte `offset` is handed to a call that runs it (`exec*`,
+    `spawn*`, `execa*`, `run*`, `fork`, `sh`, `shell`, `$`): as an argument, in an argument
+    list (`spawnSync("npx", ["-y", pkg])`), through `+`, templates and ternaries; or held in a
+    variable (`const cmd = "..."`, `cmd += "..."`) that such a call is given as its first or
+    second argument. Stricter than `not shown_not_run(...)`: a string kept in a variable or
+    written into a file (`pkg.scripts.test = "npx vitest"`) that no runner is given is not
+    run."""
+    if len(content) > MAX_SOURCE_BYTES:
+        return False
+    parser, _ = _parser(language)
+    node: ts.Node | None = parser.parse(content).root_node.descendant_for_byte_range(
+        offset, offset + 1
+    )
+    while node is not None and node.type not in ("string", "template_string"):
+        node = node.parent
+    while node is not None and node.parent is not None:
+        parent = node.parent
+        if parent.type == "arguments" and parent.parent is not None:
+            name = _text(parent.parent.child_by_field_name("function"))
+            return bool(_RUNS.match(name.rsplit(".", 1)[-1]))
+        if parent.type == "array":
+            if parent.parent is None or parent.parent.type != "arguments":
+                return False
+            node = parent
+            continue
+        if parent.type == "variable_declarator":
+            return _variable_run(content, _text(parent.child_by_field_name("name")))
+        if parent.type in ("assignment_expression", "augmented_assignment_expression"):
+            return _variable_run(content, _text(parent.child_by_field_name("left")))
+        if parent.type not in _TO_RUNNER:
+            return False
+        node = parent
+    return False
+
+
+def _variable_run(content: bytes, name: str) -> bool:
+    """Whether a runner call takes the plain variable `name` as its first or second
+    argument."""
+    if not re.fullmatch(r"[\w$]+", name):
+        return False
+    pattern = (
+        rb"(?<![\w$.])(?:exec\w*|spawn\w*|execa\w*|fork|run\w*|sh|shell|\$)\s*\(\s*"
+        rb"(?:[\w$.]+\s*,\s*)?" + re.escape(name.encode()) + rb"(?![\w$])"
+    )
+    return re.search(pattern, content) is not None
+
+
 def in_text(content: bytes, language: str, offset: int) -> bool:
     """Whether the byte at `offset` is inside a string, template, regex or comment."""
     parser, _ = _parser(language)
