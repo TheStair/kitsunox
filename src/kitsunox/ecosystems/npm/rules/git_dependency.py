@@ -97,10 +97,11 @@ def _named(dependency: SourceDependency) -> str:
 
 
 class GitDependencyCode(BaseRule):
-    """See the module docstring. v1 (2026-11-12, round 10 G)."""
+    """See the module docstring. v1 (2026-11-12, round 10 G). v2 (owner, 2026-11-12): a GitHub
+    dependency the version keeps unchanged is read too (`stages.gitdeps.wanted`)."""
 
     id = "npm.git-dependency"
-    version = 1
+    version = 2
     severity = Severity.INFO
     weight = 0.0
     title = "Git dependency's install code"

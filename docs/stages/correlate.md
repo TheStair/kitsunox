@@ -473,8 +473,11 @@ downloaded and started a payload; only `npm.dependency.non-registry` fired. Sinc
   paths, protocols npm can't fetch or registry tarball URLs. Of those, the ones whose spec
   names a GitHub repository are read (`ecosystems/npm/gitdep.github_spec`: `github:o/r`, `o/r`,
   `git+https://`, `git+ssh://`, `git://`, `git@github.com:o/r`, `https://github.com/o/r`, and
-  archive URLs); credentials in a spec are never sent, and shown as `***@`. Unchanged specs on
-  an update are not read.
+  archive URLs); credentials in a spec are never sent, and shown as `***@`. Since
+  `STAGE_VERSION` 23 (owner, 2026-11-12) every GitHub dependency of the version is read,
+  unchanged ones included: a branch or default-branch spec installs whatever the branch holds
+  today, so the same spec can install new code. An unchanged spec is read as new (what the
+  previous release installed is not known); other unchanged non-registry specs get no note.
 - **Resolve, fetch, extract.** The reference (`#<commit>`, `#<tag or branch>`,
   `#semver:<range>`, none for the default branch; `::path:<dir>`) is looked up in the
   repository's refs (`HEAD` included), then the archive at that commit is fetched through the
@@ -528,7 +531,18 @@ a dependency's `prepare: ... tsc ...`; `@eqtylab/vcomp-verify-js`: `prepublish: 
 positive is lost or gained, and 20 versions reported already gained a severe dependency
 finding (10 positives, 10 benign). The replay set (3,716 verdicted) changes the same 4
 versions and nothing else; `vm-day1` changes nothing (its waves' fork commits are gone from
-GitHub). `web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
+GitHub).
+
+With unchanged specs read too (`STAGE_VERSION` 23), the live runs on disk give 1,538 versions
+with a GitHub or added non-registry dependency (2,001 dependencies) and 108 more versions
+reported, all unverdicted (26 packages: `@filen/sdk-rs` 16, `@xrpl-utilities/mcp` 15,
+`@kubohiroya/turbowarp-kamishibai-app` 15, `handoff-app-next` 11, ...: `prepare` builds of
+the same dependency in every release), besides the 4 benign above; no positive lost or
+gained. `vm-day1`: +2 malicious (`trex-proxy-browser-extension-sdk` 0.1.1 and 0.1.11: their
+unchanged `reclaimprotocol/tls#8e0669a2…` dependency's `prepare` downloads,
+`npm.install-download`), none lost. Caps: the 4-day catch-up run `20261107T163310Z-npm` wanted
+160 specs (151 commits read, 442 MB of archives); no run reached either cap.
+`web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
 `npm.install-script-code`. Details: the proposal.
 
 ## Decision and score
@@ -930,9 +944,9 @@ for ~1.4 extra benign reports a day.
 ## Known limits
 
 - **Git dependencies** (decision 0020). Only GitHub repositories and archives are read; other
-  git hosts, GitHub release assets and tarballs on other hosts are noted, not read. An
-  unchanged spec on an update is not read, so a push to a dependency's branch between two
-  releases goes unseen. The reference is resolved when Stage 4 runs, not when the release was
+  git hosts, GitHub release assets (owner, 2026-11-12: not read) and tarballs on other hosts
+  are noted, not read. A push to a dependency's branch is seen only when a release that
+  depends on it is published. The reference is resolved when Stage 4 runs, not when the release was
   published: a branch moved since, a deleted repository or a garbage-collected fork commit
   reads differently or not at all. The dependency's own dependencies (registry ones, whose
   install hooks also run, and the devDependencies npm installs to run `prepare`) are not read,

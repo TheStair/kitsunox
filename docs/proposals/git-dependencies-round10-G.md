@@ -190,7 +190,7 @@ did). `g_replay.sh` is `k_replay.sh` with `replay_g.py`, under the same heavy lo
 - Resolved as of the run: a later push to a branch, a deleted repository or a garbage-collected
   fork commit (every `vm-day1` wave's) reads differently or not at all. That is also why
   `vm-day1` can't measure recall here: the attacks' git dependencies are gone.
-- Unchanged specs on an update are not read (owner question 1).
+- Unchanged specs on an update were not read at first; they are since Q1 (Owner answers).
 - The dependency's own dependencies (the devDependencies npm installs to run `prepare`
   included) are not read; its git dependencies are listed only.
 - Release assets, raw files, other git hosts, tarballs on other hosts: noted, not read.
@@ -198,7 +198,7 @@ did). `g_replay.sh` is `k_replay.sh` with `replay_g.py`, under the same heavy lo
 - Live cost unmeasured beyond the runs on disk: GitHub refs and archives need no token, one
   request each per run.
 
-## Owner questions
+## Owner questions (answered 2026-11-12: Q1 yes, Q2 no, Q3 yes, Q4 no; see "Owner answers")
 
 1. **Read unchanged specs too?** Today a GitHub dependency is read only when the version adds
    or changes it (as `non-registry` fires). Reading every version's GitHub dependencies would
@@ -230,3 +230,38 @@ did). `g_replay.sh` is `k_replay.sh` with `replay_g.py`, under the same heavy lo
    dependency was read and its install code found nothing. Live with today's Stage 1: 87
    benign versions reported with a non-registry dependency (not all of them GitHub ones). Not
    measured to the bar here; a precision round could.
+
+## Owner answers (2026-11-12) and what they measured
+
+- **Q2 (release assets): declined.** GitHub release assets and raw files stay noted, not read.
+- **Q4 (narrow `non-registry`): declined**, after the freeze at the earliest.
+
+### Q1: unchanged GitHub specs are read too (`STAGE_VERSION` 23, `npm.git-dependency` v2)
+
+`wanted` takes every GitHub dependency of a version, changed or not; an unchanged spec is read
+as new. Measured with `measure_live3.py` (live runs on disk, Stage 1 re-run with today's rules,
+each run's caps) and `vm_eval.py` (`vm-day1`), the tree frozen as `q1-src`:
+
+| | main | Q1 |
+|---|---|---|
+| Live: versions measured (a GitHub dependency, or an added non-registry one) | 1,538 | 1,538 |
+| Live: newly reported benign | | 4 (the 4 above) |
+| Live: newly reported unverdicted | | 108 (26 packages) |
+| Live: positives lost / gained | | 0 / 0 |
+| `vm-day1`: malicious reported (of 143 with a non-registry dependency) | 114 | **116** |
+| `vm-day1`: benign reported (of 8) | 1 | 1 |
+
+- **The 108** come from packages whose every release depends on the same dependency that
+  builds itself: `@filen/sdk-rs` 16, `@xrpl-utilities/mcp` 15,
+  `@kubohiroya/turbowarp-kamishibai-app` 15, `handoff-app-next` 11, `altium-to-circuit-json` 9,
+  `@nethesis/phone-island` 9, `@diffci.com/diffci` 4, 19 more packages with 1-3.
+- **`vm-day1` +2:** `trex-proxy-browser-extension-sdk` 0.1.1 and 0.1.11 (malicious), whose
+  unchanged `git+https://git@github.com/reclaimprotocol/tls.git#8e0669a2…` dependency's
+  `prepare` downloads (`npm.install-download` and `npm.install-hook`, MEDIUM). None lost.
+- **Caps.** The biggest live run, the 4-day catch-up `20261107T163310Z-npm` (405k changes),
+  wanted 160 distinct specs (428 versions): 151 commits read, 442 MB of archives; 6 specs
+  unreadable (`AnthusAI/Vultus#af98d57`, an abbreviated commit in no ref, for 44 versions;
+  two deleted repositories; one without `package.json`; one 404). The next runs wanted 63
+  (the 24-hour first run, 206 MB) and 20. No run reached the 200-spec cap, no package the
+  10-spec one. Over all runs, 3.3 GB of archives were downloaded (688 MB in the scratch blob
+  store, compressed and shared between runs).

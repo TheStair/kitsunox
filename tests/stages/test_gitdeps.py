@@ -312,14 +312,19 @@ def test_a_network_failure_is_retried_then_noted(tmp_path: Path, router: Router)
     assert info(tmp_path / "down")["still_failing"] == 1
 
 
-def test_only_added_or_changed_dependencies_are_read(tmp_path: Path, router: Router) -> None:
+def test_an_unchanged_github_dependency_is_read_too(tmp_path: Path, router: Router) -> None:
+    """The same `o/d` (the default branch) may install new code in this release."""
     serve_repo(router, "o/d", DECODER)
     same = release({"d": "o/d"}, previous={"d": "o/d"})
-    assert wanted(same.change) == []
+    assert wanted(same.change) == [("d", "o/d")]
     (result,), _ = run_all(tmp_path, [same], router.client())
-    assert router.requests == [] and not any(
-        f.rule_id == "npm.git-dependency" for f in result.findings
+    assert "npm.install-script-code" in rules(result)
+    # An unchanged spec that isn't a GitHub repository would only add a note: left out.
+    other = release(
+        {"t": "https://cdn.example/x.tgz", "g": "gitlab:o/r"},
+        previous={"t": "https://cdn.example/x.tgz", "g": "gitlab:o/r"},
     )
+    assert wanted(other.change) == []
     local = release({"a": "file:../a", "b": "^1", "c": "https://registry.npmjs.org/c/-/c-1.tgz"})
     assert wanted(local.change) == []
 

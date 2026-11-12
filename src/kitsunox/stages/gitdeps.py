@@ -8,7 +8,8 @@ started a payload. Only `npm.dependency.non-registry` (Stage 1) fired; Stages 2-
 release's tarball, which had none of it.
 
 For each dependency a version adds or changes (`wanted`: what `npm.dependency.non-registry`
-reads) that names a GitHub repository (`gitdep.github_spec`):
+reads), and each GitHub dependency it keeps unchanged, that names a GitHub repository
+(`gitdep.github_spec`):
 
 1. **Resolve** the reference to a commit with the repository's refs (the ref advertisement the
    repository comparison fetches, `RepoMemory.refs`), as of the run.
@@ -106,8 +107,9 @@ DEPENDENCY_LIMITS: Final = ExtractLimits(
     max_files=100_000,
 )
 # Distinct git dependencies (repository + reference) one run reads, in run order. Measured on
-# the live runs on disk (190 runs, 2026-10-29..11-12): 174 versions added or changed a GitHub
-# dependency, 175 distinct specs in all, at most a few dozen in one run.
+# the live runs on disk (190 runs, 2026-10-29..11-12) with unchanged specs read too: the
+# 4-day catch-up run `20261107T163310Z-npm` wanted 160 specs (151 commits read, 442 MB of
+# archives), the 24-hour first run 63, every other run at most 20; no run or package reached a cap.
 MAX_GIT_DEPENDENCIES: Final = 200
 # ... of which one package (all its versions in the run) may claim at most this many.
 MAX_PER_PACKAGE: Final = 10
@@ -143,15 +145,22 @@ EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def wanted(change: Change) -> list[tuple[str, str]]:
-    """The runtime dependencies (`dependencies`, `optionalDependencies`) this version adds or
-    changes that npm fetches from outside the registry: a git repository or a URL, not a local
-    path, a protocol npm can't fetch, or a registry tarball URL. Sorted by name."""
+    """The runtime dependencies (`dependencies`, `optionalDependencies`) of this version that
+    npm fetches from outside the registry: a git repository or a URL, not a local path, a
+    protocol npm can't fetch, or a registry tarball URL. Those the version adds or changes, and
+    (owner, 2026-11-12) every GitHub repository it depends on, changed or not: a spec that
+    names a branch or no reference installs whatever the branch holds today, so the same spec
+    can install new code, and the previous release's dependency code was not necessarily read.
+    An unchanged spec that isn't a GitHub repository (nothing would be read) is left out.
+    Sorted by name."""
     new = runtime_dependencies(change.new.manifest)
     old = runtime_dependencies(change.previous.manifest) if change.previous else {}
     found = []
     for name, spec in sorted(new.items()):
         text = spec.strip()
-        if old.get(name) == spec or is_registry_spec(text) or fetches_nothing(text):
+        if is_registry_spec(text) or fetches_nothing(text):
+            continue
+        if old.get(name) == spec and github_spec(spec) is None:
             continue
         if text.startswith(("file:", "link:")) or npm_local_path(text):
             continue
@@ -357,7 +366,7 @@ def base_commit(change: Change, name: str, spec: GitHubSpec) -> str | None:
 
 
 class NpmGitDependencyLookup:
-    """Reads the install code of the GitHub dependencies a version adds or changes (a
+    """Reads the install code of the GitHub dependencies of a version (`wanted`; a
     `SourceDependencyLookup`). Requests go through `fetcher` (the run's: recorded in its
     snapshot, so a replay reads the same) with their own `RepoMemory`, so each repository's
     refs and each archive go to the network at most once a pass, extraction is bounded and

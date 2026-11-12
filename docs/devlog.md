@@ -2,6 +2,27 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-12 (round 10 G, owner answers): unchanged git dependencies are read too
+
+**Stage(s):** Stage 4 (`stages/gitdeps.wanted`)
+**Context:** The owner answered round 10 G's questions: Q1 yes (read unchanged GitHub
+dependency specs: an unpinned spec can point at new code without the spec changing), Q3 yes
+(explain a dependency's build-only `prepare`; next entry), Q2 no (release assets), Q4 no
+(narrowing `non-registry`).
+
+### Decisions
+- **Unchanged GitHub specs are read, as new** ([decision 0020](decisions/0020-git-dependency-install-code.md)
+  addendum): what the previous release installed is not known, and comparing against "the
+  same spec today" would always find nothing. Unchanged specs of other kinds get no note.
+  Caps unchanged.
+
+### Evaluation snapshot
+- `vm-day1`: 114 -> 116 of 143 malicious (`trex-proxy-browser-extension-sdk` 0.1.1, 0.1.11 via
+  `reclaimprotocol/tls`'s downloading `prepare`), none lost.
+- Live runs on disk: +108 unverdicted reports (26 packages that depend on the same building
+  dependency in every release), 0 positives lost or gained. Biggest run: 160 specs, 442 MB of
+  archives, no cap reached.
+
 ## 2026-11-12 (round 10 G): Reading the install code of git dependencies
 
 **Stage(s):** Stage 4 (`npm.git-dependency`, `stages/gitdeps.py`, `ecosystems/npm/gitdep.py`)

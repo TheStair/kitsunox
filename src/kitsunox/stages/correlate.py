@@ -96,8 +96,9 @@ STAGE_ID: Final = "correlate"
 # findings carry a `dep:<name>@<commit12>/` path prefix (`dependency_subject`), an explanation
 # applies only to findings of its own subject (the package, or one dependency), and a
 # dependency's findings are never cleared by the package's repository match.
+# 23 (owner, 2026-11-12): a GitHub dependency a version keeps unchanged is read too.
 # Output without the field is 1.
-STAGE_VERSION: Final = 22
+STAGE_VERSION: Final = 23
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;

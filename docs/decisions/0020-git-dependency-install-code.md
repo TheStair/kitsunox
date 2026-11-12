@@ -83,7 +83,8 @@ tarball to npm, and only the three install hooks run.
   an INFO `Not evaluated:` note. A network failure is retried in Stage 4's passes and counted
   (`git_dependencies` in `correlate.json`).
 - **Not followed.** The dependency's own non-registry dependencies are listed (INFO), not read.
-  Unchanged specs on an update are not read (as `non-registry`, which doesn't fire on them).
+  Unchanged specs on an update were not read at first (as `non-registry`, which doesn't fire
+  on them); see the addendum.
 - **Other sources.** GitLab, Bitbucket and other git hosts: noted, not read. Tarball URLs on
   other hosts (`http(s)://<host>/x.tgz`): noted, **not fetched**. The host is often the
   attacker's (`packages.storeartifact.com`, bare IPs in `vm-day1`): a request tells them the
@@ -123,6 +124,30 @@ tarball to npm, and only the three install hooks run.
   today (the waves' fork commits on `tanstack/router`, `antvis/G2` and
   `opensearch-project/opensearch-js` are no longer served; `opensearch-project/openearch` is
   deleted), so `vm-day1` can't measure this rule's recall; no sample changed decision.
-- **Unchanged specs** on an update, branch or default-branch references included, are not
-  read: a push to a dependency's branch between two releases goes unseen (owner question in
-  the proposal).
+- **Unchanged specs** were not read at first: a push to a dependency's branch between two
+  releases went unseen. The owner chose to read them (addendum).
+
+## Addendum (2026-11-12, owner): unchanged specs are read too
+
+The owner answered the proposal's questions: read unchanged GitHub specs (Q1, yes), explain a
+dependency's build-only `prepare` (Q3, yes; see the next addendum), do not read GitHub
+release assets (Q2, no) and do not narrow `npm.dependency.non-registry` (Q4, no; after the
+freeze at the earliest).
+
+- **Decision.** `wanted` takes every GitHub dependency of a version, changed or not (an
+  unchanged spec that isn't a GitHub repository gets no note: nothing would be read). A spec
+  naming a branch or no reference installs what the branch holds today, so the same spec can
+  install new code; an unchanged spec is read as new, since what the previous release
+  installed is not known. The caps stay (200 specs a run, 10 a package).
+  `npm.git-dependency` v2, `STAGE_VERSION` 23.
+- **Measured** (live runs on disk with today's Stage 1; `vm-day1`): 108 more live versions
+  reported, all unverdicted, from 26 packages whose every release depends on the same
+  building dependency (`@filen/sdk-rs` 16, `@xrpl-utilities/mcp` 15,
+  `@kubohiroya/turbowarp-kamishibai-app` 15, `handoff-app-next` 11, ...); no live positive lost
+  or gained. `vm-day1`: +2 malicious (`trex-proxy-browser-extension-sdk` 0.1.1 and 0.1.11,
+  whose unchanged `reclaimprotocol/tls#8e0669a2…` dependency downloads in `prepare`), none
+  lost.
+- **Caps on the biggest live run** (the 4-day catch-up `20261107T163310Z-npm`, 405k changes):
+  160 distinct specs wanted, 151 commits read (442 MB of archives), 6 specs unreadable
+  (abbreviated commits in no ref, deleted repositories, no `package.json`, a 404);
+  neither cap was reached there or in any other run (the next largest: 63 specs, then 20).
