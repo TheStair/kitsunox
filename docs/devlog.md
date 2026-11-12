@@ -2,6 +2,51 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-12 (later): Round 9 Q, a regression round 8 caused, and the unverified re-review
+
+**Stage(s):** Stage 3 (`npm.install-download`, `npm.install-persistence`), reviewer verdicts
+**Context:** After round 8 landed, the largest live benign clusters were still install-time
+"downloads" that are not: `@lightdash/cli`'s telemetry script (36 verdicted benign since
+2026-11-11 12:00Z), `chmod` of a shipped `.exe` in `@lark-codem` platform builds (10). The owner
+also asked for the unverified ("inconclusive") verdicts to be revisited.
+
+### Decisions
+- **Q1-Q3 (owner, 2026-11-12):** a shell `curl`/`wget` captured into a variable and only
+  assigned, tested or sent as request data is no download (v5); inline `node -e` hook code is
+  read once, as JavaScript, so a quoted `.exe` path in a `chmodSync` no longer reads as running
+  it (v4); a command string kept in a local variable that is only shown is no network (v6).
+- **Q4 (owner, 2026-11-12): `npm.install-persistence` v7, shell start-up writes count on
+  unchanged install code** (as R2 did for agent writes). The `path` and `system-package` forms
+  still need changed code: they are where round 8 R's 22 benign came from (17 `glimmervoid`,
+  4 `agentiqa`). Cost: 0 verdicted benign, about 13 unverdicted reports a day.
+
+### Challenges
+- **Round 8 P2 silently unreported 4 unwanted versions.** `botmux` 3.59.2-3.59.5 append a PATH
+  line to shell rc files on a global install, but their install code never changed, so
+  `npm.install-persistence` (changed code only) never fired; they were reported only because
+  `npm.install-download` matched a printed `curl` hint, which P2 correctly removed. The round 8
+  bar was measured on the replay set and `vm-day1`, which did not contain `botmux`; Q found it by
+  replaying every live verdicted positive on disk with main.
+  - **Resolution:** Q4 (above). Lesson: a precision change must also be checked against every
+    verdicted positive in the live runs on disk, not only the frozen replay set. Round 9's brief
+    now requires it.
+- **Unverified re-review:** 111 unverified verdicts (67 gone, 30 obfuscated, 14 remote). Tarballs
+  for 50 were recovered (23 still held as blobs after their runs were pruned, matched to the
+  ledger's sha256; 25 from registry.npmjs.org or registry.npmmirror.com, checked against their
+  `dist.integrity`); new static resolvers (JS-Confuser, obfuscator.io aliases) decoded the
+  obfuscated ones without evaluating code. Of the 64 re-reviewed (with the 14 remote ones), one
+  is **malicious and was still live: `web3-mev-error-decoder@0.1.0`**, clean on npm but with an
+  unpinned GitHub dependency whose install script downloads and runs a Windows payload from
+  Dropbox and pipes a remote script into `zsh` on macOS. The pipeline had reported it on
+  2026-11-09; the review could not see the remote code then. The owner reports it.
+
+### Open questions / next steps
+- Owner: does a pre-push hook that blocks every push to GitHub/GitLab unless the author is
+  logged in (`wkappbot-code`) count as harmful?
+- Agent S (round 9: defensive stubs, obfuscated updates, `@humanode-hyperlane`) still running.
+- Post-freeze: report a non-registry (git) dependency whose repository declares an install
+  script; `web3-mev-error-decoder` is the motivating case.
+
 ## 2026-11-12: Round 8 (recall R + precision P), the label-blind sample backlog, and oversize hook packages
 
 **Stage(s):** Stages 1-4 (rules), reviewer verdicts, live label-blind sample
