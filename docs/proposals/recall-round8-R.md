@@ -134,7 +134,53 @@ benign above), 0 lost. New test:
 
 ## 4. Target 3: WhatsApp channel follows in unchanged files (`static.channel-follow-on-connect`)
 
-> **Pending:** built and measured in the next commit of this round.
+`@risacakep/risayap@7.0.0-rc25.7` (run `20261110T094623Z-npm`, unwanted): a Baileys fork whose
+`lib/Socket/index.js` `makeWASocket` calls `socket.newsletterFollow('120363418729056952@newsletter')`
+on every `connection.update` to `open`. rc25.6 (new) and rc25.10 (the file changed) were
+reported by `static.channel-follow`; rc25.7 shipped the file unchanged, and Stage 2's file
+rules read only the contents an update adds.
+
+A new Stage 2 artifact rule (`rules/channels.py`, registered with the npm artifact rules like
+`static.disguised-file`) reads every JavaScript file of every version, narrowly: a follow of a
+**hardcoded** channel id (a literal, or a variable bound to one in the same file: a constant, an
+environment default as in `gimaa-baileys`, an array iterated with `for ... of` or `forEach`)
+passed to `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, made
+in a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200
+characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and
+messages blanked, tests/examples/docs skipped. MEDIUM, weight 3.
+
+On the Baileys set (tarballs read as data) it fires on 15 versions, all unwanted:
+`@risacakep/risayap` rc25.6, rc25.7 and rc25.10, `elaina-baileys` 1.0.0-1.0.3,
+`@xzvbailss/baileys` 1.0.0 and 5.0.0, `gimaa-baileys@1.0.0`, `@chatbridgeworld/baileys@1.0.0`,
+`@ubedsockets/baileys` 1.7.9-1.7.12 (Stage 2 never reads those four: unrouted). **0 of the 48
+benign** (`aunubaileys` 1.0.0-1.0.70: the follow is an API method over ids the user passes;
+`@nanazx/baileys@1.0.0`: no call; `shadowx-baileys`: opt-in, `shadowXAutoFollowChannel ===
+true`; `lexzymods-*`: no hardcoded id in the calling file; `gxinztech-baileys` 1.1.0/1.1.1: no
+id in the calling file).
+
+**Tagging** (`static.channel-tagging` on unchanged files) was not added: the same always-read
+check would fire on `aunubaileys` 1.0.53-1.0.58 (benign, a tagging helper the user calls;
+`static.channel-tagging` already reports them when their file changes).
+
+**Overlap with `correlate.follow-on` (important for the owner).** Since 2026-11-11 01:32Z
+(`e299b3f`, round 6 U part A) Stage 4's follow-on pass carries a reported release's
+`static.channel-follow` and `static.channel-tagging` evidence onto later releases that still
+hold it (same run, or an earlier run's report within 7 days). Live `main` reported
+`@xzvbailss/baileys@5.0.0` and `elaina-baileys` 1.0.1-1.0.3 that way; rc25.7's run
+(`20261110T094623Z`) predates the pass, and the same shape (rc25.6 reported in the same run)
+would very likely be carried today. The replay harness does not run the follow-on pass, so its
+counts below credit this rule with versions live `main` may already report. What the rule adds
+on top of the follow-on pass: a follow-on whose earlier release was not reported for its follow
+(a first release Stage 2 did not read, or one outside the 7-day window), and a finding that
+names the follow itself rather than an earlier report.
+
+**Measured.** Sample misses: `@risacakep/risayap@7.0.0-rc25.7` now reported (score 3,
+`static.channel-follow-on-connect`, `lib/Socket/index.js:24`). Baileys set, `main` → final
+(today's verdicts): 86 → 91 reported, benign 34 → 34, unwanted 49 → 54 (rc25.7,
+`@xzvbailss/baileys@5.0.0`, `elaina-baileys` 1.0.1-1.0.3; the last four were reported live by
+`correlate.follow-on`), precision 59.04% → 61.36%. Replay set (3,716): it fires on one version,
+`@chatbridgeworld/baileys@1.0.0` (unwanted, already reported); no decision changes. Tests:
+`tests/rules/test_channels.py` (5).
 
 ## 5. Live replay (all three, today's verdicts)
 
@@ -151,7 +197,14 @@ this set (their positives are newer than the set).
 
 ## 6. `vm-day1`
 
-VMDAY1
+`pipeline+4` per sample (`dd.py`, repository comparison off), `main` and the final code, on
+the 391 of the 3,444 `vm-day1` malicious samples these changes can act on
+(`dd_atrisk.py`: 3 where the channel rule fires, 388 whose install code names an AI agent
+directory, 0 with `webdriver-manager`): **346 reported before and after, 0 lost**, 0 gained.
+Only finding change: `static.channel-follow-on-connect` (MEDIUM) on three already-reported
+Baileys samples (`@shenira/baileys@4.0.2`, `@web2apk/baileys@7.7.7`, `baileys-dtz@7.0.0`).
+All three changes only add findings, and `correlate.decide` is monotone in them (the clearing
+switches are off), so no sample can be lost by them.
 
 ## 7. Rejected or not built
 

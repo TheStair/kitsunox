@@ -183,6 +183,7 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 | `npm.artifact.install-target-missing` (2026-11-11) | every install hook is `node <file>` (optionally `\|\| true` / `\|\| exit 0`) and the tarball has no such file: not the path, nor the path with a suffix, nor a directory of that name, compared without case (Node finds `x` as `x.js`; macOS and Windows ignore case). Only on the whole package: the tarball's hooks are the registry's, no `binding.gyp` (npm adds `node-gyp rebuild`), nothing skipped (links, unsafe paths), no tar anomaly or duplicate, and the files add up to the declared unpacked size (a sample set's zip with files missing does not); no backslash in the line (Windows runs `node lib\\index.js`); and not a broken attack (no JavaScript at all, a declared `main` missing too, or a JavaScript file named like an install script at the root or beside the target: the next release fixes the hook). Round 6, [Q1](../proposals/precision-round6-Q.md). An explanation for Stage 4 (`correlate.EXPLAINED`): `npm.install-hook` becomes LOW | INFO |
 
 | `static.disguised-file` (2026-11-11, ecosystem-agnostic, `rules/disguised.py`) | a file named as a binary format (font, image, audio/video, `.wasm`, native module or program, archive, PDF, `.bin`/`.dat`) whose bytes are no binary format but a script (JavaScript, shell, PowerShell, Python, batch; also base64-encoded), or a native executable under a non-program name, or an archive under a font/image/media name. Every file of every version, so a follow-on that still ships the file is flagged; [below](#files-disguised-as-a-binary-format-staticdisguised-file-2026-11-11) | HIGH for a script that uses process execution, the network, credentials or dynamic code, and for an executable; MEDIUM for a script a code file names; LOW otherwise and for an archive; INFO for a launcher script under a program name (`.exe`, `.dll`, `.so`, `.dylib`) |
+| `static.channel-follow-on-connect` (2026-11-11, ecosystem-agnostic, `rules/channels.py`) | a WhatsApp library (Baileys fork) that passes a **hardcoded** `\d{15,22}@newsletter` id (a literal, or a variable bound to one in the same file: a constant, an environment default, an array iterated with `for ... of`/`forEach`) as the first argument of `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, inside a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200 characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and messages blanked, tests/examples/docs skipped. Every file of every version, so a follow-on that ships the follow unchanged is flagged; [below](#whatsapp-follows-in-unchanged-files-staticchannel-follow-on-connect-2026-11-11) | MEDIUM (weight 3), "unwanted" |
 
 On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
 every time, and no tarball hid an install hook. The 9 script differences were npm's own
@@ -357,6 +358,28 @@ Upstream Baileys defines the protobuf field and takes the caller's JID, so it do
 MEDIUM, weight 3, "unwanted", never demoted as "not new" (`ALWAYS_NEW`), as
 `static.channel-follow`. Measured on every verdicted version's whole tarball in
 [precision-round4-A](../proposals/precision-round4-A.md).
+
+### WhatsApp follows in unchanged files (`static.channel-follow-on-connect`, 2026-11-11)
+
+Found by the label-blind daily sample (decision 0019): `@risacakep/risayap@7.0.0-rc25.7`
+(unwanted) ships the same `lib/Socket/index.js` as rc25.6, which calls
+`socket.newsletterFollow('1203...@newsletter')` on every connection open. rc25.6 (new) and
+rc25.10 (the file changed) were reported by `static.channel-follow`; rc25.7 had no Stage 2
+finding, because file rules read only the contents an update adds and `ALWAYS_NEW` only keeps a
+changed file's match from being demoted. This artifact rule reads every JavaScript file of every
+version, narrowly: a follow of a **hardcoded** channel id made by the code itself when the socket
+connects (table above). A follow the library only defines as an API method, a helper the user
+calls, ids the user passes in, and an explicit opt-in don't count. The tagging form is not
+repeated: the same always-read check would fire on `aunubaileys` 1.0.53-1.0.58, reviewed
+benign. On a version whose file changed, `static.channel-follow` names the same call (two
+MEDIUM findings; the decision is the same).
+
+On the 118 verdicted Baileys-like versions (name or note), tarballs read as data: it fires on 15,
+all unwanted (`@risacakep/risayap` rc25.6/rc25.7/rc25.10, `elaina-baileys` 1.0.0-1.0.3,
+`@xzvbailss/baileys` 1.0.0/5.0.0, `gimaa-baileys@1.0.0`, `@chatbridgeworld/baileys@1.0.0`,
+`@ubedsockets/baileys` 1.7.9-1.7.12, which Stage 2 never reads), and on none of the 48 benign
+(`aunubaileys` 1.0.0-1.0.70, `@nanazx/baileys`, `shadowx-baileys`'s opt-in, `lexzymods-*`).
+Measured in [recall round 8 R](../proposals/recall-round8-R.md), target 3.
 
 ### Shell start-up files (`static.shell-startup`, 2026-11-08)
 
