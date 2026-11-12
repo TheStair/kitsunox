@@ -29,7 +29,8 @@ test of what the code names, not of what it reaches: a write behind an interacti
 `npm_config_global` check counts too (the owner rules global-only writes unwanted as well).
 
 MEDIUM, weight 3: install code that does one of these is reported for what it does. Only new
-or changed install code counts (`ONLY_WHEN_CHANGED`), as for the other install rules. Measured
+or changed install code counts (`ONLY_WHEN_CHANGED`), as for the other install rules, except
+for the `agent` form (`ALWAYS_FORMS`, v6), which counts on every version. Measured
 in `docs/stages/ast.md` and `docs/proposals/precision-round4-A.md`."""
 
 from __future__ import annotations
@@ -153,6 +154,12 @@ SCRIPT_SUFFIXES: Final = (".sh", ".bash", ".zsh", ".ps1", ".psm1", ".bat", ".cmd
 # the previous version. False fires on every version whose install code does it (measured in
 # `docs/proposals/precision-round4-A.md`: more unwanted versions reported, and more benign).
 ONLY_WHEN_CHANGED: Final = True
+# v6 (2026-11-11, recall round 8 R, `docs/proposals/recall-round8-R.md`): the forms that count
+# on every version whose install code does them, changed or not. A user-wide agent install runs
+# on every `npm install` of every release that ships it, and the owner rules each such release
+# unwanted (`@aswless_854771076/ai_short_studio_cli@0.1.236`: its postinstall, unchanged since
+# 0.1.235, copies skills into `~/.codex/skills`, found by the label-blind daily sample).
+ALWAYS_FORMS: Final = frozenset({"agent"})
 
 
 class InstallPersistence(BaseRule):
@@ -193,19 +200,26 @@ class InstallPersistence(BaseRule):
     value analysis from the name (`RC_FILE`): `polydev-ai` lists `~/.zshrc` to read it;
     `coding-friend-cli` returns `join(home, ".zshrc")` from one function and writes it in
     another, out of `ShellStartup`'s reach (S3). Shell scripts and hook command lines are
-    matched as before; the `git-config` form is unchanged."""
+    matched as before; the `git-config` form is unchanged.
+
+    v6 (2026-11-11, recall round 8 R, `docs/proposals/recall-round8-R.md`): the `agent` form
+    (`ALWAYS_FORMS`) counts on every version whose install code does it, changed or not; the
+    other forms still need new or changed install code (`ONLY_WHEN_CHANGED`)."""
 
     id = "npm.install-persistence"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code changes the user's machine beyond the project"
 
     def evaluate_code(self, change: CodeChange) -> Sequence[Finding]:
         before = change.install_files_before
-        if ONLY_WHEN_CHANGED and before is not None and before == change.install_files:
+        unchanged = ONLY_WHEN_CHANGED and before is not None and before == change.install_files
+        if unchanged and not ALWAYS_FORMS:
             return ()
         found = persistence(change.install_files, scripts(change.snapshot.manifest))
+        if unchanged:  # v6: unchanged install code counts for `ALWAYS_FORMS` only
+            found = [item for item in found if item[0] in ALWAYS_FORMS]
         if not found:
             return ()
         forms = sorted({form for form, _, _, _ in found})

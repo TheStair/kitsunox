@@ -74,7 +74,63 @@ on no other version; no decision changes. 29 tests in `test_install_download.py`
 
 ## 3. Target 2: user-wide agent installs in unchanged install code (`npm.install-persistence` v6)
 
-> **Pending:** built and measured in the next commit of this round.
+`@aswless_854771076/ai_short_studio_cli@0.1.236` (run `20261108T151126Z-npm`, unwanted): its
+postinstall `scripts/postinstall.mjs` calls `autoInstallSkills(defaultSkillsRoot('codex'))`,
+copying the bundled skill into `~/.codex/skills` on every install. The install code is the
+same as 0.1.235's, and `npm.install-persistence` has `ONLY_WHEN_CHANGED = True`, so nothing
+fired (only the INFO `npm.install-agent-user-wide`).
+
+Two variants, measured with the real code on the 1,384 replay-set updates that have an install
+hook (the only versions where `ONLY_WHEN_CHANGED` can matter):
+
+| Variant | Unwanted added | Benign added | Unverified added | Lost |
+|---|---|---|---|---|
+| A: `ONLY_WHEN_CHANGED = False` (every form, as round 6 R did for downloads) | 14 | 24 | 2 | 0 |
+| **B (built): only the `agent` form counts on unchanged install code (`ALWAYS_FORMS`)** | 14 | 2 | 2 | 0 |
+
+Variant A's 22 extra benign versions are all non-agent forms in unchanged install code:
+`glimmervoid` 0.48.2-next.316 ... 0.52.3-next.901 (17 prereleases, `path` form: a PATH help text
+in a bundled chunk) and `agentiqa` 1.1.50-staging.* (4, `system-package`: an install hint
+string). Variant B keeps every positive A adds and drops those. The positives both add (the
+same 14 unwanted): `@aswless_854771076/ai_short_studio_cli` 0.1.236 and 0.1.239,
+`@cartanova/qgrid-cli` 2.19.0 and 2.19.1, `@karajan-family/code@5.11.0`, `karajan-code@5.11.0`,
+`@mearl/native-host@3.0.5`, `aum-framework@1.8.2`, `onadit@1.0.21`, `pantheon-opencode`
+2.0.0-beta.2/.3/.4, `toga-ai` 1.0.1318 and 1.0.1319; unverified: `wkappbot-code` 0.3.16 and
+0.3.17.
+
+**Benign added by B (the owner's call):**
+
+- `common-context-mcp@3.6.2`: the reviewer's note: its postinstall skips local installs,
+  honours `CONTEXT_MCP_NO_SETUP`, writes nothing without a terminal and only configures the
+  agents the user picks at an interactive prompt. The rule counts a write behind a prompt by
+  design (round 4 A: "a write behind an interactive prompt ... counts too"), as it already did
+  for this package's changed versions.
+- `shieldcortex@5.19.0`: runs only on `npm -g` and refreshes plugin files only when a
+  ShieldCortex hook already exists in `~/.openclaw`. Global-only writes count by the owner's
+  ruling (round 4 A); the refresh-only shape is not something the rule can see.
+
+**Whole-run estimate (queue growth).** In the last two days' runs (47 runs since
+`20261110T040000Z`, 234,995 versions) the versions Stage 3 read, that the run did not report,
+with the INFO `npm.install-agent-user-wide` (install code naming an agent directory and the
+home directory, changed or not) and no `npm.install-persistence` finding: 195 (187 distinct).
+Replayed with `main` and with variant B: B newly reports **55 versions of 27 packages**
+(variant A: the same 55; `main`'s replay already reports 23 of the 187, which the recorded
+runs, on older code, did not), about 27 a day. This is a lower bound for the `agent` form (an
+agent CLI command such as `claude mcp add --scope user` with no home reference has no INFO
+finding to pre-filter on). None is verdicted yet. The packages:
+
+`@agentgates/cli` (0.87.0); `@archangel70/cosmo` (1.16.0, 1.16.1); `@aswless_854771076/ai_short_studio_cli` (0.1.240, 0.1.241, 0.1.242); `@cartanova/qgrid-cli` (2.19.2, 2.19.3, 2.20.0, 2.21.0); `@cliangdev/conductor` (0.54.0, 0.55.0, 0.56.0); `@getfrontline/cli` (1.8.3); `@karajan-family/code` (5.14.0, 5.15.0, 5.16.0, 5.17.0, 5.18.0); `@klingai/plugin-global` (1.0.3); `@mearl/native-host` (3.0.10, 3.0.11, 3.0.8, 3.0.9); `@myclaw163/clawclaw-cli` (0.10.5, 0.10.6); `@polymorphism-tech/morph-spec` (10.10.0, 10.10.1); `@qzhuli/qzhuli-cli` (0.7.0); `@social-data/social-neuron-metadata-query` (1.0.0-beta.7, 1.0.7); `@social-data/social-neuron-opinion-query` (1.0.0-beta.18, 1.0.9); `@social-data/social-neuron-rank-query` (1.0.0-beta.6, 1.0.5); `@social-data/social-neuron-subscription` (1.0.0-beta.31, 1.0.16); `@social-data/social-neuron-user-query` (1.0.0-beta.8, 1.0.6); `@telora/mcp-products` (0.23.28, 0.23.29); `@volter/supercode` (0.5.486); `dynamsoft-dsh-plugin` (1.0.1); `hub-launch` (1.46.0); `install-anything-skill` (2.0.0); `karajan-code` (5.14.0, 5.15.0, 5.16.0, 5.17.0, 5.18.0); `pantheon-opencode` (2.0.0-beta.6, 2.0.0-rc.1); `parqet-cli` (1.1.0); `superskill` (0.18.1); `wkappbot-code` (0.3.22)
+
+Most are skill or plugin installers that copy into `~/.claude`, `~/.codex` or `~/.config/opencode`
+on every release (the shape the owner rules unwanted); `@mearl/native-host` was verdicted unwanted
+at 3.0.5. Variant B fires on each release of a frequently published package (`karajan-code`,
+`@karajan-family/code`: 5 releases each in two days; `@social-data/*`: 10).
+
+**Measured.** Sample misses: `@aswless_854771076/ai_short_studio_cli@0.1.236` now reported
+(score 3, `npm.install-persistence`, `dist/skill/skill-manager.js`). Full replay set (3,716,
+final code): exactly the 18 decision changes of the subset (14 unwanted, 2 unverified, 2
+benign above), 0 lost. New test:
+`test_unchanged_install_code_counts_only_for_user_wide_agent_installs`.
 
 ## 4. Target 3: WhatsApp channel follows in unchanged files (`static.channel-follow-on-connect`)
 

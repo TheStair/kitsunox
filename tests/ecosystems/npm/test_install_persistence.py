@@ -182,9 +182,28 @@ def test_the_rule_reports_each_form_once_with_evidence() -> None:
         ("setup.js", 2),
         ("setup.js", 3),
     ]
-    # Only install code that is new or changed counts (`ONLY_WHEN_CHANGED`).
-    assert RULE.evaluate_code(hooked({"setup.js": code}, base=True)) == ()
     assert RULE.evaluate_code(hooked({"setup.js": b"run()\n"})) == ()
+
+
+def test_unchanged_install_code_counts_only_for_user_wide_agent_installs() -> None:
+    """v6 (round 8 R): the `agent` form counts on every version whose install code does it
+    (`@aswless_854771076/ai_short_studio_cli@0.1.236`, unwanted: an unchanged postinstall that
+    copies skills into `~/.codex/skills`); the other forms need new or changed install code."""
+    agent = b'const home = os.homedir()\nfs.cpSync(src, path.join(home, ".codex", "skills"))\n'
+    (finding,) = RULE.evaluate_code(hooked({"setup.js": agent}, base=True))
+    assert finding.rule_version == 6
+    assert [(e.path, e.line_start) for e in finding.evidence] == [("setup.js", 2)]
+    both = agent + b'execSync("sudo apt-get install -y git-lfs")\n'
+    (finding,) = RULE.evaluate_code(hooked({"setup.js": both}, base=True))
+    assert "user-wide configuration" in finding.explanation
+    assert "installs system packages" not in finding.explanation
+    assert [(e.path, e.line_start) for e in finding.evidence] == [("setup.js", 2)]
+    system = b'execSync("sudo apt-get install -y git-lfs")\n'
+    assert RULE.evaluate_code(hooked({"setup.js": system}, base=True)) == ()
+    assert (
+        RULE.evaluate_code(hooked({"install.sh": b"echo x >> ~/.bashrc\n"}, "sh install.sh", True))
+        == ()
+    )
 
 
 def test_script_text_keeps_its_lines() -> None:
@@ -378,6 +397,6 @@ def test_the_hook_command_line_changing_git_globally() -> None:
 def test_the_rule_names_the_git_change() -> None:
     code = b'spawnSync("git", ["config", "--global", "core.hooksPath", dir])\n'
     (finding,) = RULE.evaluate_code(hooked({"setup.js": code}))
-    assert finding.rule_version == 5
+    assert finding.rule_version == 6
     assert "global git configuration" in finding.explanation
     assert finding.evidence[0].path == "setup.js"
