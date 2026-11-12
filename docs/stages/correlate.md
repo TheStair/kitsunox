@@ -557,6 +557,25 @@ later), B2 +0, none lost.
   tarball, checked against its declared size, has no such file;
   [static.md](static.md#metadata-vs-tarball-npm-ecosystemsnpmrulesartifactpy)) explains
   `npm.install-hook` only ([round 6, agent Q](../proposals/precision-round6-Q.md), Q1).
+- **Obfuscation alone in a new package** (stage version 20, 2026-11-12): Stage 4's
+  `npm.obfuscation-only` (INFO, weight 0; `ecosystems/npm/rules/obfuscation_only.py`, run after
+  every other correlation rule) explains `static.obfuscated` only, for a new package (no
+  previous release) whose only finding above INFO is `static.obfuscated` MEDIUM (any LOW, any
+  other MEDIUM keeps it as it was), when no obfuscated file is an HTML page and the manifest
+  names none (`main`, `files`, `browser`, `unpkg`, `jsdelivr`, `module`, `exports`, `bin`), the
+  manifest declares no script npm runs at some install (`preinstall`, `install`,
+  `postinstall`, `prepare` and its pre/post, `prepublish`), and it names a `repository` or a
+  `homepage`. The publisher's own javascript-obfuscator build of a library or CLI
+  (`@univerjs-pro/*`, `@numbors/cli`, `@oddsockets/*`, `xgis-cog-*`) is then score 1, not
+  reported. An update is never explained: an obfuscated file new in an established package is
+  how `vm-day1`'s `@duckdb/node-api@1.3.3`, `web3rpcs`, `webpikes`, `akasearch`,
+  `dreame-claude` and `dzcvhfruwluwe` are caught, by this finding alone. The other clauses
+  keep `vm-day1`'s new ones: `mobiwaefhxc3` (an obfuscated `index.html`), `mad-1.2.6.2.2.8`
+  (no repository or homepage; its `index.html` is not in the registry's manifest, which
+  strips `files`), `multi-cloud-data-migrator@1.256.25` (`prepare`, no repository).
+  Replay set: -15 benign, 0 positives, 0 unverified
+  ([round 8 P](../proposals/precision-round8-P.md), P1, with `vm-day1` and the options that
+  remove more).
 - **Established repository match** (stage version 9, 2026-11-04): clearing install-code
   MEDIUM findings for a version whose code is exactly an established repository's is built
   but off (`CLEAR_ESTABLISHED`; Repository trust, below).
@@ -707,6 +726,7 @@ Rules over it:
 | `repo.code-not-in-repo` | shipped code files are *unexplained* (above). Since `STAGE_VERSION` 6 a file whose content is elsewhere in the repository, byte for byte, is explained (a build copied it) | LOW | 2 |
 | `npm.repo.install-script-not-in-repo` (v2) | the release's install hook isn't in the repository's `package.json` (or has another command). INFO instead when the repository's build writes it (`ManifestDifference.built_by`): every package file the command names is in the repository byte for byte, and another repository file holds the command (the release's version may be a placeholder there). First VM day: `@nutui/nutui-react-taro` (`scripts/build-taro.mjs`) and `@opencode/cli` (`script/pack.ts`); `@pulumi/*` still fire, since Pulumi's code generator, not the repository, writes their hook. With `repository.directory` only that directory is searched. v3: LOW, weight 1, when the previous release shipped the same hook (its version string aside), so a generated hook that is in every release (`@pulumi/*`) stops counting; the release that adds a hook still fires HIGH | HIGH | 5 |
 | `npm.repo.dependency-not-in-repo` | a runtime dependency the repository's `package.json` doesn't name in any section | LOW | 1 |
+| `npm.obfuscation-only` | a new package whose only finding above INFO is `static.obfuscated` MEDIUM, with no HTML page among the obfuscated files or in the manifest's entry fields, no script npm runs at some install (`prepare` included) and a declared `repository` or `homepage` (Decision and score, above). Explains `static.obfuscated` (LOW, weight 1) | INFO | 0 |
 | `correlate.follow-on` | the previous release, published at most 7 days earlier, was reported by this run or (part C) an earlier one with payload evidence (`payload_evidence`) that this release still holds unchanged: the same bytes at the same path, or the same manifest value (Follow-on releases, above). INFO "not evaluated" when the files couldn't be read | MEDIUM | 3 |
 
 ## Evaluation

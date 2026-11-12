@@ -84,8 +84,9 @@ STAGE_ID: Final = "correlate"
 # release whose previous release the run reported, still holding that report's payload
 # evidence, is correlated again with it (`correlate.follow-on`), and `correlate.json` counts
 # the pass under `follow_on`. 19: `static.disguised-file` (Stage 2) is carried by follow-ons
-# (`FOLLOW_ON_ALONE`). Output without the field is 1.
-STAGE_VERSION: Final = 19
+# (`FOLLOW_ON_ALONE`). 20: `npm.obfuscation-only` (a new package whose only signal is
+# obfuscated JavaScript) explains `static.obfuscated`. Output without the field is 1.
+STAGE_VERSION: Final = 20
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -373,7 +374,12 @@ def score(findings: Iterable[Finding]) -> float:
 # - `npm.artifact.install-target-missing` (Stage 2, STAGE_VERSION 17): every install hook is
 #   `node <file>` and the whole tarball has no such file, so nothing runs at install. Explains
 #   `npm.install-hook` only (`docs/proposals/precision-round6-Q.md`, Q1).
+# - `npm.obfuscation-only` (Stage 4, STAGE_VERSION 20): a new package whose only finding above
+#   INFO is `static.obfuscated` MEDIUM, with no web page, no script npm runs at install
+#   (`prepare` included), and a declared repository or homepage. Explains `static.obfuscated`
+#   only. Measured in `docs/proposals/precision-round8-P.md` (P1).
 _SHAPE_NOTE: Final = " The install code has an explained shape (npm.install-explained)."
+OBFUSCATION_ONLY: Final = "npm.obfuscation-only"
 EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     "npm.install-hook": (
         (
@@ -395,6 +401,13 @@ EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     ),
     "npm.install-script-changed": (("npm.install-explained", _SHAPE_NOTE),),
     "npm.install-script-code": (("npm.install-explained", _SHAPE_NOTE),),
+    "static.obfuscated": (
+        (
+            OBFUSCATION_ONLY,
+            " A new package whose only signal is this obfuscation: no other finding, no install"
+            " script, no web page, a declared repository or homepage (npm.obfuscation-only).",
+        ),
+    ),
 }
 
 
