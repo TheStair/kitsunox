@@ -2,6 +2,69 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-12: Round 8 (recall R + precision P), the label-blind sample backlog, and oversize hook packages
+
+**Stage(s):** Stages 1-4 (rules), reviewer verdicts, live label-blind sample
+**Context:** Three days before the merge cutoff for the rule freeze (2026-11-16 to 11-23). After a
+VM crash the session resumed, cleared six days of unreviewed daily samples (330 versions) and
+kept the review queue empty (about 290 more versions over the day). The sample misses it found
+drove a recall round (R); recurring benign clusters in the queue drove a precision round (P).
+
+### Decisions
+- **All six round 8 changes merged (owner, 2026-11-12):** R1 `npm.install-download` v2
+  (`webdriver-manager update` as a `tool` download), R2 `npm.install-persistence` v6 (user-wide
+  agent writes count on unchanged install code; the other forms still need changed code), R3
+  `static.channel-follow-on-connect` (a Baileys fork following a hardcoded `@newsletter`
+  channel on connect), P1 `npm.obfuscation-only` (a new package whose only finding is
+  `static.obfuscated`, with no install script, no HTML page and a declared repository or
+  homepage, drops to LOW), P2 `npm.install-download` v3 (a `curl`/`wget`/PowerShell word only
+  printed or kept as data is not network), P3 `npm.version.suspicious` v5 (pnpm 11's 1100.x
+  numbering). R's and P's `install-download` v2 collided; P2 was renumbered v3 at integration.
+- **R2 over "persistence on unchanged code for every form":** the broad version added 22 more
+  benign versions (17 `glimmervoid` prereleases, 4 `agentiqa` staging builds) for the same
+  positives. R2 costs 2 benign (`common-context-mcp@3.6.2`, prompt-gated; `shieldcortex@5.19.0`,
+  global-install refresh) and about 27 more reported versions a day.
+- **P1 kept narrow:** each clause keeps a `vm-day1` sample reported (6 updates, an HTML page,
+  `prepare` without a repository, no repository or homepage). Dropping the repository clause
+  would remove 4 more benign versions but lose `mad-1.2.6.2.2.8` and stop reporting the
+  unverified `@fcjplugins/hooks`. P1 reverses the rounds 2-3 choice to keep vendor obfuscation
+  at full strength, for new packages only.
+
+### Challenges
+- **Sample backlog:** all 605 label-blind sampled versions (11 days) now have verdicts: 586
+  benign, 18 unwanted, 1 unverified, 0 malicious. 95% Clopper-Pearson upper bounds on the
+  unreported positive rate: U1 2.14%, U2 10.84%, U3 2.84%, weighted 3.10% (8.83% with only
+  220 verdicted).
+  - **Resolution:** replayed the 18 misses on main: 11 were already caught by round 6's
+    `npm.install-download`; round 8 catches 3 more.
+- **Oversize hook packages are the largest remaining miss cause:** 4 of the 7 still-missed
+  sampled positives are never read by Stage 2 (over the 32 MB hook cap or not routed:
+  `@plannotator/opencode` 63.9 MB, `@cgh567/agent`, `local-operator-ui`, `lumen-lib`). On
+  2026-11-11 alone 832 hook-bearing updates (229 packages, 90.6 GB unpacked) were not read.
+  Raising the cap is not affordable on this disk; a streaming design that keeps only
+  `package.json` and the files the hooks reach is on the post-freeze list.
+- **Replay vs live (found by P):** live Stage 2 diffs a later version in a multi-version batch
+  against the batch base, not its own previous release; per-version replays don't. Over two
+  days 18 of 50 live reports from later batch versions were not reported in replay, all
+  benign. The replay set therefore under-counts live benign. Post-freeze question.
+- **A DNS outage** at 08:19Z cost one ingest tick ("OFFLINE or outage, nothing written"); the
+  next tick caught up (11,192 changes), as decision 0009 intends.
+
+### Evaluation snapshot
+- Replay set (3,716 verdicted versions, full replay of the merged tree `r8-integ`, today's
+  verdicts): reported 1,423 -> 1,425; benign 725 -> 711; unwanted 620 -> 634; malicious 48 ->
+  48; unverified 30 -> 32; precision 47.95% -> 48.96%; 0 positives lost. `vm-day1`: 0 samples
+  lost (measured per round). Sampled misses caught: 8 -> 11 of 13.
+- Queue: q1112b-e reviewed (270 versions; about two thirds unwanted, mostly install-time
+  downloads), 0 malicious. Daily samples 10-29..11-03: 0 malicious.
+
+### Open questions / next steps
+- Owner rulings pending: `usecloudy` (a user-run CLI writing agent skills user-wide) and
+  `@id_g3/ascend-torchevo` (silent user-wide VS Code extension install at install time).
+- Post-freeze (`~/kitsunox-scratch/r6/postfreeze.md`): oversize hook routing, batch-base diffs,
+  `npm.install-download` on chmod-only postinstalls, obfuscated updates from publishers who
+  obfuscate their own builds (`@blod-nm/*`).
+
 ## 2026-11-11: Precision round 7 (agents V, W, X), two more owner rulings, a 247-version queue
 
 **Stage(s):** Stages 1-4 (rules), reviewer verdicts, live sample
