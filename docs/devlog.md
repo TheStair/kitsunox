@@ -20,6 +20,16 @@ also asked for the unverified ("inconclusive") verdicts to be revisited.
   still need changed code: they are where round 8 R's 22 benign came from (17 `glimmervoid`,
   4 `agentiqa`). Cost: 0 verdicted benign, about 13 unverdicted reports a day.
 
+- **Round 9 S merged (owner, 2026-11-12):** S1 explains dependency-confusion placeholder stubs
+  (every hook `node <file>`, each file one constant `throw`); S2 fixes a live-vs-replay
+  difference: Stage 2 compared later versions of a multi-version batch with the batch base,
+  which the replay never did, so live reported more than measured (83 benign live, 0
+  positives); S3 lowers `npm.version.suspicious` for releases with trusted publishing or
+  provenance (15 benign live). 108 fewer live benign reports, 0 positives lost; the combined
+  Q+S replay changes 2 replay-set decisions (both benign). One more replay-set version
+  (`@mobile-platform/magnetic-components@0.0.1`) changed between replays with every tree, main
+  included: the replay still fetches some registry data, so replays a day apart can differ.
+
 ### Challenges
 - **Round 8 P2 silently unreported 4 unwanted versions.** `botmux` 3.59.2-3.59.5 append a PATH
   line to shell rc files on a global install, but their install code never changed, so
