@@ -42,8 +42,9 @@ The forms (`FORM_TEXT`), each its own so the owner can weigh them apart:
 It reads what `npm.install-persistence` reads, the same way (`install_persistence.code_text`):
 the install files (JavaScript and TypeScript with comments and messages blanked; shell,
 PowerShell and batch scripts with comment and `echo` lines blanked) and the install hooks'
-command lines (`echo` messages blanked, and a fallback that runs only when a shipped file is
-missing cut: `test -f dist/index.js || npx tsc`). In JavaScript a command string counts only
+command lines (`echo` messages blanked, a fallback that runs only when a shipped file is
+missing cut: `test -f dist/index.js || npx tsc`, and code passed inline to `node -e` blanked,
+since it is read as JavaScript in its own file: v4). In JavaScript a command string counts only
 when it is handed to a runner (`lang.javascript.handed_to_runner`), never when it is printed,
 kept in a table or written into a file. A URL in a message is blanked already; a URL the code
 keeps (a constant, a table of release assets) counts when the install code reaches the
@@ -63,6 +64,7 @@ from typing import Any, Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
+from kitsunox.ecosystems.npm.install import inline_blanked
 from kitsunox.ecosystems.npm.rules.install_persistence import SCRIPT_SUFFIXES, code_text
 from kitsunox.ecosystems.npm.rules.install_shapes import URL, _home_host, _own_kind, own_repo
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
@@ -411,6 +413,8 @@ def downloads(
     declared_scripts = scripts(manifest)
     for hook in INSTALL_HOOKS:
         if command := declared_scripts.get(hook, "").strip():
+            # Code passed to `node -e` is read once, as the JavaScript it is (v4).
+            command = inline_blanked(command, install_files, hook)
             texts[f"package.json:scripts.{hook}"] = hook_text(command)
     found: list[Found] = []
     network = network or any(
@@ -573,10 +577,16 @@ class InstallDownload(BaseRule):
     (`lang.javascript.shown_not_run`) no longer makes the install code "reach the network"
     (`_network_text`), so the URLs it keeps are no download. `@gloom-sh/terminal@0.20.8` and
     `gloomberb@0.20.8` returned a help line naming Bun's and Gloom's `curl`/`irm` installers
-    and were reported for it; their preinstall only rewrites a shebang."""
+    and were reported for it; their preinstall only rewrites a shebang.
+
+    v4 (2026-11-12, `docs/proposals/precision-round9-Q.md` Q2): the code a hook passes inline
+    to `node -e` is read once, as JavaScript (`package.json#scripts.<hook>.js`), and blanked in
+    the hook line (`install.inline_blanked`). `@lark-codem/codem-core-win32-*`'s postinstall
+    only `chmod`s its shipped `codem-core.exe`; read as a hook line, the quoted file name looked
+    like an executable the line starts."""
 
     id = "npm.install-download"
-    version = 3
+    version = 4
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code downloads code from outside the npm registry"

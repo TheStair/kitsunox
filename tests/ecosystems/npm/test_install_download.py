@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from kitsunox.core.models import PackageVersionRef, PublishInfo, Severity, VersionSnapshot
-from kitsunox.ecosystems.npm.install import install_sources
+from kitsunox.ecosystems.npm.install import inline_blanked, install_sources
 from kitsunox.ecosystems.npm.rules.install_download import (
     InstallDownload,
     download_source,
@@ -193,7 +193,7 @@ def test_webdriver_manager_update_fetches_browser_drivers() -> None:
     assert hook_forms('echo "run webdriver-manager update first"') == []
     assert forms(b'console.log("Run: webdriver-manager update")\n') == []
     (finding,) = RULE.evaluate_code(hooked({}, hook=hook, base=True))
-    assert finding.rule_version == 3
+    assert finding.rule_version == 4
     assert "browser drivers" in finding.explanation
 
 
@@ -254,6 +254,40 @@ def test_windows_executables_run_at_install() -> None:
     assert forms(b'  "7z.exe"|"7z") zip ;;\n', "build.sh", network=False) == []
     cargo = b'const cargo = win ? "cargo.exe" : "cargo";\nexecFileSync(cargo, ["build"]);\n'
     assert forms(cargo) == []
+
+
+def test_inline_node_code_is_read_as_javascript_only() -> None:
+    """v4 (round 9 Q2): `@lark-codem/codem-core-win32-*`'s postinstall is `node -e "var
+    f=require('path').join(__dirname,'codem-core.exe'),...;fs.chmodSync(f,0o755)"`. Read as a
+    hook line, the quoted `'codem-core.exe'` looked like a command start; the code is read as
+    the JavaScript it is (`package.json#scripts.postinstall.js`), where a string only joined
+    into a path runs nothing. Inline code that runs an executable still counts, and so does the
+    rest of the hook line."""
+    chmod = (
+        "node -e \"var f=require('path').join(__dirname,'codem-core.exe'),"
+        "fs=require('fs');try{fs.chmodSync(f,0o755)}catch(e){}\""
+    )
+    assert RULE.evaluate_code(hooked({}, hook=chmod)) == ()
+    assert hook_forms(chmod) == ["exe"]  # without the inline file: the line as it is
+    run = "node -e \"require('child_process').execSync('setup.exe /S')\""
+    (finding,) = RULE.evaluate_code(hooked({}, hook=run))
+    assert [e.path for e in finding.evidence] == ["package.json#scripts.postinstall.js"]
+    after = chmod + " && bin\\setup.exe /S"
+    (finding,) = RULE.evaluate_code(hooked({}, hook=after))
+    assert [e.path for e in finding.evidence] == ["package.json:scripts.postinstall"]
+    assert finding.rule_version == 4
+
+
+def test_inline_blanked_needs_the_same_code_in_its_file() -> None:
+    command = 'node -e \'x("a.exe")\'\nnode -p "y()"'
+    files = {"package.json#scripts.install.js": b'x("a.exe")\ny()'}
+    blanked = inline_blanked(command, files, "install")
+    assert len(blanked) == len(command) and "a.exe" not in blanked and "y()" not in blanked
+    assert blanked.startswith("node -e '") and 'node -p "' in blanked
+    assert inline_blanked(command, {"package.json#scripts.install.js": b"z()"}, "install") == (
+        command
+    )
+    assert inline_blanked(command, {}, "install") == command
 
 
 def test_playwright_cli_run_by_path_and_curl_in_a_child_process() -> None:

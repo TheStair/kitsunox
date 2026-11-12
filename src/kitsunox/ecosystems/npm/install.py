@@ -83,6 +83,24 @@ def _inline_code(command: str) -> list[str]:
     ]
 
 
+def inline_blanked(command: str, files: Mapping[str, bytes], hook: str) -> str:
+    """The hook's command line with the code it passes inline to `node` blanked (each byte a
+    space, newlines kept), when `install_sources` gave exactly that code its own file
+    (`package.json#scripts.<hook>.js` in `files`) to be read as JavaScript; otherwise the
+    command line as it is (a registry manifest whose hook differs from the tarball's)."""
+    inline = files.get(f"{INLINE_PREFIX}{hook}.js")
+    if inline is None or inline != "\n".join(_inline_code(command)).encode():
+        return command
+
+    def blank(m: re.Match[str]) -> str:
+        group = "double" if m.group("double") is not None else "single"
+        start, end = m.start(group) - m.start(), m.end(group) - m.start()
+        text = m.group(0)
+        return text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
+
+    return _INLINE.sub(blank, command)
+
+
 FOLLOW_DEPTH: Final = 2
 MAX_FOLLOWED: Final = 20
 MAX_FOLLOWED_BYTES: Final = 256 * 1024
