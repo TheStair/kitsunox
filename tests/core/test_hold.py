@@ -12,6 +12,7 @@ from kitsunox.core.run import DataDir
 from kitsunox.evaluation.ledger import LIVE_DIR, backfill
 from kitsunox.evaluation.live import LiveReport, LogLine, hold_requests, live_paths
 from kitsunox.evaluation.sample import write_samples
+from kitsunox.reporting.verdicts import VerdictRecord, append_verdict
 from kitsunox.util.http import Snapshot
 
 NOW = REPORT_AS_OF + timedelta(hours=1)
@@ -187,6 +188,42 @@ def test_live_requests_reported_sampled_and_labeled(tmp_path: Path) -> None:
         h.reason == "reported" and h.run_id == RUN for _, h in hold_requests(data.root, live)
     )
     path.write_text("not json")
+    assert not any(h.reason == "labeled" for _, h in hold_requests(data.root, live))
+
+
+def test_malicious_verdict_held_for_good_before_any_report(tmp_path: Path) -> None:
+    """A reviewer's malicious verdict pins the version's tarball for good at once, without
+    waiting for the daily live report to label it, even after its run is pruned; another
+    verdict, or a later reopening, does not."""
+    data = DataDir(tmp_path)
+    finished_run(data)
+    live = tmp_path / LIVE_DIR
+    backfill(data.root / "runs", live)
+    (data.run_dir(RUN) / "retention.json").write_text("{}")
+
+    def verdict(name: str, verdict: str) -> None:
+        append_verdict(
+            data.root,
+            VerdictRecord(
+                ecosystem="npm",
+                name=name,
+                version="1.0.1",
+                verdict=verdict,
+                at=NOW,
+                by="claude",
+                run_id=RUN,
+                rank=1,
+                score=5.0,
+                severity="medium",
+            ),
+        )
+
+    assert not any(h.reason == "labeled" for _, h in hold_requests(data.root, live))
+    verdict("tiny", "malicious")
+    verdict("huge", "benign")
+    labeled = [h for _, h in hold_requests(data.root, live) if h.reason == "labeled"]
+    assert {h.ref for h in labeled} == {"tiny@1.0.1"} and all(h.until is None for h in labeled)
+    verdict("tiny", "reopened")
     assert not any(h.reason == "labeled" for _, h in hold_requests(data.root, live))
 
 

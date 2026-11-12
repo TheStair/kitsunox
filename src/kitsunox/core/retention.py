@@ -26,8 +26,9 @@ a version labeled after its run was pruned had lost its tarball (51 of 139 in wi
 hold, `data/eval/live/hold.json`, keeps blobs for `HOLD_DAYS` past their run whatever the
 labels say: every captured tarball of at most `HOLD_SMALL_BYTES` (`small_tarballs`), and what
 live evaluation asks for (reported versions and their diff bases, the review sample).
-`_collect_garbage` treats held digests as referenced. A version that is later labeled is held
-for good (`until` None). The hold is capped at `HOLD_CAP_BYTES`: past it, the lowest priority
+`_collect_garbage` treats held digests as referenced. A version that is later labeled, or whose
+reviewer verdict is malicious (`evaluation.live.hold_requests`), is held for good (`until`
+None). The hold is capped at `HOLD_CAP_BYTES`: past it, the lowest priority
 and oldest go first (`small`, then `sample`, then `reported`; `labeled` never), and the
 update reports what was dropped. Blobs no longer on disk leave the hold.
 """

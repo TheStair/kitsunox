@@ -208,7 +208,11 @@ Labels come a median ~22 h after our capture, but runs are pruned after 2 days. 
 prune, `data/eval/live/hold.json` is updated: every captured tarball ≤ 64 KB (80 of the 86
 malicious tarballs captured in window A were), every reported version's tarball and diff base,
 and the review sample's tarballs, each held 30 days past its run; versions live evaluation has
-labeled malicious are held for good. The cap is 15 GB (the owner approved ~10 GB). See
+labeled malicious are held for good, and (since 2026-11-12, owner's request) so is every version
+whose current reviewer verdict is `malicious`, from the next prune on: the daily report lags a
+verdict by days, and of 60 malicious verdicts only 25 were held for good that day (14 more only
+for 30 days, 2 not at all; 14 had already lost their tarball, 5 were never captured). Labeled
+blobs are never dropped by the cap. The cap is 15 GB (the owner approved ~10 GB). See
 [0006](decisions/0006-scheduled-collection-and-retention.md#addendum-2026-11-08-a-30-day-label-hold).
 
 ### Window A, provisional (2026-11-08)

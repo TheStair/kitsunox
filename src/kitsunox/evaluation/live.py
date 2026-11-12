@@ -1307,7 +1307,9 @@ def run_live_eval(
 def hold_requests(data_root: Path, live: Path) -> list[tuple[str, HeldBlob]]:
     """What live evaluation asks the label hold (`core.retention`) to keep: the tarballs (and
     diff bases) of reported versions in runs not pruned yet, of the review samples, and, for
-    good, of every version the newest live report labels malicious."""
+    good, of every version the newest live report labels malicious and of every version whose
+    current reviewer verdict is malicious (2026-11-12: the report lags the verdict by days, so
+    a malicious version could otherwise leave the 30-day hold before it was labeled)."""
     runs = data_root / "runs"
     labeled: set[str] = set()
     entries = read_log(live / "log.jsonl")
@@ -1317,6 +1319,17 @@ def hold_requests(data_root: Path, live: Path) -> list[tuple[str, HeldBlob]]:
             labeled = set(report.malicious)
         except OSError, ValueError:
             labeled = set()
+    verdict_malicious: dict[str, set[str]] = {}
+
+    def judged_malicious(ecosystem: str) -> set[str]:
+        if ecosystem not in verdict_malicious:
+            verdict_malicious[ecosystem] = {
+                f"{name}@{version}"
+                for (name, version), record in current(read_verdicts(data_root, ecosystem)).items()
+                if record.verdict == "malicious"
+            }
+        return verdict_malicious[ecosystem]
+
     found: list[tuple[str, HeldBlob]] = []
 
     def add(
@@ -1335,13 +1348,14 @@ def hold_requests(data_root: Path, live: Path) -> list[tuple[str, HeldBlob]]:
     for lg in ledgers(live):
         header = lg.header
         recent = not (runs / header.run_id / "retention.json").exists()
-        if not (recent or labeled):
+        forever = labeled | judged_malicious(header.ecosystem)
+        if not (recent or forever):
             continue
         until = header.as_of + timedelta(days=HOLD_DAYS)
         for row in lg.rows():
             ref = f"{row.name}@{row.version}"
             why: HoldReason | None = (
-                "labeled" if ref in labeled else "reported" if recent and row.reported else None
+                "labeled" if ref in forever else "reported" if recent and row.reported else None
             )
             if why is None:
                 continue
