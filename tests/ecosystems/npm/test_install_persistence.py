@@ -185,13 +185,14 @@ def test_the_rule_reports_each_form_once_with_evidence() -> None:
     assert RULE.evaluate_code(hooked({"setup.js": b"run()\n"})) == ()
 
 
-def test_unchanged_install_code_counts_only_for_user_wide_agent_installs() -> None:
+def test_unchanged_install_code_counts_for_agent_installs_not_path_or_packages() -> None:
     """v6 (round 8 R): the `agent` form counts on every version whose install code does it
     (`@aswless_854771076/ai_short_studio_cli@0.1.236`, unwanted: an unchanged postinstall that
-    copies skills into `~/.codex/skills`); the other forms need new or changed install code."""
+    copies skills into `~/.codex/skills`); `path` and `system-package` need new or changed
+    install code."""
     agent = b'const home = os.homedir()\nfs.cpSync(src, path.join(home, ".codex", "skills"))\n'
     (finding,) = RULE.evaluate_code(hooked({"setup.js": agent}, base=True))
-    assert finding.rule_version == 6
+    assert finding.rule_version == 7
     assert [(e.path, e.line_start) for e in finding.evidence] == [("setup.js", 2)]
     both = agent + b'execSync("sudo apt-get install -y git-lfs")\n'
     (finding,) = RULE.evaluate_code(hooked({"setup.js": both}, base=True))
@@ -200,10 +201,25 @@ def test_unchanged_install_code_counts_only_for_user_wide_agent_installs() -> No
     assert [(e.path, e.line_start) for e in finding.evidence] == [("setup.js", 2)]
     system = b'execSync("sudo apt-get install -y git-lfs")\n'
     assert RULE.evaluate_code(hooked({"setup.js": system}, base=True)) == ()
-    assert (
-        RULE.evaluate_code(hooked({"install.sh": b"echo x >> ~/.bashrc\n"}, "sh install.sh", True))
-        == ()
+    path = b'execSync("setx PATH \\"%PATH%;C:\\\\kx\\"")\n'
+    assert RULE.evaluate_code(hooked({"setup.js": path}, base=True)) == ()
+
+
+def test_unchanged_install_code_counts_for_shell_startup_writes() -> None:
+    """v7 (round 9 Q4): the `shell-rc` form counts on unchanged install code too. `botmux`
+    3.59.2-3.59.5 (unwanted) append a PATH line to the user's shell start-up files from a
+    global install's postinstall that is the same in every release."""
+    rc = b"echo 'export PATH=\"$HOME/.kx/bin:$PATH\"' >> ~/.bashrc\n"
+    (finding,) = RULE.evaluate_code(hooked({"install.sh": rc}, "sh install.sh", True))
+    assert finding.rule_version == 7
+    assert "shell start-up files" in finding.explanation
+    js = (
+        b"const home = os.homedir()\nconst rc = path.join(home, '.zshrc')\n"
+        b"fs.appendFileSync(rc, 'export PATH=\"$HOME/.kx/bin:$PATH\"\\n')\n"
     )
+    assert RULE.evaluate_code(hooked({"setup.js": js}, base=True)) != ()
+    read = b"const home = os.homedir()\nconst rc = fs.readFileSync(path.join(home, '.zshrc'))\n"
+    assert RULE.evaluate_code(hooked({"setup.js": read}, base=True)) == ()
 
 
 def test_script_text_keeps_its_lines() -> None:
@@ -397,6 +413,6 @@ def test_the_hook_command_line_changing_git_globally() -> None:
 def test_the_rule_names_the_git_change() -> None:
     code = b'spawnSync("git", ["config", "--global", "core.hooksPath", dir])\n'
     (finding,) = RULE.evaluate_code(hooked({"setup.js": code}))
-    assert finding.rule_version == 6
+    assert finding.rule_version == 7
     assert "global git configuration" in finding.explanation
     assert finding.evidence[0].path == "setup.js"

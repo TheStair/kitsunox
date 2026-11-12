@@ -15,6 +15,7 @@ on in round 8's full main dump. Scripts and outputs: `~/kitsunox-scratch/r9/Q/{s
 | Q1 | `9058d91` | `@lightdash/cli` | v5: a shell `curl`/`wget` captured into a variable that stays data | 0 (1 loses the finding) | 36 (+8 not yet verdicted) | 0 | 0 | 0 |
 | Q2 | `9410920` | `@lark-codem/codem-core-win32-*` | v4: inline `node -e` code read once, as JavaScript | 0 | 10 (+1 not yet verdicted) | 0 | 0 | 0 |
 | Q3 | `a5a3175` | `praana` | v6: v3's "only shown" test follows one local variable | 0 (2 lose the finding) | 1 | 0 | 0 | 0 |
+| Q4 | (this commit) | `botmux` (recall) | `npm.install-persistence` v7: `shell-rc` counts on unchanged install code | 0 added | 0 verdicted benign added; +4 unwanted; +181 not yet verdicted | 0 | 0 | 0 (adds only) |
 
 Replay set, today's verdicts:
 
@@ -137,6 +138,66 @@ and stay reported by their other install rules.
 caller is not followed (P2's known limit, one level further); the command itself, when handed
 to a runner in the same file, still fires.
 
+## Q4. `botmux`: shell start-up writes in unchanged install code (`npm.install-persistence` v7)
+
+Added at the coordinator's request after the first report (owner question 2 above).
+
+**Why main misses it.** `botmux` 3.59.2-3.59.5 (unwanted, owner ruling of 2026-11-09:
+a global install's postinstall appends a PATH line to the shell start-up files) ship the
+same install code as the release before. `npm.install-persistence` finds the `shell-rc` form
+in it (`persistence()`: the `.zshrc`/`.bashrc` names in `scripts/install-path-entry.mjs` reach
+a write) but counts only `agent` on unchanged install code (`ALWAYS_FORMS`, round 8 R2).
+
+**Change.** `ALWAYS_FORMS = {"agent", "shell-rc"}`. `shell-rc` is the only form that covers
+`botmux`. `path` and `system-package` stay changed-only.
+
+**Where round 8 R's 22 benign came from.** Its variant A (every form on unchanged code) added
+`glimmervoid` 0.48.2-next.316 ... 0.52.3-next.901 (17, all `path`: a PATH help text in a
+bundled chunk) and `agentiqa` 1.1.50-staging.* (4, all `system-package`: an install hint),
+re-read from `~/kitsunox-scratch/r8/R/sub-t2a.jsonl` vs `sub-t2b.jsonl`. None came from
+`shell-rc`, so this variant adds none of them. (Live, `path` would fire on unchanged code in
+`glimmervoid` 20 benign + 699 unverdicted versions and `system-package` in `agentiqa` 5 + 100.)
+
+**Measured.**
+
+- Replay set: R's variant A finds `shell-rc` on unchanged code in 21 versions
+  (`persistence()` is unchanged since R). Replayed with v7 (`q4-rc.jsonl`): all 21 were
+  already reported, so no decision changes. Before and after: 1,425 reported, 718 benign,
+  645 unwanted, 49 malicious, 13 unverified, 49.15% (today's verdicts, which moved since the
+  Q1-Q3 table).
+- Live runs on disk (`s/hookcount.py`, `s/rcscan.py`, `s/persistlive.py`): 22,644 updates with an
+  install hook that Stage 3 read; `shell-rc` on unchanged install code in 208. With v7:
+  **+4 unwanted** (`botmux` 3.59.2, 3.59.3, 3.59.4, 3.59.5, confirmed by a full Stages 1-4
+  replay, `livepos-q4.jsonl`), **0 benign verdicted added**, 0 lost, and **181 versions not
+  yet verdicted newly reported** (22 already reported). The 181, by package: `@arbidocs/cli` 47,
+  `@zenera/cli` 28, `@tiens.nguyen/gu-cli` 24, `@lenne.tech/cli` 17, `agent-takkub` 17, `botmux`
+  8 (earlier releases), `@cheongfish/bouncer` 5, `@codemieai/code` 5, `e10-login` 5,
+  `bridge-agent` 4, `terminal-commander` 4, `@aui.io/apollo` 3, `@asyncapi/cli` 2,
+  `@action-test-ash17290/asyncapi-cli-release-test-20261022` 2, `@gw-tools/gw` 2,
+  `vibe-coding-wrapped` 2, and 1 each of `@symbols-cli/cli`, `@xfe-repo/cli`,
+  `@zhuan-ai/zhuanspec`, `coding-friend-cli`, `grix-connector`, `repilot`. Spot-checked
+  evidence: install-time appends of shell completion blocks or PATH/env lines to
+  `~/.zshrc`/`~/.bashrc`/profiles, unwanted by the ruling. **Likely benign: `bridge-agent` x4**
+  (its 0.26.59 is verdicted benign: the rc line is in a script the postinstall only copies to
+  `~/.bridge`, run later by the daemon on request).
+  The runs on disk span 2026-10-29 to 2026-11-12, about 13 new reports a day.
+- `vm-day1`: the change only adds findings, so nothing is at risk (0 lost).
+
+**Other live positives main doesn't report** (replay of every verdicted unwanted/malicious
+version on disk outside the replay set, 673, with main and with this branch,
+`livepos-{main,q4}.jsonl`): main misses 12. The branch reports the 4 `botmux` versions and
+still misses 8: `@cgh567/agent@2.6.60`, `@plannotator/opencode@0.28.45`,
+`local-operator-ui@0.52.8`, `lumen-lib@2.1.8` (never routed, score 0);
+`@ntdev204/laris-cli@1.5.2` (live by `correlate.follow-on`, which the replay can't rebuild;
+its own unchanged postinstall's form is `path`, which v7 leaves changed-only);
+`doc-detective@5.0.0-v5-rc.16` (replay loses `npm.install-script-code`, score 3 LOW-only);
+`mentiondock@0.1.7` (replay loses its `npm.install-persistence`, recorded live); and
+`pdf-html5-page-flip@2.0.2` (malicious, LOW-only score 3, never reported). On the replay set,
+main leaves 39 positives unreported (8 malicious: `@atedone/workspace-context` 0.0.23-0.0.25,
+`bfvkjmeikpwhqxc` 1.0.0 and 1.0.1, `calculator-preinstall-chain-demo@1.1.2`,
+`dependencykfeg@25.1.9`, `tailwindcss-animate-bridge@2.0.8`; 31 unwanted), and v7 reports
+none of them.
+
 ## `vm-day1`
 
 The rule fires on 838 reported malicious samples in round 8's full main dump
@@ -155,8 +216,9 @@ all 24 reported. **0 lost.** All 838 samples the rule fires on, with Q1 + Q2 + Q
    package lacks its binary. Keep reported under decision 0015, or exempt "fallback behind an
    `existsSync` of the platform package's binary"? Not built.
 2. `botmux` 3.59.2-3.59.5 (unwanted, shell-rc PATH append) are unreported by main since round
-   8 P2 (above). Add the shell-startup-file append to `npm.install-persistence` (not this
-   agent's rule) before the freeze?
+   8 P2 (above). Built as Q4 (`npm.install-persistence` v7). It also newly reports 181
+   unverdicted live versions over two weeks of runs (about 13 a day), shell-rc writes the
+   ruling calls unwanted. Keep?
 
 ## Reproduce
 

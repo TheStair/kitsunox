@@ -30,7 +30,8 @@ test of what the code names, not of what it reaches: a write behind an interacti
 
 MEDIUM, weight 3: install code that does one of these is reported for what it does. Only new
 or changed install code counts (`ONLY_WHEN_CHANGED`), as for the other install rules, except
-for the `agent` form (`ALWAYS_FORMS`, v6), which counts on every version. Measured
+for the `agent` form (`ALWAYS_FORMS`, v6) and the `shell-rc` form (v7), which count on every
+version. Measured
 in `docs/stages/ast.md` and `docs/proposals/precision-round4-A.md`."""
 
 from __future__ import annotations
@@ -159,7 +160,12 @@ ONLY_WHEN_CHANGED: Final = True
 # on every `npm install` of every release that ships it, and the owner rules each such release
 # unwanted (`@aswless_854771076/ai_short_studio_cli@0.1.236`: its postinstall, unchanged since
 # 0.1.235, copies skills into `~/.codex/skills`, found by the label-blind daily sample).
-ALWAYS_FORMS: Final = frozenset({"agent"})
+# v7 (2026-11-12, round 9 Q4, `docs/proposals/precision-round9-Q.md`): `shell-rc` too. `botmux`
+# 3.59.2-3.59.5 (unwanted) append a PATH line to the shell start-up files on every global
+# install from an unchanged postinstall. `path` and `system-package` stay changed-only: on
+# unchanged code they add 21 benign versions (round 8 R: `glimmervoid` x17, a PATH help text
+# in a bundled chunk; `agentiqa` x4, an install hint) for no positive.
+ALWAYS_FORMS: Final = frozenset({"agent", "shell-rc"})
 
 
 class InstallPersistence(BaseRule):
@@ -204,10 +210,16 @@ class InstallPersistence(BaseRule):
 
     v6 (2026-11-11, recall round 8 R, `docs/proposals/recall-round8-R.md`): the `agent` form
     (`ALWAYS_FORMS`) counts on every version whose install code does it, changed or not; the
-    other forms still need new or changed install code (`ONLY_WHEN_CHANGED`)."""
+    other forms still need new or changed install code (`ONLY_WHEN_CHANGED`).
+
+    v7 (2026-11-12, round 9 Q4, `docs/proposals/precision-round9-Q.md`): the `shell-rc` form
+    joins `ALWAYS_FORMS`. `botmux` 3.59.2-3.59.5 (unwanted: a global install's postinstall
+    appends a PATH line to `~/.zshrc`/`~/.bashrc`/the login file) had unchanged install code
+    and were reported only by an accidental `npm.install-download` hit, which round 8 P2
+    (`npm.install-download` v3) rightly removed."""
 
     id = "npm.install-persistence"
-    version = 6
+    version = 7
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code changes the user's machine beyond the project"
