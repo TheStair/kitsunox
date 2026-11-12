@@ -12,7 +12,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Final
+from typing import Any, Final
 
 from kitsunox.core.models import Change, Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule, Rule, RuleContext
@@ -813,6 +813,28 @@ def calendar_version(major: int, minor: int, as_of_year: int) -> bool:
     return 20 <= year <= (as_of_year + 1) % 100 and 1 <= month <= 12
 
 
+# The major of a dependency's version range: `1100.2.2`, `^1100.0.0`, `~1100.1`, `>=1100.0.0`,
+# `=v1100.0.0`. Tags, URLs, `npm:` aliases, `workspace:` and `*` have none.
+_RANGE_MAJOR: Final = re.compile(r"\s*(?:[\^~]|[<>]=?|=)?\s*v?(\d+)(?:\.|\s*$)")
+FAMILY_FIELDS: Final = ("dependencies", "optionalDependencies", "peerDependencies")
+
+
+def family_major(manifest: Mapping[str, Any], name: str, major: int) -> bool:
+    """Whether the manifest declares another package (not `name` itself) at `major`: a runtime,
+    optional or peer dependency whose range starts at that major (`SuspiciousVersion` v5)."""
+    for field in FAMILY_FIELDS:
+        deps = manifest.get(field)
+        if not isinstance(deps, Mapping):
+            continue
+        for dep, spec in deps.items():
+            if dep == name or not isinstance(spec, str):
+                continue
+            match = _RANGE_MAJOR.match(spec)
+            if match is not None and int(match.group(1)) == major:
+                return True
+    return False
+
+
 class SuspiciousVersion(BaseRule):
     """Very high major versions (`99.9.9`, `999.0.0`) are the signature of dependency-confusion
     attacks: they outrank any internal package of the same name.
@@ -834,10 +856,20 @@ class SuspiciousVersion(BaseRule):
     malware versions (`2000.0.0`, `1999.0.1`, `amazonui@2026.0.1` in 2025).
     47 benign live reports (`@4fu/arbor-*`, `@burdenoff/*`, `@runstructure/*`, `@beehexa/*`),
     no positive, none of the 6 at-risk `vm-day1` samples. The researchers' `99.x` placeholders
-    are what is left (`docs/proposals/precision-round2.md`, F5)."""
+    are what is left (`docs/proposals/precision-round2.md`, F5).
+
+    v5 (2026-11-12): a release that declares another package (a runtime, optional or peer
+    dependency, not itself) at the same major is exempt (`family_major`): it numbers its
+    versions with a family that already uses that major. pnpm 11 versions its packages
+    `1100.x` (`@pnpm/error@1100.2.2`), and the OpenHarmony ports of them
+    (`@ohos-ports/fs.hard-link-dir@1100.0.9-beta.1`, `@ohos-ports/pnpm-worker@1100.4.10-beta.1`)
+    were reported by this rule alone. A package that depends on itself still fires
+    (`@ikeacn/ui@99.9.9` declares `@ikeacn/ui: ^99.9.9`, `slack-sns@100.0.0` likewise, both
+    `vm-day1` malware); no other `vm-day1` malicious sample this rule fires on declares a
+    dependency at its major (`docs/proposals/precision-round8-P.md`, P3)."""
 
     id = "npm.version.suspicious"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency-confusion style version number"
@@ -857,6 +889,8 @@ class SuspiciousVersion(BaseRule):
             previous = semver.parse(change.previous.ref.version)
             if previous is not None and previous.major >= self.MIN_MAJOR:
                 return []  # the package has always used such versions (e.g. date-based)
+        if family_major(change.new.manifest, change.new.ref.name, version.major):
+            return []  # another declared package uses this major (pnpm 11's `1100.x`)
         return [
             self.finding(
                 f"Version {change.new.ref.version} has major {version.major} "

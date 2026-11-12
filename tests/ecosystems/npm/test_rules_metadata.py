@@ -659,6 +659,34 @@ def test_suspicious_version(version: str, previous: str | None, fires: bool) -> 
     assert bool(SuspiciousVersion().evaluate(c, CTX)) is fires
 
 
+@pytest.mark.parametrize(
+    ("version", "manifest", "fires"),
+    [
+        # pnpm 11's numbering, ported (@ohos-ports/fs.hard-link-dir, @ohos-ports/pnpm-worker)
+        ("1100.0.9-beta.1", {"dependencies": {"@pnpm/error": "1100.2.2"}}, False),
+        ("1100.4.10-beta.1", {"dependencies": {"semver": "^7", "@pnpm/a": "^1100.0.0"}}, False),
+        ("1100.0.37", {"peerDependencies": {"@pnpm/logger": "^1100.0.0"}}, False),
+        ("1100.0.1", {"optionalDependencies": {"@pnpm/x": ">=1100.0.0 <1101"}}, False),
+        ("99.9.9", {"dependencies": {"other": "~99.1"}}, False),
+        # itself at its own major: `@ikeacn/ui@99.9.9`, `slack-sns@100.0.0` (vm-day1 malware)
+        ("99.9.9", {"dependencies": {"kx": "^99.9.9"}}, True),
+        # another major, a dev dependency, no range major
+        ("99.1.0", {"dependencies": {"gql-test-client": "^100.99.99"}}, True),
+        ("999.0.0", {"devDependencies": {"@corp/b": "999.0.0"}}, True),
+        ("999.0.0", {"dependencies": {"a": "npm:b@999.0.0", "c": "latest", "d": "*"}}, True),
+        ("999.0.0", {"dependencies": {"a": "9990.0.0", "b": "99.0.0"}}, True),
+        ("999.0.0", {"dependencies": ["not", "a", "mapping"]}, True),
+        ("999.0.0", {"dependencies": {"a": 999}}, True),
+    ],
+)
+def test_a_family_major_is_not_suspicious(
+    version: str, manifest: dict[str, Any], fires: bool
+) -> None:
+    """v5 (P3): another declared package at the same major; a self-dependency still fires."""
+    found = SuspiciousVersion().evaluate(change(snap(version, manifest)), CTX)
+    assert bool(found) is fires
+
+
 def test_dormant_revived() -> None:
     old = snap("1", published_at=T0 - timedelta(days=400))
     (finding,) = DormantRevived().evaluate(change(snap("2"), old), CTX)
