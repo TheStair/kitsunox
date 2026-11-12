@@ -576,6 +576,19 @@ later), B2 +0, none lost.
   Replay set: -15 benign, 0 positives, 0 unverified
   ([round 8 P](../proposals/precision-round8-P.md), P1, with `vm-day1` and the options that
   remove more).
+- **Dependency-confusion placeholders** (stage version 21, 2026-11-12): Stage 2's
+  `npm.artifact.install-stub` (every install hook is `node <file>`, each file only throws a
+  constant message, and the whole package ships no other code;
+  [static.md](static.md#metadata-vs-tarball-npm-ecosystemsnpmrulesartifactpy)) explains
+  `npm.artifact.hidden-install-script`, `npm.install-hook` and `npm.version.suspicious`: what
+  a company's placeholder under its internal name looks like, a `999.9.9` that fails
+  `npm install` on purpose. Nothing else is explained. Live: the 10 JetBrains stubs of
+  2026-11-12 (`kotlinconf*`, `jetbrains-*`, `ides-perf`, `jquery-astabs`; score 8 -> 2), all
+  benign; replay set: fires on none of the 825 versions with one of the three findings, no
+  decision changes; `vm-day1`: of the 1,382 malicious samples with one of them, 947 run
+  `node <file>` hooks and none of those files only throws (even without the whole-package and
+  text-only conditions), so the rule fires on none: the 131 confusion probes run code that
+  reports back ([round 9 S](../proposals/precision-round9-S.md), S1).
 - **Established repository match** (stage version 9, 2026-11-04): clearing install-code
   MEDIUM findings for a version whose code is exactly an established repository's is built
   but off (`CLEAR_ESTABLISHED`; Repository trust, below).

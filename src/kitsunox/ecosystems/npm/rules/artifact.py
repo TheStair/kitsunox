@@ -266,6 +266,124 @@ def broken_attack(
     return False
 
 
+# Whitespace and comments between the tokens of a stub (`_STUB`).
+_GAP: Final = r"(?:\s|//[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*"
+# A string literal with no code in it: quoted, or a template literal with no `${...}`.
+_LITERAL: Final = (
+    r"(?:\"(?:[^\"\\\n]|\\[\s\S])*\"|'(?:[^'\\\n]|\\[\s\S])*'"
+    r"|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`)"
+)
+_CONSTANT: Final = rf"{_LITERAL}(?:{_GAP}\+{_GAP}{_LITERAL})*"
+# A whole file that only throws a constant message: an optional `#!` line and `"use strict"`,
+# then `throw new Error("...")`, `throw Error("...")` or `throw "..."`, string literals joined
+# with `+` allowed. No identifier but `Error`, no call but its constructor, no other statement.
+_STUB: Final = re.compile(
+    rf"(?:#![^\n]*\n)?{_GAP}(?:(?:\"use strict\"|'use strict'){_GAP};?{_GAP})?"
+    rf"throw{_GAP}(?:(?:new{_GAP})?Error{_GAP}\({_GAP}{_CONSTANT}{_GAP}\)|{_CONSTANT})"
+    rf"{_GAP};?{_GAP}"
+)
+# Files that never run: documentation and licence texts.
+_TEXT_FILE: Final = re.compile(
+    r"(?:^|/)(?:readme|license|licence|changelog|notice|authors)[^/]*$|\.(?:md|txt)$",
+    re.IGNORECASE,
+)
+_STUB_FILE: Final = (".js", ".cjs", ".mjs")
+
+
+def stub_file(path: str, files: Mapping[str, bytes]) -> str | None:
+    """The package file `node <path>` runs when it is a JavaScript file that only throws a
+    constant message (`_STUB`), else None. Node tries the path, then `<path>.js`."""
+    for candidate in (path, path + ".js"):
+        content = files.get(candidate)
+        if content is None:
+            continue
+        if not candidate.lower().endswith(_STUB_FILE):
+            return None
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return candidate if _STUB.fullmatch(text) else None
+    return None
+
+
+class InstallStub(BaseRule):
+    """A dependency-confusion placeholder: every install hook in the tarball is `node <file>`,
+    each file only throws a constant message (`throw new Error("...")`, string literals joined
+    with `+`), and the package ships nothing else but its `package.json` and text
+    (README, licence, `.md`, `.txt`). `npm install` stops at the first hook with that error, and
+    there is no other code to load. Companies publish such stubs under their internal package
+    names at a high version so that a misconfigured install fails loudly instead of fetching
+    an attacker's package: JetBrains' `kotlinconf@999.9.9`, `jetbrains-icons@999.9.9` and
+    eight more on 2026-11-12, each `preinstall: node fail.js` with "This is stub package to
+    mitigate risks of Dependency Confusion attacks", a hook the registry's metadata doesn't
+    show (`npm.artifact.hidden-install-script`) and a `999.9.9` version
+    (`npm.version.suspicious`).
+
+    INFO, weight 0: an explanation for Stage 4 (`correlate.EXPLAINED`), which makes
+    `npm.artifact.hidden-install-script`, `npm.install-hook` and `npm.version.suspicious` LOW.
+    It needs the whole package (`_whole`: nothing skipped, no tar anomaly, the files add up to
+    the declared size), each hook exactly `node <file>` (no `|| true`, no option, no chain),
+    and the file only the one `throw` statement: a call to anything but `Error`, a `${...}`
+    in a template, a `require` or any other statement is not a stub. A dependency-confusion
+    probe needs to run code that reports back (`vm-day1`'s 131 such samples all do), which this
+    shape cannot.
+
+    Added 2026-11-12 (`docs/proposals/precision-round9-S.md`, S1)."""
+
+    id = "npm.artifact.install-stub"
+    severity = Severity.INFO
+    weight = 0.0
+    title = "Install hooks only throw an error: a dependency-confusion placeholder"
+
+    def evaluate_artifact(
+        self, snapshot: VersionSnapshot, files: Mapping[str, bytes]
+    ) -> Sequence[Finding]:
+        raw = files.get("package.json")
+        if raw is None or not _whole(snapshot, files):
+            return ()
+        try:
+            packed = json.loads(raw)
+        except ValueError:
+            return ()
+        if not isinstance(packed, dict):
+            return ()
+        hooks = {h: c for h, c in sorted(scripts(packed).items()) if h in INSTALL_HOOKS}
+        if not hooks:
+            return ()
+        stubs: dict[str, str] = {}
+        for hook, command in hooks.items():
+            target = hook_target(command)
+            if target is None or "||" in command:
+                return ()
+            stub = stub_file(target, files)
+            if stub is None:
+                return ()
+            stubs[hook] = stub
+        if any(
+            path != "package.json" and path not in stubs.values() and not _TEXT_FILE.search(path)
+            for path in files
+        ):
+            return ()
+        return (
+            self.finding(
+                "Every install hook runs a file that only throws an error ("
+                + ", ".join(f"`{hook}`: `{stub}`" for hook, stub in stubs.items())
+                + ") and the package ships no other code: `npm install` stops there, so it "
+                "installs nothing that runs. A dependency-confusion placeholder.",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.FILE_SPAN,
+                        path=stub,
+                        line_start=1,
+                        snippet=snippet(files[stub].decode("utf-8").strip()),
+                    )
+                    for stub in sorted(set(stubs.values()))
+                ),
+            ),
+        )
+
+
 def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
     """The tree is the whole package: nothing skipped, no tar anomaly or duplicate, and the
     files add up to the declared unpacked size (within `DeclaredSizeMismatch`'s tolerance)."""
@@ -285,6 +403,7 @@ RULES: Final = (
     HiddenInstallScript(),
     DeclaredSizeMismatch(),
     InstallTargetMissing(),
+    InstallStub(),
     DisguisedFile(),
     ChannelFollowOnConnect(),
 )
