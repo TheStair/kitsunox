@@ -45,6 +45,7 @@ from kitsunox.rules.static import RULES as STATIC_RULES
 from kitsunox.stages.ast import CapabilityCache, code_change
 from kitsunox.stages.code import CODE_RULES
 from kitsunox.stages.correlate import CorrelationContext, correlate, wants_repo
+from kitsunox.stages.gitdeps import NpmGitDependencyLookup
 from kitsunox.stages.repo import RepoMemory, compare, with_history, with_trust
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
@@ -329,7 +330,9 @@ class Correlated(PipelineWithCode):
     `data/eval/github-api/` like the dependency records: as of the first evaluation that asked,
     not as of the release (a repository deleted since reads as not shown, so the release
     stays reported). Compared updates get their history (`with_history`) the same way; two
-    commits relate the same way whenever they are asked about.
+    commits relate the same way whenever they are asked about. Git dependencies a sample adds
+    are read as live (decision 0020), through the repository store, uncapped: as of the
+    evaluation, so a repository deleted since is not read (noted under `notes`).
 
     `notes` also records (under `ABOUT`) what a result depends on besides the dataset: the
     correlation rules' fingerprint, the watchlist and label set ids, and the dependency lookup
@@ -351,6 +354,11 @@ class Correlated(PipelineWithCode):
             )
         )
         self.locator = NpmLocator()
+        # Git dependencies' install code (decision 0020), through the same repository store
+        # and with no cap, as `dependencies` below.
+        self.git_dependencies = NpmGitDependencyLookup(
+            self.github.fetcher, cap=None, per_package=None
+        )
         self.refs: dict[GitHubRepo, Mapping[str, str] | None] = {}
         root = data.root / "eval" / "github-api"
         self.api = GitHub(
@@ -415,12 +423,17 @@ class Correlated(PipelineWithCode):
                 repo = with_history(
                     repo, change, self.locator, self.api, self.trust_memory, ask_range=flagged
                 )
+        sources = self.git_dependencies(candidate)
+        for source in sources:
+            if source.unavailable is not None:
+                self._note(f"git dependency not read: {source.unavailable.split(':')[0]}")
         ctx = CorrelationContext(
             as_of=_as_of(change),
             known_bad=self.labels,
             repo=repo,
             watchlist=self.watchlist,
             dependencies=self.dependencies,
+            source_dependencies=sources,
         )
         result = correlate(candidate, ctx, CORRELATION_RULES)
         self._dependency_notes()

@@ -15,7 +15,9 @@
 > rules since the same day; `STAGE_VERSION` 14. A follow-on release that keeps a reported
 > release's payload unchanged is reported as such since 2026-11-11 (`correlate.follow-on`,
 > [Follow-on releases](#follow-on-releases-correlatefollow-on-stage-version-18));
-> `STAGE_VERSION` 18.
+> `STAGE_VERSION` 18. The install code of a git dependency a version adds is read with the
+> install rules since 2026-11-12 (`npm.git-dependency`,
+> [Git dependencies](#git-dependencies-npmgit-dependency-stage-version-22)); `STAGE_VERSION` 22.
 
 ## Purpose
 
@@ -455,6 +457,77 @@ whose previous version is a sample and that round 3 didn't report): A +0, B1 +12
 (`@operato/*`, `@things-factory/email-base`: the same install-time `bundle.js`, 6-27 minutes
 later), B2 +0, none lost.
 
+## Git dependencies (`npm.git-dependency`; stage version 22)
+
+A dependency installed from a git repository runs its install code when the release is
+installed, and none of it is in the release's tarball. `web3-mev-error-decoder@0.1.0`
+(2026-11-09, malicious) shipped a clean tarball and depended on
+`github:outgoingyang/multicall-error-decoder`, whose `install` hook decrypted its strings and
+downloaded and started a payload; only `npm.dependency.non-registry` fired. Since
+`STAGE_VERSION` 22 Stage 4 reads such a dependency's install code
+([decision 0020](../decisions/0020-git-dependency-install-code.md); measured in
+[round 10 G](../proposals/git-dependencies-round10-G.md)):
+
+- **Which dependencies** (`stages/gitdeps.wanted`): runtime dependencies (`dependencies`,
+  `optionalDependencies`) the version adds or changes, from outside the registry; not local
+  paths, protocols npm can't fetch or registry tarball URLs. Of those, the ones whose spec
+  names a GitHub repository are read (`ecosystems/npm/gitdep.github_spec`: `github:o/r`, `o/r`,
+  `git+https://`, `git+ssh://`, `git://`, `git@github.com:o/r`, `https://github.com/o/r`, and
+  archive URLs); credentials in a spec are never sent, and shown as `***@`. Unchanged specs on
+  an update are not read.
+- **Resolve, fetch, extract.** The reference (`#<commit>`, `#<tag or branch>`,
+  `#semver:<range>`, none for the default branch; `::path:<dir>`) is looked up in the
+  repository's refs (`HEAD` included), then the archive at that commit is fetched through the
+  run's fetcher (recorded in `correlate-snapshot.json`, immutable index, pruned with
+  `--keep-repo-days`) and extracted with `extract_archive` under `DEPENDENCY_LIMITS` (64 MB
+  compressed, 512 MB, 100,000 files) in the comparison pool. Only what npm runs is kept.
+- **What npm runs** (`npm_runs`): for a git dependency `preinstall`, `install`, `postinstall`
+  and `prepublish`, `preprepare`, `prepare`, `postprepare` (the root lifecycle of the
+  `npm install` npm runs in the clone; pacote runs only `prepare` around the pack); for a
+  GitHub archive URL, a remote tarball to npm, the install hooks only. The rules read three
+  install slots, so a git-only hook takes a free one (with none free, it joins the last with
+  `&&`), and `npm run <script>` is expanded to the script npm runs (with its `pre`/`post`
+  scripts, three levels).
+- **Analysis** (`stages/gitdeps.analyse`): Stage 1's `npm.install-hook`, Stage 2's file rules
+  on those files, and Stage 3's code rules, the dependency taken as a new package; for a
+  commit bump in the same repository (the previous release pinned a full commit id), as an
+  update of that commit, so unchanged install code is not new. The explanations (`EXPLAINED`:
+  build tool, explained shapes, inert hooks, ...) are applied within the dependency.
+- **The rule** `npm.git-dependency` (v1) shows those findings with their own rule ids,
+  severities and weights (they score like the release's own install findings), the dependency
+  named in the explanation and the evidence under `dep:<name>@<commit12>/<path>`; a hook the
+  rules read in a slot is shown under its own name (`scripts.prepare`). An INFO summary gives
+  the repository, commit, how the reference resolved, the scripts npm runs and what the
+  install code uses (`[network]`, `[process]`, `[filesystem]`, `[decrypt]` lines). An INFO note
+  lists the dependency's own non-registry dependencies (not followed).
+- **Subjects.** An explanation applies only within its subject (`dependency_subject`: the
+  package, or one dependency): the package's `npm.install-build-tool` doesn't explain a
+  dependency's `npm.install-hook`, nor the other way round. A dependency's severe finding is
+  never cleared by the package's repository match (`CLEAR_ESTABLISHED`, `CLEAR_HISTORY`), and
+  `dep:` evidence is never carried by a follow-on.
+- **Not read** (INFO `Not evaluated:`; `npm.dependency.non-registry` alone speaks for it, as
+  before): a deleted or private repository, a reference not in its refs, an archive that is
+  404 or over the limits, a dependency over the caps, another git host, a GitHub release asset
+  or raw file, a tarball URL on another host. Tarballs on other hosts are not fetched: the
+  host is often the attacker's, a request tells them the package is being analysed and lets
+  them answer differently, and requests to arbitrary hosts are what an SSRF needs.
+- **Caps** (planned in run order before any request): `MAX_GIT_DEPENDENCIES` 200 distinct
+  specs a run, `MAX_PER_PACKAGE` 10 for all versions of one package. A network failure is
+  retried in the same passes as the repository lookups and stays visible (`transient`).
+- **`correlate.json`** `git_dependencies`: the caps, the inner rules' fingerprint (`rules`),
+  `wanted`, `capped`, `read`, `unavailable`, `with_findings`, `planned`, the retry counts and
+  `still_failing`, and why each unread dependency was not read (`errors`).
+
+Measured on the live runs on disk (190 runs, 2026-10-29..11-12): 273 versions add or change a
+non-registry dependency (335 dependencies). Of the 167 GitHub repository specs, 162 were read
+(115 commits of 70 repositories, 191 MB of archives), 30 with findings; 1 repository was
+deleted, 2 abbreviated commits were in no ref, 1 archive was 404. 110 were tarballs on other
+hosts, 56 GitHub release assets or raw files, 3 other git hosts. No decision changed: every
+version that adds a GitHub dependency was already reported through `non-registry`; 24 of them
+gained a severe dependency finding (10 positives, 14 benign: mostly `prepare: tsc`).
+`web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
+`npm.install-script-code`. Replay set and `vm-day1`: see the proposal.
+
 ## Decision and score
 
 - **Report** a version when any finding is MEDIUM or above, or its score reaches
@@ -730,6 +803,7 @@ Rules over it:
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count), and an alias into JSR's `@jsr/` scope (v2) | MEDIUM | 3 |
 | `npm.undeclared.missing` | a package Stage 3's `npm.undeclared-package` names (loaded at module load, not declared; not own scope, watched or a sibling) was 404 when the run looked it up (Undeclared and missing, above). INFO, weight 0, when the lookup failed or was over the limits | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
+| `npm.git-dependency` | a version adds or changes a dependency from outside the registry: the install rules' findings on a GitHub dependency's install code, each with its own rule id, severity and weight and `dep:<name>@<commit12>/` evidence; an INFO summary (commit, scripts npm runs, what the install code uses); an INFO `Not evaluated:` note when it wasn't read (Git dependencies, above) | INFO (its findings: theirs) | 0 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.established-match` | a clean comparison with a repository that is not a fork or archived, ≥ 30 days old at the release, ≥ 5 stars, the commit on its default branch (Repository trust, above). Clears install-code MEDIUM findings in the decision | INFO | 0 |
 | `repo.history-match` | a clean comparison at a commit ahead of the previous release's commit, no `commit-after-release` (Repository history, above). Clears install-code MEDIUM findings in the decision when `CLEAR_HISTORY` is on (off) | INFO | 0 |
@@ -852,6 +926,16 @@ for ~1.4 extra benign reports a day.
 
 ## Known limits
 
+- **Git dependencies** (decision 0020). Only GitHub repositories and archives are read; other
+  git hosts, GitHub release assets and tarballs on other hosts are noted, not read. An
+  unchanged spec on an update is not read, so a push to a dependency's branch between two
+  releases goes unseen. The reference is resolved when Stage 4 runs, not when the release was
+  published: a branch moved since, a deleted repository or a garbage-collected fork commit
+  reads differently or not at all. The dependency's own dependencies (registry ones, whose
+  install hooks also run, and the devDependencies npm installs to run `prepare`) are not read,
+  nor its git dependencies (listed only). `npm run` is expanded three levels; `yarn <script>`
+  without `run`, `npx` of the dependency's own bins and Makefiles are not. The evaluation
+  predictor reads git dependencies as of the evaluation, not as of the sample.
 - **Follow-ons.** A follow-on more than 7 days after the reported release is judged on its
   changes alone, as before; so is one whose payload moved to another path or changed by a
   byte, one whose earlier release was reported for evidence the pass doesn't carry (an install

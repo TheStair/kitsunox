@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,8 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Protocol, overload
+
+from pydantic import Field
 
 from kitsunox.core.models import (
     Candidate,
@@ -88,8 +91,13 @@ STAGE_ID: Final = "correlate"
 # obfuscated JavaScript) explains `static.obfuscated`. 21: Stage 2's `npm.artifact.install-stub`
 # (a dependency-confusion placeholder whose hooks only throw) explains
 # `npm.artifact.hidden-install-script`, `npm.install-hook` and `npm.version.suspicious`.
+# 22: dependencies installed from a git repository have their install code read
+# (`SourceDependencyLookup`, `CorrelationContext.source_dependencies`, decision 0020): their
+# findings carry a `dep:<name>@<commit12>/` path prefix (`dependency_subject`), an explanation
+# applies only to findings of its own subject (the package, or one dependency), and a
+# dependency's findings are never cleared by the package's repository match.
 # Output without the field is 1.
-STAGE_VERSION: Final = 21
+STAGE_VERSION: Final = 22
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -247,12 +255,84 @@ class FollowOnLookup(Protocol):
     def __call__(self, earlier: ReportedRelease, candidate: Candidate, /) -> FollowOn | None: ...
 
 
+class SourceDependency(Record):
+    """A dependency the release installs from its source repository instead of a registry
+    (npm: a GitHub git dependency, decision 0020), and what reading its install code found.
+
+    `name` and `spec` are as the release's manifest declares them (`spec` without credentials);
+    `repo` and `commit` what the spec resolved to as of the run, `how` by what (`tag v1.2.0`,
+    `the default branch`); `base_commit` the commit the previous release's spec pinned, when
+    the dependency's code was compared with it. `findings` are the ecosystem's install rules
+    run on the dependency as if it were a package of its own, with paths relative to it and
+    explanations applied within it; `hooks` maps each install-hook slot those rules read to
+    the dependency's own scripts it holds (npm runs `prepare` for a git dependency; the rules
+    know three slots). `reaches` is evidence for reviewers (what the install code uses), never
+    scored. `nested`: the dependency's own non-registry dependencies (`name: spec`), not
+    followed. `unavailable` says why nothing was read (a deleted repository, a missing ref, a
+    cap); `transient`: because of a network failure, so a retry may work."""
+
+    name: str
+    spec: str
+    repo: str | None = None
+    commit: str | None = None
+    how: str | None = None
+    base_commit: str | None = None
+    hooks: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    findings: tuple[Finding, ...] = ()
+    reaches: tuple[Evidence, ...] = ()
+    nested: tuple[str, ...] = ()
+    unavailable: str | None = None
+    transient: bool = False
+
+
+class SourceDependencyLookup(Protocol):
+    """Reads the install code of the dependencies a release installs from source (must be
+    thread-safe; each distinct dependency is fetched once per pass)."""
+
+    def plan(self, candidates: Sequence[Candidate], ctx: CorrelationContext, /) -> int:
+        """Called by `correlate_run` with every version in run order, before any lookup:
+        decide which dependencies will be read (its caps pick the same ones however the
+        workers are scheduled); returns how many."""
+        ...
+
+    def __call__(self, candidate: Candidate, /) -> tuple[SourceDependency, ...]: ...
+
+    def new_pass(self) -> None: ...
+
+    def requests(self) -> NetworkRequests: ...
+
+    def stats(self) -> Mapping[str, object]:
+        """Counts (and errors) for `correlate.json`."""
+        ...
+
+
+# The path prefix of evidence inside a source dependency: `dep:<name>@<commit12>/<path>`.
+DEPENDENCY_PREFIX: Final = "dep:"
+_DEPENDENCY_SUBJECT: Final = re.compile(r"^dep:(?P<name>.+?)@(?P<commit>[0-9a-f]{12})/")
+
+
+def dependency_path(dependency: SourceDependency, path: str) -> str:
+    """Where `path` (relative to the dependency) is shown: under its `dep:` prefix."""
+    return f"{DEPENDENCY_PREFIX}{dependency.name}@{(dependency.commit or '?' * 12)[:12]}/{path}"
+
+
+def dependency_subject(finding: Finding) -> str:
+    """The `dep:<name>@<commit12>/` prefix a finding about a source dependency's code carries
+    on its evidence, or "" for a finding about the package itself."""
+    for evidence in finding.evidence:
+        match = _DEPENDENCY_SUBJECT.match(evidence.path or "")
+        if match is not None:
+            return match.group(0)
+    return ""
+
+
 @dataclass(frozen=True)
 class CorrelationContext:
     """What correlation rules may know besides the candidate: the run's `as_of`, outside
     knowledge, the run's watchlist, registry records of dependencies, and (per candidate) the
-    comparison with its source repository and, for a follow-on of a release this run reported,
-    what it still holds of that release's evidence (`follow_on`)."""
+    comparison with its source repository, the dependencies it installs from source with what
+    their install code does (`source_dependencies`) and, for a follow-on of a release this run
+    reported, what it still holds of that release's evidence (`follow_on`)."""
 
     as_of: datetime
     known_bad: KnownBad | None = None
@@ -260,6 +340,7 @@ class CorrelationContext:
     watchlist: Watchlist | None = None
     dependencies: DependencyLookup | None = None
     follow_on: FollowOn | None = None
+    source_dependencies: tuple[SourceDependency, ...] = ()
 
 
 class RepoLookup(Protocol):
@@ -428,12 +509,15 @@ EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
 
 
 def explained(findings: Sequence[Finding]) -> tuple[Finding, ...]:
-    """`findings` with those an explanation accounts for (`EXPLAINED`) made LOW."""
-    present = {f.rule_id for f in findings}
+    """`findings` with those an explanation accounts for (`EXPLAINED`) made LOW. An
+    explanation applies only within its subject (`dependency_subject`): the package's own build
+    tool says nothing about a git dependency's install hook, nor the other way round."""
+    present = {(dependency_subject(f), f.rule_id) for f in findings}
     out = []
     for f in findings:
+        subject = dependency_subject(f)
         note = next(
-            (n for rule, n in EXPLAINED.get(f.rule_id, ()) if rule in present),
+            (n for rule, n in EXPLAINED.get(f.rule_id, ()) if (subject, rule) in present),
             None,
         )
         if note is not None and f.severity not in (Severity.INFO, Severity.LOW):
@@ -575,10 +659,12 @@ def _cleared_by_repo(
     findings: Sequence[Finding], severe: Sequence[str], report_score: float
 ) -> bool:
     """Whether a match (the caller checked one is present and switched on) explains every
-    finding that would report the version."""
+    finding that would report the version. The package's repository says nothing about a
+    source dependency's code, so a severe finding about one is never cleared."""
     return (
         set(severe) <= CLEARED_BY_REPO
         and not any(at_least(f.severity, Severity.HIGH) for f in findings)
+        and not any(_severe(f) and dependency_subject(f) for f in findings)
         and score(f for f in findings if f.rule_id not in CLEARED_BY_REPO) < report_score
     )
 
@@ -643,9 +729,17 @@ FOLLOW_ON_EVIDENCE: Final = 10
 
 
 def _carried_kind(evidence: Evidence) -> bool:
-    return bool(evidence.path) and evidence.kind in (
-        EvidenceKind.FILE_SPAN,
-        EvidenceKind.MANIFEST_FIELD,
+    """A file or manifest field of the release itself (a source dependency's files are not in
+    the next release's tarball: `dep:` paths are never carried)."""
+    path = evidence.path or ""
+    return (
+        bool(path)
+        and not path.startswith(DEPENDENCY_PREFIX)
+        and evidence.kind
+        in (
+            EvidenceKind.FILE_SPAN,
+            EvidenceKind.MANIFEST_FIELD,
+        )
     )
 
 
@@ -790,6 +884,7 @@ def correlate_run(
     max_comparisons: int = MAX_REPO_COMPARISONS,
     follow_on: FollowOnLookup | None = None,
     history: Mapping[tuple[str, str], ReportedRelease] | None = None,
+    sources: SourceDependencyLookup | None = None,
 ) -> CandidateFile:
     """Stage 4 over a run Stage 3 has processed. Reads every triaged version
     (`triage.jsonl`), taking Stages 2-3's version of those routed to them (`ast.jsonl`); writes
@@ -815,6 +910,11 @@ def correlate_run(
     run writes its own reported releases with payload evidence to `FOLLOW_ON_INDEX` and the
     `history` entries it used to `FOLLOW_ON_HISTORY`, so a re-score can read exactly those.
 
+    With `sources`, every version's dependencies installed from source are read after the
+    repository comparisons (`SourceDependencyLookup.plan` first, with every version), retried
+    the same way, and handed to the rules as `ctx.source_dependencies`; `correlate.json` counts
+    them under `git_dependencies`.
+
     Versions are read from disk when needed (`RunVersions`) and written as they are
     correlated, never all held at once: a 110k-version run's candidates take ~4 GB as objects,
     and Stage 4 holding them (with its input and output) was OOM-killed at 21.6 GB on the VM on
@@ -837,11 +937,19 @@ def correlate_run(
     totals = _Totals()
     releases = _RunReleases()
 
+    def source_lookup(i: int) -> tuple[SourceDependency, ...]:
+        return sources(versions[i]) if sources is not None else ()
+
     def correlated(i: int, follow: FollowOn | None = None) -> Candidate:
         comparison = comparisons[i]
         candidate = correlate(
             versions[i],
-            replace(ctx, repo=comparison, follow_on=follow),
+            replace(
+                ctx,
+                repo=comparison,
+                follow_on=follow,
+                source_dependencies=from_source[i] if from_source else (),
+            ),
             rules,
             report_score=report_score,
         )
@@ -883,6 +991,23 @@ def correlate_run(
                 if deps is not None
                 else {}
             )
+            from_source: list[tuple[SourceDependency, ...]] = []
+            source_network: dict[str, object] = {}
+            if sources is not None:
+                planned = sources.plan(versions, ctx)
+                from_source = list(pool.map(source_lookup, indices))
+                source_network = {
+                    "planned": planned,
+                    **_retry_transient(
+                        pool,
+                        source_lookup,
+                        lambda found: any(d.transient for d in found),
+                        sources,
+                        indices,
+                        from_source,
+                        retry_passes,
+                    ),
+                }
             write_jsonl(run_dir / "correlate.jsonl", _in_order(pool, one, len(versions)))
             if follow_on is not None:
                 follow_info, used = _follow_ons(
@@ -935,6 +1060,16 @@ def correlate_run(
             "still_failing": sum(r.transient for r in records),
             "versions_not_evaluated": totals.not_evaluated,
             "errors": dependency_errors,
+        }
+    if sources is not None:
+        source_stats = dict(sources.stats())
+        source_errors = source_stats.pop("errors", {})
+        source_network.pop("errors")
+        info["git_dependencies"] = {
+            **source_stats,
+            **source_network,
+            "still_failing": sum(any(d.transient for d in found) for found in from_source),
+            "errors": source_errors,
         }
     if follow_on is not None:
         info["follow_on"] = follow_info

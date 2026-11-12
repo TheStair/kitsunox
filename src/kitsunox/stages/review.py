@@ -27,6 +27,7 @@ from kitsunox.ecosystems.npm.rules.correlate import (
     foreign_added_dependencies,
     undeclared_lookups,
 )
+from kitsunox.ecosystems.npm.rules.git_dependency import RULES as GIT_DEPENDENCY_RULES
 from kitsunox.ecosystems.npm.rules.metadata import runtime_dependencies, scripts
 from kitsunox.ecosystems.npm.rules.obfuscation_only import RULES as OBFUSCATION_ONLY_RULES
 from kitsunox.evaluation.labels import label_store
@@ -49,6 +50,7 @@ from kitsunox.stages.correlate import (
     ReportedRelease,
     correlate_run,
 )
+from kitsunox.stages.gitdeps import NpmGitDependencyLookup
 from kitsunox.stages.repo import (
     NetworkRequests,
     RepoComparison,
@@ -66,6 +68,7 @@ NPM: Final = "npm"
 CORRELATION_RULES: Final[tuple[CorrelationRule, ...]] = (
     *NPM_CORRELATION_RULES,
     *REPO_RULES,
+    *GIT_DEPENDENCY_RULES,
     FollowOnRelease(),
     # Last: it reads every other rule's findings (`npm.obfuscation-only`).
     *OBFUSCATION_ONLY_RULES,
@@ -483,6 +486,7 @@ def run_correlate_stage(
                 workers=workers,
                 follow_on=follow_on_lookup(fetcher),
                 history=follow_on_history(data, run_id, manifest, reuse=seed is not None),
+                sources=NpmGitDependencyLookup(fetcher, pool=pool),
             )
     finally:
         fetcher.close()

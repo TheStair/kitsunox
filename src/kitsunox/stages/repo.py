@@ -378,11 +378,18 @@ class RepoMemory:
             del body
             yield tree
 
-    def compared_in_pool(
-        self, github: GitHub, repo: GitHubRepo, commit: str, directory: str, job: _Job
-    ) -> RepoComparison:
-        """`job` (`_extract_and_compare` with the release bound) on the archive at `commit`,
-        in a pool worker. An unreadable archive raises `ValueError`, as `archive` does."""
+    def compared_in_pool[T](
+        self,
+        github: GitHub,
+        repo: GitHubRepo,
+        commit: str,
+        directory: str,
+        job: Callable[[bytes], T | str],
+    ) -> T:
+        """`job` (`_extract_and_compare` with the release bound, or another extraction such as
+        a git dependency's, `stages.gitdeps`) on the archive at `commit`, in a pool worker. An
+        unreadable archive (the job returns why, as text) raises `ValueError`, as `archive`
+        does."""
         pool = self.pool
         if pool is None:
             raise RuntimeError("compared_in_pool needs a RepoMemory with a pool")
@@ -604,9 +611,6 @@ def with_history(
 
 # The work `compared_in_pool` sends: the archive's body in, a comparison or the text of why
 # the archive can't be read out (an `ArchiveLimitError` doesn't survive pickling).
-_Job = Callable[[bytes], "RepoComparison | str"]
-
-
 def _extract_and_compare(
     limits: ExtractLimits,
     change: Change,
