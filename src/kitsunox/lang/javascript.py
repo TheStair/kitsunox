@@ -978,8 +978,11 @@ def shown_not_run(content: bytes, language: str, offset: int) -> bool:
     )
     while node is not None and node.type not in ("string", "template_string"):
         node = node.parent
-    if node is None:
-        return False
+    return node is not None and _shown_from(node)
+
+
+def _shown_from(node: ts.Node) -> bool:
+    """`shown_not_run`'s walk from a string (or a variable's reference) up to its statement."""
     shown = False
     while node.parent is not None:
         parent = node.parent
@@ -1012,6 +1015,61 @@ def shown_not_run(content: bytes, language: str, offset: int) -> bool:
             return shown
         node = parent
     return shown
+
+
+def shown_or_kept(content: bytes, language: str, offset: int) -> bool:
+    """`shown_not_run`, also through one local variable (2026-11-12, round 9 Q3,
+    `npm.install-download` v6): a string that is the value of a `const`/`let`/`var` (directly or
+    through `+`, templates and ternaries), not exported, whose every reference in the file is
+    itself only shown or kept as data (`shown_not_run`'s walk from the reference). A variable
+    never referenced keeps its string as data. `praana@0.20.0`'s postinstall builds
+    `const installer = win ? \\`irm ${URL} | iex\\` : \\`curl -fsSL ${URL} | sh\\`` and returns
+    it in the lines of a notice."""
+    if shown_not_run(content, language, offset):
+        return True
+    if len(content) > MAX_SOURCE_BYTES:
+        return False
+    parser, _ = _parser(language)
+    root = parser.parse(content).root_node
+    node: ts.Node | None = root.descendant_for_byte_range(offset, offset + 1)
+    while node is not None and node.type not in ("string", "template_string"):
+        node = node.parent
+    while node is not None and node.parent is not None and node.parent.type in _TO_RUNNER:
+        node = node.parent
+    declarator = node.parent if node is not None else None
+    if (
+        node is None
+        or declarator is None
+        or declarator.type != "variable_declarator"
+        or declarator.child_by_field_name("value") != node
+    ):
+        return False
+    name_node = declarator.child_by_field_name("name")
+    declaration = declarator.parent
+    if (
+        name_node is None
+        or name_node.type != "identifier"
+        or declaration is None
+        or (declaration.parent is not None and declaration.parent.type == "export_statement")
+    ):
+        return False
+    name = _text(name_node)
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        stack.extend(current.children)
+        if current.type not in _REFERENCES or current == name_node or _text(current) != name:
+            continue
+        if current.type != "identifier":
+            return False  # `{ installer }`: handed on under its own name
+        if not _shown_from(current):
+            return False
+    return True
+
+
+_REFERENCES: Final = frozenset(
+    {"identifier", "shorthand_property_identifier", "shorthand_property_identifier_pattern"}
+)
 
 
 # `handed_to_runner` (2026-11-10, round 6 R, `npm.install-download-foreign`): the expressions a

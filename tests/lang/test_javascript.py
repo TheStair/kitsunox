@@ -18,6 +18,7 @@ from kitsunox.lang.javascript import (
     opt_in_parameter,
     package_name,
     passes_argument,
+    shown_or_kept,
 )
 
 C = Capability
@@ -407,3 +408,26 @@ def test_passes_argument() -> None:
     assert passes(b"set(...argv)")
     assert passes(b"items.forEach(set)")
     assert not passes(b"set(a, /* g */)")
+
+
+@pytest.mark.parametrize(
+    ("after", "kept"),
+    [
+        ('return ["Install:", cmd].join("\\n");', True),  # in a returned list
+        ('console.log("run: " + cmd);', True),  # printed
+        ("", True),  # never used
+        ("execSync(cmd);", False),  # run
+        ('const full = cmd + " --yes";\nshow(full);', False),  # handed on: not followed further
+        ("send({ cmd });", False),  # passed on under its own name
+        ("if (cmd.length) go();", False),  # used as a value
+    ],
+)
+def test_shown_or_kept_follows_one_variable(after: str, kept: bool) -> None:
+    """Round 9 Q3: `praana@0.20.0`'s installer line, kept in a `const` and returned in a
+    notice, is data; `shown_not_run` alone stops at the assignment."""
+    source = f"const cmd = win ? `irm ${{U}} | iex` : `curl -fsSL ${{U}} | sh`;\n{after}\n"
+    data = source.encode()
+    offset = data.index(b"curl")
+    assert shown_or_kept(data, "javascript", offset) is kept
+    exported = b"export " + data
+    assert not shown_or_kept(exported, "javascript", offset + 7)

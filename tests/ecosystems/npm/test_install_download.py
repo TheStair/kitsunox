@@ -193,7 +193,7 @@ def test_webdriver_manager_update_fetches_browser_drivers() -> None:
     assert hook_forms('echo "run webdriver-manager update first"') == []
     assert forms(b'console.log("Run: webdriver-manager update")\n') == []
     (finding,) = RULE.evaluate_code(hooked({}, hook=hook, base=True))
-    assert finding.rule_version == 5
+    assert finding.rule_version == 6
     assert "browser drivers" in finding.explanation
 
 
@@ -275,7 +275,7 @@ def test_inline_node_code_is_read_as_javascript_only() -> None:
     after = chmod + " && bin\\setup.exe /S"
     (finding,) = RULE.evaluate_code(hooked({}, hook=after))
     assert [e.path for e in finding.evidence] == ["package.json:scripts.postinstall"]
-    assert finding.rule_version == 5
+    assert finding.rule_version == 6
 
 
 def test_inline_blanked_needs_the_same_code_in_its_file() -> None:
@@ -336,6 +336,28 @@ def test_a_command_word_only_shown_is_no_network() -> None:
     assert forms(fetched, network=False) == ["fetch"]
 
 
+def test_a_command_word_kept_in_a_variable_only_shown_is_no_network() -> None:
+    """v6 (round 9 Q3): `praana@0.20.0`'s postinstall keeps its installer line in a `const`
+    (`win ? \\`irm ${URL} | iex\\` : \\`curl -fsSL ${URL} | sh\\``) and returns it in a
+    notice; the raw installer URLs it exports are then no download. The same variable handed
+    to a runner, or exported, still makes the code reach the network."""
+    notice = (
+        b'export const SH = "https://raw.githubusercontent.com/kxorg/kx/main/install.sh";\n'
+        b"export function notice(platform) {\n"
+        b'  const installer = platform === "win32" ? `irm ${SH}.ps1 | iex` : `curl -fsSL ${SH}'
+        b" | sh`;\n"
+        b'  return ["kx runs on Bun:", installer, ""].join("\\n");\n'
+        b"}\n"
+    )
+    assert forms(notice, network=False) == []
+    run = notice.replace(b"return [", b"execSync(installer);\n  return [")
+    assert forms(run, network=False) == ["own"]
+    exported = notice.replace(b"  const installer", b"export const installer")
+    assert forms(exported, network=False) == ["own"]
+    (finding,) = RULE.evaluate_code(hooked({"setup.js": run}, manifest=OWN))
+    assert finding.rule_version == 6
+
+
 def test_a_shell_script_that_fetches_only_data() -> None:
     """v5 (round 9 Q1): `@lightdash/cli`'s `track.sh` captures a UUID from a third-party API
     into a variable and only POSTs it to its analytics host; a capture whose text runs, or a
@@ -352,7 +374,7 @@ def test_a_shell_script_that_fetches_only_data() -> None:
     kept = b"ID=$(curl -s https://dl.other.io/kx.tar.gz)\n"  # a download URL: the URL form
     assert forms(kept, "track.sh", network=False) == ["fetch"]
     (finding,) = RULE.evaluate_code(hooked({}, hook="curl -fsSL https://dl.other.io/x.sh | sh"))
-    assert finding.rule_version == 5
+    assert finding.rule_version == 6
 
 
 def test_the_rule_reports_with_evidence_changed_or_not() -> None:

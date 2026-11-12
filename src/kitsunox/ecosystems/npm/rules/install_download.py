@@ -69,7 +69,7 @@ from kitsunox.ecosystems.npm.install import inline_blanked
 from kitsunox.ecosystems.npm.rules.install_persistence import SCRIPT_SUFFIXES, code_text
 from kitsunox.ecosystems.npm.rules.install_shapes import URL, _home_host, _own_kind, own_repo
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
-from kitsunox.lang.javascript import Capability, handed_to_runner, language_for, shown_not_run
+from kitsunox.lang.javascript import Capability, handed_to_runner, language_for, shown_or_kept
 from kitsunox.lang.shell import fetched_as_data, mask_script_messages
 from kitsunox.stages.ast import CodeChange
 
@@ -447,7 +447,9 @@ def _network_text(path: str, text: str, data: bytes | None) -> bool:
     JavaScript, a command word (`curl`, `wget`, PowerShell's cmdlets) in a string that is only
     shown or kept as data (`lang.javascript.shown_not_run`) doesn't count: `@gloom-sh/terminal`'s
     preinstall returns the help line "Install Bun (curl -fsSL https://bun.sh/install | bash)"
-    and never fetches anything (v2)."""
+    and never fetches anything (v3). Since v6 also through one local variable whose every
+    reference is shown or kept as data (`lang.javascript.shown_or_kept`): `praana@0.20.0`
+    keeps its installer line in a `const` and returns it in a notice."""
     language = language_for(path)
     mapped = language is not None and data is not None and len(text.encode("utf-8")) == len(data)
     for match in NETWORK_TEXT.finditer(text):
@@ -455,7 +457,7 @@ def _network_text(path: str, text: str, data: bytes | None) -> bool:
             return True
         if not COMMAND_WORD.fullmatch(match.group(0)):
             return True
-        if not shown_not_run(data, language, len(text[: match.start()].encode("utf-8"))):
+        if not shown_or_kept(data, language, len(text[: match.start()].encode("utf-8"))):
             return True
     return False
 
@@ -596,10 +598,17 @@ class InstallDownload(BaseRule):
     as a request's data or header; never run, saved, piped or handed to a function) is no
     download. `@lightdash/cli`'s `track.sh` fetches a random UUID from `uuidgenerator.net` and
     POSTs an install event with it to its analytics host. A download URL in the same command
-    (`DOWNLOAD_URL`) still counts through the URL form."""
+    (`DOWNLOAD_URL`) still counts through the URL form.
+
+    v6 (2026-11-12, round 9 Q3): v3's test follows one local variable
+    (`lang.javascript.shown_or_kept`). `praana@0.20.0`'s postinstall builds `const installer =
+    win ? \\`irm ${INSTALL_PS1_URL} | iex\\` : \\`curl -fsSL ${INSTALL_SH_URL} | sh\\`` and only
+    returns it in the lines of a notice; v3 stopped at the assignment, so the `curl` word made
+    the code "reach the network" and the raw installer URLs it exports read as downloads. A
+    variable a runner is given, that is exported, or handed on further still counts."""
 
     id = "npm.install-download"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code downloads code from outside the npm registry"
