@@ -28,6 +28,7 @@ from kitsunox.ecosystems.npm.rules.correlate import (
     undeclared_lookups,
 )
 from kitsunox.ecosystems.npm.rules.metadata import runtime_dependencies, scripts
+from kitsunox.ecosystems.npm.rules.obfuscation_only import RULES as OBFUSCATION_ONLY_RULES
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import GitHub
 from kitsunox.rules.follow_on import FollowOnRelease
@@ -66,6 +67,8 @@ CORRELATION_RULES: Final[tuple[CorrelationRule, ...]] = (
     *NPM_CORRELATION_RULES,
     *REPO_RULES,
     FollowOnRelease(),
+    # Last: it reads every other rule's findings (`npm.obfuscation-only`).
+    *OBFUSCATION_ONLY_RULES,
 )
 # Explanations of a lookup that failed on the network: the same text for every version that
 # needed the failed request (e.g. `network: o/r refs unavailable`), so `correlate.jsonl` doesn't

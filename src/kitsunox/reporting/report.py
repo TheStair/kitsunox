@@ -64,6 +64,7 @@ STAGE_OF_RULE: Final = {
     "npm.dependency.name-embeds-popular": "Stage 4: correlation",
     "npm.undeclared.missing": "Stage 4: correlation",
     "npm.combination.": "Stage 4: correlation",
+    "npm.obfuscation-only": "Stage 4: correlation",
     "npm.repo.": "Stage 4: repository",
 }
 

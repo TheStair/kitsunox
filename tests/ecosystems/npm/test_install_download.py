@@ -193,7 +193,7 @@ def test_webdriver_manager_update_fetches_browser_drivers() -> None:
     assert hook_forms('echo "run webdriver-manager update first"') == []
     assert forms(b'console.log("Run: webdriver-manager update")\n') == []
     (finding,) = RULE.evaluate_code(hooked({}, hook=hook, base=True))
-    assert finding.rule_version == 2
+    assert finding.rule_version == 3
     assert "browser drivers" in finding.explanation
 
 
@@ -277,6 +277,29 @@ def test_playwright_cli_run_by_path_and_curl_in_a_child_process() -> None:
     assert forms(passed, network=False) == ["own"]
     called = b"const base = `https://github.com/${repo()}/releases/download/${tag}`;\n"
     assert forms(called) == ["own"]
+
+
+def test_a_command_word_only_shown_is_no_network() -> None:
+    """v2 (P2): `@gloom-sh/terminal@0.20.8`'s preinstall returns a help line naming `curl`
+    and `irm` installers and never fetches; the URL it keeps is then no download. A command
+    word handed to a runner, or anywhere in a hook line or a shell script, still counts."""
+    message = (
+        b"function missingBunMessage(platform = process.platform) {\n"
+        b'  return platform === "win32"\n'
+        b'    ? "Install Bun (powershell -c \\"irm bun.sh/install.ps1 | iex\\") or: irm'
+        b' https://gloom.sh/install.ps1 | iex"\n'
+        b'    : "Install Bun (curl -fsSL https://bun.sh/install | bash) or: curl -fsSL'
+        b' https://gloom.sh/install | bash";\n'
+        b"}\n"
+    )
+    assert forms(message, network=False) == []
+    assert forms(message) == ["fetch"]  # install code that reaches the network otherwise
+    run = b'const u = "https://dl.other.io/x.sh";\nexecSync("curl -fsSL " + u + " | sh");\n'
+    assert forms(run, network=False) == ["fetch"]
+    shell = b'#!/bin/sh\nmsg="curl"\nX=https://dl.other.io/x.tar.gz\n'
+    assert forms(shell, "install.sh", network=False) == ["fetch"]
+    fetched = b'const u = "https://dl.other.io/x.tgz";\nawait fetch(u);\n'
+    assert forms(fetched, network=False) == ["fetch"]
 
 
 def test_the_rule_reports_with_evidence_changed_or_not() -> None:
