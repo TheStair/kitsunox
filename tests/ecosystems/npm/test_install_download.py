@@ -179,6 +179,24 @@ def test_tools_that_fetch_third_party_code() -> None:
     assert hook_forms("prebuild-install || node-gyp rebuild") == ["prebuilt"]
 
 
+def test_webdriver_manager_update_fetches_browser_drivers() -> None:
+    """v2 (round 8 R): Protractor's `webdriver-manager update` downloads geckodriver,
+    chromedriver and the Selenium server at install (`@percy/protractor@2.0.4-beta.0`,
+    unwanted). Naming it, or another `webdriver-manager` command, is not a download."""
+    hook = "webdriver-manager update --no-chrome --no-standalone"
+    assert hook_forms(hook) == ["tool"]
+    assert hook_forms("npx webdriver-manager update") == ["npx", "tool"]
+    deps = {"dependencies": {"webdriver-manager": "^12"}}
+    assert hook_forms("npx webdriver-manager update", deps) == ["tool"]
+    assert forms(b'execSync("webdriver-manager update --gecko false")\n') == ["tool"]
+    assert hook_forms("webdriver-manager status") == []
+    assert hook_forms('echo "run webdriver-manager update first"') == []
+    assert forms(b'console.log("Run: webdriver-manager update")\n') == []
+    (finding,) = RULE.evaluate_code(hooked({}, hook=hook, base=True))
+    assert finding.rule_version == 2
+    assert "browser drivers" in finding.explanation
+
+
 def test_npx_of_a_package_that_is_not_a_dependency() -> None:
     """npx downloads and runs a package that isn't installed with this one
     (`torlnk@1.11.0`: `npx --yes cmake-js build`); a dependency's bin runs locally."""

@@ -29,7 +29,8 @@ The forms (`FORM_TEXT`), each its own so the owner can weigh them apart:
   prebuilt from the package's release host;
 - **`tool`**: a command that fetches third-party code itself (`TOOL`): `playwright install`,
   `@puppeteer/browsers install`, `camoufox fetch`, `pip install`, `cargo install`, `go install`,
-  `gem install`, `skills add`, `huggingface-cli download`;
+  `gem install`, `skills add`, `huggingface-cli download`, `webdriver-manager update` (v2:
+  Protractor's manager fetches browser drivers);
 - **`npx`**: `npx`, `pnpx`, `bunx`, `pnpm dlx`, `yarn dlx` or `npm exec` of a package that is
   neither the package itself nor a dependency installed with it (`dependencies`,
   `optionalDependencies`, `peerDependencies`, bundled): npx downloads and runs it;
@@ -93,7 +94,9 @@ FETCH_ARGV: Final = re.compile(
     _Q + r"(?:curl|wget)" + _Q + r"\s*,\s*\[\s*(?:" + _Q + r"[^\"'`\n]{0,80}" + _Q
     + r"\s*,\s*){0,8}" + _Q + "(" + _URL + ")"
 )  # fmt: skip
-# Commands that fetch third-party code themselves.
+# Commands that fetch third-party code themselves. `webdriver-manager update` (v2, round 8 R):
+# Protractor's driver manager downloads chromedriver, geckodriver and the Selenium server
+# from their projects' hosts (`@percy/protractor@2.0.4-beta.0`'s `install` hook, unwanted).
 _TOOLS: Final = (
     r"(?:(?:npx|pnpx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|npm\s+exec)\s+(?:-\S+\s+)*)?"
     r"(?:(?:@playwright/test|playwright(?:-core|-chromium)?|patchright)\s+install"
@@ -101,7 +104,8 @@ _TOOLS: Final = (
     r"|camoufox(?:-js)?\s+fetch"
     r"|(?:python[\d.]*\s+-m\s+)?pip[\d.]*\s+install|pipx\s+install|uv\s+(?:pip|tool)\s+install"
     r"|cargo\s+(?:install|binstall)|go\s+(?:install|get)|gem\s+install"
-    r"|skills\s+add|(?:huggingface-cli|hf)\s+download)\b"
+    r"|skills\s+add|(?:huggingface-cli|hf)\s+download"
+    r"|webdriver-manager\s+update)\b"
 )
 TOOL: Final = re.compile(_START + _TOOLS, re.MULTILINE | re.IGNORECASE)
 # As an argument list: `spawnSync("npx", ["playwright", "install", "chromium"])`,
@@ -534,10 +538,11 @@ def _runs(path: str, data: bytes | None, text: str) -> Callable[[int], bool]:
 class InstallDownload(BaseRule):
     """Install code downloads files, scripts or binaries from outside the npm registry (module
     docstring). Added 2026-11-10 (round 6, `docs/proposals/precision-round6-R.md`), for the
-    owner's strict ruling of that day."""
+    owner's strict ruling of that day. v2 (2026-11-11, recall round 8 R): the `tool` form
+    takes `webdriver-manager update`."""
 
     id = "npm.install-download"
-    version = 1
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code downloads code from outside the npm registry"
@@ -577,8 +582,8 @@ class InstallDownload(BaseRule):
 FORM_TEXT: Final = {
     "fetch": "downloads from a third-party host (not the package's repository, its owner's "
     "repositories, its homepage or its vendor)",
-    "tool": "runs a tool that fetches third-party code (browsers, Python, Rust, Go or Ruby "
-    "packages, agent skills, models)",
+    "tool": "runs a tool that fetches third-party code (browsers, browser drivers, Python, "
+    "Rust, Go or Ruby packages, agent skills, models)",
     "npx": "has npx download and run a package that is not one of its dependencies",
     "npm": "installs packages that are not its dependencies",
     "own": "downloads the package's own files from its own host (its repository's releases, "
