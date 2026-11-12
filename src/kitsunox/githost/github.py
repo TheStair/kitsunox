@@ -96,7 +96,8 @@ class GitHubRepo:
 
 def parse_ref_advertisement(body: bytes) -> dict[str, str]:
     """`{ref name: commit}` from a smart-HTTP ref advertisement (pkt-lines). Annotated tags are
-    peeled: `refs/tags/v1` maps to the commit, not the tag object."""
+    peeled: `refs/tags/v1` maps to the commit, not the tag object. `HEAD` (the default
+    branch's commit, which git dependencies without a reference install) is kept too."""
     refs: dict[str, str] = {}
     peeled: dict[str, str] = {}
     pos = 0
@@ -113,7 +114,7 @@ def parse_ref_advertisement(body: bytes) -> dict[str, str]:
         line = body[pos + 4 : pos + length].split(b"\0", 1)[0].rstrip(b"\n")
         pos += length
         sha, _, name = line.decode("utf-8", errors="replace").partition(" ")
-        if not _SHA.match(sha) or not name.startswith("refs/"):
+        if not _SHA.match(sha) or not (name.startswith("refs/") or name == "HEAD"):
             continue  # the `# service=` header, capabilities-only lines
         if name.endswith("^{}"):
             peeled[name.removesuffix("^{}")] = sha

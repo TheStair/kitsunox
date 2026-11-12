@@ -40,7 +40,12 @@ def test_repo_from_url() -> None:
 
 def test_ref_advertisement_peels_annotated_tags() -> None:
     refs = parse_ref_advertisement(ADVERTISEMENT)
-    assert refs == {"refs/heads/main": A, "refs/tags/v1.0.0": C, "refs/tags/v0.9.0": A}
+    assert refs == {
+        "HEAD": A,  # the default branch: what a git dependency without a reference installs
+        "refs/heads/main": A,
+        "refs/tags/v1.0.0": C,
+        "refs/tags/v0.9.0": A,
+    }
 
 
 def test_truncated_advertisement_is_an_error() -> None:
