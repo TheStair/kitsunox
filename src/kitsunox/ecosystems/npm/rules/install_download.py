@@ -17,9 +17,10 @@ npm runs by itself and this rule never reads.
 
 The forms (`FORM_TEXT`), each its own so the owner can weigh them apart:
 
-- **`fetch`**: a download from a third-party host: a `curl`/`wget`/PowerShell command, or a
-  download URL (`DOWNLOAD_URL`: a release asset or the release API, a raw repository file, an
-  archive, binary or script, a `/dist/` path) in install code that reaches the network;
+- **`fetch`**: a download from a third-party host: a `curl`/`wget`/PowerShell command (in a
+  shell script, not one captured into a variable that stays data, v5), or a download URL
+  (`DOWNLOAD_URL`: a release asset or the release API, a raw repository file, an archive,
+  binary or script, a `/dist/` path) in install code that reaches the network;
 - **`own`**: the same from the package's own sources (`download_source`): its declared
   repository or any repository of its GitHub owner, its `homepage`'s host (agent H's
   `install_shapes._own_kind`), its vendor's host (`vendor_host`: `@abacus-ai/cli` from
@@ -69,10 +70,12 @@ from kitsunox.ecosystems.npm.rules.install_persistence import SCRIPT_SUFFIXES, c
 from kitsunox.ecosystems.npm.rules.install_shapes import URL, _home_host, _own_kind, own_repo
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.lang.javascript import Capability, handed_to_runner, language_for, shown_not_run
-from kitsunox.lang.shell import mask_script_messages
+from kitsunox.lang.shell import fetched_as_data, mask_script_messages
 from kitsunox.stages.ast import CodeChange
 
 MAX_SHOWN: Final = 3
+# POSIX shell scripts, where `lang.shell.fetched_as_data` reads a `curl`/`wget` capture (v5).
+SHELL_SUFFIXES: Final = (".sh", ".bash", ".zsh")
 SNIPPET_RADIUS: Final = 70
 # Every version whose install code downloads counts, changed or not: under the strict ruling
 # each such version is unwanted (measured: +10 unwanted versions, 0 benign more than with
@@ -497,9 +500,12 @@ def _text_downloads(
     def add(form: str, match: re.Match[str]) -> None:
         found.append((form, path, *_where(text, match.start(), match.end())))
 
+    shell = path.lower().endswith(SHELL_SUFFIXES)
     for match in FETCH_COMMAND.finditer(text):
         group = 1 if match.group(1) else 2
         source = download_source(match.group(group), manifest, name)
+        if shell and fetched_as_data(text, match.start(group)):
+            continue  # v5: a response captured into a variable, only ever data
         if source is not None and runs(match.start(group)):
             add("fetch" if source == "third-party" else "own", match)
     for match in FETCH_ARGV.finditer(text):
@@ -583,10 +589,17 @@ class InstallDownload(BaseRule):
     to `node -e` is read once, as JavaScript (`package.json#scripts.<hook>.js`), and blanked in
     the hook line (`install.inline_blanked`). `@lark-codem/codem-core-win32-*`'s postinstall
     only `chmod`s its shipped `codem-core.exe`; read as a hook line, the quoted file name looked
-    like an executable the line starts."""
+    like an executable the line starts.
+
+    v5 (2026-11-12, round 9 Q1): in a shell script, a constant `curl`/`wget` captured into a
+    variable whose text is only ever data (`lang.shell.fetched_as_data`: kept, compared, or sent
+    as a request's data or header; never run, saved, piped or handed to a function) is no
+    download. `@lightdash/cli`'s `track.sh` fetches a random UUID from `uuidgenerator.net` and
+    POSTs an install event with it to its analytics host. A download URL in the same command
+    (`DOWNLOAD_URL`) still counts through the URL form."""
 
     id = "npm.install-download"
-    version = 4
+    version = 5
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code downloads code from outside the npm registry"
