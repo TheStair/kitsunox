@@ -70,6 +70,32 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   cost 8 malicious samples, all follow-on releases of a series whose first malicious release is
   still reported (`esoftplay@0.0.142-m`, then 0.0.152 and others with the same Telegram
   exfiltration), for 3 benign.
+- **Compared with its own previous release** (2026-11-12, round 9
+  [S2](../proposals/precision-round9-S.md)): whether a match is "not new" is judged against
+  each version's own previous release (`Change.previous`), not the batch's base: the version
+  before it in the batch (already read), the base, or a release outside the batch (fetched;
+  a package publishing two lines in one run, `@aglit-ai/cli`'s `1.0.x-staging` beside its
+  `5.0.x-runtime` parts, whose base is the other line's). Contents are still new to the batch
+  and attributed to the first version that has them. Before, a later version of a burst that
+  rebuilt the version before it (javascript-obfuscator renames every build) was MEDIUM again,
+  where the evaluation, which reads one version against its own previous release, has it LOW:
+  so the replay set and `vm-day1` are unchanged by construction, and live now matches them.
+  When the previous release's files are unavailable the base is used, as before, and the
+  decision says `previous <version> unavailable: ...` (`will retry` for a network failure).
+  Measured on the live runs on disk (186 runs; the 13,096 batches in which a version whose
+  own previous release is not the base has a `static.*` match; tarballs from the blob store,
+  each version re-decided with its recorded Stage 1, 3 and 4 findings; main's code against
+  this): 83 benign versions no longer reported, 2 without a verdict no longer reported
+  (`@heyvamz/carry@0.4.4`, whose 0.4.3 added the match and stays reported;
+  `dns-worker@1.1.9-canary.e098c93`) and 2 without a verdict newly reported
+  (`safepassai@0.3.8`, `0.4.0`: their own previous builds were not obfuscated, the batch's
+  base was). The benign ones: `dudu-converter-cli` x25,
+  `@pomelolabs/leads` x10, `dsh-wire` x6, the `@blod-nm/*` and `@aglit-ai/cli` staging
+  builds (obfuscated again by every build), `@martindong-dhy/*`, `@melt-js/*`, ... No
+  malicious, unwanted or unverified version changes. An obfuscation or other match that a
+  release adds to a package whose previous release was clean stays MEDIUM
+  (`@blod-nm/base-cb@0.2.3`, `@aglit-ai/cli@1.0.19350-staging...`, `vm-day1`'s
+  `@duckdb/node-api@1.3.3`).
 - **Output:** the batch's candidates with Stage 2 findings and a `StageDecision`. A batch is
   forwarded if any finding is MEDIUM or above.
 
