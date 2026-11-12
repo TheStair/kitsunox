@@ -46,7 +46,8 @@ missing cut: `test -f dist/index.js || npx tsc`). In JavaScript a command string
 when it is handed to a runner (`lang.javascript.handed_to_runner`), never when it is printed,
 kept in a table or written into a file. A URL in a message is blanked already; a URL the code
 keeps (a constant, a table of release assets) counts when the install code reaches the
-network.
+network; a command word in a JavaScript string that is only shown or kept as data is no sign
+that it does (v2).
 
 MEDIUM, weight 3, and never explained away: `npm.install-explained` explains the install
 rules only, and since v5 no download shape at all (S2, S6 removed). Only new or changed install
@@ -64,7 +65,7 @@ from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.install_persistence import SCRIPT_SUFFIXES, code_text
 from kitsunox.ecosystems.npm.rules.install_shapes import URL, _home_host, _own_kind, own_repo
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
-from kitsunox.lang.javascript import Capability, handed_to_runner, language_for
+from kitsunox.lang.javascript import Capability, handed_to_runner, language_for, shown_not_run
 from kitsunox.lang.shell import mask_script_messages
 from kitsunox.stages.ast import CodeChange
 
@@ -408,7 +409,9 @@ def downloads(
         if command := declared_scripts.get(hook, "").strip():
             texts[f"package.json:scripts.{hook}"] = hook_text(command)
     found: list[Found] = []
-    network = network or any(NETWORK_TEXT.search(t) for t in texts.values())
+    network = network or any(
+        _network_text(path, text, install_files.get(path)) for path, text in texts.items()
+    )
     for path, text in texts.items():
         found += _text_downloads(path, text, install_files.get(path), manifest, name, network)
     urls = manifest.get("artifactDownloadUrls")  # cargo-dist's installer downloads these
@@ -420,6 +423,30 @@ def downloads(
     if network and not any(f[0] in ("fetch", "own") for f in found):
         found += _downloader(texts, install_files)
     return found
+
+
+# NETWORK_TEXT's command words (not `fetch`, not an HTTP client's import).
+COMMAND_WORD: Final = re.compile(
+    r"curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|DownloadFile", re.IGNORECASE
+)
+
+
+def _network_text(path: str, text: str, data: bytes | None) -> bool:
+    """Whether the install text reaches the network by its words (`NETWORK_TEXT`). In
+    JavaScript, a command word (`curl`, `wget`, PowerShell's cmdlets) in a string that is only
+    shown or kept as data (`lang.javascript.shown_not_run`) doesn't count: `@gloom-sh/terminal`'s
+    preinstall returns the help line "Install Bun (curl -fsSL https://bun.sh/install | bash)"
+    and never fetches anything (v2)."""
+    language = language_for(path)
+    mapped = language is not None and data is not None and len(text.encode("utf-8")) == len(data)
+    for match in NETWORK_TEXT.finditer(text):
+        if not mapped or data is None or language is None:
+            return True
+        if not COMMAND_WORD.fullmatch(match.group(0)):
+            return True
+        if not shown_not_run(data, language, len(text[: match.start()].encode("utf-8"))):
+            return True
+    return False
 
 
 # The downloader shape (`downloader`): JavaScript install code that reaches the network, writes
@@ -534,10 +561,17 @@ def _runs(path: str, data: bytes | None, text: str) -> Callable[[int], bool]:
 class InstallDownload(BaseRule):
     """Install code downloads files, scripts or binaries from outside the npm registry (module
     docstring). Added 2026-11-10 (round 6, `docs/proposals/precision-round6-R.md`), for the
-    owner's strict ruling of that day."""
+    owner's strict ruling of that day.
+
+    v2 (2026-11-12, `docs/proposals/precision-round8-P.md` P2): in JavaScript, a `curl`,
+    `wget` or PowerShell word in a string that is only shown or kept as data
+    (`lang.javascript.shown_not_run`) no longer makes the install code "reach the network"
+    (`_network_text`), so the URLs it keeps are no download. `@gloom-sh/terminal@0.20.8` and
+    `gloomberb@0.20.8` returned a help line naming Bun's and Gloom's `curl`/`irm` installers
+    and were reported for it; their preinstall only rewrites a shebang."""
 
     id = "npm.install-download"
-    version = 1
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Install code downloads code from outside the npm registry"
