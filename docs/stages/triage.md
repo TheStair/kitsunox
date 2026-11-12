@@ -85,7 +85,7 @@ Malicious is the 1,870 DataDog *first* malicious releases (see below).
 | `npm.install-hook` (v2): `preinstall`/`install`/`postinstall` added or changed (new package: present). A command that changed only its own version string (`@pulumi/*`: `... resource command 1.3.0`; 39 of 52 changed commands on the first VM day) isn't changed: Stage 3 diffs what it runs | HIGH (new pkg: MEDIUM) | 0.04% A, 1.03% B | 64.2% | 56.0% | 494 / 404 |
 | `npm.publish-method.downgrade` (v7): previous release had trusted publishing or provenance, this one has neither. With a co-signal (another Stage 1 rule below fires: install hook, non-registry or added dependency, maintainer added (since v7 only when an added maintainer publishes the release), unfamiliar publisher, suspicious version; a dropped `gitHead` is none since v5; an added dependency alone is none when the previous release came from token CI by the same account, v6): HIGH when watched, MEDIUM weight 3 otherwise. Without: one step lower, MEDIUM weight 3 when watched, LOW weight 1 otherwise. A MEDIUM downgrade reports only beside other signals (`correlate.WEAK_ALONE`). LOW, weight 1, on a prerelease, which npm installs only when asked for (v3) | HIGH / MEDIUM / LOW | 0.18% | 15.4% | n/a | 107 / n/a |
 | `npm.dependency.non-registry` (v10): new dependency from git/URL/GitHub shorthand/`file:`; not for a protocol npm can't fetch (v3); LOW, weight 1, for a local path and for SheetJS's own CDN, `https://cdn.sheetjs.com/` (v4), and for uWebSockets.js's GitHub repository at a tag or branch (v10, owner); LOW, weight 1, on an update whose previous release already took this dependency from the same account, or names that GitHub account as its repository, unless the new reference is a commit id or pull-request ref (v5); LOW, weight 1, for the registry's own tarball of another package in the dependent's npm scope (v6); LOW, weight 1, for a spec npm reads as a local path (`@scope/name@1.0.0`, `./x`: v7); LOW, weight 1, on an update whose previous release took this dependency from the same account *and* names that GitHub account as its repository, also for a commit (v8) | MEDIUM | 0.05% A, 0.30% B | 7.3% | 1.8% | 44 / 12 |
-| `npm.version.suspicious` (v5): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4), a release that declares another package at its own major exempt (v5) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
+| `npm.version.suspicious` (v6): major ≥ 90, CalVer exempt (v2), a major that is a date (`YYYYMM`, `YYYYMMDD`) exempt (v3), a year major with a 0 or month-day minor and a `YYMM` major exempt (v4), a release that declares another package at its own major exempt (v5); LOW, weight 1, when published by trusted publishing or with a provenance attestation (v6) | MEDIUM | 0.01% A, 0.21% B | 0% | 12.2% | 0 / 6 |
 | `npm.publisher.unfamiliar`: publisher not a previous maintainer (v2: LOW) | LOW | 2.57% | 7.5% | n/a | 10 / n/a |
 | `npm.dependency.added` | LOW | | | | |
 | `npm.maintainer.added` | LOW | | | | |
@@ -312,6 +312,24 @@ Live runs on disk (179 runs): main's rule fires on 51 versions, v5 exempts 12, a
 verdicts, all of them now unreported (`@humanode-hyperlane/*` ×9, `@ohos-ports/*` ×3).
 The researchers' `99.x` placeholders with no dependencies (`@geneva-testing/*`,
 `@one-thd/*`) still fire.
+
+`npm.version.suspicious` v6 (2026-11-12, [round 9 S](../proposals/precision-round9-S.md) S3):
+LOW, weight 1, when the release was published by trusted publishing (OIDC from CI) or carries
+a provenance attestation, as `npm.combination.revived-with-new-dependency` v3/v4 already
+reads them: the release comes from a public repository's workflow, which a confusion probe
+published by hand under a claimed name doesn't have. Of the 131 `vm-day1` malicious samples
+the rule fires on, none has either (the 21 that are updates, `baglass@99.99.2` after `1.0.0`
+and the like, were published by the researcher's own account with a token). The rest of the
+`@humanode-hyperlane/*` fork, whose packages number upstream's version plus 1,000
+(`@humanode-hyperlane/utils@1045.2.0` after `30.0.0`) without declaring a sibling at the same
+major, is published from GitHub Actions with provenance. Measured: replay set, the rule fires
+on 23 versions, v6 lowers 2 (`picard-code@1701.4.0`, `@spear-ai/trino-pulumi-aws@484.0.0-0...`,
+both benign, trusted publishing without provenance) and both are now unreported; the 2
+positives have neither. Live runs on disk (186 runs): 15 benign versions unreported against
+main (`@humanode-hyperlane/*` ×12, `@ai-ecoverse/gcloud-cli@593.0.0-1` and the two above), no
+other decision changes. `@humanode-hyperlane/registry@1026.3.0`, published by hand, stays
+reported. A confusion attacker who sets up trusted publishing for a name they own is the
+residual risk; LOW keeps the number in the score and in front of a reviewer.
 
 `npm.publisher.unfamiliar` started at MEDIUM. It caused about 90% of Stage 1's benign
 forwarding (team members often publish without being listed as maintainers) but caught only 10

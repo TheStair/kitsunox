@@ -866,10 +866,23 @@ class SuspiciousVersion(BaseRule):
     were reported by this rule alone. A package that depends on itself still fires
     (`@ikeacn/ui@99.9.9` declares `@ikeacn/ui: ^99.9.9`, `slack-sns@100.0.0` likewise, both
     `vm-day1` malware); no other `vm-day1` malicious sample this rule fires on declares a
-    dependency at its major (`docs/proposals/precision-round8-P.md`, P3)."""
+    dependency at its major (`docs/proposals/precision-round8-P.md`, P3).
+
+    v6 (2026-11-12): LOW, weight 1, when the release was published from CI by trusted
+    publishing (OIDC) or carries a provenance attestation. Both tie the release to a public
+    repository's workflow, which a confusion probe, published by hand under a name the
+    attacker claims, doesn't have: none of the 131 `vm-day1` malicious samples this rule fires
+    on has either (the round 6 C1 reading of `npm.combination.revived-with-new-dependency`).
+    The `@humanode-hyperlane/*` fork numbers its packages upstream's version plus 1,000
+    (`@humanode-hyperlane/utils@1045.2.0` after `30.0.0`) and publishes them from GitHub
+    Actions with provenance. 15 benign live reports by this rule are no longer reported (12
+    `@humanode-hyperlane/*` left after v5, `@ai-ecoverse/gcloud-cli@593.0.0-1`,
+    `picard-code@1701.4.0`, `@spear-ai/trino-pulumi-aws@484.0.0-0...`), no positive
+    (`docs/proposals/precision-round9-S.md`, S3). LOW keeps the number in the score and in
+    front of a reviewer."""
 
     id = "npm.version.suspicious"
-    version = 5
+    version = 6
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Dependency-confusion style version number"
@@ -891,13 +904,29 @@ class SuspiciousVersion(BaseRule):
                 return []  # the package has always used such versions (e.g. date-based)
         if family_major(change.new.manifest, change.new.ref.name, version.major):
             return []  # another declared package uses this major (pnpm 11's `1100.x`)
-        return [
-            self.finding(
-                f"Version {change.new.ref.version} has major {version.major} "
-                f"(threshold {self.MIN_MAJOR}).",
-                Evidence(kind=EvidenceKind.METADATA, path="version", after=change.new.ref.version),
+        explanation = (
+            f"Version {change.new.ref.version} has major {version.major} "
+            f"(threshold {self.MIN_MAJOR})."
+        )
+        evidence = Evidence(
+            kind=EvidenceKind.METADATA, path="version", after=change.new.ref.version
+        )
+        publish = change.new.publish
+        if publish.trusted_publisher is not None or publish.has_provenance:
+            how = (
+                f"trusted publishing ({publish.trusted_publisher})"
+                if publish.trusted_publisher is not None
+                else "a provenance attestation"
             )
-        ]
+            return [
+                self.finding(
+                    f"{explanation} Published with {how}: from a repository's CI, not by hand.",
+                    evidence,
+                    severity=Severity.LOW,
+                    weight=1.0,
+                )
+            ]
+        return [self.finding(explanation, evidence)]
 
 
 class DormantRevived(BaseRule):
