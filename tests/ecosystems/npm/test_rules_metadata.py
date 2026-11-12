@@ -687,6 +687,27 @@ def test_a_family_major_is_not_suspicious(
     assert bool(found) is fires
 
 
+@pytest.mark.parametrize(
+    ("publish", "how"),
+    [
+        ({"trusted_publisher": "github", "has_provenance": True}, "trusted publishing (github)"),
+        ({"trusted_publisher": "github"}, "trusted publishing (github)"),
+        ({"has_provenance": True}, "a provenance attestation"),
+    ],
+)
+def test_a_high_major_published_from_ci_is_low(publish: dict[str, Any], how: str) -> None:
+    """v6 (S3): `@humanode-hyperlane/utils@1045.2.0`, published by GitHub Actions with
+    provenance, is LOW, weight 1; the same version published by hand stays MEDIUM."""
+    new = snap("1045.2.0", publisher="GitHub Actions", **publish)
+    (finding,) = SuspiciousVersion().evaluate(change(new, snap("30.0.0")), CTX)
+    assert (finding.severity, finding.weight, finding.rule_version) == (Severity.LOW, 1.0, 6)
+    assert finding.explanation.endswith(
+        f"Published with {how}: from a repository's CI, not by hand."
+    )
+    (by_hand,) = SuspiciousVersion().evaluate(change(snap("1045.2.0"), snap("30.0.0")), CTX)
+    assert (by_hand.severity, by_hand.weight) == (Severity.MEDIUM, 3.0)
+
+
 def test_dormant_revived() -> None:
     old = snap("1", published_at=T0 - timedelta(days=400))
     (finding,) = DormantRevived().evaluate(change(snap("2"), old), CTX)

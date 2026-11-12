@@ -28,6 +28,7 @@ import httpx
 
 from kitsunox.core.interfaces import Ecosystem
 from kitsunox.core.models import (
+    Candidate,
     Finding,
     PackageBatch,
     Record,
@@ -416,7 +417,18 @@ def analyse_batch(
     File rules see each new content once; `artifact_rules` see each version's metadata and
     whole file tree. A version whose files are unavailable gets no findings and says why. An
     unavailable base counts as empty: every file of the first version is then new, which costs
-    time but can only add findings."""
+    time but can only add findings.
+
+    A new content is new to the batch (not in the base or an earlier version), but whether a
+    match is "not new" (`content_matches`) is judged against the version's own previous release
+    (`Change.previous`): the version before it in the batch, the base, or a release outside
+    the batch (a package publishing two lines, `1.0.x-staging` and `5.0.x-runtime`, in one
+    run). Until 2026-11-12 every version was compared with the batch's base, so a later
+    version that rebuilt the same obfuscated files (javascript-obfuscator renames on every
+    build) or kept any other match of the version before it got the match MEDIUM again, where
+    the evaluation (one version against its own previous release) gets it LOW
+    (`docs/proposals/precision-round9-S.md`, S2). When the previous release's files are
+    unavailable, the base is used, as before, and the reason says so."""
     base = trees(batch.base) if batch.base else None
     base_note = ""
     if isinstance(base, Unavailable):
@@ -424,6 +436,28 @@ def analyse_batch(
     missing: dict[str, Unavailable] = {}
     by_artifact: dict[str, tuple[Finding, ...]] = {}
     loaded: dict[str, LoadedFiles] = {}
+    previous_notes: dict[str, str] = {}
+    base_tree = None if isinstance(base, Unavailable) else base
+    base_files = BaseFiles(base_tree)
+    # The files the version being read is compared with (its own previous release's), and the
+    # last version read: usually the next one's previous release.
+    compared = [base_files]
+    last: list[tuple[str, Tree]] = []
+
+    def own_previous(candidate: Candidate) -> BaseFiles:
+        previous = candidate.change.previous
+        if previous is None or (
+            batch.base is not None and previous.ref.version == batch.base.ref.version
+        ):
+            return base_files
+        if last and last[0][0] == previous.ref.version:
+            return BaseFiles(last[0][1])
+        tree = trees(previous)
+        if isinstance(tree, Unavailable):
+            note = f"; previous {previous.ref.version} {_unavailable(tree)}"
+            previous_notes[candidate.change.new.ref.version] = note
+            return base_files
+        return BaseFiles(tree)
 
     def versions() -> Iterator[tuple[str, Tree]]:
         for candidate in batch.versions:
@@ -437,14 +471,15 @@ def analyse_batch(
                 f for rule in artifact_rules for f in rule.evaluate_artifact(snapshot, tree)
             )
             loaded[version] = LoadedFiles(snapshot.ref.ecosystem, tree)
+            compared[0] = own_previous(candidate)
+            last[:] = [(version, tree)]
             yield version, tree
 
     found: dict[str, list[tuple[str, FileMatch]]] = {}
-    base_tree = None if isinstance(base, Unavailable) else base
-    base_files = BaseFiles(base_tree)
     for item, content in new_contents(base_tree, versions()):
-        for match in content_matches(item, content, base_files, cache, loaded[item.first_version]):
-            found.setdefault(item.first_version, []).append((item.path, match))
+        version = item.first_version
+        for match in content_matches(item, content, compared[0], cache, loaded[version]):
+            found.setdefault(version, []).append((item.path, match))
     updated = []
     for candidate in batch.versions:
         version = candidate.change.new.ref.version
@@ -456,7 +491,8 @@ def analyse_batch(
             reason = f"files {_unavailable(missing[version])}"
         else:
             reason = f"rules: {', '.join(flagged)}" if flagged else "no signal"
-        decision = StageDecision(stage=STAGE_ID, forwarded=bool(flagged), reason=reason + base_note)
+        note = base_note + previous_notes.get(version, "")
+        decision = StageDecision(stage=STAGE_ID, forwarded=bool(flagged), reason=reason + note)
         updated.append(
             candidate.model_copy(
                 update={

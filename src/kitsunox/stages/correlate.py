@@ -85,8 +85,11 @@ STAGE_ID: Final = "correlate"
 # evidence, is correlated again with it (`correlate.follow-on`), and `correlate.json` counts
 # the pass under `follow_on`. 19: `static.disguised-file` (Stage 2) is carried by follow-ons
 # (`FOLLOW_ON_ALONE`). 20: `npm.obfuscation-only` (a new package whose only signal is
-# obfuscated JavaScript) explains `static.obfuscated`. Output without the field is 1.
-STAGE_VERSION: Final = 20
+# obfuscated JavaScript) explains `static.obfuscated`. 21: Stage 2's `npm.artifact.install-stub`
+# (a dependency-confusion placeholder whose hooks only throw) explains
+# `npm.artifact.hidden-install-script`, `npm.install-hook` and `npm.version.suspicious`.
+# Output without the field is 1.
+STAGE_VERSION: Final = 21
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -378,8 +381,18 @@ def score(findings: Iterable[Finding]) -> float:
 #   INFO is `static.obfuscated` MEDIUM, with no web page, no script npm runs at install
 #   (`prepare` included), and a declared repository or homepage. Explains `static.obfuscated`
 #   only. Measured in `docs/proposals/precision-round8-P.md` (P1).
+# - `npm.artifact.install-stub` (Stage 2, STAGE_VERSION 21): every install hook is
+#   `node <file>`, each file only throws a constant message, and the whole package ships no
+#   other code: a dependency-confusion placeholder that makes `npm install` fail. Explains
+#   the hook (`npm.artifact.hidden-install-script`, `npm.install-hook`) and the placeholder's
+#   high version (`npm.version.suspicious`) (`docs/proposals/precision-round9-S.md`, S1).
 _SHAPE_NOTE: Final = " The install code has an explained shape (npm.install-explained)."
 OBFUSCATION_ONLY: Final = "npm.obfuscation-only"
+INSTALL_STUB: Final = "npm.artifact.install-stub"
+_STUB_NOTE: Final = (
+    " Every install hook only throws an error and the package ships no other code: a"
+    " dependency-confusion placeholder (npm.artifact.install-stub)."
+)
 EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
     "npm.install-hook": (
         (
@@ -398,7 +411,10 @@ EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
             " Every install hook runs a file the package doesn't ship, so nothing runs"
             " (npm.artifact.install-target-missing).",
         ),
+        (INSTALL_STUB, _STUB_NOTE),
     ),
+    "npm.artifact.hidden-install-script": ((INSTALL_STUB, _STUB_NOTE),),
+    "npm.version.suspicious": ((INSTALL_STUB, _STUB_NOTE),),
     "npm.install-script-changed": (("npm.install-explained", _SHAPE_NOTE),),
     "npm.install-script-code": (("npm.install-explained", _SHAPE_NOTE),),
     "static.obfuscated": (

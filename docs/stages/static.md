@@ -70,6 +70,32 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   cost 8 malicious samples, all follow-on releases of a series whose first malicious release is
   still reported (`esoftplay@0.0.142-m`, then 0.0.152 and others with the same Telegram
   exfiltration), for 3 benign.
+- **Compared with its own previous release** (2026-11-12, round 9
+  [S2](../proposals/precision-round9-S.md)): whether a match is "not new" is judged against
+  each version's own previous release (`Change.previous`), not the batch's base: the version
+  before it in the batch (already read), the base, or a release outside the batch (fetched;
+  a package publishing two lines in one run, `@aglit-ai/cli`'s `1.0.x-staging` beside its
+  `5.0.x-runtime` parts, whose base is the other line's). Contents are still new to the batch
+  and attributed to the first version that has them. Before, a later version of a burst that
+  rebuilt the version before it (javascript-obfuscator renames every build) was MEDIUM again,
+  where the evaluation, which reads one version against its own previous release, has it LOW:
+  so the replay set and `vm-day1` are unchanged by construction, and live now matches them.
+  When the previous release's files are unavailable the base is used, as before, and the
+  decision says `previous <version> unavailable: ...` (`will retry` for a network failure).
+  Measured on the live runs on disk (186 runs; the 13,096 batches in which a version whose
+  own previous release is not the base has a `static.*` match; tarballs from the blob store,
+  each version re-decided with its recorded Stage 1, 3 and 4 findings; main's code against
+  this): 83 benign versions no longer reported, 2 without a verdict no longer reported
+  (`@heyvamz/carry@0.4.4`, whose 0.4.3 added the match and stays reported;
+  `dns-worker@1.1.9-canary.e098c93`) and 2 without a verdict newly reported
+  (`safepassai@0.3.8`, `0.4.0`: their own previous builds were not obfuscated, the batch's
+  base was). The benign ones: `dudu-converter-cli` x25,
+  `@pomelolabs/leads` x10, `dsh-wire` x6, the `@blod-nm/*` and `@aglit-ai/cli` staging
+  builds (obfuscated again by every build), `@martindong-dhy/*`, `@melt-js/*`, ... No
+  malicious, unwanted or unverified version changes. An obfuscation or other match that a
+  release adds to a package whose previous release was clean stays MEDIUM
+  (`@blod-nm/base-cb@0.2.3`, `@aglit-ai/cli@1.0.19350-staging...`, `vm-day1`'s
+  `@duckdb/node-api@1.3.3`).
 - **Output:** the batch's candidates with Stage 2 findings and a `StageDecision`. A batch is
   forwarded if any finding is MEDIUM or above.
 
@@ -181,6 +207,7 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 | `npm.artifact.hidden-install-script` | an install hook in the tarball's `package.json` that the metadata lacks or shows differently (`npm install` runs the tarball's) | HIGH |
 | `npm.artifact.size-mismatch` | files total more than `dist.unpackedSize` by over 1 KiB and 1% (understated only: overstating gains an attacker nothing) | MEDIUM |
 | `npm.artifact.install-target-missing` (2026-11-11) | every install hook is `node <file>` (optionally `\|\| true` / `\|\| exit 0`) and the tarball has no such file: not the path, nor the path with a suffix, nor a directory of that name, compared without case (Node finds `x` as `x.js`; macOS and Windows ignore case). Only on the whole package: the tarball's hooks are the registry's, no `binding.gyp` (npm adds `node-gyp rebuild`), nothing skipped (links, unsafe paths), no tar anomaly or duplicate, and the files add up to the declared unpacked size (a sample set's zip with files missing does not); no backslash in the line (Windows runs `node lib\\index.js`); and not a broken attack (no JavaScript at all, a declared `main` missing too, or a JavaScript file named like an install script at the root or beside the target: the next release fixes the hook). Round 6, [Q1](../proposals/precision-round6-Q.md). An explanation for Stage 4 (`correlate.EXPLAINED`): `npm.install-hook` becomes LOW | INFO |
+| `npm.artifact.install-stub` (2026-11-12) | a dependency-confusion placeholder: every install hook in the tarball is exactly `node <file>` (no `\|\| true`, option or chain), each file is JavaScript (`.js`, `.cjs`, `.mjs`; Node's `<path>.js` tried) whose whole text is one `throw` of a constant (`throw new Error("...")`, `throw Error(...)`, `throw "..."`; string literals and `${}`-free templates joined with `+`; comments, a `#!` line and `"use strict"` allowed; any other identifier, call or statement is not a stub), and the package ships nothing else but `package.json` and text (README, licence, changelog, notice, `.md`, `.txt`). Only on the whole package (as above). `npm install` stops at the hook with that error and there is no other code to load. JetBrains' `kotlinconf@999.9.9` and nine more (2026-11-12: `preinstall: node fail.js`, "This is stub package to mitigate risks of Dependency Confusion attacks", a hook the metadata doesn't show). Round 9, [S1](../proposals/precision-round9-S.md). An explanation for Stage 4: `npm.artifact.hidden-install-script`, `npm.install-hook` and `npm.version.suspicious` become LOW | INFO |
 
 | `static.disguised-file` (2026-11-11, ecosystem-agnostic, `rules/disguised.py`) | a file named as a binary format (font, image, audio/video, `.wasm`, native module or program, archive, PDF, `.bin`/`.dat`) whose bytes are no binary format but a script (JavaScript, shell, PowerShell, Python, batch; also base64-encoded), or a native executable under a non-program name, or an archive under a font/image/media name. Every file of every version, so a follow-on that still ships the file is flagged; [below](#files-disguised-as-a-binary-format-staticdisguised-file-2026-11-11) | HIGH for a script that uses process execution, the network, credentials or dynamic code, and for an executable; MEDIUM for a script a code file names; LOW otherwise and for an archive; INFO for a launcher script under a program name (`.exe`, `.dll`, `.so`, `.dylib`) |
 | `static.channel-follow-on-connect` (2026-11-11, ecosystem-agnostic, `rules/channels.py`) | a WhatsApp library (Baileys fork) that passes a **hardcoded** `\d{15,22}@newsletter` id (a literal, or a variable bound to one in the same file: a constant, an environment default, an array iterated with `for ... of`/`forEach`) as the first argument of `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, inside a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200 characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and messages blanked, tests/examples/docs skipped. Every file of every version, so a follow-on that ships the follow unchanged is flagged; [below](#whatsapp-follows-in-unchanged-files-staticchannel-follow-on-connect-2026-11-11) | MEDIUM (weight 3), "unwanted" |

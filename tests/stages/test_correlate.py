@@ -287,6 +287,25 @@ def test_a_missing_hook_target_makes_only_the_install_hook_low() -> None:
     assert kept.history[-1].forwarded and kept.findings[1] == other
 
 
+def test_an_install_stub_explains_the_hook_and_the_placeholder_version() -> None:
+    """Round 9 (S1): Stage 2's `npm.artifact.install-stub` (a dependency-confusion placeholder
+    whose hooks only throw) makes the hidden hook, the install hook and the high version LOW,
+    and nothing else: JetBrains' `kotlinconf@999.9.9` (score 8) is score 2."""
+    hidden = finding("npm.artifact.hidden-install-script", Severity.HIGH, 5.0)
+    version = finding("npm.version.suspicious", Severity.MEDIUM, 3.0)
+    hook = finding("npm.install-hook", Severity.HIGH, 5.0)
+    stub = finding("npm.artifact.install-stub", Severity.INFO, 0.0)
+    result = correlate(candidate("999.9.9", hidden, version, hook, stub), CTX, [])
+    assert not result.history[-1].forwarded
+    assert result.history[-1].reason == "score 3"
+    for explained_finding in result.findings[:3]:
+        assert (explained_finding.severity, explained_finding.weight) == (Severity.LOW, 1.0)
+        assert explained_finding.explanation.endswith("(npm.artifact.install-stub).")
+    other = finding("static.obfuscated", Severity.MEDIUM, 3.0)
+    kept = correlate(candidate("999.9.9", hidden, version, other, stub), CTX, [])
+    assert kept.history[-1].forwarded and kept.findings[2] == other
+
+
 def test_run_reads_every_triaged_version(tmp_path: Path) -> None:
     routed, quiet = candidate("1.0.1"), candidate("2.0.0", name="other")
     analysed = routed.model_copy(update={"findings": (finding("s2", Severity.MEDIUM, 3.0),)})
