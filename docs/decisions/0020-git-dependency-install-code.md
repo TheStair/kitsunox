@@ -74,8 +74,8 @@ tarball to npm, and only the three install hooks run.
 - **Showing and scoring.** `npm.git-dependency` (Stage 4, v1) adds each finding with its own
   rule id, severity and weight, so it scores like the release's own install findings, with the
   dependency named and its evidence under `dep:<name>@<commit12>/`. An INFO summary lists the
-  commit, the scripts npm runs and what the install code uses (network, processes, files,
-  `[decrypt]` lines). An explanation now applies only within its subject (the package, or one
+  commit, the scripts npm runs and what the install code uses (network, processes, files) and
+  where it decrypts, downloads, writes files and starts processes (never scored). An explanation now applies only within its subject (the package, or one
   dependency: `dependency_subject`), and a dependency's severe finding is never cleared by the
   package's repository match.
 - **Unreadable.** A deleted repository, a missing ref, an archive over the limits, an archive
@@ -100,14 +100,16 @@ tarball to npm, and only the three install hooks run.
 
 - **Detection.** `web3-mev-error-decoder@0.1.0` is reported by the dependency's
   `npm.install-hook` and `npm.install-script-code` (MEDIUM), with the `install` hook, the
-  process and network use and the decryption line in the evidence. On live data and the
-  replay set, no decision changed: every version that adds a GitHub dependency was already
-  reported by `non-registry`. What changes is the evidence, and that the report no longer rests
-  on the specifier alone.
-- **Benign cost.** None in decisions today. 14 benign live versions gained a MEDIUM dependency
-  finding (mostly `prepare: tsc`, which `npm.install-build-tool` doesn't list); they stay
-  reported for `non-registry` already. If `non-registry` is narrowed later, they become this
-  rule's cost.
+  process and network use and the decryption, download, write and start lines in the evidence.
+  No positive is lost and none is gained on the live runs on disk, the replay set or
+  `vm-day1`: every positive that adds a GitHub dependency was already reported. What changes
+  for them is the evidence, and that the report no longer rests on the specifier alone.
+- **Benign cost.** 4 benign versions newly reported, the same 4 on the live runs on disk and
+  the replay set (replay precision 49.15% -> 49.01%): a dependency whose git-only hook builds
+  it (`prepare: tsc ...` x3, `prepublish: webpack`), where today's `non-registry` is LOW (a tag
+  in the package's own account). `npm.install-build-tool` lists no compiler; whether to
+  explain `tsc` for git dependencies is an owner question in the proposal. 10 more benign
+  versions, reported already, gained a MEDIUM dependency finding.
 - **Replay.** Every request goes through the run's fetcher and is in `correlate-snapshot.json`,
   so a replay reads the same refs and archives. The replay harness for precision rounds reads
   them from a snapshot recorded once (see the proposal).
@@ -117,8 +119,10 @@ tarball to npm, and only the three install hooks run.
   request per repository and one archive per commit, once per pass.
 - **Deleted repositories.** A repository deleted (or a commit garbage-collected) before Stage 4
   runs can't be read: the INFO note says so, and `non-registry` still reports the release.
-  `vm-day1`'s samples are years old for some campaigns; see the proposal for how many of their
-  repositories still exist.
+  On `vm-day1`, 69 of the 71 malicious samples that add a GitHub dependency can't be read
+  today (the waves' fork commits on `tanstack/router`, `antvis/G2` and
+  `opensearch-project/opensearch-js` are no longer served; `opensearch-project/openearch` is
+  deleted), so `vm-day1` can't measure this rule's recall; no sample changed decision.
 - **Unchanged specs** on an update, branch or default-branch references included, are not
   read: a push to a dependency's branch between two releases goes unseen (owner question in
   the proposal).

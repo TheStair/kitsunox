@@ -522,11 +522,14 @@ Measured on the live runs on disk (190 runs, 2026-10-29..11-12): 273 versions ad
 non-registry dependency (335 dependencies). Of the 167 GitHub repository specs, 162 were read
 (115 commits of 70 repositories, 191 MB of archives), 30 with findings; 1 repository was
 deleted, 2 abbreviated commits were in no ref, 1 archive was 404. 110 were tarballs on other
-hosts, 56 GitHub release assets or raw files, 3 other git hosts. No decision changed: every
-version that adds a GitHub dependency was already reported through `non-registry`; 24 of them
-gained a severe dependency finding (10 positives, 14 benign: mostly `prepare: tsc`).
-`web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
-`npm.install-script-code`. Replay set and `vm-day1`: see the proposal.
+hosts, 56 GitHub release assets or raw files, 3 other git hosts. With today's Stage 1, 4 benign
+versions are newly reported (`@aimuzov/kaiten-mcp`, `@aimuzov/thinks-mcp`, `@biongff/vizarr`:
+a dependency's `prepare: ... tsc ...`; `@eqtylab/vcomp-verify-js`: `prepublish: webpack`), no
+positive is lost or gained, and 20 versions reported already gained a severe dependency
+finding (10 positives, 10 benign). The replay set (3,716 verdicted) changes the same 4
+versions and nothing else; `vm-day1` changes nothing (its waves' fork commits are gone from
+GitHub). `web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
+`npm.install-script-code`. Details: the proposal.
 
 ## Decision and score
 
@@ -935,7 +938,10 @@ for ~1.4 extra benign reports a day.
   install hooks also run, and the devDependencies npm installs to run `prepare`) are not read,
   nor its git dependencies (listed only). `npm run` is expanded three levels; `yarn <script>`
   without `run`, `npx` of the dependency's own bins and Makefiles are not. The evaluation
-  predictor reads git dependencies as of the evaluation, not as of the sample.
+  predictor reads git dependencies as of the evaluation, not as of the sample. Stage 5's
+  offline sandbox can't fetch a git dependency, so a release reported only for its
+  dependency's install code is not run there. Stage 4 plans the dependencies with one more
+  pass over the run's versions (read from disk, like the other plans).
 - **Follow-ons.** A follow-on more than 7 days after the reported release is judged on its
   changes alone, as before; so is one whose payload moved to another path or changed by a
   byte, one whose earlier release was reported for evidence the pass doesn't carry (an install

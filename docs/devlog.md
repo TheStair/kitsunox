@@ -2,6 +2,66 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-12 (round 10 G): Reading the install code of git dependencies
+
+**Stage(s):** Stage 4 (`npm.git-dependency`, `stages/gitdeps.py`, `ecosystems/npm/gitdep.py`)
+**Context:** `web3-mev-error-decoder@0.1.0` (malicious, found in the unverified re-review)
+shipped a clean tarball and depended on `github:outgoingyang/multicall-error-decoder`, whose
+`install` hook decrypts its strings, downloads and starts a payload. Only
+`npm.dependency.non-registry` reported it; Stages 2-4 never saw the dependency's code. The
+owner approved reading it ("the full version"). Decision
+[0020](decisions/0020-git-dependency-install-code.md), measurements in
+[the proposal](proposals/git-dependencies-round10-G.md).
+
+### Decisions
+- **Reuse the install rules on the dependency** (Stage 1 hook rule, Stage 2 file rules, Stage 3
+  code rules), not a new rule set: the dependency is read as a package of its own, its
+  findings keep their ids and weights (scored as the release's own) under
+  `dep:<name>@<commit12>/`. A separate rule set would have had to repeat every owner ruling.
+- **Model what npm runs for a git dependency:** the root lifecycle of `npm install` in the
+  clone (`prepublish`, `preprepare`, `prepare`, `postprepare`) besides the install hooks;
+  pacote runs only `prepare` around the pack, so not `prepack`/`postpack`. The rules know three
+  install slots, so git-only hooks are shown to them in free slots and the findings renamed
+  back; `npm run <script>` is expanded (the `prepare: npm run build` shape).
+- **Explanations per subject.** Without it, the package's own `npm.install-build-tool` would
+  have made a dependency's install hook LOW, and a dependency's build tool the package's.
+- **Only added or changed dependencies, GitHub only**, as `non-registry` reads them; a commit
+  bump is compared with the pinned commit (`@diffci.com/diffci`'s routine bumps find nothing
+  new). Tarballs on other hosts are not fetched: the host is often the attacker's, and the
+  request would tip them off (and is SSRF-shaped).
+
+### Challenges
+- **Measuring without network in replays.** The replay harness has no Stage 4 network. Every
+  live and replay-set version with an added non-registry dependency was visited once by a
+  measurement script that recorded the GitHub refs and archives in a scratch snapshot; the
+  harness (`replay_g.py`) reads them in replay mode.
+- **`vm-day1` can't measure recall here:** 69 of its 71 malicious samples that add a GitHub
+  dependency point at fork commits GitHub no longer serves (`tanstack/router`, `antvis/G2`,
+  `opensearch-js`: HTTP 404) or a deleted repository. Resolving "as of the run" is the only
+  option that is replayable, and it means live collection must read them on the day.
+
+### Evaluation snapshot
+- Live runs on disk (273 versions that add or change a non-registry dependency, Stage 1
+  re-run with today's rules): 4 benign newly reported (`@aimuzov/kaiten-mcp`,
+  `@aimuzov/thinks-mcp`, `@biongff/vizarr`: a dependency's `prepare` runs `tsc`;
+  `@eqtylab/vcomp-verify-js`: `prepublish: webpack`), 0 positives lost or gained; 20 versions
+  reported already gained a severe dependency finding (10 positives including
+  `web3-mev-error-decoder`, 10 benign).
+- Replay set (3,716): 1,424 -> 1,428 reported, the same 4 benign; precision 49.15% -> 49.01%;
+  no malicious, unwanted or unverified version changes.
+- `vm-day1` (151 samples with a non-registry dependency): 114/143 malicious and 1/8 benign
+  reported, before and after.
+- **Mistake caught:** the first live measurement reused the recorded Stage 1 findings and
+  showed 0 newly reported; older runs recorded older `non-registry` versions (MEDIUM where
+  today's is LOW for a tag in the package's own account). The replay showed the 4; the live
+  measurement was redone with Stage 1 re-run and agrees.
+
+### Open questions / next steps
+- Owner: read unchanged specs too (+108 live reports, 26 packages, 0 positives; +2
+  `vm-day1`); fetch GitHub release assets (`signetai`, unwanted, unreported either way);
+  explain `tsc` in a dependency's `prepare` (3 of the 4 new benign); narrow `non-registry` now
+  that the code is read.
+
 ## 2026-11-12 (later): Round 9 Q, a regression round 8 caused, and the unverified re-review
 
 **Stage(s):** Stage 3 (`npm.install-download`, `npm.install-persistence`), reviewer verdicts
