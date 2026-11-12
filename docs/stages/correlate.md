@@ -503,6 +503,15 @@ downloaded and started a payload; only `npm.dependency.non-registry` fired. Sinc
   the repository, commit, how the reference resolved, the scripts npm runs and what the
   install code uses (`[network]`, `[process]`, `[filesystem]`, `[decrypt]` lines). An INFO note
   lists the dependency's own non-registry dependencies (not followed).
+- **Build-only dependencies** (`npm.git-dependency.build-only`, INFO; `STAGE_VERSION` 24,
+  owner 2026-11-12): when every command npm runs for the dependency is a build tool
+  `npm.install-build-tool` accepts (`BUILD_TOOL_HOOKS`, whole `&&` parts) or, in a slot that
+  holds only git-only hooks (`prepare` and friends), `tsc`, `publint`, `rimraf` or `rm -rf`
+  with plain relative arguments (`COMPILE_ONLY`), and `binding.gyp` runs nothing, the
+  dependency's `npm.install-hook` is explained (LOW, weight 1), as the package's own hooks
+  are by `npm.install-build-tool`. Not `webpack`, `rollup`, `vite`, `babel`: their
+  configuration is JavaScript they run. Not a tool the dependency's own `bin` names, nor
+  `tsc` when the dependency takes `typescript` from outside the registry.
 - **Subjects.** An explanation applies only within its subject (`dependency_subject`: the
   package, or one dependency): the package's `npm.install-build-tool` doesn't explain a
   dependency's `npm.install-hook`, nor the other way round. A dependency's severe finding is
@@ -542,6 +551,13 @@ gained. `vm-day1`: +2 malicious (`trex-proxy-browser-extension-sdk` 0.1.1 and 0.
 unchanged `reclaimprotocol/tls#8e0669a2…` dependency's `prepare` downloads,
 `npm.install-download`), none lost. Caps: the 4-day catch-up run `20261107T163310Z-npm` wanted
 160 specs (151 commits read, 442 MB of archives); no run reached either cap.
+With the build-only explanation (`STAGE_VERSION` 24), the live runs on disk give 1 benign
+version newly reported (`@eqtylab/vcomp-verify-js@0.0.8`: `prepublish: webpack`) and 71
+unverdicted (19 packages; bundlers with JavaScript configuration, the dependency's own
+scripts, unexpanded `yarn build`), instead of 4 and 108; no positive lost or gained;
+`vm-day1` 116 of 143 malicious (`reclaimprotocol/tls`'s `npm exec tsc` is not explained). The
+replay set (3,716 verdicted) reports 1 more benign version, the same `@eqtylab/vcomp-verify-js`,
+and changes no positive.
 `web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
 `npm.install-script-code`. Details: the proposal.
 
@@ -820,7 +836,8 @@ Rules over it:
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count), and an alias into JSR's `@jsr/` scope (v2) | MEDIUM | 3 |
 | `npm.undeclared.missing` | a package Stage 3's `npm.undeclared-package` names (loaded at module load, not declared; not own scope, watched or a sibling) was 404 when the run looked it up (Undeclared and missing, above). INFO, weight 0, when the lookup failed or was over the limits | MEDIUM | 3 |
 | `npm.dependency.name-embeds-popular` | an added unscoped dependency (not watched) is, lowercased without `-_.`, a name with ≥ 1M downloads a month on the watchlist (≥ 5 characters) plus a prefix or suffix of 1-8 characters (`easy-day-js` / `dayjs`); not when its record (already looked up) shares an account with this release (`react-dom-utils` from React's maintainers) | LOW | 1 |
-| `npm.git-dependency` | a version adds or changes a dependency from outside the registry: the install rules' findings on a GitHub dependency's install code, each with its own rule id, severity and weight and `dep:<name>@<commit12>/` evidence; an INFO summary (commit, scripts npm runs, what the install code uses); an INFO `Not evaluated:` note when it wasn't read (Git dependencies, above) | INFO (its findings: theirs) | 0 |
+| `npm.git-dependency` (v2) | a version adds or changes a dependency from outside the registry: the install rules' findings on a GitHub dependency's install code, each with its own rule id, severity and weight and `dep:<name>@<commit12>/` evidence; an INFO summary (commit, scripts npm runs, what the install code uses); an INFO `Not evaluated:` note when it wasn't read (Git dependencies, above) | INFO (its findings: theirs) | 0 |
+| `npm.git-dependency.build-only` | inside a git dependency: every command npm runs for it is an accepted build tool or, in `prepare` and the other git-only hooks, `tsc` / `publint` / removing build output (Git dependencies, above). Explains the dependency's `npm.install-hook` (LOW, weight 1) | INFO | 0 |
 | `repo.compared` | a comparison was attempted: what it found, or why there was none | INFO | 0 |
 | `repo.established-match` | a clean comparison with a repository that is not a fork or archived, ≥ 30 days old at the release, ≥ 5 stars, the commit on its default branch (Repository trust, above). Clears install-code MEDIUM findings in the decision | INFO | 0 |
 | `repo.history-match` | a clean comparison at a commit ahead of the previous release's commit, no `commit-after-release` (Repository history, above). Clears install-code MEDIUM findings in the decision when `CLEAR_HISTORY` is on (off) | INFO | 0 |

@@ -2,6 +2,34 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-12 (round 10 G, owner Q3): a git dependency that only builds itself is explained
+
+**Stage(s):** Stage 4 (`npm.git-dependency.build-only`, `correlate.EXPLAINED`)
+**Context:** Q1 added 108 live reports and kept the 4 benign ones, mostly dependencies whose
+`prepare` compiles them. The owner asked for the package-level build-tool explanation to
+cover a dependency's `prepare`/`prepublish` chain, plus compile-only commands if justified.
+
+### Decisions
+- **Accepted:** the `BUILD_TOOL_HOOKS` commands, and in git-only hooks `tsc`, `publint`,
+  `rimraf` / `rm -rf` with plain relative arguments. **Not accepted:** `webpack`, `rollup`,
+  `vite`, `babel` (their JavaScript configuration is the dependency's code), anything with
+  shell expansion, a tool the dependency's own `bin` names, `tsc` when `typescript` comes from
+  outside the registry. Only `npm.install-hook` is explained; install code keeps its severity.
+
+### Challenges
+- **First guard too strict:** "no non-registry dependency at all" kept `@aimuzov/infra-mcp-kit`
+  reported (an unrelated git devDependency). Found on the `vm-day1` check; narrowed to the
+  compile-only tool's own package (`typescript` for `tsc`). The runs started with the strict
+  guard were stopped and redone.
+
+### Evaluation snapshot
+- Live: newly reported benign 4 -> 1 (`@eqtylab/vcomp-verify-js`, `webpack`), unverdicted
+  108 -> 71 (19 packages); 0 positives lost or gained.
+- `vm-day1`: 116 of 143 malicious, unchanged (`reclaimprotocol/tls`'s `npm exec tsc` is not
+  explained, its `trex-proxy-browser-extension-sdk` samples stay reported).
+- Replay set (full, final tree): 1,424 -> 1,425 reported, the 1 benign `@eqtylab/vcomp-verify-js`;
+  no malicious, unwanted or unverified version changes; precision 49.15% -> 49.12%.
+
 ## 2026-11-12 (round 10 G, owner answers): unchanged git dependencies are read too
 
 **Stage(s):** Stage 4 (`stages/gitdeps.wanted`)

@@ -97,8 +97,10 @@ STAGE_ID: Final = "correlate"
 # applies only to findings of its own subject (the package, or one dependency), and a
 # dependency's findings are never cleared by the package's repository match.
 # 23 (owner, 2026-11-12): a GitHub dependency a version keeps unchanged is read too.
+# 24 (owner, 2026-11-12): `npm.git-dependency.build-only` explains a git dependency's
+# `npm.install-hook` when it only builds the dependency (`EXPLAINED`).
 # Output without the field is 1.
-STAGE_VERSION: Final = 23
+STAGE_VERSION: Final = 24
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -468,6 +470,11 @@ def score(findings: Iterable[Finding]) -> float:
 #   other code: a dependency-confusion placeholder that makes `npm install` fail. Explains
 #   the hook (`npm.artifact.hidden-install-script`, `npm.install-hook`) and the placeholder's
 #   high version (`npm.version.suspicious`) (`docs/proposals/precision-round9-S.md`, S1).
+# - `npm.git-dependency.build-only` (Stage 4, inside a git dependency, STAGE_VERSION 24): every
+#   command npm runs for the dependency is a build tool `npm.install-build-tool` accepts or,
+#   in its `prepare` (and the other git-only hooks), `tsc`, `publint` or removing build output
+#   (owner, 2026-11-12). Explains `npm.install-hook` within the dependency
+#   (`docs/proposals/git-dependencies-round10-G.md`).
 _SHAPE_NOTE: Final = " The install code has an explained shape (npm.install-explained)."
 OBFUSCATION_ONLY: Final = "npm.obfuscation-only"
 INSTALL_STUB: Final = "npm.artifact.install-stub"
@@ -494,6 +501,11 @@ EXPLAINED: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
             " (npm.artifact.install-target-missing).",
         ),
         (INSTALL_STUB, _STUB_NOTE),
+        (
+            "npm.git-dependency.build-only",
+            " Every script npm runs for this git dependency only builds it: a build tool, or `tsc`"
+            " in its `prepare` (npm.git-dependency.build-only).",
+        ),
     ),
     "npm.artifact.hidden-install-script": ((INSTALL_STUB, _STUB_NOTE),),
     "npm.version.suspicious": ((INSTALL_STUB, _STUB_NOTE),),

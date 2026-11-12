@@ -265,3 +265,41 @@ each run's caps) and `vm_eval.py` (`vm-day1`), the tree frozen as `q1-src`:
   (the 24-hour first run, 206 MB) and 20. No run reached the 200-spec cap, no package the
   10-spec one. Over all runs, 3.3 GB of archives were downloaded (688 MB in the scratch blob
   store, compressed and shared between runs).
+
+### Q3: a dependency that only builds itself is explained (`STAGE_VERSION` 24)
+
+`npm.git-dependency.build-only` (decision 0020, second addendum) explains the dependency's
+`npm.install-hook` when every command npm runs for it is a build tool `npm.install-build-tool`
+accepts or, in `prepare` and the other git-only hooks, `tsc` / `publint` / `rimraf` /
+`rm -rf` with plain relative arguments; `typescript` from the registry; no own bin of that
+name; no gyp command. `webpack`, `rollup`, `vite`, `babel` are not accepted: they run their
+JavaScript configuration, the dependency's code. Measured on the final tree (`q3-src`), against
+main and against Q1:
+
+| | main | Q1 | Q1 + Q3 (final) |
+|---|---|---|---|
+| Live: newly reported benign | | 4 | **1** (`@eqtylab/vcomp-verify-js@0.0.8`: `prepublish: webpack`) |
+| Live: newly reported unverdicted | | 108 (26 packages) | **71** (19 packages) |
+| Live: positives lost / gained | | 0 / 0 | **0 / 0** |
+| `vm-day1` malicious reported (of 143) | 114 | 116 | **116** |
+| `vm-day1` benign reported (of 8) | 1 | 1 | 1 |
+| Replay set (3,716): reported (benign) | 1,424 (718) | | **1,425 (719)**: only `@eqtylab/vcomp-verify-js@0.0.8`; positives unchanged; precision 49.15% -> 49.12%; 0 errors, 0 replay misses |
+
+- **Removed by Q3** (40 live versions): the 3 benign `@aimuzov/kaiten-mcp`,
+  `@aimuzov/thinks-mcp`, `@biongff/vizarr@1.4.0` (`rm -rf build && tsc -p …`, `tsc && publint`)
+  and 37 unverdicted Q1 additions: `@xrpl-utilities/mcp` 15, `handoff-app-next` 11,
+  `@diffci.com/diffci` 4, `@biongff/vizarr` 3, `colregs-mcp` 2, `cogladius`, `@ainize/agent`.
+- **Still reported** (71 unverdicted, 19 packages): `@filen/sdk-rs` 16,
+  `@kubohiroya/turbowarp-kamishibai-app` 15, `altium-to-circuit-json` 9,
+  `@nethesis/phone-island` 9, `@inco/lightning` 3, `@edx/frontend-app-learner-dashboard` 3,
+  13 more with 1-2. Their dependencies' git-time hooks run bundlers with JavaScript
+  configuration (`webpack`, `rollup`, `babel`: `@kubohiroya/*`, `querysub`, `sliftutils`,
+  `@edx/*`, `@takeshape/util`), the dependency's own scripts (`node attribution.js`,
+  `bun run scripts/prepare-git-dependency.ts`, `hardhat compile`), or `yarn build`, which is not
+  expanded (`@filen/sdk-rs`, `payjoin`): each runs the dependency's code.
+- **`vm-day1`:** `trex-proxy-browser-extension-sdk` 0.1.1 and 0.1.11 stay reported:
+  `reclaimprotocol/tls`'s `prepare` is `npm exec tsc` (not a plain `tsc`) and
+  `npm.install-download` reads it as running a package that isn't a runtime dependency. The
+  benign sample's `infra-mcp-kit` hook (`rm -rf build && tsc -p tsconfig.build.json`) is LOW;
+  it was reported, and stays reported, for other findings.
+- **Caps** are as under Q1 (the same specs are read).

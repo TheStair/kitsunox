@@ -67,12 +67,14 @@ from kitsunox.ecosystems.npm.gitdep import (
 )
 from kitsunox.ecosystems.npm.gyp import GYP_FILE
 from kitsunox.ecosystems.npm.install import gyp_commands, install_sources
+from kitsunox.ecosystems.npm.rules.git_dependency import GitDependencyBuildOnly
 from kitsunox.ecosystems.npm.rules.metadata import (
     InstallHook,
     fetches_nothing,
     is_registry_spec,
     npm_local_path,
     runtime_dependencies,
+    scripts,
     snippet,
 )
 from kitsunox.githost.github import GitHub, extract_archive
@@ -250,7 +252,13 @@ def _snapshot(files: DependencyFiles, fallback: str, commit: str) -> VersionSnap
 
 STATIC_CACHE: Final = ContentCache(None, STATIC_RULES)  # in memory: a pure function of content
 CAPABILITIES: Final = CapabilityCache(None)
-INNER_RULES: Final[tuple[Versioned, ...]] = (InstallHook(), *STATIC_RULES, *CODE_RULES)
+BUILD_ONLY: Final = GitDependencyBuildOnly()
+INNER_RULES: Final[tuple[Versioned, ...]] = (
+    InstallHook(),
+    *STATIC_RULES,
+    *CODE_RULES,
+    BUILD_ONLY,
+)
 
 
 def analyse(
@@ -294,6 +302,13 @@ def analyse(
         build_commands=gyp_commands,
     )
     findings += [f for rule in CODE_RULES for f in rule.evaluate_code(code)]
+    declared = scripts(snapshot.manifest)
+    findings += BUILD_ONLY.evaluate_dependency(
+        snapshot.manifest,
+        {slot: declared[slot] for slot in files.held if slot in declared},
+        files.held,
+        code.build_commands,
+    )
     return explained(findings), _reaches(code.install, code.install_files)
 
 

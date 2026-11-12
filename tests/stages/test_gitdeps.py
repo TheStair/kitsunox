@@ -421,6 +421,63 @@ def test_a_build_tool_prepare_is_explained_within_the_dependency() -> None:
     assert hook.severity is Severity.LOW and "npm.install-build-tool" in hook.explanation
 
 
+def hook_severity(scripts: dict[str, str], **manifest: object) -> Severity:
+    spec = github_spec("github:o/d")
+    assert spec is not None
+    body = json.dumps({"name": "d", "scripts": scripts, **manifest}).encode()
+    files = read_dependency({"package.json": body, "x.js": b"module.exports = 1;\n"}, spec)
+    findings, _ = analyse(files, A)
+    severities = {f.severity for f in findings if f.rule_id == "npm.install-hook"}
+    return Severity.MEDIUM if Severity.MEDIUM in severities else severities.pop()
+
+
+def test_a_prepare_that_only_compiles_is_explained() -> None:
+    """Owner, 2026-11-12 (Q3): the three `tsc` builds that were newly reported."""
+    explained_ones = [
+        {"prepare": "rm -rf build && tsc -p tsconfig.build.json"},
+        {"prepare": "tsc && publint"},
+        {"prepare": "npm run build", "build": "tsc -b", "prebuild": "rimraf dist"},
+        {"prepare": "husky install"},
+        {"postinstall": "node-gyp-build", "prepare": "tsc"},  # a build tool in an install hook
+    ]
+    for scripts in explained_ones:
+        assert hook_severity(scripts, devDependencies={"typescript": "^5"}) is Severity.LOW
+    reported = [
+        {"prepare": "webpack"},  # runs webpack.config.js: the dependency's code
+        {"prepare": "tsc && node x.js"},
+        {"postinstall": "tsc"},  # compile-only counts in a git-only hook, as asked
+        {"prepare": "rm -rf /"},
+        {"prepare": "rm -rf ../../x && tsc"},
+        {"prepare": "tsc $(cat flags)"},
+        {"prepare": "NODE_ENV=production tsc"},
+    ]
+    for scripts in reported:
+        assert hook_severity(scripts) is Severity.MEDIUM, scripts
+    # `tsc` from a git devDependency, or the dependency's own `tsc` bin, is not the compiler.
+    assert hook_severity({"prepare": "tsc"}, devDependencies={"typescript": "o/ts"}) is (
+        Severity.MEDIUM
+    )
+    assert hook_severity({"prepare": "tsc"}, bin={"tsc": "x.js"}) is Severity.MEDIUM
+    # Another git devDependency (`@aimuzov/infra-mcp-kit`'s `infra-site-kit`) is no reason.
+    other = {"typescript": "6.0.3", "kit": "github:o/kit#v5"}
+    assert hook_severity({"prepare": "tsc"}, devDependencies=other) is Severity.LOW
+
+
+def test_the_build_only_explanation_reaches_the_report(tmp_path: Path, router: Router) -> None:
+    files = {
+        "package.json": json.dumps(
+            {"name": "d", "scripts": {"prepare": "rm -rf build && tsc -p tsconfig.build.json"}}
+        ).encode()
+    }
+    serve_repo(router, "o/d", files)
+    (result,), _ = run_all(tmp_path, [release({"d": "github:o/d"})], router.client())
+    hook = next(f for f in result.findings if f.rule_id == "npm.install-hook")
+    assert hook.severity is Severity.LOW and "npm.git-dependency.build-only" in hook.explanation
+    note = next(f for f in result.findings if f.rule_id == "npm.git-dependency.build-only")
+    assert note.evidence[0].path == f"dep:d@{A[:12]}/package.json:scripts.prepare"
+    assert not result.history[-1].forwarded
+
+
 def test_a_full_disk_is_never_taken_for_an_unreadable_dependency(
     tmp_path: Path, router: Router, free_disk: Disk
 ) -> None:

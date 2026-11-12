@@ -23,13 +23,15 @@ found under the dependency's name (`ctx.source_dependencies`):
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Final
+import re
+from collections.abc import Mapping, Sequence
+from typing import Any, Final
 
 from kitsunox.core.models import Candidate, Evidence, EvidenceKind, Finding, Severity
 from kitsunox.core.rules import BaseRule
-from kitsunox.ecosystems.npm.gitdep import GIT_HOOKS
-from kitsunox.ecosystems.npm.rules.metadata import snippet
+from kitsunox.ecosystems.npm.gitdep import GIT_HOOKS, GIT_ONLY_HOOKS
+from kitsunox.ecosystems.npm.rules.install_code import BUILD_TOOL_HOOKS, tool_shadowed
+from kitsunox.ecosystems.npm.rules.metadata import is_registry_spec, snippet
 from kitsunox.stages.correlate import (
     NOT_EVALUATED,
     CorrelationContext,
@@ -175,3 +177,99 @@ class GitDependencyCode(BaseRule):
 
 
 RULES: Final = (GitDependencyCode(),)
+
+
+# Compile-only commands a git dependency's `prepare` (or another git-only hook) may run besides
+# the build tools `npm.install-build-tool` accepts (`BUILD_TOOL_HOOKS`), with arguments that are
+# plain words or relative paths (no shell expansion, redirection or absolute path):
+# - `tsc` (TypeScript): compiles; its configuration is JSON, and nothing of the dependency's
+#   code runs. `webpack`, `rollup`, `vite`, `babel` and similar are not here: their
+#   configuration files are JavaScript the tool runs, so they run the dependency's code.
+# - `publint`: lints the package's `package.json`; runs nothing of it.
+# - `rimraf` / `rm -rf` / `rm -fr` of relative paths: deletes build output in the clone.
+_WORD: Final = r"[\w@%+=:,./-]+"
+COMPILE_ONLY: Final = re.compile(
+    rf"^(?:tsc(?: +{_WORD})*|publint(?: +{_WORD})*"
+    rf"|(?:rimraf|rm +-(?:rf|fr)) +{_WORD}(?: +{_WORD})*)$"
+)
+
+
+# The npm package each compile-only tool comes from (`rm` is the system's).
+TOOL_PACKAGES: Final = {"tsc": "typescript", "publint": "publint", "rimraf": "rimraf"}
+
+
+def _relative(part: str) -> bool:
+    """No argument names an absolute path, the home directory or a parent directory."""
+    return not any(w.startswith(("/", "~")) or ".." in w.split("/") for w in part.split()[1:])
+
+
+def build_only(
+    manifest: Mapping[str, Any], slots: Mapping[str, str], held: Mapping[str, tuple[str, ...]]
+) -> bool:
+    """Whether every command npm runs for the git dependency only builds it: each `&&` part of
+    a slot is a build tool `npm.install-build-tool` accepts (`BUILD_TOOL_HOOKS`), or, in a slot
+    that holds only git-only hooks (`prepare` and friends), a compile-only command
+    (`COMPILE_ONLY`). Like the package-level rule, no tool may be one of the dependency's own
+    bins (`tool_shadowed`); and a compile-only tool's package (`typescript` for `tsc`), where
+    the dependency declares it, must come from the registry: a `typescript` from a git
+    repository would be any code."""
+    if not slots:
+        return False
+    declared: dict[str, object] = {}
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
+        listed = manifest.get(section)
+        if isinstance(listed, Mapping):
+            declared |= {str(k): v for k, v in listed.items()}
+    parts: list[str] = []
+    for slot, command in slots.items():
+        git_only = all(h in GIT_ONLY_HOOKS for h in held.get(slot, ()))
+        for part in (p.strip() for p in command.split("&&")):
+            if part in BUILD_TOOL_HOOKS:
+                parts.append(part)
+                continue
+            if not (git_only and COMPILE_ONLY.fullmatch(part) and _relative(part)):
+                return False
+            spec = declared.get(TOOL_PACKAGES.get(part.split()[0], ""), "^0")
+            if not isinstance(spec, str) or not is_registry_spec(spec):
+                return False
+            parts.append(part)
+    return not tool_shadowed(manifest, parts)
+
+
+class GitDependencyBuildOnly(BaseRule):
+    """An explanation, for Stage 4 (`correlate.EXPLAINED`): every command npm runs for a git
+    dependency only builds it (`build_only`), so its `npm.install-hook` becomes LOW within the
+    dependency, as `npm.install-build-tool` does for a package's own hooks. Owner, 2026-11-12
+    (round 10 G, Q3): `prepare: tsc` was 3 of the 4 benign versions git dependencies newly
+    reported. Run by `stages.gitdeps.analyse` on the dependency, not as a correlation rule."""
+
+    id = "npm.git-dependency.build-only"
+    version = 1
+    severity = Severity.INFO
+    weight = 0.0
+    title = "Git dependency's hooks only build it"
+
+    def evaluate_dependency(
+        self,
+        manifest: Mapping[str, Any],
+        slots: Mapping[str, str],
+        held: Mapping[str, tuple[str, ...]],
+        build_commands: Sequence[str],
+    ) -> Sequence[Finding]:
+        if build_commands or not build_only(manifest, slots, held):
+            return ()
+        return (
+            self.finding(
+                "Every script npm runs for this git dependency only builds it ("
+                + ", ".join(f"`{slot}`: `{snippet(command)}`" for slot, command in slots.items())
+                + ").",
+                *(
+                    Evidence(
+                        kind=EvidenceKind.MANIFEST_FIELD,
+                        path=f"package.json:scripts.{slot}",
+                        after=snippet(command),
+                    )
+                    for slot, command in slots.items()
+                ),
+            ),
+        )

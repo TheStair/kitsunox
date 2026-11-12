@@ -151,3 +151,23 @@ freeze at the earliest).
   160 distinct specs wanted, 151 commits read (442 MB of archives), 6 specs unreadable
   (abbreviated commits in no ref, deleted repositories, no `package.json`, a 404);
   neither cap was reached there or in any other run (the next largest: 63 specs, then 20).
+
+## Addendum (2026-11-12, owner): a dependency that only builds itself is explained
+
+- **Decision.** `npm.git-dependency.build-only` (INFO, run on the dependency by
+  `stages.gitdeps.analyse`) explains the dependency's `npm.install-hook` (`EXPLAINED`), as
+  `npm.install-build-tool` does for a package's own hooks, when every command npm runs for
+  the dependency is a build tool that rule accepts (`BUILD_TOOL_HOOKS`) or, in a slot holding
+  only git-only hooks (`prepare`, `prepublish`, ...), `tsc`, `publint`, `rimraf` or
+  `rm -rf` with plain relative arguments; `binding.gyp` runs nothing; no tool is one of the
+  dependency's own bins; and `typescript` (for `tsc`), where the dependency declares it, comes
+  from the registry. `webpack`, `rollup`, `vite` and `babel` are not accepted: their
+  configuration files are JavaScript the tool runs, i.e. the dependency's code. Only the hook
+  finding is explained: install code (`npm.install-script-code`, `npm.install-download`, ...)
+  keeps its severity. `STAGE_VERSION` 24.
+- **Measured** (proposal, "Q3"): live, newly reported against main: benign 4 -> 1
+  (`@eqtylab/vcomp-verify-js`, `webpack`), unverdicted 108 -> 71; replay set 1,424 -> 1,425
+  reported (that one benign), positives unchanged. `vm-day1`: unchanged at 116 of 143 malicious;
+  `reclaimprotocol/tls` stays reported (its `prepare` is `npm exec tsc`: not a plain `tsc`,
+  and `npm.install-download` reads it as running a package that is not a runtime dependency);
+  the benign sample's `infra-mcp-kit` hook is LOW.
