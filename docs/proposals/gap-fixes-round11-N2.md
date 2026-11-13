@@ -186,3 +186,50 @@ benign ones are the same private-registry and monorepo dependencies that make
 reported again in its follow-ons for 7 days. A narrower variant for the owner: carry only a
 release with exactly one unrelated missing dependency (every campaign wrapper so far has one),
 which would drop `@ilkal/sdk` only.
+
+## 5. Replay set and `vm-day1`
+
+**Replay set** (the 3,716 verdicted live versions, `r5/K/replay.py` via `k_replay.sh ... full`,
+all three commits; baseline `~/kitsunox-scratch/r9/integ-out/full.jsonl`, which gives the same
+decision as current `main` on every one of the 3,716, M's `main.jsonl` agreeing on the targets):
+
+| | Reported | Malicious | Unwanted | Benign | Unverified | Precision (today's verdicts) |
+|---|---|---|---|---|---|---|
+| main | 1,424 | 49 | 645 | 718 | 12 | 48.74% |
+| branch | 1,429 | 51 | 648 | 718 | 12 | **48.92%** |
+
++5 reported, all positives (`@atedone/workspace-context` 0.0.19, 0.0.20, 0.0.21 unwanted;
+0.0.24, 0.0.25 malicious), 0 benign added, 0 positives or unverified lost. This harness has no
+follow-on pass and copies the recorded dependency findings, so P9 and P3's follow-on part can
+only add here; they are measured in sections 2 and 4. Nor does it replay git dependencies, so
+its `main` count is 1,424 where round 10's own replay has 1,425 (`@eqtylab/vcomp-verify-js`);
+the difference is the same on both sides.
+
+**`vm-day1`** (all 4,944 samples scanned with the branch's Stage 2 code, `vm_touched.py`: an
+`inject` match MEDIUM on the branch and LOW on main, or `npm.canary-callback` firing; then
+`pipeline+4`, the real `Correlated` predictor, on the 17 touched samples with main `d08077a` and
+the branch, `vm_eval_n2.py`, repository comparison off):
+
+- P3 touches 6 malicious `@automagik/genie` samples, all reported by main already.
+- P7 fires on 13 malicious samples (dependency-confusion probes calling interactsh- and
+  Burp-style ids on their own domains, a `canarytokens.com` lookup), all reported already, and
+  on one sample labelled benign: `selectlist-polyfill-lite@1.0.1`, the P7 target itself, which
+  the dataset took from day-1 traffic before anyone looked at it. It is now reported (an
+  unwanted probe under today's rules).
+- Malicious reported: unchanged, 0 lost. Benign reported: +1 (that probe).
+- P9 is not measured here: the per-sample predictor has no follow-on pass, and P9 can only add
+  follow-on reports.
+
+## 6. Owner questions
+
+1. **P9's cost.** About 1.1 likely-benign follow-on reports a day (private-registry and
+   monorepo 404s reported again within 7 days) for 2 MAL versions and the campaign's next
+   wrappers. Keep it, narrow it to releases with exactly one unrelated missing dependency
+   (drops `@ilkal/sdk` only), or drop P9?
+2. **`npm.dependency.missing` v3** (bundled dependencies are INFO) was added to keep P9 from
+   repeating `faberloom`; it also stops the original reports (2 benign). Keep?
+3. **`vm-day1`'s `selectlist-polyfill-lite@1.0.1`** is labelled benign in the dataset but is a
+   marker-only probe (unwanted with `probe` today). Relabel it in the dataset's notes, or leave
+   the benign cell +1?
+4. **P3 after the freeze:** the cross-file `inject` (start-up file named in one file, the
+   `source` line in another: `@atedone` 0.0.13-0.0.17).
