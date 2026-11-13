@@ -214,6 +214,7 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 | `static.channel-follow-on-connect` (2026-11-11, ecosystem-agnostic, `rules/channels.py`) | a WhatsApp library (Baileys fork) that passes a **hardcoded** `\d{15,22}@newsletter` id (a literal, or a variable bound to one in the same file: a constant, an environment default, an array iterated with `for ... of`/`forEach`) as the first argument of `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, inside a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200 characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and messages blanked, tests/examples/docs skipped. Every file of every version, so a follow-on that ships the follow unchanged is flagged; [below](#whatsapp-follows-in-unchanged-files-staticchannel-follow-on-connect-2026-11-11) | MEDIUM (weight 3), "unwanted" |
 | `static.host-ip-identity` (2026-11-13, ecosystem-agnostic, `rules/host_ip.py`) | a JSON file (not a lockfile, `tsconfig`, or under tests, examples, docs or `node_modules/`) that sets a host-like key (`host`, `hostname`, `server`, `ip`, `address`, `addr`, `endpoint`, `domain`) to a **bare** public IPv4 address (an optional port, no scheme; not a public resolver or an example address), and one JavaScript/TypeScript file of the package that both builds a URL from a scheme held in a variable (`${scheme}://`, `scheme + "://"`) and reads who runs it (`USER`/`LOGNAME`/`USERNAME`, `os.userInfo()`, `os.hostname()`), comments and messages blanked. Every file of every version; [below](#a-bare-ip-built-into-an-identity-url-statichost-ip-identity-2026-11-13) | MEDIUM (weight 3) |
 | `static.html-redirector` (2026-11-13, npm, `ecosystems/npm/rules/hosted_page.py`) | the registry used as web hosting: the tarball's `package.json` (or the registry's manifest) names a shipped HTML file as `main`, `browser`, `exports` or `exports["."]`, the package has at most 5 files, and one of its HTML/JavaScript files fetches (`fetch(`, `XMLHttpRequest`, `$.ajax`/`$.get`/`$.post`), decrypts (`crypto.subtle.decrypt(`, a CryptoJS cipher's `.decrypt(`) and navigates away (`location.replace(`/`assign(`, `location.href =`, `window.location =`): a cloaked phishing redirector served from npm's CDNs; [below](#a-package-that-is-a-redirecting-web-page-statichtml-redirector-2026-11-13) | MEDIUM (weight 3) |
+| `static.silent-native-load` (2026-11-13, npm, `ecosystems/npm/rules/native_load.py`) | a file that loading or installing the package runs (`load_sources`, `install_sources`) requires a shipped `.node` addon by a relative path, as a statement of its own (its exports unused), inside a `try` whose `catch` is empty (comments only; tree-sitter, so nesting and `if`/`else` inside the `try` are fine), and the package has no `binding.gyp`, no `prebuilds/`, no `gypfile` or `binary` field and no prebuilt-binary loader dependency (`node-gyp-build`, `prebuild-install`, `node-pre-gyp`, `bindings`, ...); [below](#a-bundled-addon-loaded-silently-staticsilent-native-load-2026-11-13) | MEDIUM (weight 3) |
 
 On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
 every time, and no tarball hid an install hook. The 9 script differences were npm's own
@@ -697,6 +698,49 @@ loader is LOW as not new.
 written as a module wrapper that decodes its body instead of fetching it, or one split across
 files (decoder in one, `Function` in another), is not seen; a bundle over 100,000 characters
 is not read as one loader on purpose.
+
+### A bundled addon loaded silently (`static.silent-native-load`, 2026-11-13)
+
+`strutil-helpers-core` 1.0.1-1.0.5 (OSV-labelled, 2026-11-01/02: "lightweight string
+utility helpers") start `index.js` with
+`try{if(process.platform==='win32')require('./native_win.node');else require('./native.napi.node')}catch(_){}`:
+two (from 1.0.3, three) bundled native addons loaded at the top of the entry for their side
+effects alone, any failure swallowed, beside a 3.7 MB opaque `.napi_cache` and no build
+files. A `.node` file is a shared library: loading it runs its initialiser, and no
+JavaScript rule can read it. Only `code.capability-gained` (LOW) fired. Round 11,
+[N1 P6](../proposals/gap-fixes-round11-N1.md).
+
+The rule (`ecosystems/npm/rules/native_load.py`, an npm artifact rule) parses the files that
+loading or installing the package runs (`load_sources`, `install_sources`) with tree-sitter
+and fires on a `require` of a shipped `.node` file by a relative path, as a statement of its
+own (what the addon exports is not used: it is loaded for what loading does), inside a `try`
+block (no function in between) whose `catch` block is empty or holds only comments, when the
+package neither builds addons nor ships them in a prebuilt layout (no `binding.gyp`, no
+`prebuilds/`, no `gypfile` or `binary` field, no dependency on `node-gyp-build`,
+`prebuild-install`, `node-pre-gyp`, `bindings`, `pkg-prebuilds`, `cmake-js`). MEDIUM,
+weight 3.
+
+**Measured:**
+
+- **Targets** (agent M's recovered tarballs): fires on `strutil-helpers-core` 1.0.1-1.0.5;
+  Stages 1-4 replayed as live report 1.0.1 (score 1 -> 4). 1.0.2-1.0.5 are not routed.
+- **Live, every held tarball of the 14 days** (232,433): the first version (any `require`
+  of the addon) fired on `dsh-needs-you-mac` 0.2.0 and 0.2.1: `const addon =
+  require('./native/dsh_notify.node')` in a `try` whose `catch` only has a comment ("No
+  binary for this platform/ABI: the fallbacks still work"), the addon's functions then used.
+  So only a `require` that is a statement of its own counts (its exports unused); with that,
+  **0**.
+- **Verdicted benign held tarballs** (1,976): 0. Malicious/unwanted held (1,243): 0.
+- **Near misses** in a random 25,000 live tarballs: a `.node` require inside a `try` with a
+  handled failure, 2 (`@eannestay/tinymage`, `penfill`: napi-rs-style loaders), and 1 more
+  with build files (`@ohos-ports/figma-nodegit`).
+- **`vm-day1`**: see the [proposal](../proposals/gap-fixes-round11-N1.md).
+
+**Limits:** an addon loaded with `process.dlopen`, through a computed path, kept in a
+variable, or with a catch that only logs is not this shape; nor is a binary run as a program (`child_process`, which
+other rules see). 1.0.2-1.0.5 have no Stage 1 signal and are not read by Stage 2 at all
+(routing), so this rule alone recovers 1.0.1; carrying it to unchanged follow-ons is a
+Stage 4 question (`FOLLOW_ON_ALONE`, owner).
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 

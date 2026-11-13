@@ -28,6 +28,7 @@ from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity, Vers
 from kitsunox.core.rules import BaseRule
 from kitsunox.ecosystems.npm.rules.hosted_page import HtmlRedirector
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
+from kitsunox.ecosystems.npm.rules.native_load import SilentNativeLoad
 from kitsunox.rules.channels import ChannelFollowOnConnect
 from kitsunox.rules.disguised import DisguisedFile
 from kitsunox.rules.host_ip import HostIpIdentity
@@ -401,7 +402,8 @@ def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
 # `static.disguised-file`, `static.channel-follow-on-connect` and `static.host-ip-identity`
 # (ecosystem-agnostic, `rules/disguised.py`, `rules/channels.py`, `rules/host_ip.py`) run here
 # because they read every file of every version, not only the contents an update adds; so do
-# the npm rules in their own modules (`static.html-redirector`, `hosted_page.py`).
+# the npm rules in their own modules (`static.html-redirector`,
+# `hosted_page.py`; `static.silent-native-load`, `native_load.py`).
 RULES: Final = (
     HiddenInstallScript(),
     DeclaredSizeMismatch(),
@@ -411,4 +413,5 @@ RULES: Final = (
     ChannelFollowOnConnect(),
     HostIpIdentity(),
     HtmlRedirector(),
+    SilentNativeLoad(),
 )
