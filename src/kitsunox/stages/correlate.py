@@ -99,8 +99,9 @@ STAGE_ID: Final = "correlate"
 # 23 (owner, 2026-11-12): a GitHub dependency a version keeps unchanged is read too.
 # 24 (owner, 2026-11-12): `npm.git-dependency.build-only` explains a git dependency's
 # `npm.install-hook` when it only builds the dependency (`EXPLAINED`).
+# 25 (round 11 P3): `static.shell-startup` (its MEDIUM forms) joins `FOLLOW_ON_ALONE`.
 # Output without the field is 1.
-STAGE_VERSION: Final = 24
+STAGE_VERSION: Final = 25
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -711,6 +712,11 @@ FOLLOW_ON: Final = "correlate.follow-on"
 #   script or executable under a font/image/media name) is carried on its own, so a follow-on
 #   too small for Stage 2's routing still reports. Live cost 0: across 230,290 tarballs its
 #   only severe findings are `pdf-html5-page-flip` 2.0.1/2.0.2; INFO launchers aren't carried.
+# - P3 (round 11, `docs/proposals/gap-fixes-round11-N2.md`): runtime code that plants a line in
+#   the shell start-up files (`static.shell-startup`, MEDIUM: its `inject` form, which Stage 2
+#   keeps on changed files too, `ALWAYS_NEW_FORMS`; a `hook` match is in `package.json`, whose
+#   bytes change with every version, so it is never carried). `@atedone/workspace-context`
+#   0.0.22 and 0.0.23 kept 0.0.21's `lib/sync.js` byte for byte.
 FOLLOW_ON_ALONE: Final = frozenset(
     {
         "static.known-signature",
@@ -718,6 +724,7 @@ FOLLOW_ON_ALONE: Final = frozenset(
         "static.channel-tagging",
         "npm.install-persistence",
         "static.disguised-file",
+        "static.shell-startup",
     }
 )
 FOLLOW_ON_DESTINATION: Final = frozenset({"static.hardcoded-ip", "static.exfil-endpoint"})

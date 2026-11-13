@@ -41,7 +41,14 @@ from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
 from kitsunox.rules.signatures import KnownSignature
-from kitsunox.rules.static import CONTEXT_NOTES, RULES, ChannelFollow, ChannelTagging, HardcodedIp
+from kitsunox.rules.static import (
+    CONTEXT_NOTES,
+    RULES,
+    ChannelFollow,
+    ChannelTagging,
+    HardcodedIp,
+    ShellStartup,
+)
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
@@ -216,6 +223,22 @@ def _key(match: FileMatch) -> tuple[str, str]:
 # user's messages with its channel (`static.channel-tagging`, 2026-11-09) does so in every
 # release too.
 ALWAYS_NEW: Final = frozenset({KnownSignature.id, ChannelFollow.id, ChannelTagging.id})
+# The same for one form of a rule: `static.shell-startup`'s `inject` (v2, round 11 P3,
+# `docs/proposals/gap-fixes-round11-N2.md`). Code that plants a sourced file or a command prompt
+# in the user's shell start-up files does so on every release that ships it (`@atedone/
+# workspace-context` 0.0.19-0.0.25 changed `lib/sync.js` each time but kept the match, so only
+# 0.0.12 and 0.0.18 were reported). The `hook` form is left out: `npm.install-persistence` v7
+# (Stage 3) reads the hook command lines on every version, changed or not.
+ALWAYS_NEW_FORMS: Final = frozenset({(ShellStartup.id, "inject")})
+
+
+def always_new(match: FileMatch) -> bool:
+    """Whether `match` is never demoted as "not new" (`ALWAYS_NEW`, `ALWAYS_NEW_FORMS`)."""
+    if match.rule_id in ALWAYS_NEW:
+        return True
+    return match.rule_id == ShellStartup.id and (
+        (match.rule_id, ShellStartup.form(match.explanation)) in ALWAYS_NEW_FORMS
+    )
 
 
 def _demoted(
@@ -231,7 +254,7 @@ def _demoted(
     which never count as documentation or tests."""
     if match.severity in (Severity.INFO, Severity.LOW):
         return match
-    if _key(match) in before and match.rule_id not in ALWAYS_NEW:
+    if _key(match) in before and not always_new(match):
         note = previous_note
     elif NON_EXECUTING.search(path) and path not in loaded:
         note = DOCS_NOTE

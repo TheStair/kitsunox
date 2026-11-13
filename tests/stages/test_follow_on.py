@@ -536,6 +536,11 @@ def test_what_the_default_policy_carries() -> None:
     assert [c.rule_id for c in payload_evidence(disguised)] == ["static.disguised-file"]
     launcher = (file_finding("static.disguised-file", "bin/x.exe", Severity.INFO),)
     assert payload_evidence(launcher) == []
+    # Round 11 P3: a shell start-up injection (MEDIUM) is carried; a CLI's LOW write is not.
+    planted = (file_finding("static.shell-startup", "lib/sync.js"),)
+    assert [c.rule_id for c in payload_evidence(planted)] == ["static.shell-startup"]
+    path_line = (file_finding("static.shell-startup", "bin/setup.js", Severity.LOW),)
+    assert payload_evidence(path_line) == []
 
 
 # Follow-ons of earlier runs' reported releases.

@@ -1383,10 +1383,16 @@ class ShellStartup:
     completion installer (`@heyvamz/carry`); `shell` and `code` stay LOW evidence (weight 1):
     at MEDIUM they reported about 8 and 2 benign CLIs a day (`backupd`, `westkite`). An
     `inject` that sourced start-up files themselves (`. "$HOME/.profile"`) or any `PROMPT=`
-    variable reported at least 10 more benign versions before it was narrowed to these."""
+    variable reported at least 10 more benign versions before it was narrowed to these.
+
+    v2 (2026-11-13, round 11 P3, `docs/proposals/gap-fixes-round11-N2.md`): the `inject` form
+    is never "not new" in Stage 2 (`stages.static.ALWAYS_NEW_FORMS`) and a reported release's
+    `inject` match is carried to its unchanged follow-ons (`FOLLOW_ON_ALONE`): a release that
+    plants a sourced file or a prompt command in the shell start-up files does it again on
+    every install. The matching itself is unchanged."""
 
     id: ClassVar[str] = "static.shell-startup"
-    version: ClassVar[int] = 1
+    version: ClassVar[int] = 2
     title: ClassVar[str] = "Writes to shell start-up files"
     SEVERITY: ClassVar[dict[str, tuple[Severity, float]]] = {
         "hook": (Severity.MEDIUM, 3.0),
@@ -1481,6 +1487,12 @@ class ShellStartup:
             )
         return out
 
+    @staticmethod
+    def form(explanation: str) -> str | None:
+        """The form (`hook`, `shell`, `inject`, `code`) a match's explanation names."""
+        found = _FORM.search(explanation)
+        return found.group(1) if found else None
+
     def _injected(self, text: str, named: bool) -> re.Match[str] | None:
         """A prompt that runs a command under `setopt prompt_subst`, or (in a file that names a
         start-up file) a line sourcing a file under the home directory that isn't one."""
@@ -1493,6 +1505,7 @@ class ShellStartup:
         return None
 
 
+_FORM: Final = re.compile(r"\(form `(\w+)`\)")
 _SHELL_FORMS: Final = {
     "hook": "An install hook appends to a shell start-up file: it runs on every `npm install`",
     "shell": "A shell command writes to a shell start-up file",

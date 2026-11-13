@@ -125,7 +125,7 @@ attributed.
 | `static.npm-publish` | npm token use or `npm publish` from code (worm behaviour). Stage 3's `npm.publish-at-load` (MEDIUM) reports the command when it runs at load or install | LOW (v2; was MEDIUM) |
 | `static.process-exec` | `child_process` | LOW |
 | `static.network` | `http`, `https`, `net`, `dns`, `dgram` modules | LOW |
-| `static.shell-startup` (2026-11-08) | writes to shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, fish's `config.fish`, the PowerShell profile). Forms: `hook` (an install hook in `package.json` appends to one), `inject` (code that writes files holds a line sourcing a file under `$HOME`, or a prompt that runs a command: `setopt prompt_subst`, `PROMPT="$(...)"`), `shell` (a shell command elsewhere appends to one), `code` (a start-up file's name, a file write within 1,000 characters and a home-directory reference) | MEDIUM (weight 3) for `hook` and `inject`; LOW for `shell` and `code` |
+| `static.shell-startup` (2026-11-08) | writes to shell start-up files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, fish's `config.fish`, the PowerShell profile). Forms: `hook` (an install hook in `package.json` appends to one), `inject` (code that writes files holds a line sourcing a file under `$HOME`, or a prompt that runs a command: `setopt prompt_subst`, `PROMPT="$(...)"`), `shell` (a shell command elsewhere appends to one), `code` (a start-up file's name, a file write within 1,000 characters and a home-directory reference). v2 (2026-11-13): `inject` is never demoted as "not new" (`ALWAYS_NEW_FORMS`) and is carried to unchanged follow-ons; [below](#shell-start-up-files-staticshell-startup-2026-11-08) | MEDIUM (weight 3) for `hook` and `inject`; LOW for `shell` and `code` |
 | `static.padded-code` (v2, 2026-11-10, `rules/padding.py`) | code pushed off screen: on one line, a run of 100+ spaces or tabs, then 200+ characters of code (not a comment, table cell or markup, not inside a string, with code punctuation, or shell code: a chained command or a pipe into a shell, v2); a run that is the line's indentation counts only when it is 100+ deeper than the line before's. One finding per file; [below](#code-hidden-behind-whitespace-staticpadded-code-2026-11-10) | MEDIUM (weight 3) |
 | `static.channel-follow` (2026-11-08) | a WhatsApp library (Baileys fork) following channels with the user's account: a FOLLOW query or `newsletterFollow(...)` call outside the library's own follow method, in a file that also names channels (`...@newsletter`, `0029V...` invite codes, also in base64 or char codes), fetches them, or calls it an auto-follow/auto-join; not behind an `if (... === true)` opt-in. Never demoted as "not new" | MEDIUM (weight 3), "unwanted" |
 | `static.channel-tagging` (2026-11-09) | a WhatsApp library (Baileys fork) tagging the user's messages with a channel: a fixed `...@newsletter` JID written as `newsletterJid` in a file that builds the forwarded-newsletter context (`forwardedNewsletterMessageInfo`). Never demoted as "not new"; [below](#whatsapp-channel-tagging-staticchannel-tagging-2026-11-09) | MEDIUM (weight 3), "unwanted" |
@@ -433,6 +433,22 @@ and 0.0.18 are reported (both need small updates routed, `triage.md` reason 6); 
 releases repeat the previous version's match and are LOW. No reviewed version of any kind is
 reported by the MEDIUM forms that wasn't reported already; DataDog `vm-day1` has no sample it
 changes.
+
+**v2 (2026-11-13, round 11 P3, [proposal](../proposals/gap-fixes-round11-N2.md)): the `inject`
+form on every release.** `@atedone/workspace-context` 0.0.19-0.0.25 (4 unwanted, 3 malicious)
+changed `lib/sync.js` in almost every release but kept the injected block, so the match was
+"also in the previous version's file" and LOW. The `inject` form is now never demoted as not
+new (`stages.static.ALWAYS_NEW_FORMS`; it is still LOW in documentation and tests), and
+Stage 4 carries a reported release's `inject` match to follow-ons that keep the file byte for
+byte (`FOLLOW_ON_ALONE`: 0.0.22 and 0.0.23 kept 0.0.21's `sync.js`). The other forms are
+unchanged; `hook` stays "not new" because Stage 3's `npm.install-persistence` v7 already
+reports a hook line that writes a start-up file on every version. The two rules differ in what
+they read: `npm.install-persistence` reads only install code (the files the hooks run and the
+hook command lines), on every version, changed or not; `static.shell-startup` reads every file
+Stage 2 reads, including runtime code such as `@atedone`'s `lib/sync.js` (run by the package
+itself, not by a hook), but only contents an update adds. Install code that injects a
+`source` line is seen by both: one report, two findings on the same lines. Measured in the
+proposal (P3).
 
 ### Code hidden behind whitespace (`static.padded-code`, 2026-11-10)
 
