@@ -123,8 +123,9 @@ or `None` (not read).
   extension is a source one (`SOURCE_EXTENSIONS`: `.js`, `.ts`, `.json`, `.sh`, `.ps1`,
   `.bat`, `.py`, `.gyp`, ...). A binary keeps only its path, size, SHA-256, mode and first 512
   bytes. When the budget is full, a more important file evicts less important kept ones,
-  largest first (`_keep_rank`): `package.json`, `binding.gyp` and text under a binary format's
-  name first, then the package's own code, then `node_modules/` code and JSON, then the rest
+  largest first (`_keep_rank`, `partial_policy`): `package.json`, `binding.gyp`, the paths the
+  version's install hooks name in its metadata and text under a binary format's name first,
+  then the package's own code, then `node_modules/` code and JSON, then the rest
   (documentation, types, source maps, tests, data).
 - **What is stored**: a deterministic tar.gz re-pack of the kept files plus a manifest
   (`util/partial.py`), recorded in `static-snapshot.json` and the immutable index under

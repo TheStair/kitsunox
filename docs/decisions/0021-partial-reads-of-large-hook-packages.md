@@ -90,9 +90,11 @@ number. The decompressed stream is capped separately (below), whatever is declar
     under a font's name) go into the manifest.
   - Text files are kept up to **16 MB each** (`MAX_FILE_BYTES`, the file rules' own limit) and
     **64 MB in all**. When the budget is full, a more important file evicts less important
-    kept ones, largest first: (0) `package.json`, `binding.gyp`, and text under a binary
-    format's name (a disguise candidate); (1) the package's own code; (2) bundled code under
-    `node_modules/`; (3) everything else (documentation, type declarations, source maps,
+    kept ones, largest first: (0) `package.json`, `binding.gyp`, every path the version's
+    install hooks name in its registry metadata (`partial_policy`: so a hook's script late in
+    the tar is never left out), and text under a binary format's name (a disguise candidate);
+    (1) the package's own code; (2) bundled code and JSON under `node_modules/`, and the
+    package's own JSON; (3) everything else (documentation, type declarations, source maps,
     tests, data). Within a class the first file in tar order wins. Every file not kept is
     listed with its reason (`binary`, `file` over the per-file limit, `budget`).
 - The policy has a version (`PARTIAL_POLICY.version`) that is part of the request key, so

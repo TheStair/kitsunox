@@ -50,12 +50,12 @@ from kitsunox.stages.gitdeps import NpmGitDependencyLookup
 from kitsunox.stages.repo import RepoMemory, compare, with_history, with_trust
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
-    PARTIAL_POLICY,
     BaseFiles,
     ContentCache,
     LoadedFiles,
     content_matches,
     new_contents,
+    partial_policy,
     read_mode,
 )
 from kitsunox.stages.triage import at_least, triage
@@ -301,7 +301,7 @@ def as_read(snapshot: VersionSnapshot, tree: ArtifactTree) -> ArtifactTree:
     reads partially (`read_mode`, decision 0021), what `PARTIAL_POLICY` keeps of them. The
     evaluation has every file (a sample's zip, a whole tarball), so it selects in memory."""
     if read_mode(snapshot) == "partial":
-        return partial_view(tree, PARTIAL_POLICY)
+        return partial_view(tree, partial_policy(snapshot))
     return tree
 
 

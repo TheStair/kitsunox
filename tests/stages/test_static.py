@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -39,12 +40,13 @@ from kitsunox.stages.static import (
     has_hook,
     needs_retry,
     new_contents,
+    partial_policy,
     read_mode,
     record_static,
     static_run,
     unhashed,
 )
-from kitsunox.util.archive import ArtifactTree, KeepPolicy, OmittedFile
+from kitsunox.util.archive import ArtifactTree, KeepPolicy, OmittedFile, stream_tar_gz
 from kitsunox.util.http import FetchError, Snapshot, TransientFetchError
 from kitsunox.util.partial import PARTIAL_CONTENT_TYPE
 
@@ -680,7 +682,8 @@ class FakePartialEcosystem(FakeEcosystem):
 
     def fetch_artifact_partial(self, artifact: ArtifactRef, policy: KeepPolicy) -> ArtifactTree:
         self.partial.append(artifact.url)
-        assert policy is PARTIAL_POLICY
+        assert policy.version == PARTIAL_POLICY.version
+        assert policy.rank("setup.js", b"") == 0  # the hook's script (`snapshot(hook=...)`)
         return ArtifactTree(files=CLEAN)
 
 
@@ -826,3 +829,20 @@ def test_record_static_reads_a_large_hooked_version_partially_and_replays_it(
     record_static(data, "r1", NpmEcosystem, client=offline, seed=snapshot_file)
     assert (run_dir / "static.jsonl").read_bytes() == recorded
     assert router.requests == [url]
+
+
+def test_the_files_a_hook_names_are_kept_first() -> None:
+    """A hook's script late in a large package's tar is kept even when the budget is full of
+    the package's own code: `partial_policy` ranks the files the hooks name 0."""
+    hooked = snapshot("1.0.1", hook="postinstall")  # `node setup.js`
+    assert partial_policy(hooked).rank("setup.js", b"") == 0
+    assert partial_policy(hooked).rank("lib/a.js", b"") == 1
+    assert partial_policy(snapshot("1.0.1")) is PARTIAL_POLICY
+    tight = replace(partial_policy(hooked), max_kept_bytes=2000)
+    tarball = make_tar_gz(
+        [TarEntry(f"package/lib/{i}.js", b"x" * 900) for i in range(2)]
+        + [TarEntry("package/setup.js", b"require('https')" * 40)]
+    )
+    archive = stream_tar_gz([tarball], tight, strip_components=1)
+    assert "setup.js" in archive.files
+    assert [o.path for o in archive.omitted] == ["lib/0.js"]

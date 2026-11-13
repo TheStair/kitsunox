@@ -21,6 +21,7 @@ import json
 import re
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -602,6 +603,34 @@ PARTIAL_POLICY: Final = KeepPolicy(
 )
 
 
+def _npm_hook_paths(manifest: Mapping[str, Any]) -> frozenset[str]:
+    from kitsunox.ecosystems.npm.install import hook_paths
+
+    return hook_paths(manifest)
+
+
+# The package paths a version's install hooks name, from its metadata (before any file is read).
+HOOK_PATHS_BY_ECOSYSTEM: Final[dict[str, Callable[[Mapping[str, Any]], frozenset[str]]]] = {
+    "npm": _npm_hook_paths
+}
+
+
+def partial_policy(snapshot: VersionSnapshot) -> KeepPolicy:
+    """`PARTIAL_POLICY` for this version: the files its install hooks name are kept first
+    (rank 0), so a hook's script late in a large package's tar is never left out for the
+    budget. A function of the version's metadata, so the policy (and its request key) is the
+    same whenever the version is read."""
+    hook_paths = HOOK_PATHS_BY_ECOSYSTEM.get(snapshot.ref.ecosystem)
+    named = hook_paths(snapshot.manifest) if hook_paths is not None else frozenset()
+    if not named:
+        return PARTIAL_POLICY
+
+    def rank(path: str, head: bytes) -> int:
+        return 0 if path in named else _keep_rank(path, head)
+
+    return replace(PARTIAL_POLICY, rank=rank)
+
+
 def fetch_limit(
     snapshot: VersionSnapshot,
     max_bytes: int = MAX_ARTIFACT_BYTES,
@@ -666,7 +695,7 @@ class ArtifactFiles:
             return Unavailable(reason=f"declared unpacked size {artifact.unpacked_size} bytes")
         try:
             if mode == "partial" and isinstance(ecosystem, PartialArtifacts):
-                return ecosystem.fetch_artifact_partial(artifact, PARTIAL_POLICY)
+                return ecosystem.fetch_artifact_partial(artifact, partial_policy(snapshot))
             return ecosystem.fetch_artifact(artifact)
         except (FetchError, ValueError) as exc:  # ValueError: integrity or archive errors
             return Unavailable(

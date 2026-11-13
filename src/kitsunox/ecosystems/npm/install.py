@@ -337,6 +337,19 @@ def install_entry_files(files: Mapping[str, bytes]) -> frozenset[str]:
     return frozenset().union(*(files_named(c, files) for c in commands))
 
 
+def hook_paths(manifest: Mapping[str, object]) -> frozenset[str]:
+    """Every token of `manifest`'s install hooks read as a package path, whether or not the
+    package has such a file: before the files are read (a partial read keeps these first,
+    decision 0021). The registry's manifest, so a hook only the tarball has isn't here."""
+    commands = [c for hook, c in scripts(manifest).items() if hook in INSTALL_HOOKS]
+    return frozenset(
+        path
+        for command in commands
+        for token in _TOKEN.split(command)
+        if (path := _package_path(token.strip("'\"")))
+    )
+
+
 def _virtual(path: str) -> bool:
     """Inline code given a path of its own (`package.json#scripts.<hook>.js`, `GYP_INLINE`)."""
     return path.startswith(INLINE_PREFIX) or path == GYP_INLINE
