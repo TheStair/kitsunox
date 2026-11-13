@@ -2,6 +2,48 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-13 (integration): round 11 merged, seven more phishing redirectors, 1-day retention
+
+**Stage(s):** Stages 2 and 4 (round 11 N1 + N2), live review, collection retention
+**Context:** Agents N1 and N2 built fixes for the residual misses from agent M's gap analysis
+(`~/kitsunox-scratch/r11/GAP-ANALYSIS.md`); O built partial reads of hooked packages over the
+32 MB cap. Disk fell to 23 GB during the day.
+
+### Decisions
+- **Merge N1 (four Stage 2 rules) and N2 (P3, P7, P9, `npm.dependency.missing` v3)** (owner,
+  2026-11-13; main `dd2d565`). Measured separately against main: +11 positives
+  recovered, 0 lost on the replay set, held live tarballs and `vm-day1`. Benign cost: about
+  0.35 a day for P3 and about 1.1 a day for P9; the owner kept P9 as built for
+  `tailwind-kinetix` 2.0.9 and 2.0.10 (MAL-2026-19078). The two branches conflicted only in
+  `artifact.py`'s rule list and the docs. The combined tree passed all four gates (3,620
+  tests). Threat-model rows 4 and 5, which both agents edited, were folded into one row each.
+- **`vm-day1`'s `selectlist-polyfill-lite@1.0.1` counts as a probe (unwanted)** in results,
+  not benign (owner). The dataset file is not edited: it is built from the OSV label set and
+  records its hash.
+- **1-day retention** for runs and repository archives (owner). See
+  [decision 0006, addendum 2026-11-13](decisions/0006-scheduled-collection-and-retention.md#addendum-2026-11-13-1-day-retention).
+  The hold and the ledgers are unchanged.
+
+### Challenges
+- **The silent-native-load follow-on carry recovered nothing.** N1 expected that adding
+  `static.silent-native-load` to `FOLLOW_ON_ALONE` would report `strutil-helpers-core`
+  1.0.2-1.0.5. Every release rewrote the loader and rebuilt the addon, and a follow-on carries
+  only byte-identical files.
+  - **Resolution:** built and measured (0 gained, 0 lost, N1's branch `633f4e4`) and **not
+    merged**. Re-running whole-package rules on follow-ons is on the post-freeze list.
+- **The new redirector rule found seven live phishing pages the pipeline never reported.**
+  `static.html-redirector`, run over the held tarballs, matched `@isla5mic/test` 1.0.0, 1.0.1,
+  1.0.3, 1.0.4 and 1.0.5 (`xfrkbihc`, the same account and dead-drop/AES keys as `@isla5mic/aasics`) and
+  `hewuzdfhcxmrsu@1.0.0` and `mkdgwgbvpwqsf@1.0.0` (`pdlzbbrb`: the same template and
+  byte-identical README, their own key pair). All seven were read as data and recorded
+  malicious; all were still on npm, with no OSV record. Reports were written for the owner.
+
+### Open questions / next steps
+- O (partial reads): +66 of 88 affected malicious `vm-day1` samples, about +81 reports a day
+  (mostly own-binary downloads, unwanted), about 5.9 GB a day of re-packs, and one unwanted
+  version lost (`doc-detective@5.0.0-v5-rc.16`). Pending the owner and the disk expansion;
+  the merge cutoff is 2026-11-15.
+
 ## 2026-11-13 (round 11 N1): four Stage 2 rules for residual misses
 
 **Stage(s):** Stage 2 (three artifact rules, one file rule)

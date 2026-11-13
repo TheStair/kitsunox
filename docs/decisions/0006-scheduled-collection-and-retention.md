@@ -171,3 +171,17 @@ used, and if that can't be read the prune goes ahead without it (a full disk cra
 On 2026-11-08 the unpruned runs held 1.5 GB of small tarballs (83,140, most from the 4-day
 catch-up) and 1.5 GB of reported versions' tarballs.
 
+
+## Addendum (2026-11-13): 1-day retention
+
+Free disk fell to 23-24 GB on 2026-11-13 (weekday tarball peak, with the round 11 replays in
+scratch), and every tick has been pruning under `PRUNE_BELOW`. The owner reduced the timer's
+retention from 2 days to **1 day** for runs and repository archives (`--keep-days 1
+--keep-repo-days 1`), ahead of the planned 75 GB disk expansion. What stays the same: the label
+hold (labeled and malicious-verdict tarballs for good; reported, sampled and small ones 30
+days), the decision ledgers (live evaluation, D = 7) and the queue's 7-day window. What it
+costs: a version OSV labels more than a day after publication, with a large tarball that was
+neither reported nor sampled, has nothing left to read on disk (the review tools fall back to
+registry.npmjs.org and npmmirror, which often no longer serve it); live replays for rule
+measurement cover one day of runs; and the daily sample, drawn after 00:30 UTC, can find the
+first hour of the previous day's tarballs pruned (those are read from the registry instead).
