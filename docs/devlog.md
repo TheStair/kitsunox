@@ -2,6 +2,61 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-13 (round 11 N1): four Stage 2 rules for residual misses
+
+**Stage(s):** Stage 2 (three artifact rules, one file rule)
+**Context:** Agent M's gap analysis left 91 live misses after main; the owner approved four
+small Stage 2 fixes for this agent before the 2026-11-15 cutoff: P2, P5, P4 and P6
+([proposal](proposals/gap-fixes-round11-N1.md)). M had measured the shapes with a throwaway
+scanner; each was rebuilt as a real rule and re-measured on every held live tarball.
+
+### Decisions
+- **`static.host-ip-identity`** (P2, artifact rule): a bare public IP under a host-like JSON
+  key, plus one code file that builds a URL from a scheme variable and reads the user's name.
+  The JSON half alone is configuration (16 of 25,000 random live tarballs, one package).
+- **`static.html-redirector`** (P5, npm artifact rule): the package's entry is an HTML page in
+  a package of at most 5 files, and a file fetches, decrypts and redirects. The registry used
+  as web hosting is a new tactic for the threat model (row 18).
+- **`static.decoded-function`** (P4, file rule): decoding plus `Function(...)` handed
+  `require` in a file of at most 100,000 characters. Not a CommonJS module wrapper, and not
+  `static.function-require`'s first-parameter shape (no double count).
+- **`static.silent-native-load`** (P6, npm artifact rule, tree-sitter): a shipped `.node`
+  required for its side effects inside an empty `catch`, with no build or prebuilt layout.
+- All MEDIUM, weight 3, version 1. They only add findings, so no decision can be lost.
+
+### Challenges
+- **Each first version had live false shapes**, found by running the real rules over all
+  232,433 held tarballs of the 14 days of ledgers:
+  - P4 fired on CommonJS module wrappers that also read base64 data URIs
+    (`@wix/agent-skills` 1.41.3/1.41.4, `axiom-math@1.1.0`).
+    - **Resolution:** a `"module"`/`"exports"` parameter name means a wrapper, not this shape,
+      unless the file also fetches. Dropping wrappers outright would have missed `vm-day1`'s
+      `@uallianceorg/config@1.0.2` (malicious), a wrapper run on a download.
+  - P6 fired on `dsh-needs-you-mac` 0.2.0/0.2.1, an optional macOS addon whose failure is
+    swallowed on purpose but whose exports are used.
+    - **Resolution:** the `require` must be a statement of its own.
+  - **Why it worked:** after both, the live scan's 17 hits are 12, every one a positive or
+    the redirector template; 0 of 1,976 benign-verdicted tarballs fire.
+- **An offset slip in P4** (checking `static.function-require`'s pattern at `new` rather than
+  at `Function`) fired on two benign `new Function(\n "require", ...)` files in the
+  benign-verdicted set. Fixed before the live scan.
+
+### Evaluation snapshot
+- Targets (M's replay, Stages 1-4 as live): +6 reported, all positive
+  (`@atedone/workspace-context` 0.0.23-0.0.25, `bfvkjmeikpwhqxc@1.0.1` malicious;
+  `mock-data-sdk@1.0.1`, `strutil-helpers-core@1.0.1` OSV); 0 lost.
+- Replay set: +4 malicious, nothing else changes; precision 49.12% -> 49.26% against round
+  10's final replay.
+- Live, 14 days: 0 benign added; 7 unverdicted versions of the redirector template, still on
+  npm (`@isla5mic/test` ×5, `hewuzdfhcxmrsu`, `mkdgwgbvpwqsf`).
+- `vm-day1`: fires on 4 of the 4,944 samples, all malicious and none routed (no Stage 1 signal), so no decision changes; 0 benign (P2 on 3 `@depro-tech/cortana-md` versions, P4 on
+  `@uallianceorg/config@1.0.2`).
+
+### Open questions / next steps
+- Carry `static.silent-native-load` to unchanged follow-ons (`FOLLOW_ON_ALONE`, Stage 4):
+  `strutil-helpers-core` 1.0.2-1.0.5 are never read by Stage 2.
+- Verdicts and reports for the 7 redirector versions.
+
 ## 2026-11-13: Four live malware finds, malicious tarballs kept for good, sample bounds
 
 **Stage(s):** reviewer verdicts, retention (`evaluation.live.hold_requests`), live sample
