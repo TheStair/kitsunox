@@ -211,6 +211,7 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 
 | `static.disguised-file` (2026-11-11, ecosystem-agnostic, `rules/disguised.py`) | a file named as a binary format (font, image, audio/video, `.wasm`, native module or program, archive, PDF, `.bin`/`.dat`) whose bytes are no binary format but a script (JavaScript, shell, PowerShell, Python, batch; also base64-encoded), or a native executable under a non-program name, or an archive under a font/image/media name. Every file of every version, so a follow-on that still ships the file is flagged; [below](#files-disguised-as-a-binary-format-staticdisguised-file-2026-11-11) | HIGH for a script that uses process execution, the network, credentials or dynamic code, and for an executable; MEDIUM for a script a code file names; LOW otherwise and for an archive; INFO for a launcher script under a program name (`.exe`, `.dll`, `.so`, `.dylib`) |
 | `static.channel-follow-on-connect` (2026-11-11, ecosystem-agnostic, `rules/channels.py`) | a WhatsApp library (Baileys fork) that passes a **hardcoded** `\d{15,22}@newsletter` id (a literal, or a variable bound to one in the same file: a constant, an environment default, an array iterated with `for ... of`/`forEach`) as the first argument of `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, inside a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200 characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and messages blanked, tests/examples/docs skipped. Every file of every version, so a follow-on that ships the follow unchanged is flagged; [below](#whatsapp-follows-in-unchanged-files-staticchannel-follow-on-connect-2026-11-11) | MEDIUM (weight 3), "unwanted" |
+| `static.host-ip-identity` (2026-11-13, ecosystem-agnostic, `rules/host_ip.py`) | a JSON file (not a lockfile, `tsconfig`, or under tests, examples, docs or `node_modules/`) that sets a host-like key (`host`, `hostname`, `server`, `ip`, `address`, `addr`, `endpoint`, `domain`) to a **bare** public IPv4 address (an optional port, no scheme; not a public resolver or an example address), and one JavaScript/TypeScript file of the package that both builds a URL from a scheme held in a variable (`${scheme}://`, `scheme + "://"`) and reads who runs it (`USER`/`LOGNAME`/`USERNAME`, `os.userInfo()`, `os.hostname()`), comments and messages blanked. Every file of every version; [below](#a-bare-ip-built-into-an-identity-url-statichost-ip-identity-2026-11-13) | MEDIUM (weight 3) |
 
 On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
 every time, and no tarball hid an install hook. The 9 script differences were npm's own
@@ -558,6 +559,49 @@ Known limits: a payload in a format the rule doesn't know (an encrypted blob, a 
 as `.txt` or `.json`) is not classified, nor is a polyglot (a real PNG with code appended); the
 script classifier is markers, not a parser, so a payload written to avoid them (one long line
 of obfuscated code with no `require`, `function` or `=>`) is not a script to it.
+
+### A bare IP built into an identity URL (`static.host-ip-identity`, 2026-11-13)
+
+`@atedone/workspace-context` 0.0.23-0.0.25 (live, malicious) keep their server out of every
+URL: `lib/default-profile.json` holds `{"transport": "http", "host": "<public IPv4>",
+"port": 8080, ...}`, and `lib/state.js` builds `${transport}://${authority}/${pathname}`
+and appends `?username=` from `USER` / `LOGNAME`, for a shell prompt that fetches from it.
+`static.hardcoded-ip` needs `scheme://ip`, so it never fired, and the shell start-up match
+(`static.shell-startup`, `inject`) was unchanged since 0.0.18, so Stage 2 kept it LOW as not
+new (round 11, [N1 P2](../proposals/gap-fixes-round11-N1.md); P3 is agent N2's).
+
+The rule (`rules/host_ip.py`, registered with the npm artifact rules so that it reads every
+file of every version Stage 2 reads: the two halves are in different files and usually
+unchanged) fires when both halves are in the package:
+
+1. a JSON file sets a host-like key to a bare public IPv4 address, optionally `:port`, with
+   no scheme (not a public DNS resolver or an example address, `static.hardcoded-ip`'s lists;
+   not lockfiles, `tsconfig`/`jsconfig`, or files under tests, examples, docs or
+   `node_modules/`);
+2. one JavaScript or TypeScript file (comments and log/error messages blanked) builds a URL
+   from a scheme held in a variable and reads who is running it (the user's name from the
+   environment, `os.userInfo()`, `os.hostname()`).
+
+MEDIUM, weight 3; the evidence shows the JSON line, the URL line and the identity line.
+
+**Measured** (the real rule, nothing executed; `~/kitsunox-scratch/r11/N/N1/`):
+
+- **Targets** (agent M's recovered tarballs, Stages 1-4 replayed as live): reports
+  `@atedone/workspace-context` 0.0.23, 0.0.24 and 0.0.25 (malicious; score 0/1/1 -> 3/4/4).
+  0.0.13-0.0.22 hold no bare IP and are unchanged. The same three in the 3,716-version replay
+  set (keyed replay, main vs branch): +3 malicious, nothing else changes.
+- **Live, every held tarball of the 14 days of ledgers** (232,433 distinct tarballs, about
+  what Stage 2 read): fires on none (the atedone tarballs were not held). **0 benign.**
+- **Verdicted benign held tarballs** (1,976): 0. **Malicious/unwanted held** (1,243): 0.
+- **Without the code half**: a bare public IP under a host-like key is in 16 of a random
+  25,000 live tarballs, all `@mentra/cloud-protocol` versions (URL test vectors in
+  `src/__fixtures__/`); none has the scheme-variable URL and identity read.
+- **`vm-day1`**: see the [proposal](../proposals/gap-fixes-round11-N1.md) (measured with all
+  four rules).
+
+**Limits:** a host split into its octets, or read from a non-JSON file (YAML, `.env`, a JS
+object literal), is not seen; neither is an identity sent by a file other than the one that
+builds the URL (an obvious next step for an attacker, and a wider rule).
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
