@@ -212,6 +212,7 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 | `static.disguised-file` (2026-11-11, ecosystem-agnostic, `rules/disguised.py`) | a file named as a binary format (font, image, audio/video, `.wasm`, native module or program, archive, PDF, `.bin`/`.dat`) whose bytes are no binary format but a script (JavaScript, shell, PowerShell, Python, batch; also base64-encoded), or a native executable under a non-program name, or an archive under a font/image/media name. Every file of every version, so a follow-on that still ships the file is flagged; [below](#files-disguised-as-a-binary-format-staticdisguised-file-2026-11-11) | HIGH for a script that uses process execution, the network, credentials or dynamic code, and for an executable; MEDIUM for a script a code file names; LOW otherwise and for an archive; INFO for a launcher script under a program name (`.exe`, `.dll`, `.so`, `.dylib`) |
 | `static.channel-follow-on-connect` (2026-11-11, ecosystem-agnostic, `rules/channels.py`) | a WhatsApp library (Baileys fork) that passes a **hardcoded** `\d{15,22}@newsletter` id (a literal, or a variable bound to one in the same file: a constant, an environment default, an array iterated with `for ... of`/`forEach`) as the first argument of `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, inside a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200 characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and messages blanked, tests/examples/docs skipped. Every file of every version, so a follow-on that ships the follow unchanged is flagged; [below](#whatsapp-follows-in-unchanged-files-staticchannel-follow-on-connect-2026-11-11) | MEDIUM (weight 3), "unwanted" |
 | `static.host-ip-identity` (2026-11-13, ecosystem-agnostic, `rules/host_ip.py`) | a JSON file (not a lockfile, `tsconfig`, or under tests, examples, docs or `node_modules/`) that sets a host-like key (`host`, `hostname`, `server`, `ip`, `address`, `addr`, `endpoint`, `domain`) to a **bare** public IPv4 address (an optional port, no scheme; not a public resolver or an example address), and one JavaScript/TypeScript file of the package that both builds a URL from a scheme held in a variable (`${scheme}://`, `scheme + "://"`) and reads who runs it (`USER`/`LOGNAME`/`USERNAME`, `os.userInfo()`, `os.hostname()`), comments and messages blanked. Every file of every version; [below](#a-bare-ip-built-into-an-identity-url-statichost-ip-identity-2026-11-13) | MEDIUM (weight 3) |
+| `static.html-redirector` (2026-11-13, npm, `ecosystems/npm/rules/hosted_page.py`) | the registry used as web hosting: the tarball's `package.json` (or the registry's manifest) names a shipped HTML file as `main`, `browser`, `exports` or `exports["."]`, the package has at most 5 files, and one of its HTML/JavaScript files fetches (`fetch(`, `XMLHttpRequest`, `$.ajax`/`$.get`/`$.post`), decrypts (`crypto.subtle.decrypt(`, a CryptoJS cipher's `.decrypt(`) and navigates away (`location.replace(`/`assign(`, `location.href =`, `window.location =`): a cloaked phishing redirector served from npm's CDNs; [below](#a-package-that-is-a-redirecting-web-page-statichtml-redirector-2026-11-13) | MEDIUM (weight 3) |
 
 On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
 every time, and no tarball hid an install hook. The 9 script differences were npm's own
@@ -602,6 +603,44 @@ MEDIUM, weight 3; the evidence shows the JSON line, the URL line and the identit
 **Limits:** a host split into its octets, or read from a non-JSON file (YAML, `.env`, a JS
 object literal), is not seen; neither is an identity sent by a file other than the one that
 builds the URL (an obvious next step for an attacker, and a wider rule).
+
+### A package that is a redirecting web page (`static.html-redirector`, 2026-11-13)
+
+npm tarballs are served again as web pages by public CDNs (jsDelivr, unpkg), so a package can
+be phishing infrastructure that never runs on a developer's machine. `bfvkjmeikpwhqxc` 1.0.0
+and 1.0.1 (OSV-labelled, malicious) are two files: `package.json` with `"main": "index.html"`
+and a fake Cloudflare "Just a moment" page that fetches a value from a key-value dead drop,
+AES-CTR-decrypts it with `crypto.subtle.decrypt` and sends the visitor there with
+`window.location.replace` (with their query parameters). The target is never in the package,
+so no URL rule sees it; only generic LOWs fired. The same template is in `@isla5mic/aasics`
+1.0.0-1.0.2 ("Checking your browser"; live 2026-11-09/10, never reported, no OSV record,
+malicious verdict 2026-11-13). Round 11, [N1 P5](../proposals/gap-fixes-round11-N1.md).
+
+The rule (`ecosystems/npm/rules/hosted_page.py`, an npm artifact rule: it reads `main`)
+fires when the package's entry is a shipped HTML file (`main`, `browser`, a string `exports`
+or `exports["."]`, from the tarball's `package.json` or, without one, the registry's
+manifest), the package has at most 5 files, and one HTML or JavaScript file of it does all
+three steps: fetches, decrypts and navigates away. MEDIUM, weight 3. The explanation says the
+harm is to whoever opens the page, not to whoever installs it.
+
+**Measured:**
+
+- **Targets**: reports `bfvkjmeikpwhqxc@1.0.1` (malicious; score 0 -> 3, also in the replay
+  set: +1 malicious there, nothing else changes). 1.0.0's tarball is gone.
+- **Live, every held tarball of the 14 days** (232,433): fires on 11 versions of 5
+  packages, all the same template (a key-value dead drop, AES-CTR, `location.replace`), none
+  reported live: `bfvkjmeikpwhqxc@1.0.1`, `@isla5mic/aasics` 1.0.0-1.0.2 (malicious),
+  `@isla5mic/test` 1.0.0, 1.0.1, 1.0.3, 1.0.4, 1.0.5 (account `xfrkbihc`, as aasics), and
+  `hewuzdfhcxmrsu@1.0.0`, `mkdgwgbvpwqsf@1.0.0` (account `pdlzbbrb`), the last seven
+  unverdicted and still on npm on 2026-11-13. **0 benign.**
+- **Verdicted benign held tarballs** (1,976): 0. A random 25,000 live tarballs: only
+  `@isla5mic/aasics@1.0.0`. Without the 5-file test the page shape also matches
+  `@accounter/client`'s alphas (agent M).
+- **`vm-day1`**: see the [proposal](../proposals/gap-fixes-round11-N1.md).
+
+**Limits:** a redirector that only decodes (base64, XOR) instead of decrypting, or reads its
+target from the URL fragment, is not this rule's shape; a page shipped beside a library
+(more than 5 files, or not the entry) is not read as the package's purpose.
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 

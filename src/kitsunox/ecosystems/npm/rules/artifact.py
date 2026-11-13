@@ -26,6 +26,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity, VersionSnapshot
 from kitsunox.core.rules import BaseRule
+from kitsunox.ecosystems.npm.rules.hosted_page import HtmlRedirector
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.rules.channels import ChannelFollowOnConnect
 from kitsunox.rules.disguised import DisguisedFile
@@ -399,7 +400,8 @@ def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
 
 # `static.disguised-file`, `static.channel-follow-on-connect` and `static.host-ip-identity`
 # (ecosystem-agnostic, `rules/disguised.py`, `rules/channels.py`, `rules/host_ip.py`) run here
-# because they read every file of every version, not only the contents an update adds.
+# because they read every file of every version, not only the contents an update adds; so do
+# the npm rules in their own modules (`static.html-redirector`, `hosted_page.py`).
 RULES: Final = (
     HiddenInstallScript(),
     DeclaredSizeMismatch(),
@@ -408,4 +410,5 @@ RULES: Final = (
     DisguisedFile(),
     ChannelFollowOnConnect(),
     HostIpIdentity(),
+    HtmlRedirector(),
 )
