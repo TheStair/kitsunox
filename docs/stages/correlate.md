@@ -325,6 +325,21 @@ doesn't exist yet, and until 2026-11-08 a 404 gave no finding, so every such rel
   captured tarballs: `lib/styles/variables.js:5`, `src/motion.js:5`), but so does the code of
   almost every benign sibling and platform launcher, so "required by the code" doesn't separate
   them and isn't used.
+- **Bundled dependencies are INFO** (v3, 2026-11-13, round 11 P9,
+  [proposal](../proposals/gap-fixes-round11-N2.md)): a dependency the manifest also lists in
+  `bundleDependencies` (or `bundledDependencies`, or `true` for all) is installed from the
+  tarball, never the registry, so its 404 is expected (`faberloom@0.1.8-alpha.1` with 34
+  bundled `@deepseek-ai/dsh-*` modules, `badbot@0.1.0`; both benign, the only such reports).
+- **Carried to follow-ons** (`STAGE_VERSION` 26, round 11 P9): a later release that keeps the
+  missing dependency isn't looked up again (it isn't "added"), so `tailwind-kinetix` 2.0.9 and
+  2.0.10 (MAL-2026-19078; 2.0.8's payload `@unipswap/postcss-animate-units`, its range bumped
+  from `^1.0.4` to `^1.0.5`) were missed. `npm.dependency.missing` and `npm.undeclared.missing`
+  are now in `FOLLOW_ON_ALONE`; a missing dependency is carried while the follow-on still
+  declares the same package, whatever range (`DECLARED_ONLY`, npm's `declared_dependency`), an
+  undeclared one while the file that loads it is unchanged. The carried finding says "still
+  declared": the follow-on itself was not looked up, and its payload may have been published
+  since (which is what the campaign does next). Cost in the
+  [Follow-on releases](#follow-on-releases-correlatefollow-on-stage-version-18) table.
 - **Not caught (until stage version 15):** wrappers that require the payload without
   declaring it (`tailwind-animate-engine@1.0.6` requires `@unipswap/postcss-animate-units` in
   `src/motion.js`; 4 of the 8 adjudicated wrapper misses): no dependency, no lookup. See the
@@ -431,6 +446,7 @@ a silent skip. Nothing here reads the clock or a verdict.
 | B2 | `npm.install-persistence` (owner rulings, decision 0015), in `FOLLOW_ON_ALONE` | +22 unwanted, +4 benign (`agy-statusblocks@0.1.1`, `repilot@0.3.1`, `basinfy@1.3.14`, `@c0dingbear/termius-mcp@0.6.2`), +1 unverified (`wkappbot-code@0.3.8`) |
 | T | `static.disguised-file` (round 6 T, MEDIUM or HIGH: a script or executable under a font, image or media name), in `FOLLOW_ON_ALONE`, `STAGE_VERSION` 19: a follow-on too small for Stage 2's routing still reports | 0 benign (its only severe findings on 230,290 tarballs are `pdf-html5-page-flip` 2.0.1/2.0.2) |
 | P3 | `static.shell-startup` (round 11, `STAGE_VERSION` 25, [proposal](../proposals/gap-fixes-round11-N2.md)): its MEDIUM forms, in practice `inject` (a `hook` match is in `package.json`, which changes with every version); Stage 2 keeps `inject` on changed files too (`ALWAYS_NEW_FORMS`) | +2 positives (`@atedone/workspace-context` 0.0.22 unwanted, 0.0.23 malicious); live cost in the proposal |
+| P9 | `npm.dependency.missing` (carried while the same package is still declared, `DECLARED_ONLY`) and `npm.undeclared.missing` (round 11, `STAGE_VERSION` 26, same proposal) | +2 malicious-labelled (`tailwind-kinetix` 2.0.9, 2.0.10), +1 unverified campaign wrapper (`tailwindcss-animationkit@1.0.7`); live runs on disk (11-08 to 11-13): +5 versions whose reported release was verdicted benign (`@turnit-ou/webshop-search-widget@1.1.2`, `@ilkal/sdk@0.1.2`, `@rapidoc/docusaurus@0.1.0`, `service-tunnels@0.3.78`, `create-duots-neo@1.1.0`), about 1.1 a day |
 | C | the same, from earlier runs within 7 days | over A-B2: +27 unwanted, +1 benign (`memtrace@1.2.14`), +1 unverified; over A alone: +5 unwanted |
 
 A destination alone is not carried: benign CLIs with a bundled ngrok table or a default server

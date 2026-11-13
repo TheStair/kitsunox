@@ -24,11 +24,12 @@ from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.repo import NpmLocator
 from kitsunox.ecosystems.npm.rules.correlate import RULES as NPM_CORRELATION_RULES
 from kitsunox.ecosystems.npm.rules.correlate import (
+    _dependency_name,
     foreign_added_dependencies,
     undeclared_lookups,
 )
 from kitsunox.ecosystems.npm.rules.git_dependency import RULES as GIT_DEPENDENCY_RULES
-from kitsunox.ecosystems.npm.rules.metadata import runtime_dependencies, scripts
+from kitsunox.ecosystems.npm.rules.metadata import is_registry_spec, runtime_dependencies, scripts
 from kitsunox.ecosystems.npm.rules.obfuscation_only import RULES as OBFUSCATION_ONLY_RULES
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import GitHub
@@ -373,11 +374,30 @@ def manifest_field(manifest: Mapping[str, object], path: str) -> object:
     return value.get(key, ABSENT) if isinstance(value, Mapping) else ABSENT
 
 
+def declared_dependency(manifest: Mapping[str, object], path: str) -> object:
+    """What a `package.json:dependencies.<key>` evidence path installs from the registry: the
+    package name (an `npm:` alias's target), whatever range the manifest asks for, or `ABSENT`
+    when the key is gone or no longer a registry specifier. Any other path: `manifest_field`.
+    A follow-on carries `correlate.DECLARED_ONLY` evidence (a dependency the registry didn't
+    have) while this is unchanged: `tailwind-kinetix@2.0.9` asked for `^1.0.5` of the payload
+    2.0.8 asked `^1.0.4` of (round 11 P9)."""
+    field, _, key = path.removeprefix("package.json:").partition(".")
+    if field != "dependencies" or not key:
+        return manifest_field(manifest, path)
+    spec = runtime_dependencies(manifest).get(key)
+    if spec is None or not is_registry_spec(spec):
+        return ABSENT
+    return _dependency_name(key, spec)
+
+
 def follow_on_lookup(fetcher: HttpFetcher) -> ReleaseFollowOn:
     """Follow-on checks for npm (`correlate_run`'s follow-on pass): release files through the
     run's fetcher, under Stage 2's size limits (recorded in `correlate-snapshot.json`, so a
-    replay reads the same bytes; Stage 2 fetched most of them already), and `manifest_field`."""
-    return ReleaseFollowOn(ArtifactFiles(NpmEcosystem(fetcher)), manifest_field)
+    replay reads the same bytes; Stage 2 fetched most of them already), `manifest_field`, and
+    `declared_dependency` for a missing dependency."""
+    return ReleaseFollowOn(
+        ArtifactFiles(NpmEcosystem(fetcher)), manifest_field, declared=declared_dependency
+    )
 
 
 def follow_on_history(

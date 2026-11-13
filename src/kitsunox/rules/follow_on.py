@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from kitsunox.core.models import Candidate, Finding, Severity
 from kitsunox.core.rules import BaseRule
 from kitsunox.stages.correlate import (
+    DECLARED_ONLY,
     FOLLOW_ON,
     FOLLOW_ON_EVIDENCE,
     NOT_EVALUATED,
@@ -32,8 +33,11 @@ class FollowOnRelease(BaseRule):
     reports the release on its own: the reviewer sees the same payload again, named as such.
     When the files couldn't be read, an INFO finding says the follow-on was not checked."""
 
+    # v2 (2026-11-13, round 11 P9): a carried dependency the registry didn't have is listed as
+    # "still declared" (`DECLARED_ONLY`: carried by name, its range may have changed).
+
     id = FOLLOW_ON
-    version = 1
+    version = 2
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Same flagged code as a reported earlier release"
@@ -58,7 +62,11 @@ class FollowOnRelease(BaseRule):
                 ),
             )
         shown = follow.carried[:FOLLOW_ON_EVIDENCE]
-        listed = ", ".join(f"{item.evidence.path} ({item.rule_id})" for item in shown) + (
+        listed = ", ".join(
+            f"{item.evidence.path} ({item.rule_id}"
+            + (", still declared)" if item.rule_id in DECLARED_ONLY else ")")
+            for item in shown
+        ) + (
             f", and {len(follow.carried) - len(shown)} more"
             if len(follow.carried) > len(shown)
             else ""

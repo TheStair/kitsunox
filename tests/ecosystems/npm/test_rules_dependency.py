@@ -26,6 +26,7 @@ from kitsunox.ecosystems.npm.rules.correlate import (
     MissingDependency,
     NameEmbedsPopular,
     UndeclaredMissing,
+    bundled_dependencies,
     embedded_popular_name,
     foreign_added_dependencies,
     sibling_reason,
@@ -462,7 +463,7 @@ def test_a_missing_unrelated_dependency_reports_alone() -> None:
         {"@utilitycraft/tailwindcss-motion-atelier": "^1.0.4", "kept": "^1"},
     )
     (found,) = missing(candidate, ctx(kept=packument("kept", OLD)))  # unknown names are 404
-    assert found.rule_id == "npm.dependency.missing" and found.rule_version == 2
+    assert found.rule_id == "npm.dependency.missing" and found.rule_version == 3
     assert found.severity is Severity.MEDIUM and found.weight == 3.0
     assert "`@utilitycraft/tailwindcss-motion-atelier`" in found.explanation
     assert "HTTP 404" in found.explanation and "`kept`" not in found.explanation
@@ -488,6 +489,26 @@ def test_a_jsr_alias_is_info() -> None:
     for target in ("@jsrx/sevenc-nanashi__utaformatix-ts", "jsr"):
         (other,) = missing(new_package("ichikara", "0.1.0", {"x": f"npm:{target}@^0.4.0"}), ctx())
         assert other.severity is Severity.MEDIUM, target
+
+
+@pytest.mark.parametrize(
+    "bundle",
+    [
+        {"bundleDependencies": ["@kx-internal/ui"]},
+        {"bundledDependencies": ["@kx-internal/ui"]},
+        {"bundleDependencies": True},
+    ],
+)
+def test_a_bundled_dependency_is_not_missing(bundle: dict[str, object]) -> None:
+    """v3 (round 11 P9): npm installs a bundled dependency from the tarball, not the registry
+    (`faberloom@0.1.8-alpha.1`: every 404 was in `bundleDependencies`)."""
+    new = snap("kx-app", "0.1.0", {"@kx-internal/ui": "*"}, published_at=PUBLISHED)
+    manifest = {**new.manifest, **bundle}
+    candidate = Candidate(change=Change(new=new.model_copy(update={"manifest": manifest})))
+    (found,) = missing(candidate, ctx())
+    assert found.severity is Severity.INFO and "bundled in the tarball" in found.explanation
+    assert not decide([found]).forwarded
+    assert bundled_dependencies({"bundleDependencies": "x"}) == frozenset()
 
 
 def test_several_missing_dependencies_share_one_finding() -> None:
