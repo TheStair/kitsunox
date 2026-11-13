@@ -852,6 +852,124 @@ def _loads_remote(text: str) -> bool:
     return _LOADS_REMOTE.search(text) is not None
 
 
+class DecodedFunction(RegexRule):
+    """A small file that decodes text (base64, `atob`, zlib, character codes XOR-ed with a
+    key), compiles text into a function with `Function(...)` / `new Function(...)`, and
+    hands that function Node's `require`: as a call argument of the compiled function
+    (`Function(a, b, code)(Buffer, require)`, or the same through the variable it is stored
+    in, `.call` and `.apply` included) or as a parameter name other than the first (the first
+    is `static.function-require`'s). A second-stage loader that keeps its parameter names
+    out of sight: `mock-data-sdk@1.0.1` (OSV-labelled, 2026-11-10) joined the `mark` fields of
+    ten data files, decoded them from base64 and ran `Function(names.Buffer, names.require,
+    names.process, code)(Buffer, require, process)`, the names XOR-decoded from a table, and
+    nothing else in Stages 2-3 fired (round 11, `docs/proposals/gap-fixes-round11-N1.md`, P4).
+
+    Only in a file of at most `MAX_BYTES`, so a bundle that has a polyfill compiling code, a
+    UMD wrapper passing `require` and a base64 helper far apart is not read as one loader. Not
+    a call whose arguments are all string literals (`Function("return this")`: the code is
+    the package's own, as written), and not a CommonJS module wrapper (`"module"` or
+    `"exports"` among the parameter names) in a file that fetches nothing: an Emscripten or
+    bundler wrapper evaluating the package's own code, as `@wix/agent-skills`' image renderer
+    and `axiom-math`'s WASM loader do (live). A wrapper in a file that fetches stays: the
+    `vm-day1` loader `@uallianceorg/config@1.0.2` (malicious) runs
+    `new Function("module", "exports", "require", code)` on a download from an `atob`-hidden
+    URL. One match per file. MEDIUM, weight 3."""
+
+    id = "static.decoded-function"
+    severity = Severity.MEDIUM
+    weight = 3.0
+    title = "Compiles decoded text into a function and hands it `require`"
+    MAX_BYTES: ClassVar[int] = 100_000
+    MAX_ARGUMENTS: ClassVar[int] = 4_000
+    pattern = re.compile(r"(?<![\w$.])(?:new\s++)?Function\s*+\(")
+
+    def evaluate_text(self, text: str) -> Sequence[FileMatch]:
+        if len(text) > self.MAX_BYTES or "require" not in text or not _DECODES.search(text):
+            return ()
+        return super().evaluate_text(text)[:1]
+
+    def accept(self, match: re.Match[str]) -> bool:
+        text = match.string
+        end = _closing_paren(text, match.end(), self.MAX_ARGUMENTS)
+        if end is None:
+            return False
+        arguments = text[match.end() : end]
+        if not arguments.strip() or _CONSTANT_ARGUMENTS.fullmatch(arguments):
+            return False
+        if FunctionRequire.pattern.match(text, match.start() + match.group(0).index("Function")):
+            return False  # `Function("require", ...)`: `static.function-require` reports it
+        if _WRAPPER_PARAMETER.search(arguments) and not _FETCHES.search(text):
+            return False  # a CommonJS module wrapper evaluating the package's own code
+        if _REQUIRE_PARAMETER.search(arguments):
+            return True
+        if (call := _CALL.match(text, end + 1)) and _REQUIRE_ARGUMENT.search(call.group(1)):
+            return True
+        stored = _STORED.search(text, max(0, match.start() - 80), match.start())
+        if stored is None:
+            return False
+        later = re.compile(
+            r"(?<![\w$.])" + re.escape(stored.group(1)) + r"\s*+(?:\.\s*+(?:call|apply)\s*+)?"
+            r"\(([^()]{0,300})\)"
+        )
+        return any(_REQUIRE_ARGUMENT.search(c.group(1)) for c in later.finditer(text, end + 1))
+
+    def explain(self, match: re.Match[str]) -> str:
+        return (
+            f"`{' '.join(match.group(0).split())}...)` compiles text into a function that is "
+            "handed `require`, in a file that decodes text (base64, `atob`, zlib or XOR-ed "
+            "character codes): code hidden in the package can load `child_process`, `fs` or "
+            "`https` itself."
+        )
+
+
+# `static.decoded-function`: what decodes text (`Buffer.from(x, "base64")`, `atob(`, zlib's
+# `inflateSync(` / `gunzipSync(` / `brotliDecompressSync(`, `fromCharCode(c ^ key)`).
+_DECODES: Final = re.compile(
+    r"""Buffer\s*\.\s*from\s*\([^)]{0,120}["'`]base64(?:url)?["'`]|(?<![\w$])atob\s*\("""
+    r"|\b(?:inflate|inflateRaw|gunzip|unzip|brotliDecompress)(?:Sync)?\s*\("
+    r"|fromCharCode\s*\([^)]{0,40}\^"
+)
+_STRING: Final = r"""(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\$]|\\.|\$(?!\{))*`)"""
+_CONSTANT_ARGUMENTS: Final = re.compile(rf"\s*{_STRING}(?:\s*(?:,|\+)\s*{_STRING})*\s*,?\s*")
+_REQUIRE_PARAMETER: Final = re.compile(r"""["'`]require["'`]""")
+_WRAPPER_PARAMETER: Final = re.compile(r"""["'`](?:module|exports)["'`]""")
+# What fetches: a module wrapper in a file that does runs code from elsewhere.
+_FETCHES: Final = re.compile(
+    r"(?<![\w$.])fetch\s*\(|\baxios\b|\bhttps?\.(?:get|request)\b|XMLHttpRequest|(?<![\w$.])got\s*\("
+    r"|\bWebSocket\b|\bnet\.connect\b"
+)
+_REQUIRE_ARGUMENT: Final = re.compile(r"(?:^|[,\[])\s*require\s*(?=[,\]]|$)")
+# The compiled function called in place: `Function(...)(args)`, `Function(...).call(this, args)`.
+_CALL: Final = re.compile(r"\s*+(?:\.\s*+(?:call|apply)\s*+)?\(([^()]{0,300})\)")
+# The variable it is stored in: `const fn = Function(`, `fn = new Function(`.
+_STORED: Final = re.compile(r"(?<![\w$.])([\w$]+)\s*+=\s*+$")
+
+
+def _closing_paren(text: str, start: int, limit: int) -> int | None:
+    """The index of the `)` closing a call whose arguments start at `start` (strings skipped),
+    or None past `limit` characters."""
+    depth = 0
+    i, stop = start, min(len(text), start + limit)
+    while i < stop:
+        char = text[i]
+        if char in "\"'`":
+            close = text.find(char, i + 1)
+            while close != -1 and text[close - 1] == "\\":
+                close = text.find(char, close + 1)
+            if close == -1:
+                return None
+            i = close + 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return i
+            depth -= 1
+        i += 1
+    return None
+
+
 class SensitivePath(RegexRule):
     """Credential and secret stores a package has no business reading."""
 
@@ -1702,6 +1820,7 @@ RULES: Final = (
     WebhookPlaceholder(),
     EncodedUrl(),
     FunctionRequire(),
+    DecodedFunction(),
     SensitivePath(),
     EnvHarvest(),
     HardcodedIp(),

@@ -116,6 +116,7 @@ attributed.
 | `static.webhook-placeholder` | Discord/Slack webhook URLs whose id is a placeholder (`/services/xxx/xxx`, `/webhooks/123/abc`, `T00000000`): what v2 matched and v3 doesn't call an endpoint | MEDIUM (weight 3) |
 | `static.encoded-url` | a whole string literal that is an `http(s)://` or `ws(s)://` URL in base64 (standard or URL-safe) or hex, e.g. `"aHR0cHM6Ly9..."`; the finding shows the decoded URL | MEDIUM (weight 3) |
 | `static.function-require` (v2) | a function compiled from a string with `require` as its first parameter: `new Function("require", body)`, also via `Function.constructor`; LOW (weight 1) for a module wrapper (`"require", "module", "exports", code`) in a file that neither fetches nor decodes anything (v2) | MEDIUM (weight 3) |
+| `static.decoded-function` (2026-11-13) | in a file of at most 100,000 characters that decodes text (`Buffer.from(x, "base64")`, `atob(`, zlib inflate/gunzip/brotli, `fromCharCode(c ^ key)`), a `Function(`/`new Function(` call with non-constant arguments whose result is handed `require` (a call argument of the result or of the variable it is stored in, `.call`/`.apply` included, or a parameter name other than the first), not a CommonJS module wrapper (`"module"`/`"exports"` among the parameter names) unless the file also fetches; one match per file; [below](#code-handed-require-after-decoding-staticdecoded-function-2026-11-13) | MEDIUM (weight 3) |
 | `static.sensitive-path` | `.npmrc`, `.ssh/id_*`, `.aws/credentials`, `.git-credentials`, shell history, browser credential stores, crypto wallets | LOW (v2; was MEDIUM) |
 | `static.env-harvest` | the whole of `process.env` serialised or enumerated | LOW (v2; was MEDIUM) |
 | `static.hardcoded-ip` (v8) | URLs with a public IPv4 literal, other than well-known public DNS resolvers (`1.1.1.1`, `8.8.8.8`, ...: connectivity checks; 29 of 56 live MEDIUM findings, none of 159 malicious); LOW in markup, tables, lockfiles, notices and `*.test.js` files and in `package.json`'s own repository/homepage/bugs URLs (v3); AliDNS, DNSPod and 114DNS count as resolvers, and example addresses (`1.2.3.4`, `123.45.67.89`, `93.184.216.34`, ...) are LOW (v4); LOW on a comment line (`//`, `# `, a block comment, `<!--`; v5); LOW as a UI placeholder or example value (`placeholder: '…'`, `# e.g. http://…`; v6); LOW as an environment variable's fallback (`process.env.X || 'http://…'`), a literal compared or hashed (`=== 'http://…'`, `[…].includes(`, `.update(`) and in a JSON catalog with URLs on 20+ hosts (v7); LOW inside an `example(s)` field's value, as a declared option's default (`{ name, type, default: '…' }`, `.default('…')`), as a constant used only as an environment fallback, and in a set only asked `.has(` (v8) | MEDIUM |
@@ -641,6 +642,61 @@ harm is to whoever opens the page, not to whoever installs it.
 **Limits:** a redirector that only decodes (base64, XOR) instead of decrypting, or reads its
 target from the URL fragment, is not this rule's shape; a page shipped beside a library
 (more than 5 files, or not the entry) is not read as the package's purpose.
+
+### Code handed `require` after decoding (`static.decoded-function`, 2026-11-13)
+
+`mock-data-sdk@1.0.1` (OSV-labelled, 2026-11-10) joins the `mark` fields of ten
+`data/products_*.js` files, decodes them from base64 and runs
+`Function(n.Buffer, n.require, n.process, code)(Buffer, require, process)`, the parameter
+names XOR-decoded from a table. `static.dynamic-code` (LOW) needs `new Function(`,
+`static.function-require` needs the literal `"require"` as the first parameter, and
+`code.function-constructor` covers only the constructor reached through `constructor`, so
+nothing fired MEDIUM. Round 11, [N1 P4](../proposals/gap-fixes-round11-N1.md).
+
+The rule (`rules/static.py`, a file rule) fires once per file when a file of at most 100,000
+characters
+
+1. decodes text: `Buffer.from(x, "base64")`, `atob(`, zlib's `inflate`/`gunzip`/`unzip`/
+   `brotliDecompress` (and `Sync`), `fromCharCode(c ^ key)`;
+2. calls `Function(` or `new Function(` (not `x.Function(`) with arguments that are not all
+   string literals (`Function("return this")` is the package's own code);
+3. hands the compiled function `require`: as a call argument of the result
+   (`Function(...)(..., require)`, also `.call`/`.apply`) or of the variable it is stored in
+   (`const fn = Function(...)`, later `fn(Buffer, require)`), or as a parameter name other
+   than the first. A first parameter `"require"` is `static.function-require`'s and is left
+   to it, and a CommonJS module wrapper (`"module"` or `"exports"` among the parameter
+   names, as Emscripten and bundler output evaluated in place use) counts only in a file
+   that also fetches (`fetch(`, axios, `http(s).get`/`request`, `XMLHttpRequest`, `got(`,
+   `WebSocket`, `net.connect`).
+
+MEDIUM, weight 3. Like every file rule it judges contents new in the release, so an unchanged
+loader is LOW as not new.
+
+**Measured:**
+
+- **Targets**: reports `mock-data-sdk@1.0.1` (OSV-labelled; score 0 -> 3).
+- **Live, every held tarball of the 14 days** (232,433): the first version (a `"require"`
+  parameter in any position counted) fired on 4 versions: `mock-data-sdk@1.0.1`,
+  `@wix/agent-skills` 1.41.3 and 1.41.4 (`new Function('module', 'exports', 'require',
+  bundle)(...)` in an image renderer that also reads base64 data URIs) and
+  `axiom-math@1.1.0` (an Emscripten wrapper), neither of which fetches anything. A CommonJS
+  module wrapper (`"module"` or `"exports"` among the parameter names) in a file that fetches
+  nothing is therefore not this rule's; with that, only `mock-data-sdk@1.0.1`. Dropping
+  wrappers altogether would have lost `vm-day1`'s `@uallianceorg/config@1.0.2` (malicious:
+  `new Function("module", "exports", "require", code)` on a download from an `atob`-hidden
+  URL). **0 benign.**
+- **Verdicted benign held tarballs** (1,976): 0 (the first version, before the offset fix,
+  took `new Function(\n "require", ...)` for its own in `@wular/pnext@0.2.0` and
+  `@jundle/node-worker@0.0.0`: `static.function-require`'s shape, now left to it).
+- **Near misses** in a random 25,000 live tarballs: without the decoding test, 7
+  (`@backtickjs/core`, `piral-base`, `@module-federation/devtools`, `coralite`, tests); with
+  no size limit, 2 (`coralite`'s bundle, `stremiok`'s QuickJS worker).
+- **`vm-day1`**: see the [proposal](../proposals/gap-fixes-round11-N1.md).
+
+**Limits:** `require` handed under another name (`const r = require; fn(r)`), a loader
+written as a module wrapper that decodes its body instead of fetching it, or one split across
+files (decoder in one, `Function` in another), is not seen; a bundle over 100,000 characters
+is not read as one loader on purpose.
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 
