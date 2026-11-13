@@ -2,6 +2,53 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-13: Four live malware finds, malicious tarballs kept for good, sample bounds
+
+**Stage(s):** reviewer verdicts, retention (`evaluation.live.hold_requests`), live sample
+**Context:** After rounds 9 and 10 landed, the queue (231 versions over two batches), the
+2026-11-12 label-blind sample (55) and a re-review of every unverified verdict (64 with
+recoverable code) were cleared by reviewer agents.
+
+### Decisions
+- **A malicious verdict now pins the version's tarball for good at once** (owner's request,
+  commit `6e67613`). The hold kept a version for good only after the daily live report labeled
+  it, which lags by days: of 60 malicious verdicts that day, 25 were held for good, 14 for 30
+  days only, 2 not at all, and 14 had already lost their tarball (5 never captured).
+- **Reports are written per account and grounded in seen behaviour only** (local skill
+  `.claude/skills/report-malware`, gitignored). The owner submits GitHub and host reports;
+  npm reports can't be submitted from the VM because npm's support form sits behind a
+  Cloudflare bot check, which is not worked around.
+
+### Challenges
+- **Malware still live on npm, none in OSV or the takedowns feed:**
+  - `web3-mev-error-decoder@0.1.0` (re-review): clean npm tarball; its unpinned GitHub
+    dependency's install script decrypts AES strings, drops a Dropbox-hosted Windows binary and
+    pipes a remote script into zsh on macOS. Motivated round 10 (git dependency install code).
+  - `approve-audit@1.0.0`: install script collects keys, mnemonics, keystores and extension
+    storage and POSTs them to an ntfy.sh topic.
+  - `sol-wallet-adapater` 1.0.0-1.0.3 and `celest-browser@1.0.0` (the latter re-verdicted from
+    unwanted): the same downloader of a "patched Chromium" from an anonymous file share that
+    served ChromeDriver on 11-11 and Windows batch droppers (in-memory loader, logon Scheduled
+    Task) on 11-12. Lesson: an install-time download from an anonymous share is malicious on
+    its own; the payload behind a link can change after review.
+  - All were reported by the pipeline when published; the reviews made them actionable.
+- **A reviewer fetched payloads from an attacker's file share** because the queue prompt lacked
+  the code-host-only fetch rule the re-review prompt had. Both prompts now carry it.
+
+### Evaluation snapshot
+- Label-blind sample, 12 days (660 versions, all verdicted): U1 1/240 (95% upper bound 1.96%),
+  U2 16/240 (9.95%), U3 1/180 (2.61%), weighted upper bound 2.85% (3.10% before 2026-11-12).
+- Unverified re-review: 64 re-read (tarballs recovered from held blobs, registry.npmjs.org or
+  registry.npmmirror.com with integrity checks): 1 malicious, 23 unwanted, 30 benign, 10 still
+  unverified; 47 more are gone everywhere.
+
+### Open questions / next steps
+- Owner rulings pending: `wkappbot-code` (pre-push hook blocking pushes), `ogensec` (unsigned
+  remote code run per request), `usecloudy`, `@id_g3/ascend-torchevo`, `vault-erp-pyodide`,
+  `codexunlimit`, `@dougbots/avenor-core` (dead downloader), `@ultraxas/xro`, the
+  `centralicons.com` license-key check at preinstall.
+- Rule freeze 2026-11-16 to 11-23: no rule changes merge after 2026-11-15.
+
 ## 2026-11-12 (round 10 G, owner Q3): a git dependency that only builds itself is explained
 
 **Stage(s):** Stage 4 (`npm.git-dependency.build-only`, `correlate.EXPLAINED`)
