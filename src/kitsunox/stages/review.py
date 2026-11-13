@@ -34,6 +34,7 @@ from kitsunox.ecosystems.npm.rules.obfuscation_only import RULES as OBFUSCATION_
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import GitHub
 from kitsunox.rules.follow_on import FollowOnRelease
+from kitsunox.rules.partial import omitted_files
 from kitsunox.rules.repo import RULES as REPO_RULES
 from kitsunox.stages.correlate import (
     ABSENT,
@@ -79,6 +80,12 @@ CORRELATION_RULES: Final[tuple[CorrelationRule, ...]] = (
 # depend on which worker thread asked first. The errors are in `correlate.json`.
 REPO_NETWORK: Final = "network: "
 PACKAGE_FILES_NETWORK: Final = "package files: network failure; Stage 2 retries next tick"
+# A version Stage 2 read partially (decision 0021) is not compared: before, it had no files and
+# no comparison, and comparing it would fetch ~270 more repository archives a day (2026-11-11:
+# 266 of them watched-package updates, 102 of `@dcl-regenesislabs/bevy-explorer-web` alone,
+# each at a new commit) onto a disk that crashes when full. The owner's call (proposal
+# `partial-reads-round11-O.md`).
+PARTIAL_NOT_COMPARED: Final = "package files read partially (decision 0021): not compared"
 # Distinct dependency names one run may look up in the registry, per started day of its
 # window (`dependency_cap`). Measured on run `20261029T221803Z-npm` (24 hours, 110,084
 # versions): 628 names pass the prefilter (`foreign_added_dependencies`), ~27 an hourly tick,
@@ -136,6 +143,8 @@ class NpmRepoLookup:
             if tree.transient:
                 return RepoComparison(unavailable=PACKAGE_FILES_NETWORK, files_transient=True)
             return RepoComparison(unavailable=f"package files {tree.reason}"[:300])
+        if omitted_files(tree):
+            return RepoComparison(unavailable=PARTIAL_NOT_COMPARED)
         try:
             comparison = compare(
                 candidate.change, tree, self.locator, self.github, memory=self.memory

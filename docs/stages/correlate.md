@@ -975,6 +975,15 @@ within the hour before, which is `fresh-foreign`'s case), and its dependencies a
 now. The evidence is live (Missing dependencies, above): 16 of 16 campaign wrappers reported,
 for ~1.4 extra benign reports a day.
 
+### Partially read versions (decision 0021, round 11)
+
+A version Stage 2 read partially (a hooked package over 32 MB: its text and code, not its
+binaries) is **not compared with its repository**: `NpmRepoLookup` returns "package files read
+partially (decision 0021): not compared", as it said "package files unavailable" before such
+versions were read at all. Comparing them would add about 270 repository archives a day
+(measured on 2026-11-11). Its Stage 2 and 3 findings are scored as any other version's;
+`static.partial-read` (INFO) says what was not read. `STAGE_VERSION` 25.
+
 ## Known limits
 
 - **Git dependencies** (decision 0020). Only GitHub repositories and archives are read; other

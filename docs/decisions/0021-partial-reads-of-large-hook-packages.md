@@ -138,8 +138,17 @@ tarball's own URL as `url`, the re-pack's SHA-256 and size, and the content type
   `npm.artifact.install-target-missing` and `npm.artifact.install-stub` need the whole
   package (`_whole`) and so never hold on a partial tree. `static.disguised-file` also checks
   the heads of omitted binaries for an executable or an archive under another format's name.
-- Stage 3 parses the kept code; Stage 4 compares the kept files with the repository. A binary
-  is absent from both, as its content was unread by their rules before.
+- Stage 3 parses the kept code. A binary is absent, as its content was unread by its rules
+  before.
+- **Stage 4 does not compare a partial read with its repository** (`review.PARTIAL_NOT_COMPARED`,
+  "package files read partially (decision 0021): not compared"): before, such a version had no
+  files and so no comparison, and comparing would fetch about 270 more repository archives a
+  day (2026-11-11: 273 of the day's partially read versions were picked by `wants_repo`, 266
+  of them watched-package updates, 102 of `@dcl-regenesislabs/bevy-explorer-web` alone at a
+  new commit each) onto the disk whose filling crashed the VM twice. Stage 4's behaviour for
+  these versions is therefore unchanged; enabling it is an owner question in the proposal. The
+  evaluation's `pipeline+4` skips the comparison the same way. The follow-on pass reads the
+  partial tree as any other (an evidence path absent from it is simply not carried).
 
 ## Consequences
 

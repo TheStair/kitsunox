@@ -42,6 +42,7 @@ from kitsunox.evaluation.datadog import RAW_URL, SAMPLE_LIMITS, ZIP_PASSWORD
 from kitsunox.evaluation.dataset import EvalSample, ExternalSampleSet
 from kitsunox.evaluation.labels import label_store
 from kitsunox.githost.github import TOKEN_ENV, GitHub, GitHubRepo
+from kitsunox.rules.partial import omitted_files
 from kitsunox.rules.static import RULES as STATIC_RULES
 from kitsunox.stages.ast import CapabilityCache, code_change
 from kitsunox.stages.code import CODE_RULES
@@ -421,7 +422,8 @@ class Correlated(PipelineWithCode):
             ),
         )
         repo = None
-        if wants_repo(candidate) and found.package is not None:
+        # A partial read is not compared, as live (`review.PARTIAL_NOT_COMPARED`).
+        if wants_repo(candidate) and found.package is not None and not omitted_files(found.package):
             try:
                 repo = compare(
                     change, found.package, self.locator, self.github, refs_cache=self.refs

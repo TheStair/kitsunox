@@ -132,7 +132,9 @@ or `None` (not read).
   `GET <tarball url> partial=1` with the tarball's URL and the content type
   `application/vnd.kitsunox.partial+gzip`. A re-score serves it from the run's snapshot; Stages
   3 and 4 read it through the immutable index; retention, pins and the hold treat it as the
-  version's captured artifact; Stage 5 never takes it for the tarball.
+  version's captured artifact; Stage 5 never takes it for the tarball. Stage 4 does not
+  compare a partial read with its repository (`review.PARTIAL_NOT_COMPARED`: ~270 more
+  archives a day otherwise; an owner question).
 - **What the rules see**: the kept files; the tree's `omitted` lists the rest.
   `static.partial-read` (INFO, weight 0) says "Partial read: N files (X MB) not read" with
   the largest omitted files, and the decision reason ends `; partial read: N files (X MB) not

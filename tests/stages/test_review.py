@@ -47,11 +47,13 @@ from kitsunox.stages.review import (
     MAX_DEPENDENCY_LOOKUPS,
     MAX_LOOKUPS_PER_RELEASE,
     PACKAGE_FILES_NETWORK,
+    PARTIAL_NOT_COMPARED,
     NpmDependencyLookup,
     dependency_cap,
     repo_lookup,
     run_watchlist,
 )
+from kitsunox.util.archive import ArtifactTree, OmittedFile
 from kitsunox.util.http import BlobStore, FetchMode, HttpFetcher, RetryPolicy, Snapshot
 
 A = "a" * 40
@@ -917,4 +919,25 @@ def test_a_history_match_end_to_end(tmp_path: Path, router: Router) -> None:
     assert unflagged is not None and unflagged.history is not None
     assert unflagged.history.previous_commit == old and unflagged.history.status is None
     assert router.requests.count(history_url) == 1
+    fetcher.close()
+
+
+def test_a_partial_read_is_not_compared_with_its_repository(tmp_path: Path, router: Router) -> None:
+    """Decision 0021: Stage 4 compares no partially read version (no archive is fetched)."""
+    candidate = serve(router)
+    fetcher = HttpFetcher(
+        store=BlobStore(tmp_path / "blobs"),
+        snapshot=Snapshot(),
+        mode=FetchMode.RECORD,
+        client=router.client(),
+    )
+    lookup = repo_lookup(fetcher)
+    unread = OmittedFile(path="x.node", size=10, sha256="ab" * 32, mode=0o644, reason="binary")
+    lookup.files = lambda snapshot: ArtifactTree(  # type: ignore[attr-defined]
+        files={"index.js": b"1"}, omitted=(unread,)
+    )
+    result = lookup(candidate)
+    assert result is not None and result.unavailable == PARTIAL_NOT_COMPARED
+    assert not result.transient and not result.files_transient
+    assert router.requests == []
     fetcher.close()
