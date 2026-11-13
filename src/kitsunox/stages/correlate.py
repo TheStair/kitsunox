@@ -102,8 +102,10 @@ STAGE_ID: Final = "correlate"
 # 25 (round 11 P3): `static.shell-startup` (its MEDIUM forms) joins `FOLLOW_ON_ALONE`.
 # 26 (round 11 P9): `npm.dependency.missing` and `npm.undeclared.missing` join `FOLLOW_ON_ALONE`;
 # a missing dependency is carried while it is still declared (`DECLARED_ONLY`).
+# 27 (round 11 O, decision 0021): Stage 2 reads a hooked version over its 32 MB cap partially
+# (up to 1 GiB declared): its text and code, not its binaries (`static.partial-read`, INFO).
 # Output without the field is 1.
-STAGE_VERSION: Final = 26
+STAGE_VERSION: Final = 27
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;

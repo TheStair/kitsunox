@@ -12,7 +12,12 @@ from kitsunox.core.models import (
     Severity,
     VersionSnapshot,
 )
-from kitsunox.ecosystems.npm.rules.artifact import DeclaredSizeMismatch, HiddenInstallScript
+from kitsunox.ecosystems.npm.rules.artifact import (
+    DeclaredSizeMismatch,
+    HiddenInstallScript,
+    _whole,
+)
+from kitsunox.util.archive import ArtifactTree, OmittedFile
 
 
 def snap(scripts: dict[str, str] | None = None, size: int | None = None) -> VersionSnapshot:
@@ -75,3 +80,16 @@ def test_size_mismatch_needs_a_real_gap() -> None:
     assert finding.severity is Severity.MEDIUM
     assert "understated by 199,000" in finding.explanation
     assert rule.evaluate_artifact(snap(size=900_000), files) == ()  # overstating gains nothing
+
+
+def test_a_partial_read_counts_the_files_it_did_not_read() -> None:
+    """Decision 0021: a partial read's omitted files have their sizes from the tar headers, so
+    the measured size is the whole package's, and the tree is never `_whole`."""
+    unread = OmittedFile(path="x.node", size=900_000, sha256="ab" * 32, mode=0o644, reason="binary")
+    files = ArtifactTree(files={"a.js": b"x" * 100_000}, omitted=(unread,))
+    rule = DeclaredSizeMismatch()
+    assert rule.evaluate_artifact(snap(size=1_000_000), files) == ()
+    (finding,) = rule.evaluate_artifact(snap(size=500_000), files)
+    assert "total 1,000,000" in finding.explanation
+    assert not _whole(snap(size=1_000_000), files)
+    assert _whole(snap(size=100_000), ArtifactTree(files={"a.js": b"x" * 100_000}))

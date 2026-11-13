@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from compression import zstd
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -253,11 +253,71 @@ class HttpFetcher:
             self._immutable_store(key, entry)
         return response
 
+    def get_derived(
+        self,
+        url: str,
+        derive: Callable[[Iterator[bytes]], bytes],
+        *,
+        variant: str,
+        content_type: str,
+        max_bytes: int,
+    ) -> FetchedResponse:
+        """GET `url` and keep only what `derive` makes of the body (decision 0021: a partial
+        read of a large tarball). The body is streamed to `derive` chunk by chunk, up to
+        `max_bytes`, and never held whole; what `derive` returns is stored and recorded under
+        `derived_key(url, variant)` with `content_type` and the URL's own `url`. Immutable, like
+        a tarball: a later run reuses the result. A transport error mid-stream restarts the
+        download (`TransientFetchError` once retries run out); whatever `derive` raises is not
+        retried. A non-2xx response is recorded as `get` records it and `derive` never runs."""
+        key = derived_key(url, variant)
+        with self._lock:
+            entry = self.snapshot.entries.get(key)
+        if entry is None and self.mode is FetchMode.RECORD:
+            entry = self._immutable_lookup(key)
+            if entry is not None:
+                with self._lock:
+                    self.snapshot.entries[key] = entry
+        if entry is not None:
+            body = self.store.get(entry.sha256)
+            return FetchedResponse(
+                entry.url, entry.status, entry.content_type, body, entry.fetched_at
+            )
+        if self.mode is FetchMode.REPLAY:
+            raise FetchError(f"replay miss: {key}")
+
+        def read(resp: httpx.Response) -> tuple[bytes, str | None]:
+            if not 200 <= resp.status_code < 300:
+                return self._read_limited(resp), resp.headers.get("content-type")
+            return derive(_limited(resp, max_bytes)), content_type
+
+        response = self._fetch_with_retry(url, None, read)
+        sha = self.store.put(response.body)
+        entry = SnapshotEntry(
+            url=url,
+            status=response.status,
+            content_type=response.content_type,
+            sha256=sha,
+            size=len(response.body),
+            fetched_at=response.fetched_at,
+        )
+        with self._lock:
+            self.snapshot.entries[key] = entry
+        if response.ok:
+            self._immutable_store(key, entry)
+        return response
+
     def _pins(self, response: FetchedResponse) -> bool:
         """Whether an `immutable` response goes into the immutable index: a success only."""
         return response.ok
 
-    def _fetch_with_retry(self, url: str, headers: Mapping[str, str] | None) -> FetchedResponse:
+    def _fetch_with_retry(
+        self,
+        url: str,
+        headers: Mapping[str, str] | None,
+        read: Callable[[httpx.Response], tuple[bytes, str | None]] | None = None,
+    ) -> FetchedResponse:
+        """`read` turns a non-retryable response into (body, content type); by default the
+        whole body, up to `max_bytes`, with the response's content type."""
         last_error = "no attempts made"
         for attempt in range(1, self.retry.max_attempts + 1):
             retry_after: float | None = None
@@ -267,8 +327,11 @@ class HttpFetcher:
                     if resp.url.scheme != "https":
                         raise FetchError(f"GET {url}: refusing non-HTTPS response from {resp.url}")
                     if resp.status_code not in RETRYABLE_STATUS:
-                        body = self._read_limited(resp)
-                        content_type = resp.headers.get("content-type")
+                        if read is None:
+                            body = self._read_limited(resp)
+                            content_type = resp.headers.get("content-type")
+                        else:
+                            body, content_type = read(resp)
                         return FetchedResponse(
                             url, resp.status_code, content_type, body, self._clock()
                         )
@@ -321,6 +384,21 @@ class HttpFetcher:
         path = self._immutable_path(key)
         if path is not None:
             atomic_write(path, entry.model_dump_json().encode())
+
+
+def derived_key(url: str, variant: str) -> str:
+    """The request key of a derived response (`HttpFetcher.get_derived`): never the plain
+    `request_key` of the URL, so nothing that looks up the original response finds it."""
+    return f"{request_key(url, None)} {variant}"
+
+
+def _limited(resp: httpx.Response, max_bytes: int) -> Iterator[bytes]:
+    total = 0
+    for chunk in resp.iter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            raise FetchError(f"response from {resp.url} exceeds {max_bytes} bytes")
+        yield chunk
 
 
 def request_key(url: str, headers: Mapping[str, str] | None) -> str:

@@ -6,7 +6,7 @@ are registry tarballs. See docs/decisions/0002-data-sources.md.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from typing import Final
@@ -15,9 +15,22 @@ from urllib.parse import quote
 from kitsunox.core.interfaces import DIFF_BASE, ChangeStub, DownloadCounts, PackageChanges
 from kitsunox.core.models import ArtifactRef, Window
 from kitsunox.ecosystems.npm.packument import ECOSYSTEM, Packument
-from kitsunox.util.archive import ArtifactTree, extract_tar_gz
-from kitsunox.util.hashing import verify_integrity
+from kitsunox.util.archive import (
+    PARTIAL_LIMITS,
+    ArtifactTree,
+    KeepPolicy,
+    extract_tar_gz,
+    stream_tar_gz,
+)
+from kitsunox.util.hashing import IntegrityCheck, verify_integrity
 from kitsunox.util.http import FetchError, HttpFetcher
+from kitsunox.util.partial import (
+    PARTIAL_CONTENT_TYPE,
+    pack_partial,
+    partial_variant,
+    policy_fields,
+    read_partial,
+)
 
 REPLICATE_URL: Final = "https://replicate.npmjs.com/registry"
 REGISTRY_URL: Final = "https://registry.npmjs.org"
@@ -140,6 +153,42 @@ class NpmEcosystem:
             raise FetchError(f"{artifact.url}: HTTP {response.status}")
         verify_integrity(response.body, integrity=artifact.integrity, shasum=artifact.shasum)
         return extract_tar_gz(response.body, strip_components=1)
+
+    def fetch_artifact_partial(self, artifact: ArtifactRef, policy: KeepPolicy) -> ArtifactTree:
+        """A partial read of the tarball (decision 0021): streamed once through the fetcher,
+        its integrity checked over the whole stream, and only what `policy` keeps stored, as
+        a re-pack under `partial_variant(policy)`. The tarball itself is never stored."""
+        if not (artifact.integrity or artifact.shasum):
+            raise FetchError(f"{artifact.url}: no digest to verify against")
+
+        def derive(chunks: Iterator[bytes]) -> bytes:
+            check = IntegrityCheck(integrity=artifact.integrity, shasum=artifact.shasum)
+
+            def checked() -> Iterator[bytes]:
+                for chunk in chunks:
+                    check.update(chunk)
+                    yield chunk
+
+            archive = stream_tar_gz(checked(), policy, strip_components=1)
+            check.verify()
+            return pack_partial(
+                archive,
+                url=artifact.url,
+                integrity=artifact.integrity,
+                shasum=artifact.shasum,
+                policy=policy_fields(policy),
+            )
+
+        response = self.fetcher.get_derived(
+            artifact.url,
+            derive,
+            variant=partial_variant(policy),
+            content_type=PARTIAL_CONTENT_TYPE,
+            max_bytes=PARTIAL_LIMITS.max_compressed_bytes,
+        )
+        if not response.ok:
+            raise FetchError(f"{artifact.url}: HTTP {response.status}")
+        return read_partial(response.body)
 
     def _json(self, url: str) -> object:
         response = self.fetcher.get(url, headers=_JSON)

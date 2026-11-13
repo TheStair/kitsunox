@@ -28,7 +28,9 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   (integrity-verified, extracted in memory by `extract_tar_gz`, never executed). Versions that
   declare more than 16 MB unpacked (`MAX_ARTIFACT_BYTES`) are not fetched, or more than 32 MB
   if the version declares an install hook (`MAX_HOOK_ARTIFACT_BYTES`, `fetch_limit`; since
-  2026-11-08). Stages 3 and 4 fetch through the same `ArtifactFiles`. Tarballs go into
+  2026-11-08). A version with an install hook over 32 MB is **read partially** up to 1 GiB
+  declared (`read_mode`, since round 11; [Partial reads](#partial-reads-of-large-hooked-versions-decision-0021)).
+  Stages 3 and 4 fetch through the same `ArtifactFiles`. Tarballs go into
   `data/blobs` (immutable, so each is downloaded once) and are recorded in the run's
   `static-snapshot.json`.
 - **Unavailable files** (too large, fetch or integrity failure, no artifact): the version gets
@@ -98,6 +100,48 @@ uv run kitsunox eval run <dataset> --predictor pipeline   # end to end: what the
   `@duckdb/node-api@1.3.3`).
 - **Output:** the batch's candidates with Stage 2 findings and a `StageDecision`. A batch is
   forwarded if any finding is MEDIUM or above.
+
+## Partial reads of large hooked versions (decision 0021)
+
+A version that declares an install hook (`has_hook`) and more than 32 MB unpacked, up to
+`MAX_PARTIAL_ARTIFACT_BYTES` (1 GiB), is read partially
+([0021](../decisions/0021-partial-reads-of-large-hook-packages.md)); the same rule holds for
+its base and its previous release, so a large hooked package is compared with a large hooked
+release before it. `read_mode(snapshot)` decides from the metadata alone: `whole`, `partial`
+or `None` (not read).
+
+- **Streamed once** through the run's fetcher (`HttpFetcher.get_derived`): the tarball is
+  never held whole, in memory or on disk. `util.archive.stream_tar_gz` decompresses and walks
+  it as it arrives, with `extract_tar_gz`'s guards (safe paths, non-regular entries skipped,
+  50,000 entries, ratio 1000, 1 GiB compressed, 1.25 GiB decompressed, one gzip member, no
+  truncation, the strict-reader and trailing-data anomalies) and the SRI digest checked over
+  the whole stream (`util.hashing.IntegrityCheck`): a mismatch is the same `IntegrityError` as
+  a whole read's. A connection cut mid-stream restarts the download (retried, then
+  `TransientFetchError`, decision 0009).
+- **What is kept** (`PARTIAL_POLICY`): every text file up to 16 MB, 64 MB in all. A file is
+  binary when its first 8 KiB hold a NUL byte (what `analyse` skips anyway) unless its
+  extension is a source one (`SOURCE_EXTENSIONS`: `.js`, `.ts`, `.json`, `.sh`, `.ps1`,
+  `.bat`, `.py`, `.gyp`, ...). A binary keeps only its path, size, SHA-256, mode and first 512
+  bytes. When the budget is full, a more important file evicts less important kept ones,
+  largest first (`_keep_rank`): `package.json`, `binding.gyp` and text under a binary format's
+  name first, then the package's own code, then `node_modules/` code and JSON, then the rest
+  (documentation, types, source maps, tests, data).
+- **What is stored**: a deterministic tar.gz re-pack of the kept files plus a manifest
+  (`util/partial.py`), recorded in `static-snapshot.json` and the immutable index under
+  `GET <tarball url> partial=1` with the tarball's URL and the content type
+  `application/vnd.kitsunox.partial+gzip`. A re-score serves it from the run's snapshot; Stages
+  3 and 4 read it through the immutable index; retention, pins and the hold treat it as the
+  version's captured artifact; Stage 5 never takes it for the tarball.
+- **What the rules see**: the kept files; the tree's `omitted` lists the rest.
+  `static.partial-read` (INFO, weight 0) says "Partial read: N files (X MB) not read" with
+  the largest omitted files, and the decision reason ends `; partial read: N files (X MB) not
+  read`. `npm.artifact.size-mismatch` counts the omitted sizes, `install-target-missing` and
+  `install-stub` don't hold on a partial tree, and `static.disguised-file` checks the heads of
+  omitted binaries for an executable or an archive under another format's name.
+- **Evaluation**: `static_eval.as_read` applies the same policy to a sample's files in memory
+  (`partial_view`), so `pipeline` and `pipeline+4` read a large hooked sample as live does.
+
+Measured in [partial-reads-round11-O](../proposals/partial-reads-round11-O.md).
 
 ## Content cache
 
@@ -1179,7 +1223,9 @@ should be separated.
 
 Tarballs fetched by the pipeline go into `data/blobs` and follow
 [0006](../decisions/0006-scheduled-collection-and-retention.md): 7 days, and indefinitely for
-packages named in OSV records (pruning pins them from the run's `static-snapshot.json`). The
+packages named in OSV records (pruning pins them from the run's `static-snapshot.json`). A
+partial read's re-pack is recorded under the tarball's URL, so it is kept, pinned and held
+the same way (decision 0021). The
 immutable index is a fetch cache only: an entry whose blob no run references is deleted with
 the blob. Evaluation tarballs live in their own store and are not pruned.
 
@@ -1188,9 +1234,11 @@ the blob. Evaluation tarballs live in their own store and are not pruned.
 - `dist.unpackedSize` is declared by the publisher, so an attacker can understate growth to
   skip routing, or overstate size to skip the download. A rule comparing declared and real size
   after download is a candidate.
-- Updates over 16 MB (32 MB with an install hook) are seen by Stage 1 only. A hook added to a
-  package of 16–32 MB leaves its hookless base unread, so all its files count as new (Stage 1
-  flags the added hook HIGH anyway).
+- Updates over 16 MB without an install hook, and hooked ones over 1 GiB, are seen by
+  Stage 1 only. A hook added to a package over 16 MB leaves its hookless base unread, so all
+  its files count as new (Stage 1 flags the added hook HIGH anyway).
+- A partial read does not read binaries (beyond their first 512 bytes), text over 16 MB, or
+  text past the 64 MB budget; `static.partial-read` says how much. A payload there is missed.
 - Routing is not what misses most live malware: of the 24 live misses Stage 2 never read that
   could still be fetched, none is reported when read
   ([stage2-routing-recall](../proposals/stage2-routing-recall.md)); since small updates are

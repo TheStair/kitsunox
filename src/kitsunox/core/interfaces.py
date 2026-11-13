@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Final, Protocol
+from typing import Final, Protocol, runtime_checkable
 
 from pydantic import Field
 
 from kitsunox.core.models import ArtifactRef, Change, Record, Window
-from kitsunox.util.archive import ArtifactTree
+from kitsunox.util.archive import ArtifactTree, KeepPolicy
 
 
 class ChangeStub(Record):
@@ -81,4 +81,16 @@ class Ecosystem(Protocol):
 
     def fetch_artifact(self, artifact: ArtifactRef) -> ArtifactTree:
         """Download, integrity-check and safely extract a published artifact. Never executes."""
+        ...
+
+
+@runtime_checkable
+class PartialArtifacts(Protocol):
+    """An ecosystem that can read a large artifact partially (decision 0021): stream it once,
+    verify it whole, and keep only what `policy` keeps. Optional: Stage 2 skips a version over
+    its download cap when the ecosystem can't."""
+
+    def fetch_artifact_partial(self, artifact: ArtifactRef, policy: KeepPolicy) -> ArtifactTree:
+        """The artifact's files as `util.archive.stream_tar_gz` keeps them (`omitted` lists
+        the rest), from a stored re-pack (`util.partial`). Never executes."""
         ...

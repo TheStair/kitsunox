@@ -1,5 +1,8 @@
+import hashlib
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -7,12 +10,14 @@ import pytest
 from conftest import Router
 from kitsunox.util.http import (
     BlobStore,
+    FetchedResponse,
     FetchError,
     FetchMode,
     HttpFetcher,
     RetryPolicy,
     Snapshot,
     TransientFetchError,
+    derived_key,
     request_key,
 )
 
@@ -259,3 +264,117 @@ def test_non_transport_http_errors_become_fetch_errors(tmp_path: Path) -> None:
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(FetchError, match="DecodingError"):
         make_fetcher(tmp_path, client).get(URL)
+
+
+# --- derived responses (decision 0021: partial reads) -------------------------------------------
+
+
+def upper(chunks: Iterator[bytes]) -> bytes:
+    """A derivation: what a partial read does with the stream, in miniature."""
+    return b"".join(chunks).upper()
+
+
+def derived(fetcher: HttpFetcher, **kwargs: Any) -> FetchedResponse:
+    kwargs.setdefault("max_bytes", 1000)
+    return fetcher.get_derived(
+        URL, upper, variant="partial=1", content_type="application/x-test", **kwargs
+    )
+
+
+def test_derived_responses_are_recorded_under_their_own_key(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"tarball")
+    fetcher = make_fetcher(tmp_path, router.client())
+    response = derived(fetcher)
+    assert response.body == b"TARBALL"
+    assert response.content_type == "application/x-test"
+    key = derived_key(URL, "partial=1")
+    assert list(fetcher.snapshot.entries) == [key] != [request_key(URL, None)]
+    entry = fetcher.snapshot.entries[key]
+    assert (entry.url, entry.size) == (URL, 7)
+    assert fetcher.store.get(entry.sha256) == b"TARBALL"  # the original body is not stored
+    assert not fetcher.store.exists(hashlib.sha256(b"tarball").hexdigest())
+
+
+def test_derived_responses_replay_offline_and_are_reused_across_runs(
+    tmp_path: Path, router: Router
+) -> None:
+    router.add_bytes(URL, b"tarball")
+    snapshot = Snapshot()
+    derived(make_fetcher(tmp_path, router.client(), snapshot=snapshot))
+    snapshot.save(tmp_path / "snap.json")
+    offline = httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("network used")))
+    replay = make_fetcher(
+        tmp_path, offline, mode=FetchMode.REPLAY, snapshot=Snapshot.load(tmp_path / "snap.json")
+    )
+    assert derived(replay).body == b"TARBALL"
+    later = make_fetcher(tmp_path, offline)  # another run: the immutable index serves it
+    assert derived(later).body == b"TARBALL"
+    assert derive_miss(make_fetcher(tmp_path, offline, mode=FetchMode.REPLAY))
+
+
+def derive_miss(fetcher: HttpFetcher) -> bool:
+    with pytest.raises(FetchError, match="replay miss"):
+        derived(fetcher)
+    return True
+
+
+class _Broken(httpx.SyncByteStream):
+    def __iter__(self) -> Iterator[bytes]:
+        yield b"tar"
+        raise httpx.ReadError("connection reset")
+
+
+def test_a_stream_cut_mid_body_is_downloaded_again(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(200, stream=_Broken())
+        return httpx.Response(200, content=b"tarball")
+
+    fetcher = make_fetcher(tmp_path, httpx.Client(transport=httpx.MockTransport(handler)))
+    assert derived(fetcher).body == b"TARBALL"
+    assert len(calls) == 2
+
+
+def test_a_stream_cut_every_time_is_transient(tmp_path: Path) -> None:
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, stream=_Broken()))
+    )
+    fetcher = make_fetcher(tmp_path, client, retry=RetryPolicy(max_attempts=2))
+    with pytest.raises(TransientFetchError, match="ReadError"):
+        derived(fetcher)
+    assert fetcher.snapshot.entries == {}
+
+
+def test_what_the_derivation_raises_is_not_retried_or_recorded(
+    tmp_path: Path, router: Router
+) -> None:
+    router.add_bytes(URL, b"tarball")
+
+    def refuse(chunks: Iterator[bytes]) -> bytes:
+        raise ValueError("integrity mismatch")
+
+    fetcher = make_fetcher(tmp_path, router.client())
+    with pytest.raises(ValueError, match="integrity"):
+        fetcher.get_derived(
+            URL, refuse, variant="partial=1", content_type="application/x-test", max_bytes=100
+        )
+    assert len(router.requests) == 1
+    assert fetcher.snapshot.entries == {}
+
+
+def test_a_failed_status_is_recorded_without_deriving(tmp_path: Path, router: Router) -> None:
+    fetcher = make_fetcher(tmp_path, router.client())
+    response = derived(fetcher)
+    assert response.status == 404
+    assert fetcher.snapshot.entries[derived_key(URL, "partial=1")].status == 404
+    assert not (tmp_path / "immutable").exists()  # only a success is reused across runs
+
+
+def test_the_derived_stream_has_a_size_limit(tmp_path: Path, router: Router) -> None:
+    router.add_bytes(URL, b"x" * 100)
+    fetcher = make_fetcher(tmp_path, router.client())
+    with pytest.raises(FetchError, match="exceeds 10 bytes"):
+        derived(fetcher, max_bytes=10)

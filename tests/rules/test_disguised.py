@@ -5,6 +5,7 @@ name capabilities (`example.invalid` hosts); nothing here is real malware.
 """
 
 import base64
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import pytest
@@ -31,6 +32,7 @@ from kitsunox.rules.disguised import (
 )
 from kitsunox.rules.static import RULES
 from kitsunox.stages.static import ContentCache, analyse_batch
+from kitsunox.util.archive import ArtifactTree, OmitReason, OmittedFile
 
 # A script that reads a credential file and sends it: names only, nothing runs.
 STEALER = (
@@ -48,7 +50,7 @@ SNAP = VersionSnapshot(
 )
 
 
-def run(files: dict[str, bytes]) -> list[tuple[Severity, str, str]]:
+def run(files: Mapping[str, bytes]) -> list[tuple[Severity, str, str]]:
     return [
         (f.severity, f.evidence[0].path or "", f.explanation)
         for f in DisguisedFile().evaluate_artifact(SNAP, files)
@@ -279,3 +281,31 @@ def test_a_follow_on_that_still_ships_the_file_is_flagged() -> None:
     (version,) = result.versions
     assert version.history[-1].forwarded
     assert "static.disguised-file" in version.history[-1].reason
+
+
+def omitted(path: str, head: bytes, reason: OmitReason = "binary") -> OmittedFile:
+    return OmittedFile(
+        path=path, size=50_000_000, sha256="ab" * 32, mode=0o644, reason=reason, head=head
+    )
+
+
+def test_a_partial_read_s_binaries_are_checked_by_their_heads() -> None:
+    """Decision 0021: a binary a partial read did not keep still has its first 512 bytes, enough
+    to see an executable or an archive under another format's name."""
+    tree = ArtifactTree(
+        files={"index.js": QUIET_JS},
+        omitted=(
+            omitted("assets/logo.png", b"\x7fELF\x02\x01\x01" + bytes(40)),
+            omitted("fonts/a.woff", b"PK\x03\x04" + bytes(40)),
+            omitted("bin/tool.node", b"\x7fELF\x02\x01\x01" + bytes(40)),  # expected there
+            omitted("img/real.png", b"\x89PNG\r\n\x1a\n" + bytes(40)),
+            omitted("img/odd.png", b"MZ" + bytes(60)),  # weak magic, but known to be binary
+            omitted("big.png", b"", reason="budget"),  # text past the budget: not a binary
+        ),
+    )
+    found = sorted(run(tree))
+    assert [(s, p) for s, p, _ in found] == [
+        (Severity.HIGH, "assets/logo.png"),
+        (Severity.HIGH, "img/odd.png"),
+        (Severity.LOW, "fonts/a.woff"),
+    ]

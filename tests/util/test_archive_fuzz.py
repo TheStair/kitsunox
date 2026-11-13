@@ -11,7 +11,14 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from conftest import TarEntry, make_tar_gz
-from kitsunox.util.archive import ArchiveError, ExtractLimits, extract_tar_gz
+from kitsunox.util.archive import (
+    PARTIAL_LIMITS,
+    ArchiveError,
+    ExtractLimits,
+    KeepPolicy,
+    extract_tar_gz,
+    stream_tar_gz,
+)
 
 SEGMENTS = st.sampled_from(
     ["package", "..", ".", "", "a", "b.js", "C:", "x\\y", "~", "node_modules", " ", "é", "a" * 120]
@@ -132,3 +139,79 @@ def test_pax_long_names_and_gnu_headers_are_handled() -> None:
     tree = extract_tar_gz(gzip.compress(buffer.getvalue()), strip_components=1)
     assert list(tree) == ["d/" * 80 + "deep.js"]
     assert [s.reason for s in tree.skipped] == ["unsafe path"]
+
+
+# --- partial reads: the streaming reader agrees with `extract_tar_gz` ---------------------------
+
+KEEP_ALL = KeepPolicy(
+    version=0,
+    max_file_bytes=1 << 30,
+    max_kept_bytes=1 << 30,
+    text=lambda path: True,
+    rank=lambda path, head: 0,
+)
+STREAM_CUTS = st.sampled_from([1, 3, 64, 511, 512, 4096, 1 << 20])
+
+
+def _both(data: bytes, cut: int, strip: int) -> None:
+    """`stream_tar_gz`, keeping everything, reads what `extract_tar_gz` reads, or both fail
+    with an ArchiveError."""
+    try:
+        whole = extract_tar_gz(data, strip_components=strip, limits=PARTIAL_LIMITS)
+    except ArchiveError:
+        whole = None
+    try:
+        pieces = (data[i : i + cut] for i in range(0, len(data), cut))
+        streamed = stream_tar_gz(pieces, KEEP_ALL, strip_components=strip).tree()
+    except ArchiveError:
+        streamed = None
+    if whole is None or streamed is None:
+        assert whole is None and streamed is None
+        return
+    assert dict(streamed.files) == dict(whole.files)
+    assert dict(streamed.modes) == dict(whole.modes)
+    assert streamed.skipped == whole.skipped
+    assert streamed.duplicates == whole.duplicates
+    assert streamed.anomalies == whole.anomalies
+    assert streamed.omitted == ()
+
+
+@given(ENTRIES, st.integers(min_value=0, max_value=2), STREAM_CUTS)
+def test_streamed_reads_match_whole_reads(entries: list[TarEntry], strip: int, cut: int) -> None:
+    _both(build(entries), cut, strip)
+
+
+@given(st.binary(max_size=2048), STREAM_CUTS)
+def test_streamed_arbitrary_bytes_match_whole_reads(data: bytes, cut: int) -> None:
+    for candidate in (data, gzip.compress(data, mtime=0)):
+        _both(candidate, cut, 0)
+
+
+@given(
+    st.lists(st.integers(min_value=0, max_value=10_000), min_size=1, max_size=8),
+    st.binary(min_size=1, max_size=4),
+    STREAM_CUTS,
+)
+def test_streamed_corrupted_archives_match_whole_reads(
+    offsets: list[int], replacement: bytes, cut: int
+) -> None:
+    raw = bytearray(
+        b"".join(
+            _member(name, data)
+            for name, data in [("package/index.js", b"module.exports = 1" * 50), ("package/a", b"")]
+        )
+        + b"\0" * 1024
+    )
+    for offset in offsets:
+        position = offset % len(raw)
+        raw[position : position + len(replacement)] = replacement
+    _both(gzip.compress(bytes(raw), mtime=0), cut, 1)
+
+
+def _member(name: str, data: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()[: 512 + ((len(data) + 511) // 512) * 512]

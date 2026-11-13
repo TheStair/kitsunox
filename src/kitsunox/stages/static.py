@@ -22,11 +22,11 @@ import re
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import httpx
 
-from kitsunox.core.interfaces import Ecosystem
+from kitsunox.core.interfaces import Ecosystem, PartialArtifacts
 from kitsunox.core.models import (
     Candidate,
     Finding,
@@ -40,6 +40,8 @@ from kitsunox.core.rules import ArtifactRule, FileMatch, FileRule, rules_fingerp
 from kitsunox.core.run import STATIC_SNAPSHOT, DataDir, EcosystemFactory
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.ecosystems.npm.rules.metadata import has_install_hook
+from kitsunox.rules.disguised import CLAIMS
+from kitsunox.rules.partial import omitted_files, partial_summary
 from kitsunox.rules.signatures import KnownSignature
 from kitsunox.rules.static import (
     CONTEXT_NOTES,
@@ -51,6 +53,7 @@ from kitsunox.rules.static import (
 )
 from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.triage import at_least
+from kitsunox.util.archive import KeepPolicy
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 from kitsunox.util.http import FetchError, FetchMode, HttpFetcher, Snapshot, TransientFetchError
@@ -66,6 +69,14 @@ MAX_ARTIFACT_BYTES: Final = MAX_FILE_BYTES
 # all flagged by Stage 2 when read; 44 of them are at most 32 MB). Live, about 339 more versions
 # and 2.5 to 4.8 GB of tarballs a day (docs/proposals/stage2-routing-recall.md).
 MAX_HOOK_ARTIFACT_BYTES: Final = 2 * MAX_ARTIFACT_BYTES
+# Over that, a version with an install hook is read partially, up to 1 GiB declared (decision
+# 0021, `ArtifactFiles`): streamed once, its text and code kept, its binaries only listed. On
+# 2026-11-11..13, 1,434 of the 1,437 hooked versions Stage 2 skipped for size were at most
+# 512 MB, the other 3 were 659 MB.
+MAX_PARTIAL_ARTIFACT_BYTES: Final = 1 << 30
+# What a partial read keeps of each text file, and of all of them (decision 0021).
+PARTIAL_FILE_BYTES: Final = MAX_FILE_BYTES
+PARTIAL_KEPT_BYTES: Final = 64 * 1024 * 1024
 INSTALL_HOOK_BY_ECOSYSTEM: Final[dict[str, Callable[[Mapping[str, Any]], bool]]] = {
     "npm": has_install_hook
 }
@@ -73,6 +84,9 @@ INSTALL_HOOK_BY_ECOSYSTEM: Final[dict[str, Callable[[Mapping[str, Any]], bool]]]
 # retry: ...". The retry form marks a network failure, which `collect` retries.
 UNAVAILABLE: Final = "unavailable: "
 WILL_RETRY: Final = "unavailable, will retry: "
+# A partial read's note on the decision reason (decision 0021): "; partial read: 12 files
+# (310.2 MB) not read".
+PARTIAL_NOTE: Final = "; partial read: "
 DEFAULT_THRESHOLD: Final = Severity.MEDIUM
 ARTIFACT_RULES_BY_ECOSYSTEM: Final[dict[str, Sequence[ArtifactRule]]] = {"npm": NPM_ARTIFACT_RULES}
 
@@ -460,6 +474,7 @@ def analyse_batch(
     by_artifact: dict[str, tuple[Finding, ...]] = {}
     loaded: dict[str, LoadedFiles] = {}
     previous_notes: dict[str, str] = {}
+    partial_notes: dict[str, str] = {}
     base_tree = None if isinstance(base, Unavailable) else base
     base_files = BaseFiles(base_tree)
     # The files the version being read is compared with (its own previous release's), and the
@@ -493,6 +508,8 @@ def analyse_batch(
             by_artifact[version] = tuple(
                 f for rule in artifact_rules for f in rule.evaluate_artifact(snapshot, tree)
             )
+            if omitted := omitted_files(tree):
+                partial_notes[version] = f"{PARTIAL_NOTE}{partial_summary(omitted)}"
             loaded[version] = LoadedFiles(snapshot.ref.ecosystem, tree)
             compared[0] = own_previous(candidate)
             last[:] = [(version, tree)]
@@ -514,7 +531,7 @@ def analyse_batch(
             reason = f"files {_unavailable(missing[version])}"
         else:
             reason = f"rules: {', '.join(flagged)}" if flagged else "no signal"
-        note = base_note + previous_notes.get(version, "")
+        note = partial_notes.get(version, "") + base_note + previous_notes.get(version, "")
         decision = StageDecision(stage=STAGE_ID, forwarded=bool(flagged), reason=reason + note)
         updated.append(
             candidate.model_copy(
@@ -537,6 +554,54 @@ def has_hook(snapshot: VersionSnapshot) -> bool:
     return hooked is not None and hooked(snapshot.manifest)
 
 
+# Source and script extensions a partial read always keeps as text, a NUL byte or not: what the
+# file rules, Stage 3 and the install-code rules read (`lang.javascript.language_for`,
+# `rules.disguised.SCRIPT_MARKERS`, npm's `binding.gyp`).
+SOURCE_EXTENSIONS: Final = frozenset(
+    {
+        *("js", "cjs", "mjs", "jsx", "ts", "cts", "mts", "tsx", "json", "json5"),
+        *("sh", "bash", "zsh", "ps1", "psm1", "bat", "cmd", "vbs", "py"),
+        *("gyp", "gypi"),
+    }
+)
+
+
+def _extension(path: str) -> str:
+    name = path.rsplit("/", 1)[-1]
+    return name.rsplit(".", 1)[-1].lower() if "." in name.lstrip(".") else ""
+
+
+def _always_text(path: str) -> bool:
+    return _extension(path) in SOURCE_EXTENSIONS
+
+
+def _keep_rank(path: str, head: bytes) -> int:
+    """Which text a partial read keeps first when its budget is full (lower first): (0) the
+    manifest, `binding.gyp`, and text under a binary format's name (`static.disguised-file`'s
+    candidates); (1) the package's own code; (2) code and JSON under `node_modules/`, and its
+    own JSON; (3) the rest: documentation, type declarations, source maps, tests, data."""
+    name = path.rsplit("/", 1)[-1]
+    extension = _extension(path)
+    if path == "package.json" or name == "binding.gyp" or extension in CLAIMS:
+        return 0
+    if NON_EXECUTING.search(path) or TEST_FILES.search(path):
+        return 3
+    if extension not in SOURCE_EXTENSIONS:
+        return 3
+    if "node_modules" in path.split("/") or extension in ("json", "json5"):
+        return 2
+    return 1
+
+
+PARTIAL_POLICY: Final = KeepPolicy(
+    version=1,
+    max_file_bytes=PARTIAL_FILE_BYTES,
+    max_kept_bytes=PARTIAL_KEPT_BYTES,
+    text=_always_text,
+    rank=_keep_rank,
+)
+
+
 def fetch_limit(
     snapshot: VersionSnapshot,
     max_bytes: int = MAX_ARTIFACT_BYTES,
@@ -546,33 +611,63 @@ def fetch_limit(
     return max(max_bytes, hook_max_bytes) if has_hook(snapshot) else max_bytes
 
 
+ReadMode = Literal["whole", "partial"]
+
+
+def read_mode(
+    snapshot: VersionSnapshot,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+    hook_max_bytes: int = MAX_HOOK_ARTIFACT_BYTES,
+    partial_max_bytes: int = MAX_PARTIAL_ARTIFACT_BYTES,
+) -> ReadMode | None:
+    """How Stage 2 reads this version's files, from its metadata alone: whole up to
+    `fetch_limit`; partially (decision 0021) when it declares an install hook and at most
+    `partial_max_bytes`; else not at all (None)."""
+    size = snapshot.artifact.unpacked_size if snapshot.artifact else None
+    if size is None or size <= fetch_limit(snapshot, max_bytes, hook_max_bytes):
+        return "whole"
+    if has_hook(snapshot) and size <= partial_max_bytes:
+        return "partial"
+    return None
+
+
 class ArtifactFiles:
     """Fetch a version's files through its ecosystem, skipping versions that declare an
     unpacked size over `max_bytes`, or `hook_max_bytes` for a version with an install hook
     (`fetch_limit`): almost all of that volume is platform binaries that the rules skip anyway
     (2026-10-27: versions over 16 MB were 9% of releases and 86% of bytes). A base is held to
     its own limit, so a hook added to a large package can leave its hookless base unread: all
-    the files then count as new (Stage 1 flags an added hook HIGH anyway)."""
+    the files then count as new (Stage 1 flags an added hook HIGH anyway).
+
+    A version with an install hook over its limit is read partially up to `partial_max_bytes`
+    (`read_mode`, decision 0021), when the ecosystem can (`PartialArtifacts`): streamed once,
+    its text and code kept under `PARTIAL_POLICY`, its binaries listed in the tree's
+    `omitted`. Base, previous release or the version itself: the same rule for each."""
 
     def __init__(
         self,
         ecosystem: Ecosystem,
         max_bytes: int = MAX_ARTIFACT_BYTES,
         hook_max_bytes: int = MAX_HOOK_ARTIFACT_BYTES,
+        partial_max_bytes: int = MAX_PARTIAL_ARTIFACT_BYTES,
     ) -> None:
         self.ecosystem = ecosystem
         self.max_bytes = max_bytes
         self.hook_max_bytes = hook_max_bytes
+        self.partial_max_bytes = partial_max_bytes
 
     def __call__(self, snapshot: VersionSnapshot) -> Tree | Unavailable:
         artifact = snapshot.artifact
         if artifact is None:
             return Unavailable(reason="no artifact")
-        limit = fetch_limit(snapshot, self.max_bytes, self.hook_max_bytes)
-        if artifact.unpacked_size is not None and artifact.unpacked_size > limit:
+        mode = read_mode(snapshot, self.max_bytes, self.hook_max_bytes, self.partial_max_bytes)
+        ecosystem = self.ecosystem
+        if mode is None or (mode == "partial" and not isinstance(ecosystem, PartialArtifacts)):
             return Unavailable(reason=f"declared unpacked size {artifact.unpacked_size} bytes")
         try:
-            return self.ecosystem.fetch_artifact(artifact)
+            if mode == "partial" and isinstance(ecosystem, PartialArtifacts):
+                return ecosystem.fetch_artifact_partial(artifact, PARTIAL_POLICY)
+            return ecosystem.fetch_artifact(artifact)
         except (FetchError, ValueError) as exc:  # ValueError: integrity or archive errors
             return Unavailable(
                 reason=f"{type(exc).__name__}: {exc}"[:300],

@@ -1,9 +1,12 @@
 """Stage 2 engine: new contents, attribution across a burst, and the content cache."""
 
+import hashlib
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
 from conftest import Router, TarEntry, make_tar_gz, sri_sha512
@@ -18,7 +21,7 @@ from kitsunox.core.models import (
     Severity,
     VersionSnapshot,
 )
-from kitsunox.core.run import DataDir
+from kitsunox.core.run import STATIC_SNAPSHOT, DataDir
 from kitsunox.ecosystems.npm.registry import NpmEcosystem
 from kitsunox.ecosystems.npm.rules.artifact import RULES as NPM_ARTIFACT_RULES
 from kitsunox.rules.static import RULES
@@ -26,6 +29,8 @@ from kitsunox.stages.ingest import write_jsonl
 from kitsunox.stages.static import (
     MAX_ARTIFACT_BYTES,
     MAX_HOOK_ARTIFACT_BYTES,
+    MAX_PARTIAL_ARTIFACT_BYTES,
+    PARTIAL_POLICY,
     ArtifactFiles,
     ContentCache,
     Unavailable,
@@ -34,11 +39,14 @@ from kitsunox.stages.static import (
     has_hook,
     needs_retry,
     new_contents,
+    read_mode,
     record_static,
     static_run,
     unhashed,
 )
-from kitsunox.util.http import FetchError, TransientFetchError
+from kitsunox.util.archive import ArtifactTree, KeepPolicy, OmittedFile
+from kitsunox.util.http import FetchError, Snapshot, TransientFetchError
+from kitsunox.util.partial import PARTIAL_CONTENT_TYPE
 
 T0 = datetime(2026, 10, 1, tzinfo=UTC)
 BASE = {"index.js": b"module.exports = 1", "README.md": b"hi"}
@@ -660,3 +668,161 @@ def test_a_new_package_burst_compares_later_versions_with_earlier_ones() -> None
     )
     first, second = result.versions
     assert first.history[-1].forwarded and not second.history[-1].forwarded
+
+
+# --- partial reads (decision 0021) --------------------------------------------------------------
+
+
+class FakePartialEcosystem(FakeEcosystem):
+    def __init__(self) -> None:
+        super().__init__()
+        self.partial: list[str] = []
+
+    def fetch_artifact_partial(self, artifact: ArtifactRef, policy: KeepPolicy) -> ArtifactTree:
+        self.partial.append(artifact.url)
+        assert policy is PARTIAL_POLICY
+        return ArtifactTree(files=CLEAN)
+
+
+def test_a_hooked_version_over_its_limit_is_read_partially_up_to_the_ceiling() -> None:
+    ecosystem = FakePartialEcosystem()
+    files = ArtifactFiles(
+        ecosystem,  # type: ignore[arg-type]
+        max_bytes=1000,
+        hook_max_bytes=2000,
+        partial_max_bytes=5000,
+    )
+    assert files(snapshot("1.0.1", size=2000, hook="postinstall")) == BAD  # whole
+    assert files(snapshot("1.0.1", size=5000, hook="postinstall")) == ArtifactTree(files=CLEAN)
+    assert files(snapshot("1.0.1", size=5001, hook="postinstall")) == Unavailable(
+        reason="declared unpacked size 5001 bytes"
+    )
+    assert files(snapshot("1.0.1", size=1001)) == Unavailable(  # no hook: as before
+        reason="declared unpacked size 1001 bytes"
+    )
+    assert len(ecosystem.fetched) == 1
+    assert ecosystem.partial == ["https://r.test/kx-1.0.1.tgz"]
+
+
+def test_read_mode_depends_on_the_metadata_only() -> None:
+    hooked = MAX_HOOK_ARTIFACT_BYTES
+    assert read_mode(snapshot("1.0.1", size=None, hook="install")) == "whole"
+    assert read_mode(snapshot("1.0.1", size=hooked, hook="install")) == "whole"
+    assert read_mode(snapshot("1.0.1", size=hooked + 1, hook="install")) == "partial"
+    ceiling = MAX_PARTIAL_ARTIFACT_BYTES
+    assert read_mode(snapshot("1.0.1", size=ceiling, hook="install")) == "partial"
+    assert read_mode(snapshot("1.0.1", size=ceiling + 1, hook="install")) is None
+    assert read_mode(snapshot("1.0.1", size=MAX_ARTIFACT_BYTES + 1)) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "rank"),
+    [
+        ("package.json", 0),
+        ("build/binding.gyp", 0),
+        ("assets/font.woff2", 0),  # text under a binary format's name: a disguise candidate
+        ("install.js", 1),
+        ("lib/index.mjs", 1),
+        ("scripts/setup.sh", 1),
+        ("node_modules/dep/index.js", 2),
+        ("config.json", 2),
+        ("index.d.ts", 3),
+        ("dist/index.js.map", 3),
+        ("README.md", 3),
+        ("test/index.js", 3),
+        ("styles.css", 3),
+    ],
+)
+def test_what_a_partial_read_keeps_first(path: str, rank: int) -> None:
+    assert PARTIAL_POLICY.rank(path, b"") == rank
+
+
+def test_source_files_are_always_text() -> None:
+    assert PARTIAL_POLICY.text("a/b.JS") and PARTIAL_POLICY.text("binding.gyp")
+    assert not PARTIAL_POLICY.text("a.node") and not PARTIAL_POLICY.text("Makefile")
+
+
+def test_a_partial_read_says_what_it_did_not_read() -> None:
+    omitted = (
+        OmittedFile(
+            path="bin/x.node", size=40_000_000, sha256="ab" * 32, mode=0o755, reason="binary"
+        ),
+        OmittedFile(
+            path="dist/big.js", size=20_000_000, sha256="cd" * 32, mode=0o644, reason="file"
+        ),
+    )
+    tree = ArtifactTree(files=BAD, omitted=omitted)
+    result = analyse_batch(
+        batch(),
+        lambda s: tree if s.ref.version == "1.0.1" else CLEAN,
+        ContentCache(None, RULES),
+        artifact_rules=NPM_ARTIFACT_RULES,
+    )
+    bad, clean = result.versions
+    assert bad.history[-1].reason.endswith("; partial read: 2 files (60.0 MB) not read")
+    (partial,) = [f for f in bad.findings if f.rule_id == "static.partial-read"]
+    assert partial.severity is Severity.INFO and partial.weight == 0
+    assert "1 binary, 1 over the per-file limit" in partial.explanation
+    assert [e.path for e in partial.evidence] == ["bin/x.node", "dist/big.js"]
+    assert "partial read" not in clean.history[-1].reason
+    assert not any(f.rule_id == "static.partial-read" for f in clean.findings)
+
+
+HOOKED = b'{"name":"kx","scripts":{"postinstall":"node setup.js"}}'
+# A large "platform binary" that compresses well (the test stays fast) but has a NUL byte.
+BIG_BINARY = (b"\x7fELF\x02\x01\x01\x00" + bytes(range(256)) * 16) * 8200  # ~33.6 MB
+
+
+def test_record_static_reads_a_large_hooked_version_partially_and_replays_it(
+    tmp_path: Path, router: Router
+) -> None:
+    data = DataDir(tmp_path / "data")
+    tarball = make_tar_gz(
+        [
+            TarEntry("package/package.json", HOOKED),
+            TarEntry("package/setup.js", BAD["lib/x.js"]),
+            TarEntry("package/prebuilds/linux-x64/kx.node", BIG_BINARY),
+        ]
+    )
+    url = "https://r.test/kx-2.0.0.tgz"
+    router.add_bytes(url, tarball)
+    size = len(HOOKED) + len(BAD["lib/x.js"]) + len(BIG_BINARY)
+    assert size > MAX_HOOK_ARTIFACT_BYTES
+    new = VersionSnapshot(
+        ref=PackageVersionRef(ecosystem="npm", name="kx", version="2.0.0"),
+        publish=PublishInfo(published_at=T0),
+        manifest={"scripts": {"postinstall": "node setup.js"}},
+        artifact=ArtifactRef(url=url, integrity=sri_sha512(tarball), unpacked_size=size),
+    )
+    run_dir = data.run_dir("r1")
+    write_jsonl(
+        run_dir / "batches.jsonl",
+        [
+            PackageBatch(
+                ecosystem="npm", name="kx", base=None, versions=(Candidate(change=Change(new=new)),)
+            )
+        ],
+    )
+    (result,) = record_static(data, "r1", NpmEcosystem, client=router.client())
+    (version,) = result.versions
+    decision = version.history[-1]
+    assert decision.forwarded and "static.exfil-endpoint" in decision.reason
+    assert decision.reason.endswith("; partial read: 1 file (33.7 MB) not read")
+    assert any(f.rule_id == "static.partial-read" for f in version.findings)
+    assert not any(f.rule_id == "npm.artifact.size-mismatch" for f in version.findings)
+
+    snapshot_file = Snapshot.load(run_dir / STATIC_SNAPSHOT)
+    (key,) = snapshot_file.entries
+    entry = snapshot_file.entries[key]
+    assert key == f"GET {url} partial={PARTIAL_POLICY.version}"
+    assert (entry.url, entry.content_type) == (url, PARTIAL_CONTENT_TYPE)
+    assert entry.size < len(tarball) // 10  # the re-pack, not the tarball
+    assert not data.blobs.exists(hashlib.sha256(tarball).hexdigest())
+    recorded = (run_dir / "static.jsonl").read_bytes()
+
+    # A re-score from the run's snapshot alone, offline, with no cross-run cache: identical.
+    shutil.rmtree(data.immutable_index)
+    offline = httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("network used")))
+    record_static(data, "r1", NpmEcosystem, client=offline, seed=snapshot_file)
+    assert (run_dir / "static.jsonl").read_bytes() == recorded
+    assert router.requests == [url]

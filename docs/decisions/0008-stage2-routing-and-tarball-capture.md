@@ -103,3 +103,13 @@ and the two new rules match none of them at MEDIUM. The cost is mainly Stage 2-3
 (+~40% of the versions they read) and registry requests, not disk.
 
 Details: [prefreeze-recall](../proposals/prefreeze-recall.md#3-small-updates-to-stage-2).
+
+## Addendum (2026-11-13, round 11 O): partial reads above the hook cap
+
+Proposed in [0021](0021-partial-reads-of-large-hook-packages.md), not yet approved. A version
+with an install hook over 32 MB (and at most 1 GiB declared) is no longer skipped: it is
+streamed once, its text and code kept (16 MB a file, 64 MB in all), its binaries only listed
+with size, hash and first 512 bytes, and the kept subset stored as a small re-pack instead of
+the tarball. Hookless versions keep the 16 MB cap. On the two days of runs on disk this reads
+about 700 more hooked versions a day; bandwidth, disk, reports and verdicts are measured in
+[partial-reads-round11-O](../proposals/partial-reads-round11-O.md).

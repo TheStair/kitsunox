@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -15,8 +16,10 @@ from kitsunox.ecosystems.npm.registry import (
     downloads_period,
     parse_downloads,
 )
+from kitsunox.stages.static import PARTIAL_POLICY
 from kitsunox.util.hashing import IntegrityError
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
+from kitsunox.util.partial import PARTIAL_CONTENT_TYPE
 
 
 def feed_url(since: int) -> str:
@@ -124,3 +127,41 @@ def test_download_counts_bulk_requests_are_chunked(npm: NpmEcosystem, router: Ro
 def test_parse_downloads_rejects_hostile_values(doc: object) -> None:
     with pytest.raises(ValueError):
         parse_downloads(doc, ["x"])
+
+
+ELF = b"\x7fELF\x02\x01\x01\x00" + bytes(range(256)) * 64
+
+
+def test_partial_reads_verify_the_whole_stream_and_store_only_the_re_pack(
+    npm: NpmEcosystem, router: Router
+) -> None:
+    tarball = make_tar_gz(
+        [
+            TarEntry("package/package.json", b'{"scripts":{"postinstall":"node i.js"}}'),
+            TarEntry("package/i.js", b"require('https')"),
+            TarEntry("package/bin/x.node", ELF),
+        ]
+    )
+    url = "https://registry.npmjs.org/x/-/x-1.0.0.tgz"
+    router.add_bytes(url, tarball)
+    artifact = ArtifactRef(url=url, integrity=sri_sha512(tarball))
+    tree = npm.fetch_artifact_partial(artifact, PARTIAL_POLICY)
+    assert sorted(tree) == ["i.js", "package.json"]
+    assert [(o.path, o.reason, o.size) for o in tree.omitted] == [
+        ("bin/x.node", "binary", len(ELF))
+    ]
+    (entry,) = npm.fetcher.snapshot.entries.values()
+    assert entry.url == url and entry.content_type == PARTIAL_CONTENT_TYPE
+    assert not npm.fetcher.store.exists(hashlib.sha256(tarball).hexdigest())
+
+    router.add_bytes(url + "?other", tarball)
+    with pytest.raises(IntegrityError, match="mismatch"):
+        npm.fetch_artifact_partial(
+            ArtifactRef(url=url + "?other", integrity=sri_sha512(b"else")), PARTIAL_POLICY
+        )
+    with pytest.raises(FetchError, match="no digest"):
+        npm.fetch_artifact_partial(ArtifactRef(url=url), PARTIAL_POLICY)
+    with pytest.raises(FetchError, match="HTTP 404"):
+        npm.fetch_artifact_partial(
+            ArtifactRef(url=url + "-gone", integrity=sri_sha512(tarball)), PARTIAL_POLICY
+        )

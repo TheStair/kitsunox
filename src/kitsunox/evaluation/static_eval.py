@@ -28,6 +28,7 @@ from kitsunox.core.models import (
     Record,
     Severity,
     StageDecision,
+    VersionSnapshot,
 )
 from kitsunox.core.rules import RuleContext, rules_fingerprint
 from kitsunox.core.run import DataDir
@@ -49,15 +50,16 @@ from kitsunox.stages.gitdeps import NpmGitDependencyLookup
 from kitsunox.stages.repo import RepoMemory, compare, with_history, with_trust
 from kitsunox.stages.review import CORRELATION_RULES, NPM, NpmDependencyLookup
 from kitsunox.stages.static import (
+    PARTIAL_POLICY,
     BaseFiles,
     ContentCache,
     LoadedFiles,
     content_matches,
-    fetch_limit,
     new_contents,
+    read_mode,
 )
 from kitsunox.stages.triage import at_least, triage
-from kitsunox.util.archive import ArtifactTree, extract_zip
+from kitsunox.util.archive import ArtifactTree, extract_zip, partial_view
 from kitsunox.util.disk import DiskSpaceError
 from kitsunox.util.env import env_value
 from kitsunox.util.http import (
@@ -173,11 +175,9 @@ class StaticRules:
 
     def collect(self, change: Change, sample: EvalSample) -> SampleFindings:
         candidate = triage(change, RuleContext(as_of=_as_of(change)))
-        size = change.new.artifact.unpacked_size if change.new.artifact else None
         found = SampleFindings(
             stage1=candidate.findings,
-            routed=candidate.history[-1].forwarded
-            and (size is None or size <= fetch_limit(change.new)),
+            routed=candidate.history[-1].forwarded and read_mode(change.new) is not None,
         )
         if not self.needs_files(found):
             return found
@@ -185,9 +185,12 @@ class StaticRules:
         if new is None:
             self._note("new files unavailable (not forwarded)")
             return found
+        new = as_read(change.new, new)
         base: Tree | None = self._tarball(change.previous.artifact) if change.previous else {}
         if base is None:
             self._note("base unavailable (all files treated as new)")
+        elif change.previous is not None and isinstance(base, ArtifactTree):
+            base = as_read(change.previous, base)
         stage2 = self._stage2(change, new, base) if self.include_stage2 else None
         stage3 = None
         if self.include_stage3:
@@ -291,6 +294,15 @@ class PinnedFetcher(HttpFetcher):
     @override
     def _pins(self, response: FetchedResponse) -> bool:
         return response.ok or response.status == HTTPStatus.NOT_FOUND
+
+
+def as_read(snapshot: VersionSnapshot, tree: ArtifactTree) -> ArtifactTree:
+    """The files of `snapshot` as the pipeline reads them: whole, or, for a version Stage 2
+    reads partially (`read_mode`, decision 0021), what `PARTIAL_POLICY` keeps of them. The
+    evaluation has every file (a sample's zip, a whole tarball), so it selects in memory."""
+    if read_mode(snapshot) == "partial":
+        return partial_view(tree, PARTIAL_POLICY)
+    return tree
 
 
 def _as_of(change: Change) -> datetime:

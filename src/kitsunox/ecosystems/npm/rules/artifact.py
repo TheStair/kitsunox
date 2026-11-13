@@ -33,6 +33,7 @@ from kitsunox.ecosystems.npm.rules.native_load import SilentNativeLoad
 from kitsunox.rules.channels import ChannelFollowOnConnect
 from kitsunox.rules.disguised import DisguisedFile
 from kitsunox.rules.host_ip import HostIpIdentity
+from kitsunox.rules.partial import PartialRead, omitted_files
 
 SIZE_TOLERANCE_BYTES: Final = 1024
 SIZE_TOLERANCE_RATIO: Final = 0.01
@@ -105,7 +106,7 @@ class DeclaredSizeMismatch(BaseRule):
         declared = snapshot.artifact.unpacked_size if snapshot.artifact else None
         if declared is None:
             return ()
-        real = sum(len(content) for content in files.values())
+        real = measured_size(files)
         gap = real - declared
         if gap <= max(SIZE_TOLERANCE_BYTES, SIZE_TOLERANCE_RATIO * declared):
             return ()
@@ -122,6 +123,14 @@ class DeclaredSizeMismatch(BaseRule):
                 ),
             ),
         )
+
+
+def measured_size(files: Mapping[str, bytes]) -> int:
+    """The bytes of every regular file: those read, and those a partial read only listed
+    (decision 0021), whose sizes come from the tar headers."""
+    return sum(len(content) for content in files.values()) + sum(
+        o.size for o in omitted_files(files)
+    )
 
 
 # Words that end a hook harmlessly after the failing `node <file>`: `|| true`, `|| exit 0`.
@@ -389,9 +398,11 @@ class InstallStub(BaseRule):
 
 
 def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
-    """The tree is the whole package: nothing skipped, no tar anomaly or duplicate, and the
-    files add up to the declared unpacked size (within `DeclaredSizeMismatch`'s tolerance)."""
-    if any(getattr(files, attr, ()) for attr in ("skipped", "anomalies", "duplicates")):
+    """The tree is the whole package: nothing skipped, no tar anomaly or duplicate, nothing
+    a partial read left unread (decision 0021), and the files add up to the declared unpacked
+    size (within `DeclaredSizeMismatch`'s tolerance)."""
+    attributes = ("skipped", "anomalies", "duplicates", "omitted")
+    if any(getattr(files, attr, ()) for attr in attributes):
         return False
     declared = snapshot.artifact.unpacked_size if snapshot.artifact else None
     if declared is None:
@@ -405,7 +416,8 @@ def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
 # because they read every file of every version, not only the contents an update adds; so do
 # the npm rules in their own modules (`static.html-redirector`,
 # `hosted_page.py`; `static.silent-native-load`, `native_load.py`); `npm.canary-callback`
-# (`canary.py`) because it reads the files loading and installing run, of a whole tiny package.
+# (`canary.py`) because it reads the files loading and installing run, of a whole tiny package;
+# `static.partial-read` (`rules/partial.py`) because it reads what a partial read left out.
 RULES: Final = (
     HiddenInstallScript(),
     DeclaredSizeMismatch(),
@@ -417,4 +429,5 @@ RULES: Final = (
     HtmlRedirector(),
     SilentNativeLoad(),
     CanaryCallback(),
+    PartialRead(),
 )

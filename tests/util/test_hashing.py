@@ -4,7 +4,7 @@ import hashlib
 import pytest
 
 from conftest import sri_sha512
-from kitsunox.util.hashing import IntegrityError, verify_integrity
+from kitsunox.util.hashing import IntegrityCheck, IntegrityError, verify_integrity
 
 
 def test_sri_match() -> None:
@@ -33,3 +33,30 @@ def test_falls_back_to_sha1_shasum() -> None:
 def test_no_digest_is_an_error() -> None:
     with pytest.raises(IntegrityError, match="no supported digest"):
         verify_integrity(b"data", integrity="md5-abc")
+
+
+@pytest.mark.parametrize(
+    ("integrity", "shasum"),
+    [
+        (sri_sha512(b"data"), None),
+        ("sha256-" + base64.b64encode(hashlib.sha256(b"data").digest()).decode(), None),
+        (None, hashlib.sha1(b"data", usedforsecurity=False).hexdigest()),
+        ("md5-unsupported", hashlib.sha1(b"data", usedforsecurity=False).hexdigest()),
+    ],
+)
+def test_integrity_check_in_pieces_agrees_with_verify_integrity(
+    integrity: str | None, shasum: str | None
+) -> None:
+    check = IntegrityCheck(integrity=integrity, shasum=shasum)
+    for piece in (b"d", b"", b"ata"):
+        check.update(piece)
+    assert check.verify() == verify_integrity(b"data", integrity=integrity, shasum=shasum)
+    wrong = IntegrityCheck(integrity=integrity, shasum=shasum)
+    wrong.update(b"dat")
+    with pytest.raises(IntegrityError, match="mismatch"):
+        wrong.verify()
+
+
+def test_integrity_check_without_a_digest_fails_before_reading() -> None:
+    with pytest.raises(IntegrityError, match="no supported digest"):
+        IntegrityCheck(integrity="md5-x", shasum=None)

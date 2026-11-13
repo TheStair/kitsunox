@@ -43,6 +43,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity, VersionSnapshot
 from kitsunox.core.rules import BaseRule
+from kitsunox.rules.partial import omitted_files
 from kitsunox.rules.static import (
     DynamicCode,
     EnvHarvest,
@@ -277,12 +278,13 @@ def extension(path: str) -> str | None:
     return name.rsplit(".", 1)[-1].lower()
 
 
-def detect_format(content: bytes) -> str | None:
-    """The binary format `content` starts like, or None."""
+def detect_format(content: bytes, *, binary: bool = False) -> str | None:
+    """The binary format `content` starts like, or None. `binary`: the content is known not
+    to read as text (a partial read's head of a binary file), so weak magic is trusted."""
     for name, signatures in FORMATS.items():
         for offset, magic in signatures:
             if content[offset : offset + len(magic)] == magic:
-                if name in WEAK_MAGIC and _text(content) is not None:
+                if name in WEAK_MAGIC and not binary and _text(content) is not None:
                     continue
                 return name
     if b"%PDF" in content[:1024]:
@@ -367,15 +369,8 @@ def disguise(ext: str, content: bytes) -> Disguise | None:
     """What `content` hides under the extension `ext`, or None when it is no disguise: it is
     the claimed format, another binary format, or text that isn't a script."""
     found = detect_format(content)
-    if found in EXECUTABLES:
-        if ext in _EXPECTS_EXECUTABLE:
-            return None
-        what = {"elf": "ELF", "pe": "Windows PE", "macho": "Mach-O"}[found]
-        return Disguise(kind="executable", what=f"{what} executable", snippet=content[:16].hex())
-    if found in ARCHIVES:
-        if ext in _EXPECTS_ARCHIVE or CLAIMS[ext] not in (_FONT, _IMAGE, _MEDIA):
-            return None
-        return Disguise(kind="archive", what=f"{found} archive", snippet=content[:16].hex())
+    if found in EXECUTABLES or found in ARCHIVES:
+        return _binary_disguise(ext, found, content)
     if found is not None:
         return None  # another binary format: a mislabel, not a disguise
     text = _text(content)
@@ -397,6 +392,29 @@ def disguise(ext: str, content: bytes) -> Disguise | None:
         else:
             return None
     return _script(text)
+
+
+def _binary_disguise(ext: str, found: str, content: bytes) -> Disguise | None:
+    """An executable or archive (`found`) under the extension `ext`: a disguise unless the
+    extension expects one."""
+    if found in EXECUTABLES:
+        if ext in _EXPECTS_EXECUTABLE:
+            return None
+        what = {"elf": "ELF", "pe": "Windows PE", "macho": "Mach-O"}[found]
+        return Disguise(kind="executable", what=f"{what} executable", snippet=content[:16].hex())
+    if ext in _EXPECTS_ARCHIVE or CLAIMS[ext] not in (_FONT, _IMAGE, _MEDIA):
+        return None
+    return Disguise(kind="archive", what=f"{found} archive", snippet=content[:16].hex())
+
+
+def head_disguise(ext: str, head: bytes) -> Disguise | None:
+    """`disguise` for a binary file a partial read only kept the head of (decision 0021): an
+    executable or an archive under another format's name. A binary file is never a script, so
+    nothing else can be one."""
+    found = detect_format(head, binary=True)
+    if found in EXECUTABLES or found in ARCHIVES:
+        return _binary_disguise(ext, found, head)
+    return None
 
 
 def _referenced_by(path: str, files: Mapping[str, bytes]) -> str | None:
@@ -427,6 +445,13 @@ class DisguisedFile(BaseRule):
             what = disguise(ext, files[path])
             if what is not None:
                 found.append(self._finding(path, ext, what, files))
+        for omitted in omitted_files(files):
+            ext = extension(omitted.path)
+            if ext is None or ext not in CLAIMS or omitted.reason != "binary":
+                continue
+            what = head_disguise(ext, omitted.head)
+            if what is not None:
+                found.append(self._finding(omitted.path, ext, what, files))
         found.sort(key=lambda f: SEVERITY_ORDER.index(f.severity))
         return found[:MAX_FINDINGS]
 
