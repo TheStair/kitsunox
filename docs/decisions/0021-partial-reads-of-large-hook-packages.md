@@ -20,8 +20,8 @@ only Stage 1's metadata findings are left. That is a known recall gap:
 - Three of the label-blind sample's misses that main still misses are hooked versions over
   32 MB: `@plannotator/opencode@0.28.45` (63.9 MB), `@cgh567/agent@2.6.60` (44.7 MB; its hook
   downloads Homebrew openssl bottles) and `local-operator-ui@0.52.8` (38.9 MB), all unwanted.
-- On the two days of runs on disk (2026-11-11..13, 47 runs) Stage 2 skipped **1,437
-  hook-bearing versions** for size (311 packages, 183 GB declared unpacked); 3 of them were
+- On the two days of runs on disk (2026-11-11..13, 47 runs) Stage 2 skipped **1,411
+  hook-bearing versions over 32 MB** (311 packages, 183 GB declared unpacked); 3 of them were
   over 512 MB. `@dcl-regenesislabs/bevy-explorer-web` alone was 248 of them (67 GB).
 
 The size is almost always platform binaries, WebAssembly, media or bundled assets. The code
@@ -54,7 +54,7 @@ under the cap, a normal read; without a hook or over 1 GiB, `files unavailable: 
 unpacked size ...`. The choice depends only on the version's metadata, never on what happens
 to be cached, so a re-score reads the same way.
 
-The ceiling: 1,434 of the 1,437 skipped hooked versions were at most 512 MB; the other 3 were
+The ceiling: 1,408 of the 1,411 skipped hooked versions were at most 512 MB; the other 3 were
 659 MB (`@dialetica/server`). Streaming needs no memory or disk in proportion to the size, so
 the ceiling only bounds the time and bandwidth one version can take (about 10-20 s at the
 measured rates). 1 GiB covers every version seen and is a round bound on a publisher-declared
@@ -152,7 +152,7 @@ tarball's own URL as `url`, the re-pack's SHA-256 and size, and the content type
 
 ## Consequences
 
-- Hooked versions from 32 MB to 1 GiB are read: about 700 a day (measured in the proposal:
+- Hooked versions from 32 MB to 1 GiB are read: 832 on 2026-11-11 (measured in the proposal:
   bandwidth, tick time, blobs, reports and their verdicts).
 - A payload that is binary, or text past the budget in a package with more than 64 MB of more
   important text, is still not read; the report says how much was not read.

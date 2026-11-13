@@ -231,3 +231,15 @@ Run `20261029T221803Z-npm`, a 24-hour catch-up window, timed from its files and
 | `changes_digest` over the 4-day run's `changes.jsonl`, each line parsed into a `Change` and fed to the function one at a time | 405,710 changes; equals the manifest's `changes_sha256` (`00652635...`); 36 s; **128 MB peak RSS** (the joined string: ~18 GB, estimated in the proposal) |
 | `kitsunox ingest replay` (worktree code; read-only, no lock) | `20261108T153157Z-npm` (1,598 changes): identical, 12 s, 0.55 GB peak RSS. `20261107T222723Z-npm` (16,589 changes): identical, 94 s, 1.04 GB peak RSS |
 | `ingest replay` of the 4-day run | Not run: the replay still holds every `Change` (~13 GB) until step 4 |
+
+## 2026-11-13: Partial reads (round 11 O, branch)
+
+From the worktree against the live `data/` read-only, scratch fetch store
+`~/kitsunox-scratch/r11/O/fetch`. Details: [partial-reads-round11-O](proposals/partial-reads-round11-O.md).
+
+| Check | Result |
+|---|---|
+| Stage 2 `record_static` on run `20261111T051353Z-npm`'s 6 batches with a partial read, then an offline re-score from its `static-snapshot.json` alone (no immutable index, a transport that fails every request) | `static.jsonl` byte-identical; 13 re-packs (128 MB); record 119 s, re-score 11 s on a loaded VM |
+| One day of partial reads (2026-11-11, 994 artifacts) | 985 read, 8 HTTP 404, 1 refused (data after the gzip stream); 28.7 GB downloaded, 5.88 GB stored; 0 anomalies; ~690 worker-seconds per GB |
+| Profile of one 10,944-file icon package (5 MB gzip) | 3.2 s single-threaded: stream 1.1 s, re-pack 0.9 s, read-back 0.9 s |
+

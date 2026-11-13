@@ -138,6 +138,56 @@ owner approved proposals P3, P7 and P9 for agent N2 before the freeze. Details a
 ### Open questions / next steps
 - Owner: P9's ~1.1 benign a day; the cross-file `inject` variant (atedone 0.0.13-0.0.17) after
   the freeze.
+## 2026-11-13 (round 11 O): partial reads of large hooked versions
+
+**Stage(s):** Stage 2 (`ArtifactFiles`, `util/archive.stream_tar_gz`, `util/partial.py`,
+`HttpFetcher.get_derived`), Stage 4 wiring (`review.PARTIAL_NOT_COMPARED`)
+**Context:** The owner asked to keep improving recall. Stage 2 skipped every hooked version
+declaring over 32 MB: 1,411 in two days of runs, three of them label-blind sample misses.
+Branch only; merging needs the owner's go-ahead
+([proposal](proposals/partial-reads-round11-O.md), [decision 0021](decisions/0021-partial-reads-of-large-hook-packages.md)).
+
+### Decisions
+- **Stream once, keep text, list binaries**: a hooked version from 32 MB to 1 GiB is streamed
+  through the fetcher, integrity-checked over the whole stream, its text and code kept (16 MB
+  a file, 64 MB in all, ranked), binaries kept as name, size, hash and 512-byte head. Raising
+  the cap instead would store ~45 GB of tarballs a day; range requests can't reach into gzip.
+- **Store a deterministic re-pack, not the tarball**, under its own request key with a marker
+  content type and the tarball's URL: re-scores replay it from the run's snapshot, retention
+  and the hold keep it by URL, Stage 5 never mistakes it for the tarball.
+- **The files the hooks name are kept first** (`partial_policy`): on the first 217 live partial
+  reads, 50 hit the budget, and a hook's script late in the tar would otherwise be dropped.
+- **Stage 4 does not compare partial reads with their repository**: it would add ~273
+  repository archives a day (102 of one package) to a disk that crashes when full.
+
+### Challenges
+- **Strict-reader anomalies without a second pass**: `extract_tar_gz` reads the archive twice;
+  a stream can't. Entries a strict reader wouldn't see are found by offsets (an entry not
+  starting where the previous one ended). A differential fuzz test (60,000 explore examples)
+  shows the streaming reader agrees with `extract_tar_gz` on files, modes, skipped entries,
+  duplicates and anomalies, or both refuse.
+  - **Why it worked:** `test_streamed_*` in `tests/util/test_archive_fuzz.py`.
+- **The measurement harness differed from live**: round 10's replay fetched an over-cap base
+  whole from the registry, which the pipeline never does (11 of 108 decisions differ). The
+  adapted harness (`o_replay.py`) uses each tree's own read rule.
+- **Disk**: re-packs are 20% of what is downloaded (5.9 GB a day), because many "large"
+  packages are mostly JavaScript (icon sets, bundled servers). An owner question.
+
+### Evaluation snapshot
+- `vm-day1` (`pipeline+4`, the 92 affected samples): malicious 19 -> 85 of 88 (0 lost); benign
+  0 -> 1 of 4.
+- Replay set (108 affected of 3,716): 0 malicious or unwanted lost; benign reported 92 -> 75
+  (23 leave, 6 `signetai` join), 1 unverified leaves.
+- Live 2026-11-11: 832 versions newly read; +81 unverdicted reports (75 `npm.install-download`);
+  lost 3 benign and 1 unwanted (`doc-detective@5.0.0-v5-rc.16`, reported in main only because
+  its base was unread). Sample misses: `@plannotator/opencode@0.28.45` now reported; `@cgh567/agent`
+  and `local-operator-ui` read but missed by the rules; `lumen-lib` was a routing case.
+- Real-data replay check: Stage 2 re-scored offline from the snapshot alone, byte-identical.
+
+### Open questions / next steps
+- Owner: disk budget, the `doc-detective` option B, repository comparison of partial reads,
+  hookless versions over 16 MB, the CLAUDE.md extraction invariant (proposal, owner questions).
+- Not merged before the freeze unless the owner approves by 2026-11-15.
 
 ## 2026-11-13: Four live malware finds, malicious tarballs kept for good, sample bounds
 

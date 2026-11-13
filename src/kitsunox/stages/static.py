@@ -72,7 +72,7 @@ MAX_ARTIFACT_BYTES: Final = MAX_FILE_BYTES
 MAX_HOOK_ARTIFACT_BYTES: Final = 2 * MAX_ARTIFACT_BYTES
 # Over that, a version with an install hook is read partially, up to 1 GiB declared (decision
 # 0021, `ArtifactFiles`): streamed once, its text and code kept, its binaries only listed. On
-# 2026-11-11..13, 1,434 of the 1,437 hooked versions Stage 2 skipped for size were at most
+# 2026-11-11..13, 1,408 of the 1,411 hooked versions over 32 MB that Stage 2 skipped were at most
 # 512 MB, the other 3 were 659 MB.
 MAX_PARTIAL_ARTIFACT_BYTES: Final = 1 << 30
 # What a partial read keeps of each text file, and of all of them (decision 0021).
