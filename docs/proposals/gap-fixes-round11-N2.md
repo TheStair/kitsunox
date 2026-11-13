@@ -12,7 +12,8 @@
 
 | # | Commit (stage) | What | Recovered (verdict) | Benign added, live | Positives lost |
 |---|---|---|---|---|---|
-| P3 | `static.shell-startup` v2 (2) + `FOLLOW_ON_ALONE` (4, `STAGE_VERSION` 25) | the `inject` form is never "not new", and is carried to unchanged follow-ons | `@atedone/workspace-context` 0.0.19-0.0.25: 4 unwanted, 3 malicious | see P3 | 0 |
+| P3 | `static.shell-startup` v2 (2) + `FOLLOW_ON_ALONE` (4, `STAGE_VERSION` 25) | the `inject` form is never "not new", and is carried to unchanged follow-ons | `@atedone/workspace-context` 0.0.19-0.0.25: 4 unwanted, 3 malicious | 5 unreviewed in ~14 days (~0.35/day): `@heyvamz/carry@0.4.4`, `@muonroi/experience-engine@0.8.2`, `@nxuss/lemma@1.49.1`, `terminal-commander` 0.3.18/0.3.19 (follow-ons) | 0 |
+| P7 | `npm.canary-callback` (2, new artifact rule) | a tiny package's loaded or installed code calls a random-id callback host | `selectlist-polyfill-lite@1.0.1` (unwanted with `probe` by the probe rule; 1.0.0/1.0.2 and `hissakdx-wix-ssr-callback-canary` ×3 are gone, same template) | 0 in 231,298 held tarballs (the only hit is the target) | 0 |
 
 ## 1. Data and method
 
@@ -73,3 +74,58 @@ report. Restricting v2 to files that loading the package runs was tried and drop
 
 Not recovered: 0.0.13-0.0.17, where the start-up file's name (`state.js`) and the `source`
 line (`sync.js`) are in different files (a cross-file form is post-freeze).
+
+**Live cost** (`scan_n2.py`, all 231,298 distinct held tarballs of the live ledgers, 2026-10-29
+to 11-13; the other 244,469 ledger rows' tarballs are pruned). An `inject` match that main
+makes LOW and the branch MEDIUM, in a version that wasn't reported: `@heyvamz/carry@0.4.4`
+(`carry.js`, a completion installer; 0.4.3 is MEDIUM on main already) and
+`@muonroi/experience-engine@0.8.2` (`bin/init.js`, `.experience/setup-thin-client.sh`: a CLI's
+`init` command). From the recorded findings (its tarball is pruned): `@nxuss/lemma@1.49.1`
+(`bin/init.js`). Follow-ons that keep a MEDIUM `inject` file byte for byte within 7 days
+(`p3_follow.py`): `terminal-commander` 0.3.18 and 0.3.19 (`lib/daemon/autostart.js`, from
+0.3.17, which main reports); `@lenne.tech/cli` 1.58.5-1.58.7 keep `bin/postinstall.js`, which
+their postinstall runs, so `npm.install-persistence` v7 reports them already; the pre-push
+scanner `@arifbiswas/...@1.0.16` is reported already. So **5 more reports in about 14 days**,
+none reviewed yet; the CLI `init` commands run when the user asks, so these are likely
+benign. `agent-lookout` (an injected line in `docs/GUIDE.md`) stays LOW as documentation.
+
+## 3. P7: a probe's callback canary
+
+**Shape** (M's cluster C1). `selectlist-polyfill-lite` 1.0.0-1.0.2 and
+`hissakdx-wix-ssr-callback-canary` 1.0.0-1.0.2 (2026-10-29/30, one publisher, npm took all
+six down) are two-file packages ("Callback-only diagnostic module for an authorized ... SSR
+security test") whose `index.js` fetches `https://<26-character id>.ssrf-check.<company>/...` at
+import, with an `https.get` fallback, and exports empty stubs. The host is a bug-bounty
+programme's own out-of-band callback service, so `static.exfil-endpoint`'s list of public OAST
+services doesn't know it. Under the probe rule (decision 0015 addendum of 2026-11-08) a
+marker-only callback is **unwanted with the `probe` tag**, not malicious.
+
+**Rule** (`npm.canary-callback`, Stage 2 artifact rule, `ecosystems/npm/rules/canary.py`,
+MEDIUM 3). All of:
+
+1. the version has at most `MAX_FILES` = 6 files (M's bound; a probe ships its callback and
+   little else);
+2. a file that loading or installing runs (`load_sources` ∪ `install_sources`) or an install
+   hook's command line names a host whose first label is 20-64 letters and digits with at least
+   two of each (`CANARY_HOST`), written as a URL (`https://<id>.x.y`), a whole quoted host
+   (`hostname: '<id>.x.y'`) or a lookup/download command's argument (`nslookup <id>.x.y`);
+3. that file or command uses the network (`NETWORK_USE`: `fetch(`, an `http(s)`/`net`/`dns`/
+   `tls`/`dgram` module, `XMLHttpRequest`, `sendBeacon`, `axios`, `WebSocket`, `curl`, `wget`,
+   `nslookup`, `dig`, `Invoke-WebRequest`);
+4. the host is not one `static.exfil-endpoint` already reports (public OAST), and doesn't end in
+   a file extension (`'<hash>.worker.js'`).
+
+Security tooling that only names such hosts in documentation or tests never fires: those files
+are not loaded (tested with a README and a `test/*.test.js` holding the beacon), and such a
+library is bigger than 6 files.
+
+**Recovered:** `selectlist-polyfill-lite@1.0.1` (the only recovered tarball; replay:
+`score 1` on main, MEDIUM `npm.canary-callback` on the branch). 1.0.0, 1.0.2 and the three
+`hissakdx-*` versions are gone from both registries, so they can't be replayed; M reads them
+as the same template.
+
+**Benign cost:** the rule fires on 1 of 231,298 held live tarballs: the target. M's
+throwaway shape (any code file of a ≤6-file package with such a URL, no network test) was 0 of
+27k too. On `vm-day1` it fires on one sample, `selectlist-polyfill-lite@1.0.1`, which the
+dataset labels **benign** (it was sampled as day-1 benign traffic): under today's verdict rules
+it is an unwanted probe, so the `vm-day1` benign cell gains this one version.

@@ -210,6 +210,7 @@ These rules see a version's registry metadata and its whole extracted tarball (t
 | `npm.artifact.install-stub` (2026-11-12) | a dependency-confusion placeholder: every install hook in the tarball is exactly `node <file>` (no `\|\| true`, option or chain), each file is JavaScript (`.js`, `.cjs`, `.mjs`; Node's `<path>.js` tried) whose whole text is one `throw` of a constant (`throw new Error("...")`, `throw Error(...)`, `throw "..."`; string literals and `${}`-free templates joined with `+`; comments, a `#!` line and `"use strict"` allowed; any other identifier, call or statement is not a stub), and the package ships nothing else but `package.json` and text (README, licence, changelog, notice, `.md`, `.txt`). Only on the whole package (as above). `npm install` stops at the hook with that error and there is no other code to load. JetBrains' `kotlinconf@999.9.9` and nine more (2026-11-12: `preinstall: node fail.js`, "This is stub package to mitigate risks of Dependency Confusion attacks", a hook the metadata doesn't show). Round 9, [S1](../proposals/precision-round9-S.md). An explanation for Stage 4: `npm.artifact.hidden-install-script`, `npm.install-hook` and `npm.version.suspicious` become LOW | INFO |
 
 | `static.disguised-file` (2026-11-11, ecosystem-agnostic, `rules/disguised.py`) | a file named as a binary format (font, image, audio/video, `.wasm`, native module or program, archive, PDF, `.bin`/`.dat`) whose bytes are no binary format but a script (JavaScript, shell, PowerShell, Python, batch; also base64-encoded), or a native executable under a non-program name, or an archive under a font/image/media name. Every file of every version, so a follow-on that still ships the file is flagged; [below](#files-disguised-as-a-binary-format-staticdisguised-file-2026-11-11) | HIGH for a script that uses process execution, the network, credentials or dynamic code, and for an executable; MEDIUM for a script a code file names; LOW otherwise and for an archive; INFO for a launcher script under a program name (`.exe`, `.dll`, `.so`, `.dylib`) |
+| `npm.canary-callback` (2026-11-13, `ecosystems/npm/rules/canary.py`) | a package of at most 6 files whose loaded or installed code (or an install hook's command line) calls a host whose first label is a random id (20-64 letters and digits, two of each), not a public OAST host `static.exfil-endpoint` reports, from code that uses the network: a probe's callback canary; [below](#callback-canaries-npmcanary-callback-2026-11-13) | MEDIUM (weight 3) |
 | `static.channel-follow-on-connect` (2026-11-11, ecosystem-agnostic, `rules/channels.py`) | a WhatsApp library (Baileys fork) that passes a **hardcoded** `\d{15,22}@newsletter` id (a literal, or a variable bound to one in the same file: a constant, an environment default, an array iterated with `for ... of`/`forEach`) as the first argument of `newsletterFollow(...)`, `followNewsletter(...)` or a query call given `.FOLLOW`, inside a `connection.update` listener, a `setTimeout`/`setInterval` or `ev.process` (within 1,200 characters before the call), not behind an `if (... follow ... === true)` opt-in; comments and messages blanked, tests/examples/docs skipped. Every file of every version, so a follow-on that ships the follow unchanged is flagged; [below](#whatsapp-follows-in-unchanged-files-staticchannel-follow-on-connect-2026-11-11) | MEDIUM (weight 3), "unwanted" |
 
 On 1,069 live versions (run `20261028T004851Z-npm`), declared and real size matched exactly
@@ -574,6 +575,29 @@ Known limits: a payload in a format the rule doesn't know (an encrypted blob, a 
 as `.txt` or `.json`) is not classified, nor is a polyglot (a real PNG with code appended); the
 script classifier is markers, not a parser, so a payload written to avoid them (one long line
 of obfuscated code with no `require`, `function` or `=>`) is not a script to it.
+
+### Callback canaries (`npm.canary-callback`, 2026-11-13)
+
+Dependency-confusion and SSRF probes publish a package under a name a company uses
+internally and make it call a callback service when it is installed or imported; the request
+is the result. The host names the test by a random id in its first label. The public
+services (`*.oast.fun`, `*.oastify.com`, Burp Collaborator, `interact.sh`) are
+`static.exfil-endpoint`'s; a programme's private one (`<id>.ssrf-check.<company>`) was unknown:
+`selectlist-polyfill-lite` 1.0.0-1.0.2 and `hissakdx-wix-ssr-callback-canary` 1.0.0-1.0.2
+(2026-10-29/30, taken down by npm, two files each, `index.js` fetching such a host at import)
+were never reported.
+
+`npm.canary-callback` (an artifact rule, `ecosystems/npm/rules/canary.py`; round 11 P7,
+[proposal](../proposals/gap-fixes-round11-N2.md)) fires on a version of at most 6 files when a
+file that loading or installing runs (`load_sources`, `install_sources`) or an install hook's
+command line holds a host whose first label is 20-64 letters and digits with at least two of
+each, written as a URL, a whole quoted host or a lookup/download command's argument, and that
+code uses the network (`fetch(`, an HTTP/DNS/socket module, `XMLHttpRequest`, `curl`,
+`nslookup`, ...). Not counted: hosts `static.exfil-endpoint` reports, names ending in a file
+extension (`<hash>.worker.js`), documentation and tests (never loaded). MEDIUM, weight 3. A
+marker-only callback is unwanted with the `probe` tag (decision 0015 addendum of 2026-11-08);
+one that also sends the user, host name or files is malicious: the reviewer decides. Measured
+in the proposal (P7).
 
 ### `exfil-endpoint` v3 and the placeholder rule (2026-10-30, `vm-day1`)
 

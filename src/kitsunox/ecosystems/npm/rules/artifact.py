@@ -26,6 +26,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity, VersionSnapshot
 from kitsunox.core.rules import BaseRule
+from kitsunox.ecosystems.npm.rules.canary import CanaryCallback
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.rules.channels import ChannelFollowOnConnect
 from kitsunox.rules.disguised import DisguisedFile
@@ -398,7 +399,8 @@ def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
 
 # `static.disguised-file` and `static.channel-follow-on-connect` (ecosystem-agnostic,
 # `rules/disguised.py`, `rules/channels.py`) run here because they read every file of every
-# version, not only the contents an update adds.
+# version, not only the contents an update adds; `npm.canary-callback` (`canary.py`) because
+# it reads the files loading and installing run, of a whole tiny package.
 RULES: Final = (
     HiddenInstallScript(),
     DeclaredSizeMismatch(),
@@ -406,4 +408,5 @@ RULES: Final = (
     InstallStub(),
     DisguisedFile(),
     ChannelFollowOnConnect(),
+    CanaryCallback(),
 )
