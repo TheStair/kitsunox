@@ -553,6 +553,24 @@ JSR_REASON: Final = (
 )
 
 
+BUNDLED_REASON: Final = (
+    "bundled in the tarball (`bundleDependencies`): npm installs it from there, not from the "
+    "registry"
+)
+
+
+def bundled_dependencies(manifest: Mapping[str, object]) -> frozenset[str]:
+    """The dependency names the manifest bundles (`bundleDependencies`, or the older spelling
+    `bundledDependencies`): a list of names, or `true` for every runtime dependency."""
+    for field in ("bundleDependencies", "bundledDependencies"):
+        value = manifest.get(field)
+        if value is True:
+            return frozenset(runtime_dependencies(manifest))
+        if isinstance(value, list):
+            return frozenset(v for v in value if isinstance(v, str))
+    return frozenset()
+
+
 class MissingDependency(BaseRule):
     """The release adds a dependency (`foreign_added_dependencies`) that the registry doesn't
     have: its packument lookup in this run returned 404 (`DependencyStatus.MISSING`). `npm
@@ -585,10 +603,17 @@ class MissingDependency(BaseRule):
     npm-compatibility scope (`"x": "npm:@jsr/sevenc-nanashi__utaformatix-ts@^0.4"`, `JSR_SCOPE`)
     is INFO too, with the reason: JSR serves `@jsr/*` from `npm.jsr.io` to projects that map the
     scope there, and the npm registry answers 404 for it by design (`ichikara@0.1.0`,
-    `@audiflo/ichikara@0.1.0`, both benign)."""
+    `@audiflo/ichikara@0.1.0`, both benign).
+
+    v3 (2026-11-13, round 11 P9, `docs/proposals/gap-fixes-round11-N2.md`): a dependency the
+    manifest also lists in `bundleDependencies` (or `bundledDependencies`; `true` bundles them
+    all) is INFO with the reason (`BUNDLED_REASON`): npm installs it from the tarball, never
+    from the registry (`faberloom@0.1.8-alpha.1`, `badbot@0.1.0`, both benign: every 404 was
+    bundled). Since round 11 P9 a reported release's missing dependency is also carried to its
+    follow-ons (`correlate.FOLLOW_ON_ALONE`), so such a release would have been reported again."""
 
     id = "npm.dependency.missing"
-    version = 2
+    version = 3
     severity = Severity.MEDIUM
     weight = 3.0
     title = "Depends on a package the registry doesn't have"
@@ -601,10 +626,12 @@ class MissingDependency(BaseRule):
         change = candidate.change
         unrelated: list[AddedDependency] = []
         siblings: list[tuple[AddedDependency, str]] = []
+        bundled = bundled_dependencies(change.new.manifest)
         for dep in foreign_added_dependencies(change, ctx.watchlist):
             if ctx.dependencies(dep.target).status is not DependencyStatus.MISSING:
                 continue
             why = JSR_REASON if dep.target.startswith(JSR_SCOPE) else None
+            why = why or (BUNDLED_REASON if dep.key in bundled else None)
             why = why or sibling_reason(dep, change, ctx.watchlist)
             if why is None:
                 unrelated.append(dep)
@@ -628,8 +655,8 @@ class MissingDependency(BaseRule):
             more = f" (+{len(siblings) - 10} more)" if len(siblings) > 10 else ""
             finding = self.finding(
                 f"Depends on {len(siblings)} package(s) the registry did not have when this "
-                f"run looked (HTTP 404) that look like this package's own (or are JSR's): "
-                f"{listed}{more}.",
+                f"run looked (HTTP 404) that look like this package's own (or are JSR's, or "
+                f"bundled): {listed}{more}.",
                 *(_dependency_evidence(d) for d, _ in siblings[:5]),
                 severity=Severity.INFO,
             )

@@ -1,0 +1,235 @@
+# Proposal: round 11 gap fixes, agent N2 (P3, P7, P9)
+
+> **Status:** built 2026-11-13, before the rule freeze (2026-11-16 00:00Z), for the owner's
+> review. One commit per target, each with its tests and docs. Not merged.
+> **Builds on:** agent M's gap analysis of what npm and OSV caught and Kitsunox missed (round
+> 11, `~/kitsunox-scratch/r11/GAP-ANALYSIS.md`: proposals P3, P7, P9 there), decision
+> [0015](../decisions/0015-reviewer-verdicts.md) (what counts as a positive, the `probe`
+> tag), [round 6 U](precision-round6-U.md) (`correlate.follow-on`),
+> [round 9 Q](precision-round9-Q.md) (`npm.install-persistence` v7).
+
+## Summary
+
+| # | Commit (stage) | What | Recovered (verdict) | Benign added, live | Positives lost |
+|---|---|---|---|---|---|
+| P3 | `static.shell-startup` v2 (2) + `FOLLOW_ON_ALONE` (4, `STAGE_VERSION` 25) | the `inject` form is never "not new", and is carried to unchanged follow-ons | `@atedone/workspace-context` 0.0.19-0.0.25: 4 unwanted, 3 malicious | 5 unreviewed in ~14 days (~0.35/day): `@heyvamz/carry@0.4.4`, `@muonroi/experience-engine@0.8.2`, `@nxuss/lemma@1.49.1`, `terminal-commander` 0.3.18/0.3.19 (follow-ons) | 0 |
+| P7 | `npm.canary-callback` (2, new artifact rule) | a tiny package's loaded or installed code calls a random-id callback host | `selectlist-polyfill-lite@1.0.1` (unwanted with `probe` by the probe rule; 1.0.0/1.0.2 and `hissakdx-wix-ssr-callback-canary` ×3 are gone, same template) | 0 in 231,298 held tarballs (the only hit is the target) | 0 |
+| P9 | `FOLLOW_ON_ALONE` + `DECLARED_ONLY` (4, `STAGE_VERSION` 26), `npm.dependency.missing` v3, `correlate.follow-on` v2 | a missing (or undeclared missing) dependency is carried to follow-ons that still declare it; bundled dependencies are not missing | `tailwind-kinetix` 2.0.9, 2.0.10 (MAL-2026-19078) | +5 likely benign in 4.4 days (~1.1/day), +1 unverified campaign wrapper | 0 |
+
+## 1. Data and method
+
+- **Targets.** M's residual misses (`clusters.json`, `cands.jsonl.zst`, the previous
+  versions in `cands_prev.jsonl.zst`) and M's recovered tarballs (`M/recovered/`). Replayed
+  with M's harness (`replay_m.py`: `r5/K/replay.py` reading the recovered tarballs first) on
+  this branch's `src/`, plus a model of Stage 4's follow-on pass that uses the branch's own
+  `reported_release`, `ReleaseFollowOn` and `correlate.follow-on` in publish order
+  (`~/kitsunox-scratch/r11/N/N2/scripts/followon_n2.py`).
+- **Live benign cost.** Every distinct tarball in the live ledgers that is still held
+  (`scan_n2.py`): P3 runs Stage 2's own `content_matches` (the version's new contents against
+  its base tarball, `LoadedFiles`) twice, with `ALWAYS_NEW_FORMS` and with it emptied (main);
+  P7 runs the rule on the tree. Held tarballs are roughly what Stage 2 reads.
+- **Replay set and `vm-day1`.** See section 5.
+
+Package text was read as data; nothing was executed and no host was contacted.
+
+## 2. P3: shell start-up injection on every release
+
+**Shape.** `static.shell-startup`'s `inject` form (code that writes files, refers to the home
+directory, and holds a `source` line for a file under `$HOME` next to a start-up file's name,
+or a command prompt under `setopt prompt_subst`) was demoted to LOW as "also in the previous
+version's file" whenever the base had the same match. `@atedone/workspace-context` changed
+`lib/sync.js` in most releases but kept the injected block, so only 0.0.12 and 0.0.18 were
+reported.
+
+**Change.**
+- Stage 2: `ALWAYS_NEW_FORMS = {("static.shell-startup", "inject")}`; documentation and test
+  paths are still LOW. Rule version 2 (the matching is unchanged).
+- Stage 4: `static.shell-startup` joins `FOLLOW_ON_ALONE`, so a reported release's MEDIUM match
+  is carried to a release that keeps the file byte for byte (0.0.22 and 0.0.23 kept 0.0.21's
+  `sync.js`). Only MEDIUM findings are carried; a `hook` match is in `package.json`, which
+  changes with every version, so in practice this carries `inject`.
+- The `hook` form is left "not new" on purpose: `npm.install-persistence` v7 (Stage 3) reads
+  the hook command lines on every version.
+
+**How it differs from `npm.install-persistence` v7.** The Stage 3 rule reads only install code
+(the files the install hooks run, and the hook command lines), on every version, changed or
+not. `static.shell-startup` reads every file Stage 2 reads (runtime code such as
+`@atedone`'s `lib/sync.js`, which no hook runs), but only the contents an update adds; v2 stops
+it from calling an injection that is still there "old". Install code that injects a `source`
+line is seen by both rules: one report with two findings on the same lines, never a second
+report. Restricting v2 to files that loading the package runs was tried and dropped:
+`load_sources` reaches `index.js` and `lib/state.js` of `@atedone`, not `lib/sync.js`, which
+`state.js` reaches through split strings.
+
+**Recovered** (replay + follow-on model, branch code):
+
+| Version | Verdict | Main | Branch |
+|---|---|---|---|
+| `@atedone/workspace-context@0.0.19` | unwanted | score 1 | MEDIUM `static.shell-startup` |
+| 0.0.20 | unwanted | score 1 | MEDIUM `static.shell-startup` |
+| 0.0.21 | unwanted | score 1 | MEDIUM `static.shell-startup` |
+| 0.0.22 | unwanted | score 0 | `correlate.follow-on` (`lib/sync.js` from 0.0.21) |
+| 0.0.23 | malicious | score 0 | `correlate.follow-on` (`lib/sync.js` from 0.0.22) |
+| 0.0.24 | malicious | score 1 | MEDIUM `static.shell-startup` |
+| 0.0.25 | malicious | score 1 | MEDIUM `static.shell-startup` |
+
+Not recovered: 0.0.13-0.0.17, where the start-up file's name (`state.js`) and the `source`
+line (`sync.js`) are in different files (a cross-file form is post-freeze).
+
+**Live cost** (`scan_n2.py`, all 231,298 distinct held tarballs of the live ledgers, 2026-10-29
+to 11-13; the other 244,469 ledger rows' tarballs are pruned). An `inject` match that main
+makes LOW and the branch MEDIUM, in a version that wasn't reported: `@heyvamz/carry@0.4.4`
+(`carry.js`, a completion installer; 0.4.3 is MEDIUM on main already) and
+`@muonroi/experience-engine@0.8.2` (`bin/init.js`, `.experience/setup-thin-client.sh`: a CLI's
+`init` command). From the recorded findings (its tarball is pruned): `@nxuss/lemma@1.49.1`
+(`bin/init.js`). Follow-ons that keep a MEDIUM `inject` file byte for byte within 7 days
+(`p3_follow.py`): `terminal-commander` 0.3.18 and 0.3.19 (`lib/daemon/autostart.js`, from
+0.3.17, which main reports); `@lenne.tech/cli` 1.58.5-1.58.7 keep `bin/postinstall.js`, which
+their postinstall runs, so `npm.install-persistence` v7 reports them already; the pre-push
+scanner `@arifbiswas/...@1.0.16` is reported already. So **5 more reports in about 14 days**,
+none reviewed yet; the CLI `init` commands run when the user asks, so these are likely
+benign. `agent-lookout` (an injected line in `docs/GUIDE.md`) stays LOW as documentation.
+
+## 3. P7: a probe's callback canary
+
+**Shape** (M's cluster C1). `selectlist-polyfill-lite` 1.0.0-1.0.2 and
+`hissakdx-wix-ssr-callback-canary` 1.0.0-1.0.2 (2026-10-29/30, one publisher, npm took all
+six down) are two-file packages ("Callback-only diagnostic module for an authorized ... SSR
+security test") whose `index.js` fetches `https://<26-character id>.ssrf-check.<company>/...` at
+import, with an `https.get` fallback, and exports empty stubs. The host is a bug-bounty
+programme's own out-of-band callback service, so `static.exfil-endpoint`'s list of public OAST
+services doesn't know it. Under the probe rule (decision 0015 addendum of 2026-11-08) a
+marker-only callback is **unwanted with the `probe` tag**, not malicious.
+
+**Rule** (`npm.canary-callback`, Stage 2 artifact rule, `ecosystems/npm/rules/canary.py`,
+MEDIUM 3). All of:
+
+1. the version has at most `MAX_FILES` = 6 files (M's bound; a probe ships its callback and
+   little else);
+2. a file that loading or installing runs (`load_sources` ∪ `install_sources`) or an install
+   hook's command line names a host whose first label is 20-64 letters and digits with at least
+   two of each (`CANARY_HOST`), written as a URL (`https://<id>.x.y`), a whole quoted host
+   (`hostname: '<id>.x.y'`) or a lookup/download command's argument (`nslookup <id>.x.y`);
+3. that file or command uses the network (`NETWORK_USE`: `fetch(`, an `http(s)`/`net`/`dns`/
+   `tls`/`dgram` module, `XMLHttpRequest`, `sendBeacon`, `axios`, `WebSocket`, `curl`, `wget`,
+   `nslookup`, `dig`, `Invoke-WebRequest`);
+4. the host is not one `static.exfil-endpoint` already reports (public OAST), and doesn't end in
+   a file extension (`'<hash>.worker.js'`).
+
+Security tooling that only names such hosts in documentation or tests never fires: those files
+are not loaded (tested with a README and a `test/*.test.js` holding the beacon), and such a
+library is bigger than 6 files.
+
+**Recovered:** `selectlist-polyfill-lite@1.0.1` (the only recovered tarball; replay:
+`score 1` on main, MEDIUM `npm.canary-callback` on the branch). 1.0.0, 1.0.2 and the three
+`hissakdx-*` versions are gone from both registries, so they can't be replayed; M reads them
+as the same template.
+
+**Benign cost:** the rule fires on 1 of 231,298 held live tarballs: the target. M's
+throwaway shape (any code file of a ≤6-file package with such a URL, no network test) was 0 of
+27k too. On `vm-day1` it fires on one sample, `selectlist-polyfill-lite@1.0.1`, which the
+dataset labels **benign** (it was sampled as day-1 benign traffic): under today's verdict rules
+it is an unwanted probe, so the `vm-day1` benign cell gains this one version.
+
+## 4. P9: a still-declared missing dependency in follow-ons
+
+**Shape** (M's cluster C4). `tailwind-kinetix@2.0.8` (2026-10-31) is a Tailwind-wrapper
+release whose dependency `@unipswap/postcss-animate-units` was 404 (the run's
+`correlate-snapshot.json`): `npm.dependency.missing` reports it (M modelled it as caught by
+main). 2.0.9 and 2.0.10 (2026-11-02, MAL-2026-19078) keep the dependency, so it isn't
+"added", no later run looks it up, and nothing else fires (score 0). 2.0.9 also bumps the range
+from `^1.0.4` to `^1.0.5`, so carrying the manifest field by value, as the follow-on pass does
+for an install hook, would not have caught it either.
+
+**Change** (`STAGE_VERSION` 26):
+- `npm.dependency.missing` and `npm.undeclared.missing` join `FOLLOW_ON_ALONE`.
+- `DECLARED_ONLY = {"npm.dependency.missing"}`: its manifest evidence is carried while the
+  follow-on still installs the same package from the registry (`ReleaseFollowOn(declared=...)`,
+  npm's `review.declared_dependency`: the key's alias target, whatever range; gone, or no longer
+  a registry specifier, is not carried). `npm.undeclared.missing`'s evidence is the file that
+  loads the package: carried while it is byte-identical.
+- `correlate.follow-on` v2 lists such an item as "still declared": the follow-on itself was not
+  looked up, and the payload may have been published since (the campaign's next step).
+- `npm.dependency.missing` v3: a dependency also listed in `bundleDependencies` /
+  `bundledDependencies` (or `true`) is INFO, as npm installs it from the tarball. On the live
+  runs on disk the only two reports whose 404s were all bundled are benign (`faberloom`
+  0.1.8-alpha.1, 34 bundled `@deepseek-ai/dsh-*` modules; `badbot@0.1.0`, which another rule
+  reports anyway); without v3 `faberloom@0.1.8-alpha.2` would be a P9 follow-on too.
+
+Not done: looking a kept dependency up again in the follow-on's run. It would say whether the
+payload is still missing or now published, but the dependency lookup plan runs before the
+follow-on pass, and both answers mean the same wrapper.
+
+**Recovered** (replay with the run snapshots' 404s as the dependency lookup, `DEPSTUB=1`, plus
+the follow-on model): `tailwind-kinetix@2.0.8` reported by `npm.dependency.missing` (as on
+main), **2.0.9 and 2.0.10** by `correlate.follow-on` ("package.json:dependencies.
+@unipswap/postcss-animate-units (npm.dependency.missing, still declared)").
+
+**Live cost** (`live_p9.py`, branch code: every release reported with a severe missing finding
+in the runs on disk, its finding regenerated by v3, its carried evidence by
+`reported_release`, then every later release checked by `ReleaseFollowOn` with held tarballs).
+The rule has existed since 2026-11-08, so this covers about 4.4 days:
+
+| Follow-on | Reported release (verdict) | Carried |
+|---|---|---|
+| `@turnit-ou/webshop-search-widget@1.1.2` | 1.1.1 (benign: a vendor's private-registry `@fleet/*`) | `@fleet/design-tokens` |
+| `@ilkal/sdk@0.1.2` | 0.1.1 (benign: unpublished monorepo packages) | `@canvas/app`, `document`, `schema` |
+| `@rapidoc/docusaurus@0.1.0` | 0.0.0 (benign: Docusaurus module aliases) | `src/client.js` (undeclared) |
+| `service-tunnels@0.3.78` | 0.3.76 (benign) | `@aiti-ti/ddns` |
+| `create-duots-neo@1.1.0` | 1.0.0 (benign) | `duots` |
+| `tailwindcss-animationkit@1.0.7` | 1.0.6 (unverified: the campaign's template) | `@vertexdigital/postcss-animationkit` |
+
+So **+5 likely benign (~1.1 a day)** and +1 unverified campaign wrapper; `@ecomiq/storefront@3.4.1`
+(an undeclared Vite alias) gets an INFO "not evaluated" because its files are pruned. The
+benign ones are the same private-registry and monorepo dependencies that make
+`npm.dependency.missing` itself cost ~1.4 benign reports a day: each such release is now
+reported again in its follow-ons for 7 days. A narrower variant for the owner: carry only a
+release with exactly one unrelated missing dependency (every campaign wrapper so far has one),
+which would drop `@ilkal/sdk` only.
+
+## 5. Replay set and `vm-day1`
+
+**Replay set** (the 3,716 verdicted live versions, `r5/K/replay.py` via `k_replay.sh ... full`,
+all three commits; baseline `~/kitsunox-scratch/r9/integ-out/full.jsonl`, which gives the same
+decision as current `main` on every one of the 3,716, M's `main.jsonl` agreeing on the targets):
+
+| | Reported | Malicious | Unwanted | Benign | Unverified | Precision (today's verdicts) |
+|---|---|---|---|---|---|---|
+| main | 1,424 | 49 | 645 | 718 | 12 | 48.74% |
+| branch | 1,429 | 51 | 648 | 718 | 12 | **48.92%** |
+
++5 reported, all positives (`@atedone/workspace-context` 0.0.19, 0.0.20, 0.0.21 unwanted;
+0.0.24, 0.0.25 malicious), 0 benign added, 0 positives or unverified lost. This harness has no
+follow-on pass and copies the recorded dependency findings, so P9 and P3's follow-on part can
+only add here; they are measured in sections 2 and 4. Nor does it replay git dependencies, so
+its `main` count is 1,424 where round 10's own replay has 1,425 (`@eqtylab/vcomp-verify-js`);
+the difference is the same on both sides.
+
+**`vm-day1`** (all 4,944 samples scanned with the branch's Stage 2 code, `vm_touched.py`: an
+`inject` match MEDIUM on the branch and LOW on main, or `npm.canary-callback` firing; then
+`pipeline+4`, the real `Correlated` predictor, on the 17 touched samples with main `d08077a` and
+the branch, `vm_eval_n2.py`, repository comparison off):
+
+- P3 touches 6 malicious `@automagik/genie` samples, all reported by main already.
+- P7 fires on 13 malicious samples (dependency-confusion probes calling interactsh- and
+  Burp-style ids on their own domains, a `canarytokens.com` lookup), all reported already, and
+  on one sample labelled benign: `selectlist-polyfill-lite@1.0.1`, the P7 target itself, which
+  the dataset took from day-1 traffic before anyone looked at it. It is now reported (an
+  unwanted probe under today's rules).
+- Malicious reported: unchanged, 0 lost. Benign reported: +1 (that probe).
+- P9 is not measured here: the per-sample predictor has no follow-on pass, and P9 can only add
+  follow-on reports.
+
+## 6. Owner questions
+
+1. **P9's cost.** About 1.1 likely-benign follow-on reports a day (private-registry and
+   monorepo 404s reported again within 7 days) for 2 MAL versions and the campaign's next
+   wrappers. Keep it, narrow it to releases with exactly one unrelated missing dependency
+   (drops `@ilkal/sdk` only), or drop P9?
+2. **`npm.dependency.missing` v3** (bundled dependencies are INFO) was added to keep P9 from
+   repeating `faberloom`; it also stops the original reports (2 benign). Keep?
+3. **`vm-day1`'s `selectlist-polyfill-lite@1.0.1`** is labelled benign in the dataset but is a
+   marker-only probe (unwanted with `probe` today). Relabel it in the dataset's notes, or leave
+   the benign cell +1?
+4. **P3 after the freeze:** the cross-file `inject` (start-up file named in one file, the
+   `source` line in another: `@atedone` 0.0.13-0.0.17).

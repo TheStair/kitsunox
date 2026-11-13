@@ -99,8 +99,11 @@ STAGE_ID: Final = "correlate"
 # 23 (owner, 2026-11-12): a GitHub dependency a version keeps unchanged is read too.
 # 24 (owner, 2026-11-12): `npm.git-dependency.build-only` explains a git dependency's
 # `npm.install-hook` when it only builds the dependency (`EXPLAINED`).
+# 25 (round 11 P3): `static.shell-startup` (its MEDIUM forms) joins `FOLLOW_ON_ALONE`.
+# 26 (round 11 P9): `npm.dependency.missing` and `npm.undeclared.missing` join `FOLLOW_ON_ALONE`;
+# a missing dependency is carried while it is still declared (`DECLARED_ONLY`).
 # Output without the field is 1.
-STAGE_VERSION: Final = 24
+STAGE_VERSION: Final = 26
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -711,6 +714,17 @@ FOLLOW_ON: Final = "correlate.follow-on"
 #   script or executable under a font/image/media name) is carried on its own, so a follow-on
 #   too small for Stage 2's routing still reports. Live cost 0: across 230,290 tarballs its
 #   only severe findings are `pdf-html5-page-flip` 2.0.1/2.0.2; INFO launchers aren't carried.
+# - P3 (round 11, `docs/proposals/gap-fixes-round11-N2.md`): runtime code that plants a line in
+#   the shell start-up files (`static.shell-startup`, MEDIUM: its `inject` form, which Stage 2
+#   keeps on changed files too, `ALWAYS_NEW_FORMS`; a `hook` match is in `package.json`, whose
+#   bytes change with every version, so it is never carried). `@atedone/workspace-context`
+#   0.0.22 and 0.0.23 kept 0.0.21's `lib/sync.js` byte for byte.
+# - P9 (round 11, same proposal): a dependency the registry didn't have (`npm.dependency.missing`,
+#   carried while the release still declares it, whatever range: `DECLARED_ONLY`) and an
+#   undeclared one it loads (`npm.undeclared.missing`, its file unchanged). The Tailwind-wrapper
+#   campaign's `tailwind-kinetix` 2.0.9 and 2.0.10 (MAL-2026-19078) kept 2.0.8's missing payload
+#   `@unipswap/postcss-animate-units` (bumped from `^1.0.4` to `^1.0.5`), which isn't "added",
+#   so no later run looked it up.
 FOLLOW_ON_ALONE: Final = frozenset(
     {
         "static.known-signature",
@@ -718,8 +732,14 @@ FOLLOW_ON_ALONE: Final = frozenset(
         "static.channel-tagging",
         "npm.install-persistence",
         "static.disguised-file",
+        "static.shell-startup",
+        "npm.dependency.missing",
+        "npm.undeclared.missing",
     }
 )
+# Rules whose manifest evidence a follow-on carries while the field still installs the same thing
+# (`ReleaseFollowOn.declared`), not only while its value is unchanged.
+DECLARED_ONLY: Final = frozenset({"npm.dependency.missing"})
 FOLLOW_ON_DESTINATION: Final = frozenset({"static.hardcoded-ip", "static.exfil-endpoint"})
 FOLLOW_ON_COMPANION: Final = frozenset(
     {
@@ -839,7 +859,9 @@ class ReleaseFollowOn:
     through the run's fetcher, so a replay reads the same bytes) and manifests (`field`: the
     value at an evidence path such as `package.json:scripts.postinstall`, or `ABSENT`; the
     ecosystem's own format). A file is still there when the later release has the same bytes at
-    the same path; a manifest field when it has the same value."""
+    the same path; a manifest field when it has the same value, except that evidence of a
+    `DECLARED_ONLY` rule is compared with `declared` instead (what the field installs, e.g. the
+    dependency's name whatever range is asked), when the ecosystem gives one."""
 
     def __init__(
         self,
@@ -847,10 +869,12 @@ class ReleaseFollowOn:
         field: ManifestField,
         *,
         window: timedelta = FOLLOW_ON_WINDOW,
+        declared: ManifestField | None = None,
     ) -> None:
         self.files = files
         self.field = field
         self.window = window
+        self.declared = declared
 
     def __call__(self, earlier: ReportedRelease, candidate: Candidate) -> FollowOn | None:
         new = candidate.change.new
@@ -869,8 +893,11 @@ class ReleaseFollowOn:
         for item in earlier.evidence:
             path = item.evidence.path or ""
             if item.evidence.kind is EvidenceKind.MANIFEST_FIELD:
-                value = self.field(earlier.release.manifest, path)
-                if value is not ABSENT and value == self.field(new.manifest, path):
+                field = self.field
+                if self.declared is not None and item.rule_id in DECLARED_ONLY:
+                    field = self.declared
+                value = field(earlier.release.manifest, path)
+                if value is not ABSENT and value == field(new.manifest, path):
                     carried.append(item)
             elif trees is not None and path in trees[0] and trees[1].get(path) == trees[0][path]:
                 carried.append(item)

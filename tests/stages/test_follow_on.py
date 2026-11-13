@@ -46,7 +46,12 @@ from kitsunox.stages.correlate import (
     reported_release,
 )
 from kitsunox.stages.ingest import write_jsonl
-from kitsunox.stages.review import CORRELATION_RULES, follow_on_history, manifest_field
+from kitsunox.stages.review import (
+    CORRELATION_RULES,
+    declared_dependency,
+    follow_on_history,
+    manifest_field,
+)
 from kitsunox.stages.static import Unavailable
 
 T0 = datetime(2026, 11, 10, 20, 0, tzinfo=UTC)
@@ -536,6 +541,11 @@ def test_what_the_default_policy_carries() -> None:
     assert [c.rule_id for c in payload_evidence(disguised)] == ["static.disguised-file"]
     launcher = (file_finding("static.disguised-file", "bin/x.exe", Severity.INFO),)
     assert payload_evidence(launcher) == []
+    # Round 11 P3: a shell start-up injection (MEDIUM) is carried; a CLI's LOW write is not.
+    planted = (file_finding("static.shell-startup", "lib/sync.js"),)
+    assert [c.rule_id for c in payload_evidence(planted)] == ["static.shell-startup"]
+    path_line = (file_finding("static.shell-startup", "bin/setup.js", Severity.LOW),)
+    assert payload_evidence(path_line) == []
 
 
 # Follow-ons of earlier runs' reported releases.
@@ -622,3 +632,72 @@ def test_a_damaged_earlier_index_is_skipped(tmp_path: Path) -> None:
     data.run_dir("now").mkdir()
     history = follow_on_history(data, "now", manifest("now", now))
     assert sorted(history) == [("flip", "2.0.1")]
+
+
+# Round 11 P9: a dependency the registry didn't have, carried while it is still declared.
+
+
+def missing_entry(spec: str = "^1.0.4") -> ReportedRelease:
+    manifest = {"dependencies": {"@kx-payload/postcss-units": spec, "postcss": "^8"}}
+    finding = Finding(
+        rule_id="npm.dependency.missing",
+        rule_version=3,
+        severity=Severity.MEDIUM,
+        weight=3.0,
+        title="t",
+        explanation="e",
+        evidence=(
+            Evidence(
+                kind=EvidenceKind.MANIFEST_FIELD,
+                path="package.json:dependencies.@kx-payload/postcss-units",
+                after=f"@kx-payload/postcss-units: {spec}",
+            ),
+        ),
+    )
+    entry = reported_release(release("2.0.8", 0, finding, forwarded=True, manifest=manifest))
+    assert entry is not None and [c.rule_id for c in entry.evidence] == ["npm.dependency.missing"]
+    return entry
+
+
+def test_a_missing_dependency_is_carried_while_it_is_still_declared() -> None:
+    check = ReleaseFollowOn(Files({}), manifest_field, declared=declared_dependency)
+    bumped = {"dependencies": {"@kx-payload/postcss-units": "^1.0.5", "postcss": "^8"}}
+    follow = check(missing_entry(), release("2.0.9", 60, manifest=bumped))
+    assert follow is not None and [c.evidence.path for c in follow.carried] == [
+        "package.json:dependencies.@kx-payload/postcss-units"
+    ]
+    dropped = check(missing_entry(), release("2.0.9", 60, manifest={"dependencies": {}}))
+    assert dropped is not None and dropped.carried == ()
+    aliased = {"dependencies": {"@kx-payload/postcss-units": "npm:postcss@^8"}}
+    other = check(missing_entry(), release("2.0.9", 60, manifest=aliased))
+    assert other is not None and other.carried == ()
+    # Without the npm hook, a changed range is a changed value: not carried.
+    plain = ReleaseFollowOn(Files({}), manifest_field)(
+        missing_entry(), release("2.0.9", 60, manifest=bumped)
+    )
+    assert plain is not None and plain.carried == ()
+
+
+def test_npm_declared_dependency() -> None:
+    manifest: dict[str, object] = {
+        "dependencies": {"a": "^1", "b": "npm:c@2", "g": "github:o/r"},
+        "scripts": {"postinstall": "node a.js"},
+    }
+    assert declared_dependency(manifest, "package.json:dependencies.a") == "a"
+    assert declared_dependency(manifest, "package.json:dependencies.b") == "c"
+    assert declared_dependency(manifest, "package.json:dependencies.g") is ABSENT
+    assert declared_dependency(manifest, "package.json:dependencies.z") is ABSENT
+    assert declared_dependency(manifest, "package.json:scripts.postinstall") == "node a.js"
+
+
+def test_the_rule_says_a_carried_dependency_is_still_declared() -> None:
+    follow = FollowOn(
+        previous="2.0.8",
+        previous_reason="score 3; medium: npm.dependency.missing",
+        hours=38.0,
+        carried=missing_entry().evidence,
+    )
+    (finding,) = FollowOnRelease().evaluate_candidate(
+        release("2.0.9", 60), CorrelationContext(as_of=T0, follow_on=follow)
+    )
+    assert "(npm.dependency.missing, still declared)" in finding.explanation

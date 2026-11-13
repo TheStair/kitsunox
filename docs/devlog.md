@@ -56,6 +56,46 @@ scanner; each was rebuilt as a real rule and re-measured on every held live tarb
 - Carry `static.silent-native-load` to unchanged follow-ons (`FOLLOW_ON_ALONE`, Stage 4):
   `strutil-helpers-core` 1.0.2-1.0.5 are never read by Stage 2.
 - Verdicts and reports for the 7 redirector versions.
+## 2026-11-13: Round 11 N2: shell injection on every release, probe canaries, carried missing dependencies
+
+**Stage(s):** Stage 2 (`static.shell-startup` v2, new `npm.canary-callback`), Stage 4
+(`FOLLOW_ON_ALONE`, `DECLARED_ONLY`, `npm.dependency.missing` v3; stage version 26)
+**Context:** Agent M's gap analysis listed what npm and OSV caught and Kitsunox missed; the
+owner approved proposals P3, P7 and P9 for agent N2 before the freeze. Details and numbers in
+[gap-fixes-round11-N2](proposals/gap-fixes-round11-N2.md).
+
+### Decisions
+- **P3: the `inject` form of `static.shell-startup` is never "not new"**, and Stage 4 carries a
+  reported release's match to unchanged follow-ons. `@atedone/workspace-context` changed
+  `lib/sync.js` in most releases but kept the planted block, so the match was demoted as
+  "also in the previous version's file". The `hook` form stays demoted: `npm.install-persistence`
+  v7 already reads hook lines on every version. Restricting it to files loading runs was
+  rejected: `load_sources` doesn't reach `sync.js` (split-string spawn).
+- **P7: a new artifact rule, `npm.canary-callback`**, not another `exfil-endpoint` host: the
+  probe's canary is a bug-bounty programme's private callback domain, so the signal is the
+  shape (a random-id first label, a package of at most 6 files, loaded or installed code that
+  uses the network), not a name list.
+- **P9: a missing dependency is carried by name, not by value.** `tailwind-kinetix@2.0.9`
+  bumped its missing payload's range (`^1.0.4` → `^1.0.5`), so value equality, as for install
+  hooks, would have missed it. Bundled dependencies stop counting as missing (v3).
+
+### Challenges
+- **The P3 follow-on was needed:** 0.0.22 and 0.0.23 (malicious) didn't change `sync.js` at all,
+  so Stage 2 never re-read it; only the follow-on pass reaches them (found with a follow-on model
+  built from the branch's own `reported_release` / `ReleaseFollowOn`).
+- **P9 costs more than M estimated ("small"):** carrying the rule's private-registry and
+  monorepo 404s into follow-ons adds ~1.1 likely-benign reports a day on the live runs on disk.
+  Left to the owner, with a narrower variant (one missing dependency only).
+
+### Evaluation snapshot
+- Replay set (3,716): 1,424 → 1,429 reported, +5 positives, 0 benign, 0 lost; precision
+  (today's verdicts) 48.74% → 48.92%. Targets: atedone 0.0.19-0.0.25 (7),
+  `selectlist-polyfill-lite@1.0.1`, `tailwind-kinetix` 2.0.9/2.0.10.
+- Live held tarballs (231,298): P3 +5 unreviewed in ~14 days; P7 fires only on its target.
+
+### Open questions / next steps
+- Owner: P9's ~1.1 benign a day; the cross-file `inject` variant (atedone 0.0.13-0.0.17) after
+  the freeze.
 
 ## 2026-11-13: Four live malware finds, malicious tarballs kept for good, sample bounds
 

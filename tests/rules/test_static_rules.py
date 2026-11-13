@@ -744,6 +744,36 @@ def test_channel_follow_is_never_not_new_but_shell_startup_is() -> None:
     assert _demoted(rc, "package.json", frozenset({_key(rc)})).severity is Severity.LOW
 
 
+_INJECT = (
+    "const line = 'source \"$HOME/.cache/x/init.sh\"';\n"
+    "fs.writeFileSync(path.join(env.HOME, shell === 'bash' ? '.bashrc' : '.zshrc'), line)"
+)
+
+
+def test_shell_startup_inject_is_never_not_new() -> None:
+    """v2 (round 11 P3): code that plants a sourced file in the start-up files does it again in
+    every release; the `hook` form stays "not new" (Stage 3's install-persistence reads hooks
+    on every version), and documentation stays documentation."""
+    from kitsunox.core.models import Severity
+    from kitsunox.rules.static import ShellStartup
+    from kitsunox.stages.static import ALWAYS_NEW_FORMS, _demoted, _key, always_new
+
+    matches = [m for m in analyse(_INJECT.encode()) if m.rule_id == "static.shell-startup"]
+    (inject,) = [m for m in matches if ShellStartup.form(m.explanation) == "inject"]
+    (code,) = [m for m in matches if ShellStartup.form(m.explanation) == "code"]
+    assert always_new(inject) and not always_new(code)
+    assert (ShellStartup.id, "inject") in ALWAYS_NEW_FORMS
+    assert _demoted(inject, "lib/sync.js", frozenset({_key(inject)})).severity is Severity.MEDIUM
+    assert _demoted(inject, "docs/GUIDE.md", frozenset({_key(inject)})).severity is Severity.LOW
+    (hook,) = [
+        m
+        for m in analyse(b'{"scripts": {"postinstall": "echo PLACEHOLDER >> ~/.zshrc"}}')
+        if m.rule_id == "static.shell-startup"
+    ]
+    assert ShellStartup.form(hook.explanation) == "hook" and not always_new(hook)
+    assert ShellStartup.form("no form named") is None
+
+
 @pytest.mark.parametrize(
     "text",
     [

@@ -26,6 +26,7 @@ from typing import Final
 
 from kitsunox.core.models import Evidence, EvidenceKind, Finding, Severity, VersionSnapshot
 from kitsunox.core.rules import BaseRule
+from kitsunox.ecosystems.npm.rules.canary import CanaryCallback
 from kitsunox.ecosystems.npm.rules.hosted_page import HtmlRedirector
 from kitsunox.ecosystems.npm.rules.metadata import INSTALL_HOOKS, scripts, snippet
 from kitsunox.ecosystems.npm.rules.native_load import SilentNativeLoad
@@ -403,7 +404,8 @@ def _whole(snapshot: VersionSnapshot, files: Mapping[str, bytes]) -> bool:
 # (ecosystem-agnostic, `rules/disguised.py`, `rules/channels.py`, `rules/host_ip.py`) run here
 # because they read every file of every version, not only the contents an update adds; so do
 # the npm rules in their own modules (`static.html-redirector`,
-# `hosted_page.py`; `static.silent-native-load`, `native_load.py`).
+# `hosted_page.py`; `static.silent-native-load`, `native_load.py`); `npm.canary-callback`
+# (`canary.py`) because it reads the files loading and installing run, of a whole tiny package.
 RULES: Final = (
     HiddenInstallScript(),
     DeclaredSizeMismatch(),
@@ -414,4 +416,5 @@ RULES: Final = (
     HostIpIdentity(),
     HtmlRedirector(),
     SilentNativeLoad(),
+    CanaryCallback(),
 )
