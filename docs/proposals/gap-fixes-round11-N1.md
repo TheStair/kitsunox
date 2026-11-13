@@ -101,3 +101,8 @@ as in `strutil-helpers-core`), which is the shape's point: loaded for what loadi
 3. **Severity of `static.html-redirector`**: MEDIUM, as designed. It harms visitors, not
    installers; whether such packages count as malicious for the evaluation is the verdict
    policy's (all verdicted so far: malicious).
+
+**Owner's answers (2026-11-13):** merge all four rules. (1) Yes: build and measure the
+`FOLLOW_ON_ALONE` carry for `static.silent-native-load` as a follow-up change. (2) Done by
+the integrator: all 7 recorded malicious (same template, read as data; `@isla5mic/test`
+shares aasics's dead-drop and AES keys) and reported. (3) MEDIUM kept.

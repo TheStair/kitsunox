@@ -231,5 +231,11 @@ the branch, `vm_eval_n2.py`, repository comparison off):
 3. **`vm-day1`'s `selectlist-polyfill-lite@1.0.1`** is labelled benign in the dataset but is a
    marker-only probe (unwanted with `probe` today). Relabel it in the dataset's notes, or leave
    the benign cell +1?
+**Owner's answers (2026-11-13):** merge P3, P7 and P9 as built (P9 kept at about 1.1 benign
+a day for the 2 MAL versions); keep `npm.dependency.missing` v3; relabel
+`selectlist-polyfill-lite@1.0.1` as a probe (unwanted with `probe`). The dataset file is not
+edited (it is built from the OSV label set and records its hash): results count the sample as
+a probe, so `vm-day1` benign is unchanged by round 11.
+
 4. **P3 after the freeze:** the cross-file `inject` (start-up file named in one file, the
    `source` line in another: `@atedone` 0.0.13-0.0.17).
