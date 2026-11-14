@@ -302,6 +302,7 @@ Report follow-on releases separately (decision 0007).
 Stage 2 is `stages/static.py` with rules in `rules/static.py` and its eval predictors in
 `evaluation/static_eval.py`. The end-to-end predictor is `pipeline`. See `docs/stages/static.md`.
 What Stage 2 reads (new packages, grown updates, watched, flagged; plus updates of at most 64 KiB; a 16 MB cap, 32 MB with an install hook) is decision 0008.
+A hooked version over 32 MB is read partially (decision 0021): it is not compared with its repository, and it is no base for a version read whole.
 Stage 3 is `stages/ast.py` (+ npm wiring in `stages/code.py`), parsing JS/TS with tree-sitter
 in `lang/javascript.py`; see `docs/stages/ast.md`. tree-sitter 0.26.0 crashes; it is pinned below.
 Stage 4 is `stages/correlate.py` (+ npm wiring in `stages/review.py`): it reads every triaged
@@ -332,7 +333,10 @@ Key invariants:
   exception is output: `collect`'s daily Discord summary (`notify.py`, decision 0011), posted with
   httpx after the tick. The webhook URL is a secret, and package names in it are escaped.
 - Analysis never reads the clock; it uses the run's `as_of`.
-- Tarballs are only ever extracted with `extract_tar_gz`.
+- Tarballs are only ever extracted with `extract_tar_gz`. The one other reader is
+  `stream_tar_gz` (decision 0021), which reads a hooked version over the 32 MB cap once as a
+  stream, keeps its text and code and only hashes the rest; it shares `extract_tar_gz`'s
+  guards and never writes or runs anything.
 - Stage 0 must never crash on one package: per-package errors go to `skipped.jsonl`.
 - A systemd user timer (`kitsunox-collect.timer`, from `kitsunox schedule systemd`; launchd's
   `schedule plist` on macOS) runs `kitsunox collect` hourly against `data/`:

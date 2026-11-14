@@ -2,6 +2,51 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-14 (integration): partial reads merged; celest-browser republished
+
+**Stage(s):** Stages 2-4 (round 11 O merge), live review queue
+**Context:** The owner chose option B for partial reads ("Build B, then merge") with the budget
+kept as built. O rebased onto main `35be883`, built B and re-measured; this entry records the
+merge and the day's queue.
+
+### Decisions
+- **Merged round 11 O (head `7c0e9ad`, fast-forward onto `35be883`)**: hooked versions from
+  32 MB to 1 GiB are read partially (decision 0021, Stage 2 `STAGE_VERSION` 27), are not
+  compared with their repository, and are no base for a version read whole (option B). Gates
+  re-run before the merge: ruff clean, 297 files formatted, mypy clean on 216 files, 3,697
+  tests passed. Against `35be883`: `vm-day1` 19 -> 85 of 88 affected malicious, 0 positives lost
+  on any subset, `doc-detective@5.0.0-v5-rc.16` still reported. The cost is +81 unverdicted
+  reports on the 2026-11-11 live day (29 packages, mostly `npm.install-download`) and about
+  28.7 GB more downloaded a day, which 1-day retention absorbs. CLAUDE.md now names
+  `stream_tar_gz` as the one tarball reader besides `extract_tar_gz`.
+- **@xingjisoft/neutrino-hlg@0.1.2 recorded benign** (a Windows `dotnet build` of shipped
+  source plus a Start Menu shortcut, nothing downloaded or launched); left to the owner as a
+  judgement call, since no ruling covers shortcuts.
+
+### Challenges
+- **celest-browser came back under a new account within a day.** npm removed celest-browser
+  (stevendolerhas, MAL-2026-19238) on 2026-11-13. On 2026-11-14 at 02:15-02:33 UTC dcdaw555
+  published the same code as `testpackage83` 1.0.0 and 1.0.1: the postinstall downloads a
+  "Chromium" to `~/.celest/bin/chrome` from a raw IP (`185.212.128.180`, 1.0.0) or the file
+  share sendit.sh (1.0.1) and launches it through puppeteer on first use; the URL on
+  `src/download2.js` line 8 is the only change between them. The queue caught both an hour
+  after publication; recorded malicious, reports written for the owner (npm and sendit.sh).
+  The payload was not fetched (neither host is a code host).
+  - **Why it worked:** the existing install-download and exec rules fire on the code, not the
+    name; reviewers were also told the family's markers (`CELEST_SKIP_DOWNLOAD`, `.celest`).
+
+### Evaluation snapshot
+- Queue 2026-11-14 to 07:04Z: 39 + 37 versions reviewed: 2 malicious (testpackage83), 58
+  unwanted, 16 benign, 0 unverified. Benign false positives: a printed `curl | sh` hint
+  (nexo-palace), placeholder hosts in tests and translations (service-tunnels), commercial
+  obfuscation with harmless content (two boweisoftware packages), a git dependency whose
+  prepublish is a stock webpack build (sliftutils).
+
+### Open questions / next steps
+- Owner calls still open: neutrino-hlg (shortcut), plus the five listed on 2026-11-13.
+- Draw the 2026-11-14 label-blind sample after the first 2026-11-15 tick.
+- No merges after 2026-11-15; rule freeze 11-16 to 11-23.
+
 ## 2026-11-13 (integration): round 11 merged, seven more phishing redirectors, 1-day retention
 
 **Stage(s):** Stages 2 and 4 (round 11 N1 + N2), live review, collection retention
