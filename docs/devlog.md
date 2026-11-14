@@ -138,6 +138,25 @@ owner approved proposals P3, P7 and P9 for agent N2 before the freeze. Details a
 ### Open questions / next steps
 - Owner: P9's ~1.1 benign a day; the cross-file `inject` variant (atedone 0.0.13-0.0.17) after
   the freeze.
+## 2026-11-14 (round 11 O): owner chose option B for partial reads; re-measured on main
+
+**Stage(s):** Stages 2 and 3 (`static.partial_base`, `diff_base`), evaluation (`as_read`)
+**Context:** The owner answered the questions of the [partial-reads proposal](proposals/partial-reads-round11-O.md):
+option B, budget as built, no repository comparison of partial reads, no hookless partial
+reads. Rebased onto main `35be883` (round 11 N1/N2): `STAGE_VERSION` 27.
+
+### Decisions
+- **Option B**: a partially read base is no base for a version read whole; it counts as
+  unavailable with the reason a skipped base always had. Every version read whole before is
+  decided exactly as before, so partial reads only change versions that were unread. Option A
+  lost `doc-detective@5.0.0-v5-rc.16` (unwanted, reported only because its base was unread).
+
+### Evaluation snapshot
+- Against main `35be883`: live day 2026-11-11 0 positives lost, 0 benign added (+81
+  unverdicted); replay set 0 positives lost, 6 benign added, 12 benign leave; `vm-day1`
+  malicious 19 -> 85 of 88 affected (0 lost), 1 benign added. `doc-detective` rc.16 stays
+  reported.
+
 ## 2026-11-13 (round 11 O): partial reads of large hooked versions
 
 **Stage(s):** Stage 2 (`ArtifactFiles`, `util/archive.stream_tar_gz`, `util/partial.py`,

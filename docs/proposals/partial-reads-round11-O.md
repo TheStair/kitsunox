@@ -151,6 +151,29 @@ What the 66 add: `npm.install-script-code` 65, `static.exfil-endpoint` HIGH 43,
 evaluation (all files new), as for most DataDog samples. The other 4,852 samples are
 unaffected by construction.
 
+## Owner's answers (2026-11-14) and option B, measured against main `35be883`
+
+The owner chose **option B** (question 2), kept the budget as built (64 MB, nothing skipped;
+question 1), kept the repository comparison of partial reads off (3), declined hookless
+partial reads for now (4) and will add the `stream_tar_gz` line to CLAUDE.md at merge (5).
+The branch was rebased onto main `35be883` (round 11 N1 and N2; `STAGE_VERSION` 27) and B
+built in `ff41970`: `static.partial_base` / `diff_base` make a partially read base unavailable,
+with the reason a skipped base always had, to a version read whole, in Stages 2 and 3; the
+evaluation keeps the base it always gave such a version. Every version read whole before is
+decided as before. Re-measured, same subsets, main `35be883` vs the branch at `ff41970`:
+
+| Set | Positives gained | Positives lost | Benign |
+|---|---|---|---|
+| Live day 2026-11-11 (839 affected) | 0 verdicted (+81 unverdicted reports, 29 packages, as before) | **0** | 0 added, 0 lost (9 stay reported) |
+| Replay set (108 affected) | 0 | **0** | 6 added (`signetai` x6), 12 leave; 1 unverified leaves (`@yalehwang/cloudpit`) |
+| `vm-day1` (92 affected) | **+66 malicious** (19 -> 85 of 88) | **0** | 1 added (`instar@1.3.1505`) |
+| Sample misses (3) | +1 unwanted (`@plannotator/opencode@0.28.45`) | 0 | - |
+
+`doc-detective@5.0.0-v5-rc.16` **stays reported** (score 6, `npm.install-script-code`), as on
+main. The live day's 3 `@lark-codem` benign reports stay too, and the 3 unwanted versions
+reported on main stay reported. Bandwidth and disk are unchanged (994 artifacts, 28.7 GB
+downloaded, 5.88 GB of re-packs; B only changes which base a version is compared with).
+
 ## Limits
 
 - A binary payload, text over 16 MB, or text past 64 MB of more important text is not read.
@@ -159,7 +182,7 @@ unaffected by construction.
   and the follow-on pass were not re-run (the comparison is off for partial reads anyway).
 - The replay set and `vm-day1` were re-run on the affected versions only.
 
-## Owner questions
+## Owner questions (answered 2026-11-14, see above)
 
 1. **Disk.** Re-packs add ~5.9 GB a day (~12 GB at 2-day retention) on a VM with ~30-37 GB
    free. Accept, or keep less: a 32 MB budget, or no rank-3 text (documentation, types, source
