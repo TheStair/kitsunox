@@ -145,6 +145,8 @@ class RetryPolicy:
 
 
 DEFAULT_RETRY = RetryPolicy()
+# Per-read timeout: how long a response may stall between bytes before an attempt fails.
+DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 
 class HttpFetcher:
@@ -159,6 +161,7 @@ class HttpFetcher:
         immutable_index: Path | None = None,
         client: httpx.Client | None = None,
         retry: RetryPolicy = DEFAULT_RETRY,
+        timeout: httpx.Timeout = DEFAULT_TIMEOUT,
         max_bytes: int = 256 * 1024 * 1024,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -179,7 +182,7 @@ class HttpFetcher:
         self._next_slot: dict[str, float] = {}
         self._client = client or httpx.Client(
             headers={"User-Agent": USER_AGENT},
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=timeout,
             follow_redirects=True,
         )
 

@@ -2,6 +2,32 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-14 (evening): watchlist fetch timeout raised to 120 s
+
+**Stage(s):** Stage 0 (weekly watchlist refresh in `collect`)
+**Context:** The weekly watchlist rebuild came due at the 17:05Z tick and failed on six ticks in a
+row (17:28Z to 22:37Z), each time with `ReadTimeout` after 5 attempts on one page (pages 31, 32,
+56, 78, 91, 127 of ~130).
+
+### Challenges
+- **Each failure cost a tick 15-30 min.** The step is best-effort, so collection carried on with
+  the 2026-11-07 list, but every tick retried the whole build: the 22:10Z tick took 62 min, over
+  the hourly interval.
+  - **Cause:** ecosyste.ms ranking pages are 80-100 MB each (page 127: 96 MB in 20.7 s when
+    probed), and the server sometimes stalls mid-page for longer than the fetcher's 30 s read
+    timeout. Five stalls on any one page threw away the whole build.
+  - **Resolution:** `HttpFetcher` takes a `timeout` (default unchanged, `DEFAULT_TIMEOUT`, 30 s
+    read), and `record_watchlist` passes `WATCHLIST_TIMEOUT` (120 s read, 10 s connect). The
+    timeout changes no output, so runs stay deterministic. Tests:
+    `test_own_client_uses_the_given_read_timeout`,
+    `test_record_watchlist_allows_long_stalls_on_its_large_pages`.
+  - **Why it worked:** unproven until the next tick's rebuild; to be confirmed in the log
+    (`watchlist: built ...`).
+
+### Open questions / next steps
+- If 120 s is still not enough, resume a failed build from its last page instead of restarting,
+  or wait some hours after a failed build before retrying.
+
 ## 2026-11-14 (integration): partial reads merged; celest-browser republished
 
 **Stage(s):** Stages 2-4 (round 11 O merge), live review queue

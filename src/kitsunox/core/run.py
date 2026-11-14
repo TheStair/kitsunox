@@ -246,6 +246,11 @@ def make_run_id(ecosystem: str, as_of: datetime) -> str:
     return f"{as_of.astimezone(UTC):%Y%m%dT%H%M%SZ}-{ecosystem}"
 
 
+# The ranking pages are 80-100 MB each and the server sometimes stalls mid-page for over 30 s;
+# five such stalls on any of ~130 pages lost whole builds (six ticks on 2026-11-14).
+WATCHLIST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
+
 def record_watchlist(
     data: DataDir,
     *,
@@ -259,7 +264,11 @@ def record_watchlist(
     store and is discarded; only the derived list is kept (and hashed into each run)."""
     with tempfile.TemporaryDirectory(prefix="kitsunox-watchlist-") as tmp:
         fetcher = HttpFetcher(
-            store=BlobStore(Path(tmp)), snapshot=Snapshot(), mode=FetchMode.RECORD, client=client
+            store=BlobStore(Path(tmp)),
+            snapshot=Snapshot(),
+            mode=FetchMode.RECORD,
+            client=client,
+            timeout=WATCHLIST_TIMEOUT,
         )
         try:
             watchlist = build_watchlist(

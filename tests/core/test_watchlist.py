@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from conftest import Router
-from kitsunox.core.run import DataDir, record_watchlist
+from kitsunox.core.run import WATCHLIST_TIMEOUT, DataDir, record_watchlist
 from kitsunox.core.store import RecordStore
 from kitsunox.core.watchlist import ECOSYSTEMS_URL, Watchlist, build_watchlist
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
@@ -124,3 +124,28 @@ def test_record_watchlist_keeps_only_the_derived_list(tmp_path: Path, router: Ro
     assert path == tmp_path / "watchlists" / "npm" / "20261027T060000Z.json"
     assert data.watchlists.load("npm", watchlist.id, sha256=sha) == watchlist
     assert not (tmp_path / "blobs").exists()  # raw pages not persisted
+
+
+def test_record_watchlist_allows_long_stalls_on_its_large_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[httpx.Timeout] = []
+
+    class Stop(Exception):
+        pass
+
+    def fake_build(fetcher: HttpFetcher, **_: object) -> Watchlist:
+        seen.append(fetcher._client.timeout)
+        raise Stop
+
+    monkeypatch.setattr("kitsunox.core.run.build_watchlist", fake_build)
+    with pytest.raises(Stop):
+        record_watchlist(
+            DataDir(tmp_path),
+            ecosystem="npm",
+            registry="npmjs.org",
+            built_at=BUILT,
+            min_monthly_downloads=43_000,
+        )
+    assert seen == [WATCHLIST_TIMEOUT]
+    assert WATCHLIST_TIMEOUT.read is not None and WATCHLIST_TIMEOUT.read > 30.0

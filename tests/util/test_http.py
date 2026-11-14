@@ -9,6 +9,7 @@ import pytest
 
 from conftest import Router
 from kitsunox.util.http import (
+    DEFAULT_TIMEOUT,
     BlobStore,
     FetchedResponse,
     FetchError,
@@ -378,3 +379,20 @@ def test_the_derived_stream_has_a_size_limit(tmp_path: Path, router: Router) -> 
     fetcher = make_fetcher(tmp_path, router.client())
     with pytest.raises(FetchError, match="exceeds 10 bytes"):
         derived(fetcher, max_bytes=10)
+
+
+def test_own_client_uses_the_given_read_timeout(tmp_path: Path) -> None:
+    default = HttpFetcher(store=BlobStore(tmp_path), snapshot=Snapshot(), mode=FetchMode.RECORD)
+    slow = HttpFetcher(
+        store=BlobStore(tmp_path),
+        snapshot=Snapshot(),
+        mode=FetchMode.RECORD,
+        timeout=httpx.Timeout(120.0, connect=10.0),
+    )
+    try:
+        assert default._client.timeout == DEFAULT_TIMEOUT
+        assert slow._client.timeout.read == 120.0
+        assert slow._client.timeout.connect == 10.0
+    finally:
+        default.close()
+        slow.close()
