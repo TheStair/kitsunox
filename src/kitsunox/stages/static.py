@@ -467,7 +467,20 @@ def analyse_batch(
     the evaluation (one version against its own previous release) gets it LOW
     (`docs/proposals/precision-round9-S.md`, S2). When the previous release's files are
     unavailable, the base is used, as before, and the reason says so."""
-    base = trees(batch.base) if batch.base else None
+    # A base read partially is no base for a batch with a version read whole (`partial_base`).
+    whole = next(
+        (
+            c.change.new
+            for c in batch.versions
+            if batch.base is not None and partial_base(trees, c.change.new, batch.base)
+        ),
+        None,
+    )
+    base = (
+        (diff_base(trees, whole, batch.base) if whole is not None else trees(batch.base))
+        if batch.base
+        else None
+    )
     base_note = ""
     if isinstance(base, Unavailable):
         base_note = f"; base {_unavailable(base)}"
@@ -489,9 +502,13 @@ def analyse_batch(
             batch.base is not None and previous.ref.version == batch.base.ref.version
         ):
             return base_files
-        if last and last[0][0] == previous.ref.version:
+        if (
+            last
+            and last[0][0] == previous.ref.version
+            and not partial_base(trees, candidate.change.new, previous)
+        ):
             return BaseFiles(last[0][1])
-        tree = trees(previous)
+        tree = diff_base(trees, candidate.change.new, previous)
         if isinstance(tree, Unavailable):
             note = f"; previous {previous.ref.version} {_unavailable(tree)}"
             previous_notes[candidate.change.new.ref.version] = note
@@ -660,6 +677,33 @@ def read_mode(
     return None
 
 
+def partial_base(
+    trees: Callable[[VersionSnapshot], Tree | Unavailable],
+    version: VersionSnapshot,
+    base: VersionSnapshot,
+) -> bool:
+    """Whether `base` must not serve as `version`'s diff base: `version` is read whole and
+    `base` partially (decision 0021, owner option B, 2026-11-14). Such a base counts as
+    unavailable, as it was before partial reads existed, so every version that was read whole
+    before is decided exactly as before. Only a `trees` that knows read modes
+    (`ArtifactFiles.read_mode`) says so."""
+    modes = getattr(trees, "read_mode", None)
+    return modes is not None and modes(version) == "whole" and modes(base) == "partial"
+
+
+def diff_base(
+    trees: Callable[[VersionSnapshot], Tree | Unavailable],
+    version: VersionSnapshot,
+    base: VersionSnapshot,
+) -> Tree | Unavailable:
+    """`trees(base)` as `version`'s diff base (`partial_base`: unavailable, with the reason a
+    skipped base always had, when `version` is read whole and `base` partially)."""
+    if partial_base(trees, version, base):
+        size = base.artifact.unpacked_size if base.artifact else None
+        return Unavailable(reason=f"declared unpacked size {size} bytes")
+    return trees(base)
+
+
 class ArtifactFiles:
     """Fetch a version's files through its ecosystem, skipping versions that declare an
     unpacked size over `max_bytes`, or `hook_max_bytes` for a version with an install hook
@@ -685,13 +729,20 @@ class ArtifactFiles:
         self.hook_max_bytes = hook_max_bytes
         self.partial_max_bytes = partial_max_bytes
 
+    def read_mode(self, snapshot: VersionSnapshot) -> ReadMode | None:
+        """`read_mode` under this reader's limits; "partial" only when the ecosystem can."""
+        mode = read_mode(snapshot, self.max_bytes, self.hook_max_bytes, self.partial_max_bytes)
+        if mode == "partial" and not isinstance(self.ecosystem, PartialArtifacts):
+            return None
+        return mode
+
     def __call__(self, snapshot: VersionSnapshot) -> Tree | Unavailable:
         artifact = snapshot.artifact
         if artifact is None:
             return Unavailable(reason="no artifact")
-        mode = read_mode(snapshot, self.max_bytes, self.hook_max_bytes, self.partial_max_bytes)
+        mode = self.read_mode(snapshot)
         ecosystem = self.ecosystem
-        if mode is None or (mode == "partial" and not isinstance(ecosystem, PartialArtifacts)):
+        if mode is None:
             return Unavailable(reason=f"declared unpacked size {artifact.unpacked_size} bytes")
         try:
             if mode == "partial" and isinstance(ecosystem, PartialArtifacts):

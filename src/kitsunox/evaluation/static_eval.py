@@ -190,7 +190,13 @@ class StaticRules:
         base: Tree | None = self._tarball(change.previous.artifact) if change.previous else {}
         if base is None:
             self._note("base unavailable (all files treated as new)")
-        elif change.previous is not None and isinstance(base, ArtifactTree):
+        elif (
+            change.previous is not None
+            and isinstance(base, ArtifactTree)
+            and read_mode(change.new) == "partial"
+        ):
+            # A version read whole keeps the base the evaluation always gave it (decision
+            # 0021, option B: partial reads change nothing for a version read whole).
             base = as_read(change.previous, base)
         stage2 = self._stage2(change, new, base) if self.include_stage2 else None
         stage3 = None

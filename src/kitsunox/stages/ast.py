@@ -43,7 +43,7 @@ from kitsunox.lang.javascript import (
     language_for,
 )
 from kitsunox.stages.ingest import write_jsonl
-from kitsunox.stages.static import ArtifactFiles, Unavailable
+from kitsunox.stages.static import ArtifactFiles, Unavailable, partial_base
 from kitsunox.stages.triage import at_least
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
@@ -263,11 +263,13 @@ def analyse_batch(
             previous is not None
             and previous.ref.version not in profiles
             and previous.ref.version not in unavailable
+            and not partial_base(trees, snapshot, previous)
         ):
             load(previous)
         before, install_before, files_before = (
             profiles.get(previous.ref.version, (None, None, None))
-            if previous
+            # A base read partially is no base for a version read whole (decision 0021).
+            if previous and not partial_base(trees, snapshot, previous)
             else (None, None, None)
         )
         tree = trees(snapshot)

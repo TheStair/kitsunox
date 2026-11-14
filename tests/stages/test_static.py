@@ -40,6 +40,7 @@ from kitsunox.stages.static import (
     has_hook,
     needs_retry,
     new_contents,
+    partial_base,
     partial_policy,
     read_mode,
     record_static,
@@ -846,3 +847,53 @@ def test_the_files_a_hook_names_are_kept_first() -> None:
     archive = stream_tar_gz([tarball], tight, strip_components=1)
     assert "setup.js" in archive.files
     assert [o.path for o in archive.omitted] == ["lib/0.js"]
+
+
+class ModeTrees:
+    """Trees that know read modes, as `ArtifactFiles` does: `partial` names the versions read
+    partially."""
+
+    def __init__(self, trees: dict[str, dict[str, bytes]], partial: set[str]) -> None:
+        self.trees = trees
+        self.partial = partial
+
+    def read_mode(self, s: VersionSnapshot) -> str:
+        return "partial" if s.ref.version in self.partial else "whole"
+
+    def __call__(self, s: VersionSnapshot) -> dict[str, bytes]:
+        return self.trees[s.ref.version]
+
+
+def test_a_partially_read_base_is_no_base_for_a_version_read_whole() -> None:
+    """Decision 0021, option B (owner, 2026-11-14): a version read whole is decided as before
+    partial reads, when its base was unread: every file is new, and the reason says the base is
+    unavailable. A version read partially is compared with the partially read base."""
+    trees = {"1.0.0": BAD, "1.0.1": BAD}
+    one = PackageBatch(
+        ecosystem="npm",
+        name="kx",
+        base=snapshot("1.0.0", size=50_000_000),
+        versions=(candidate("1.0.1", 5),),
+    )
+    whole = analyse_batch(one, ModeTrees(trees, {"1.0.0"}), ContentCache(None, RULES))
+    (version,) = whole.versions
+    assert version.history[-1].forwarded
+    assert version.history[-1].reason.endswith(
+        "; base unavailable: declared unpacked size 50000000 bytes"
+    )
+    partial = analyse_batch(one, ModeTrees(trees, {"1.0.0", "1.0.1"}), ContentCache(None, RULES))
+    (version,) = partial.versions
+    assert not version.history[-1].forwarded  # the same files as its base: nothing new
+    assert version.history[-1].reason == "no signal"
+
+
+def test_partial_base_needs_a_reader_that_knows_read_modes() -> None:
+    ecosystem = FakePartialEcosystem()
+    files = ArtifactFiles(ecosystem, max_bytes=1000, hook_max_bytes=2000)  # type: ignore[arg-type]
+    large = snapshot("1.0.0", size=5000, hook="postinstall")
+    small = snapshot("1.0.1", size=100)
+    assert files.read_mode(large) == "partial" and files.read_mode(small) == "whole"
+    assert partial_base(files, small, large) and not partial_base(files, large, large)
+    assert not partial_base(lambda s: {}, small, large)
+    plain = ArtifactFiles(FakeEcosystem(), max_bytes=1000, hook_max_bytes=2000)  # type: ignore[arg-type]
+    assert plain.read_mode(large) is None

@@ -298,3 +298,36 @@ def test_bundled_package() -> None:
     assert bundled_package("node_modules/@s") is None
     assert bundled_package("lib/node_modules") is None
     assert bundled_package("lib/x.js") is None
+
+
+def test_a_partially_read_previous_is_no_base_for_a_version_read_whole() -> None:
+    """Decision 0021, option B: a version read whole is compared as before partial reads, when
+    its previous release (read partially now) was unread; a version read partially uses it."""
+    seen: list[CodeChange] = []
+
+    class Trees:
+        def read_mode(self, s: VersionSnapshot) -> str:
+            return "partial" if s.ref.version in ("base", "2.0.0") else "whole"
+
+        def __call__(self, s: VersionSnapshot) -> dict[str, bytes]:
+            return BASE if s.ref.version == "base" else NEW
+
+    class Spy:
+        id = "test.spy"
+        version = 1
+
+        def evaluate_code(self, change: CodeChange) -> list[Finding]:
+            seen.append(change)
+            return []
+
+    for version in ("1.0.0", "2.0.0"):
+        batch = PackageBatch(
+            ecosystem="npm",
+            name="kx",
+            base=snap("base"),
+            versions=(Candidate(change=Change(new=snap(version), previous=snap("base"))),),
+        )
+        analyse_batch(batch, Trees(), CapabilityCache(None), [Spy()])
+    whole, partial = seen
+    assert whole.before is None and whole.install_files_before is None
+    assert partial.before is not None

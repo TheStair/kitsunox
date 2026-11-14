@@ -1,9 +1,9 @@
 # 0021: Partial reads of large packages with an install hook
 
 **Date:** 2026-11-13
-**Status:** Proposed (round 11, agent O). Built on a branch and measured in
-[the proposal](../proposals/partial-reads-round11-O.md). It merges only once the owner
-approves.
+**Status:** Accepted by the owner on 2026-11-14 with option B (below); budget as built, no
+repository comparison of partial reads, no hookless partial reads. Built and measured in
+[the proposal](../proposals/partial-reads-round11-O.md) (round 11, agent O).
 **Builds on:** [0008](0008-stage2-routing-and-tarball-capture.md) (Stage 2's download caps:
 16 MB declared unpacked, 32 MB with an install hook), [0006](0006-scheduled-collection-and-retention.md)
 (snapshots, blob retention, the hold), [0009](0009-network-failure-handling.md) (network
@@ -138,6 +138,13 @@ tarball's own URL as `url`, the re-pack's SHA-256 and size, and the content type
   `npm.artifact.install-target-missing` and `npm.artifact.install-stub` need the whole
   package (`_whole`) and so never hold on a partial tree. `static.disguised-file` also checks
   the heads of omitted binaries for an executable or an archive under another format's name.
+- **A partially read base is no base for a version read whole** (owner's option B,
+  2026-11-14; `static.partial_base` / `diff_base`): Stages 2 and 3 treat it as unavailable, with
+  the reason a skipped base always had (`base unavailable: declared unpacked size N bytes`), and
+  the evaluation keeps the base it always gave such a version. So every version that was read
+  whole before partial reads existed is decided exactly as before; partial reads only change
+  versions that were not read. Within a batch, a partially read base is unavailable to the
+  whole batch when any of its versions is read whole.
 - Stage 3 parses the kept code. A binary is absent, as its content was unread by its rules
   before.
 - **Stage 4 does not compare a partial read with its repository** (`review.PARTIAL_NOT_COMPARED`,
