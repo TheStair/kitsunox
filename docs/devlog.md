@@ -2,6 +2,65 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-15: `npm.known-malware.self` built and measured (round 12 P, branch)
+
+**Stage(s):** Stage 4 (correlation), live evaluation
+**Context:** Agent M's gap analysis (round 11) proposed P1: report a release when the package
+itself has an OSV malware record. M estimated about 17 positives for 8 benign over 14 days. The
+owner approved building and measuring it before the 2026-11-16 freeze. There was one
+condition: those reports must not count as flagged in the OSV-truth matrix.
+[Proposal](proposals/self-known-malware-round12-P.md).
+
+### Decisions
+- **The rule** (`npm.known-malware.self` v1, HIGH 5, Stage 4 `STAGE_VERSION` 28): it fires
+  when a record in the run's own label set, published by `as_of`, lists the version, holds it
+  in a range, or covers every version. It never fires on a registry placeholder. HIGH like a
+  known-malicious dependency, so it reports on its own. The label set is the one
+  `npm.dependency.known-malware` already uses, so replays agree.
+- **Narrowing: all-versions projections count only within 90 days of the record.** The 8
+  benign-looking hits are real packages that kept releasing 139-420 days after a compromise
+  record: `@emilgroup/discount-sdk` ×5, `@magda/semantic-indexer-sdk`,
+  `uol-simple-api-futebol` ×2. The positive-looking hits are WhatsApp-library forks 6-45 days
+  after theirs. The alternatives removed none of the 8. Withdrawn records are already dropped
+  at sync, and every one of the 8 has an open "introduced 0" range, so "the range excludes the
+  version" never applies. This builds on decision 0005 (projected matches). The 90-day value
+  rests on six packages, and the proposal says so.
+- **Circularity:** a version the rule alone reports counts as flagged only where a reviewer
+  verdict decides its truth. It is never flagged in the OSV matrices, and not in the headline
+  when there is no verdict, because that truth falls back to the same OSV record. This goes one
+  step past the owner's literal "behaviour counts normally" and is flagged for them.
+  `LiveSample.self_known_only` reads it from the ledger's rule entries, so no ledger change is
+  needed. Decision 0019 addendum.
+
+### Challenges
+- **M's estimate didn't reproduce.** Scanning every ledger row with the run's own label set
+  gave 5 new reports, not ~25. M had dated records by the newest label set. The records naming
+  M's positives reached our label sets after those versions were read. OSV's `published` date
+  runs up to 7 days ahead of the export: `sauruspro-bail`'s 11-03 record first appeared in our
+  11-10 set, and `@ruthless-imperium/baileys`' 11-06 record in our 11-12 set.
+  - **Resolution:** measured with the real rule on each ledger row, using the label set in the
+    ledger header (`scan_rule.py`).
+  - **Why it worked:** the rule is a function of name, version, publish time, publisher and
+    placeholder, all of which are in each row. So the scan is the rule as it would have run.
+
+### Evaluation snapshot
+- Live, 17.1 days (241 ledgers, 1,581,270 versions): +5 reported, none with a verdict:
+  - `@ifasn/ms-doc-mcp` 2.0.9 and 2.1.1, read in the catch-up run; a sibling package is
+    malicious;
+  - `@kelvdra/baileys@1.0.7-rc.1`, `sauruspro-bail@5.3.1`, `spencer-baileys@1.0.5`: forks.
+  - 0 benign-looking. Without the window: +13, of which 8 benign-looking.
+- Replay set (3,716 verdicted): 0 positives lost, 0 decisions changed. Without the window,
+  +1 benign.
+- `vm-day1` `pipeline+4`: +18 malicious (A +3, B +2, B follow-ons +13), 0 of 1,500 benign
+  touched. That is partly OSV grading itself.
+- Freeze-week cost: about 1-2 reports and about 0 benign.
+
+### Open questions / next steps
+- Owner: merge as built, or without the window (+8 benign-looking).
+- Owner: should headline truth without a verdict also skip these versions? It does as built.
+- Fresher labels can't recover M's positives: most of the delay is OSV's export, not our daily
+  sync.
+
 ## 2026-11-14 (evening): watchlist fetch timeout raised to 120 s
 
 **Stage(s):** Stage 0 (weekly watchlist refresh in `collect`)
