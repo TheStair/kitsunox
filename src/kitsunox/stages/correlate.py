@@ -104,8 +104,11 @@ STAGE_ID: Final = "correlate"
 # a missing dependency is carried while it is still declared (`DECLARED_ONLY`).
 # 27 (round 11 O, decision 0021): Stage 2 reads a hooked version over its 32 MB cap partially
 # (up to 1 GiB declared): its text and code, not its binaries (`static.partial-read`, INFO).
+# 28 (round 12 P): `npm.known-malware.self`: the package's own OSV record covers the release
+# (`KnownBad.covering`); live evaluation doesn't count a version it alone reports as flagged
+# where OSV decides the truth (`evaluation/live.py`, `self_known_only`).
 # Output without the field is 1.
-STAGE_VERSION: Final = 27
+STAGE_VERSION: Final = 28
 REPORT_SEVERITY: Final = Severity.MEDIUM
 # Measured on `day1`: LOW findings of Stages 1-3 summing to 3, 4 or 5 added 0.6, 0.2 and 0
 # points of recall on malicious updates for 2.0, 0.8 and 0.4 points of benign updates reported;
@@ -154,13 +157,35 @@ BUDGET_UNCOMPARED: Final = "; not compared with its repository: over the run's c
 NOT_EVALUATED: Final = "Not evaluated: "
 
 
+class KnownRecord(Protocol):
+    """One known-malware record (e.g. an OSV `MAL-` record) about a package."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def published(self) -> datetime: ...
+
+    def observes(self, version: str, published_at: datetime | None, /) -> bool:
+        """Whether the record is evidence about this release (it names it, or a bounded range
+        holds it, or it was published before the record), not only a projection of an
+        all-versions range onto a later release."""
+        ...
+
+
 class KnownBad(Protocol):
     """Outside knowledge about packages (e.g. OSV malware records)."""
 
     @property
     def id(self) -> str: ...
 
-    def known_malware(self, name: str, as_of: datetime) -> tuple[str, ...]: ...
+    def known_malware(self, name: str, as_of: datetime) -> tuple[str, ...]:
+        """Ids of records, published by `as_of`, that call every version of `name` malware."""
+        ...
+
+    def covering(self, name: str, version: str, as_of: datetime) -> Sequence[KnownRecord]:
+        """Records, published by `as_of`, that cover this release of `name`."""
+        ...
 
 
 class DependencyStatus(StrEnum):

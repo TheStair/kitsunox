@@ -129,6 +129,15 @@ class LabelSet(Persisted):
             if label.all_versions and label.published <= as_of
         )
 
+    def covering(self, name: str, version: str, as_of: datetime) -> tuple[MalwareLabel, ...]:
+        """Records, published by `as_of`, that cover this release (`MalwareLabel.affects`):
+        it is listed, or in an affected range (an all-versions range included)."""
+        return tuple(
+            label
+            for label in self.labels.get(name, ())
+            if label.published <= as_of and label.affects(version)
+        )
+
     @property
     def record_count(self) -> int:
         return sum(len(v) for v in self.labels.values())

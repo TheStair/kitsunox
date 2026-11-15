@@ -1,8 +1,9 @@
-"""Stage 4 npm rules: gitHead provenance and known-malware dependencies."""
+"""Stage 4 npm rules: gitHead provenance and known malware (dependencies and the package)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from conftest import mal, osv_zip
 from kitsunox.core.models import (
     Candidate,
     Change,
@@ -13,12 +14,15 @@ from kitsunox.core.models import (
     VersionSnapshot,
 )
 from kitsunox.ecosystems.npm.rules.correlate import (
+    PROJECTION_DAYS,
     GitHeadDropped,
     KnownMalwareDependency,
+    KnownMalwareSelf,
     RevivedWithNewDependency,
 )
-from kitsunox.evaluation.labels import AffectedRange, LabelSet, MalwareLabel
-from kitsunox.stages.correlate import CorrelationContext
+from kitsunox.evaluation.labels import AffectedRange, LabelSet, MalwareLabel, parse_osv_export
+from kitsunox.stages.correlate import CorrelationContext, correlate
+from kitsunox.stages.review import CORRELATION_RULES
 
 T0 = datetime(2026, 10, 28, tzinfo=UTC)
 
@@ -316,3 +320,126 @@ def test_a_unity_package_s_built_in_module_is_low() -> None:
         cand(snap("1", {"dependencies": {"evil": "1"}, "unity": "6000.4"})), ctx
     )
     assert evil.severity is Severity.HIGH  # only Unity's own namespace
+
+
+# --- npm.known-malware.self (round 12 P) -------------------------------------------------------
+
+RECORD_AT = datetime(2026, 10, 20, tzinfo=UTC)
+SELF_LABELS = LabelSet(
+    ecosystem="npm",
+    source="t",
+    fetched_at=T0,
+    source_sha256="0" * 64,
+    labels={
+        # every version, published before the run
+        "kx": (label(RECORD_AT, AffectedRange(introduced="0")),),
+        # the compromised releases of a real package
+        "real": (label(RECORD_AT, AffectedRange(introduced="2.0.0", fixed="2.0.2")),),
+        "listed": (label(datetime(2025, 1, 1, tzinfo=UTC), versions=("1.0.0",)),),
+        "future": (label(T0 + timedelta(hours=1), AffectedRange(introduced="0")),),
+    },
+)
+
+
+def own(
+    name: str,
+    version: str,
+    published: datetime | None = T0 - timedelta(hours=1),
+    **publish: Any,
+) -> Candidate:
+    snapshot = VersionSnapshot(
+        ref=PackageVersionRef(ecosystem="npm", name=name, version=version),
+        publish=PublishInfo(published_at=published, **publish),
+        manifest={},
+    )
+    return Candidate(change=Change(new=snapshot))
+
+
+def self_findings(candidate: Candidate, labels: LabelSet | None = SELF_LABELS) -> list[Finding]:
+    ctx = CorrelationContext(as_of=T0, known_bad=labels)
+    return list(KnownMalwareSelf().evaluate_candidate(candidate, ctx))
+
+
+def test_known_malware_self_reports_a_package_osv_calls_malware() -> None:
+    (found,) = self_findings(own("kx", "1.2.3"))
+    assert (found.rule_id, found.rule_version) == ("npm.known-malware.self", 1)
+    assert (found.severity, found.weight) == (Severity.HIGH, 5.0)
+    assert "MAL-1" in found.explanation and found.evidence[0].path == "osv:MAL-1"
+    # Enough on its own to report the version.
+    ctx = CorrelationContext(as_of=T0, known_bad=SELF_LABELS)
+    decision = correlate(own("kx", "1.2.3"), ctx, CORRELATION_RULES).history[-1]
+    assert decision.forwarded and "npm.known-malware.self" in decision.reason
+
+
+def test_known_malware_self_needs_a_record_covering_this_release() -> None:
+    assert not self_findings(own("other", "1.0.0"))  # no record
+    assert not self_findings(own("kx", "1.0.0"), labels=None)  # no label set
+    assert self_findings(own("real", "2.0.1"))  # inside the bounded range
+    for version in ("1.9.9", "2.0.2", "3.0.0"):  # outside it
+        assert not self_findings(own("real", version)), version
+    assert self_findings(own("listed", "1.0.0"))  # named, whatever the record's age
+    assert not self_findings(own("listed", "1.0.1"))
+
+
+def test_known_malware_self_ignores_records_published_after_as_of() -> None:
+    """Analysis never reads the clock: a record OSV published after the run's as_of (even one
+    in the label set) doesn't count, so a replay gives the same answer."""
+    assert not self_findings(own("future", "1.0.0"))
+    late = CorrelationContext(as_of=T0 + timedelta(hours=2), known_bad=SELF_LABELS)
+    assert KnownMalwareSelf().evaluate_candidate(own("future", "1.0.0"), late)
+
+
+def test_known_malware_self_skips_withdrawn_records() -> None:
+    """`labels sync` drops withdrawn records, so a withdrawn record never reaches the rule."""
+    all_versions = {"ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]}
+    export = osv_zip(
+        {
+            "MAL-1.json": {**mal("MAL-1", "gone", **all_versions), "withdrawn": "2026-10-01"},
+            "MAL-2.json": mal("MAL-2", "kept", **all_versions),
+        }
+    )
+    labels = LabelSet(
+        ecosystem="npm",
+        source="t",
+        fetched_at=T0,
+        source_sha256="0" * 64,
+        labels=parse_osv_export(export, ecosystem="npm"),
+    )
+    assert not self_findings(own("gone", "1.0.0"), labels)
+    assert self_findings(own("kept", "1.0.0"), labels)
+
+
+def test_known_malware_self_projects_an_all_versions_record_only_while_recent() -> None:
+    """A release the record doesn't name, published after it: counted within PROJECTION_DAYS,
+    an INFO note after (a real package compromised once keeps releasing)."""
+    days = timedelta(days=PROJECTION_DAYS)
+    edge = RECORD_AT + days
+    ctx = CorrelationContext(as_of=edge + timedelta(days=30), known_bad=SELF_LABELS)
+    rule = KnownMalwareSelf()
+    (recent,) = rule.evaluate_candidate(own("kx", "1.0.0", edge), ctx)
+    assert recent.severity is Severity.HIGH
+    (old,) = rule.evaluate_candidate(own("kx", "1.0.0", edge + timedelta(seconds=1)), ctx)
+    assert (old.severity, old.weight) == (Severity.INFO, 0.0)
+    assert old.explanation.startswith("Not counted:")
+    assert not correlate(own("kx", "1.0.0", edge + days), ctx, [rule]).history[-1].forwarded
+    # Published before the record: the record is evidence about it, however old it is now.
+    (before,) = rule.evaluate_candidate(own("kx", "1.0.0", RECORD_AT - days), ctx)
+    assert before.severity is Severity.HIGH
+    # Without a publish time a projection can't be dated: not counted.
+    (undated,) = rule.evaluate_candidate(own("kx", "1.0.0", None), ctx)
+    assert undated.severity is Severity.INFO
+
+
+def test_known_malware_self_skips_registry_placeholders() -> None:
+    assert not self_findings(own("kx", "0.0.1-security", publisher="npm"))
+    assert self_findings(own("kx", "0.0.1-security", publisher="someone"))
+
+
+def test_known_malware_self_is_deterministic() -> None:
+    second = label(RECORD_AT, AffectedRange(introduced="0")).model_copy(update={"id": "MAL-2"})
+    labels = SELF_LABELS.model_copy(
+        update={"labels": {"kx": (second, label(RECORD_AT, AffectedRange(introduced="0")))}}
+    )
+    first = self_findings(own("kx", "1.0.0"), labels)
+    assert first == self_findings(own("kx", "1.0.0"), labels)
+    assert "MAL-2, MAL-1" in first[0].explanation  # in the label set's order

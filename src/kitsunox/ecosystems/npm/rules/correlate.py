@@ -1,5 +1,5 @@
-"""Stage 4 rules for npm: release provenance, known-malware dependencies and the reputation
-of newly added dependencies.
+"""Stage 4 rules for npm: release provenance, known malware (the package itself or a dependency)
+and the reputation of newly added dependencies.
 
 Numbers are from `day1` (2026-10-28; "updates" are shape-A first releases, DataDog for
 malicious) and, for the dependency rules, `docs/proposals/dependency-reputation.md` (run
@@ -19,6 +19,7 @@ from kitsunox.core.models import Candidate, Change, Evidence, EvidenceKind, Find
 from kitsunox.core.rules import BaseRule
 from kitsunox.core.watchlist import Watchlist
 from kitsunox.ecosystems.npm import semver
+from kitsunox.ecosystems.npm.packument import is_registry_placeholder
 from kitsunox.ecosystems.npm.rules.metadata import (
     declared_only_for_development,
     is_registry_spec,
@@ -32,6 +33,7 @@ from kitsunox.stages.correlate import (
     CorrelationContext,
     DependencyRecord,
     DependencyStatus,
+    KnownRecord,
 )
 from kitsunox.stages.repo import ManifestDifference
 
@@ -201,6 +203,96 @@ class KnownMalwareDependency(BaseRule):
                 )
             )
         return findings
+
+
+# `npm.known-malware.self`: an all-versions record is projected onto a release the record
+# doesn't name, published after it, only within this many days of the record. Live (round 12 P,
+# `docs/proposals/self-known-malware-round12-P.md`): every such release of 16 days of ledgers
+# came 6-45 days after its record in WhatsApp-library forks still publishing under a MAL name
+# (`sauruspro-bail`, `@kelvdra/baileys`, `spencer-baileys`), and 139-420 days after it in
+# real packages whose maintainers kept releasing (`uol-simple-api-futebol`,
+# `@emilgroup/discount-sdk`, `@magda/semantic-indexer-sdk`).
+PROJECTION_DAYS: Final = 90
+
+
+class KnownMalwareSelf(BaseRule):
+    """The package itself has an OSV `MAL-` record, published by the run's `as_of`, that
+    covers this release (`LabelSet.covering`: it names the version, a range holds it, or the
+    record calls every version malware). The label set is the one the run uses for
+    `npm.dependency.known-malware` (the latest synced by `as_of`), so a replay gives the same
+    answer. A known-malware record is a reviewer's verdict on the package, so this is enough on
+    its own: HIGH, like a known-malicious dependency.
+
+    It only fires on what OSV knew when the run read the release: almost always a later
+    release of a package OSV has already called malware (a fork still publishing under its
+    name), or a release captured late. Because it reads OSV labels, a version it alone reports
+    is not counted as flagged where OSV decides the truth (`evaluation/live.py`,
+    `self_known_only`).
+
+    - **Registry placeholders** (`0.0.1-security`, `0.0.0-stage`) never fire: npm published
+      them, and they hold nothing.
+    - **Projections.** An all-versions record says every version, future ones included. For a
+      release it doesn't name and that came after it, that is a guess (decision 0005,
+      `MalwareLabel.observes`), so it counts only within `PROJECTION_DAYS` of the record;
+      later it is an INFO note. A real package compromised once keeps such a record while its
+      maintainers keep releasing, months later.
+    """
+
+    id = "npm.known-malware.self"
+    version = 1
+    severity = Severity.HIGH
+    weight = 5.0
+    title = "The package is known malware"
+
+    def evaluate_candidate(
+        self, candidate: Candidate, ctx: CorrelationContext
+    ) -> Sequence[Finding]:
+        if ctx.known_bad is None:
+            return ()
+        new = candidate.change.new
+        if is_registry_placeholder(new):
+            return ()
+        records = ctx.known_bad.covering(new.ref.name, new.ref.version, ctx.as_of)
+        published = new.publish.published_at
+        counted: list[KnownRecord] = []
+        old: list[KnownRecord] = []
+        for record in records:
+            observed = record.observes(new.ref.version, published)
+            recent = published is not None and published - record.published <= timedelta(
+                days=PROJECTION_DAYS
+            )
+            (counted if observed or recent else old).append(record)
+        if counted:
+            ids = ", ".join(r.id for r in counted[:3])
+            return (
+                self.finding(
+                    f"OSV lists this package as malware ({ids}, published by this run's "
+                    "as-of time), and the record covers this release.",
+                    *(_record_evidence(r) for r in counted[:3]),
+                ),
+            )
+        if old:
+            ids = ", ".join(r.id for r in old[:3])
+            return (
+                self.finding(
+                    f"Not counted: OSV lists every version of this package as malware ({ids}), "
+                    f"but the record doesn't name this release, which came more than "
+                    f"{PROJECTION_DAYS} days after it: a package that kept releasing that long "
+                    "after its record is more often a real one compromised once.",
+                    *(_record_evidence(r) for r in old[:3]),
+                    severity=Severity.INFO,
+                    weight=0.0,
+                ),
+            )
+        return ()
+
+
+def _record_evidence(record: KnownRecord) -> Evidence:
+    return Evidence(
+        kind=EvidenceKind.METADATA,
+        path=f"osv:{record.id}",
+        snippet=f"{record.id} published {record.published.isoformat()}",
+    )
 
 
 def _alias_range(spec: str) -> str:
@@ -1248,6 +1340,7 @@ class DependencyNotInRepo(BaseRule):
 RULES: Final = (
     GitHeadDropped(),
     KnownMalwareDependency(),
+    KnownMalwareSelf(),
     RevivedWithNewDependency(),
     FreshForeignDependency(),
     MissingDependency(),

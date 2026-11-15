@@ -277,7 +277,8 @@ def is_registry_placeholder(snapshot: VersionSnapshot) -> bool:
     - **Staged-publishing placeholder**: `0.0.0-stage` with `"stub": true`, created before a
       new package's first real release.
 
-    Only evaluation uses this, to keep placeholders out of both label sets. Because `stub` and
+    Evaluation uses this to keep placeholders out of both label sets, and Stage 4's
+    `npm.known-malware.self` to skip them (they hold nothing). Because `stub` and
     the version string can be set by anyone, a staged placeholder only counts if it also has no
     install scripts and no dependencies, i.e. nothing a rule could flag."""
     publish, manifest = snapshot.publish, snapshot.manifest

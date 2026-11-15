@@ -18,6 +18,10 @@
 > `STAGE_VERSION` 18. The install code of a git dependency a version adds is read with the
 > install rules since 2026-11-12 (`npm.git-dependency`,
 > [Git dependencies](#git-dependencies-npmgit-dependency-stage-version-22)); `STAGE_VERSION` 22.
+> A release the package's own OSV record covers is reported since round 12 P (2026-11-15,
+> branch: `npm.known-malware.self`,
+> [The package's own record](#the-packages-own-record-npmknown-malwareself-stage-version-28));
+> `STAGE_VERSION` 28.
 
 ## Purpose
 
@@ -578,6 +582,42 @@ and changes no positive.
 `web3-mev-error-decoder@0.1.0` is reported by its dependency's `npm.install-hook` and
 `npm.install-script-code`. Details: the proposal.
 
+## The package's own record (`npm.known-malware.self`; stage version 28)
+
+`npm.dependency.known-malware` asks whether a release depends on known malware.
+`npm.known-malware.self` asks whether the package itself is known malware
+([proposal](../proposals/self-known-malware-round12-P.md)). It fires when an OSV `MAL-` record
+in the run's label set, published by the run's `as_of`, covers this release:
+
+- the record lists the version, a range holds it, or it calls every version malware
+  (`LabelSet.covering`);
+- the label set is the one the dependency rule uses: the newest synced by `as_of`, recorded as
+  `known_bad` in `correlate.json` and in the ledger header. A replay gives the same answer;
+- withdrawn records never count (`labels sync` drops them), and neither do registry
+  placeholders (`0.0.1-security`, `0.0.0-stage`);
+- **projections only while recent:** an all-versions record that doesn't name the release, for
+  a release published after the record, counts only within `PROJECTION_DAYS` (90) of the
+  record; after that it is an INFO note. Decision 0005 calls such a match a projection. Real
+  packages compromised once keep an "introduced 0" record while their maintainers keep
+  releasing: `@emilgroup/discount-sdk` (220-234 days on), `uol-simple-api-futebol` (139-145),
+  `@magda/semantic-indexer-sdk` (420). WhatsApp-library forks still publishing under a MAL name
+  came 6-45 days after theirs.
+
+HIGH, weight 5, like a known-malicious dependency: an OSV malware record is a reviewer's
+verdict on the package, so it reports the version on its own. It isn't carried to follow-ons;
+each release gets its own lookup.
+
+It can only use what OSV had exported when the run read the release. Records reach the export
+up to 7 days after their `published` date (`sauruspro-bail`'s 11-03 record first appeared in
+our 11-10 label set). So it reports a later release of a package OSV already calls malware, or a
+version read late (a catch-up run), not the first malicious release. Live, over 17.1 days of
+ledgers: +5 reports, none benign-looking (+13, 8 benign-looking, without the window).
+
+**Circularity.** A version this rule alone reports isn't counted as flagged where OSV decides
+its truth: never in the OSV matrices, and not in the headline when there is no verdict
+(`LiveSample.self_known_only`;
+[evaluation](../evaluation.md#the-live-dataset-and-the-matrices-evaluationlivepy)).
+
 ## Decision and score
 
 - **Report** a version when any finding is MEDIUM or above, or its score reaches
@@ -848,6 +888,7 @@ Rules over it:
 |---|---|---|---|
 | `npm.provenance.githead-dropped` (v2) | the previous release recorded `gitHead`, this one doesn't. Weight 1 when Stage 1's `npm.publish-method.downgrade` fired on the same release: both then say it left the CI path, and given a downgrade a dropped `gitHead` is no commoner among malicious samples (34 of 149 `vm-day1` downgrades, 23%) than among live benign verdicts (81 of 273, 30%) (v2, [round 5 K](../proposals/precision-round5-K.md) G1) | LOW | 2 |
 | `npm.dependency.known-malware` (v3) | an added (or re-pointed) runtime dependency, or its `npm:` alias target, is malware in every version per an OSV record published by `as_of`. LOW (weight 1) when the specifier only matches npm's empty `0.0.1-security` holding package (`fs: ^0.0.1-security`, what `npm install fs` writes), or when a Unity (UPM) package (`unity` field) depends on a `com.unity.*` built-in module, which Unity resolves from its own registry while the npm names are malware squats (v3) | HIGH | 5 |
+| `npm.known-malware.self` (v1) | the package's own OSV `MAL-` record (in the run's label set, published by `as_of`) lists this version, holds it in a range, or calls every version malware; never on a registry placeholder. An all-versions record that doesn't name a release published more than 90 days after it gives an INFO note instead (The package's own record, above) | HIGH | 5 |
 | `npm.combination.revived-with-new-dependency` (v6) | `npm.dormant-revived` and `npm.dependency.added` both fired, on a release (not a prerelease). LOW (weight 1) when the previous release's publisher publishes this one: the package's own maintainer coming back (v2; since v5 also when maintainers were added, none of whom published it); LOW (weight 1) too when the release carries a provenance attestation (v3) or was published through trusted publishing (v4), starts a new major version (v6), or adds only packages the previous release already declared as dev or peer dependencies (v6) | MEDIUM | 2 |
 | `npm.dependency.fresh-foreign` (v4) | an added dependency (not the package, its scope or watched) was first published (earliest `time[v]` ≤ `as_of`) less than 7 days before this release, and none of its accounts (maintainers and `_npmUser` of its versions by `as_of`, else its top-level maintainers) is a maintainer or publisher of this release or the previous one. No account data on either side, or a failed lookup: INFO "not evaluated" instead; dependencies over the lookup limits: one INFO for all of them. LOW (weight 1) when this release is a prerelease, which npm installs only when asked for it (v3, [round 3](../proposals/precision-round3.md) X7), and when the dependency's npm scope also holds a package on the run's watchlist (v4, [round 4 C](../proposals/precision-round4-C.md) F1) | MEDIUM | 3 |
 | `npm.dependency.missing` | an added dependency (as for `fresh-foreign`) was 404 when the run looked it up, and its name is unrelated to the release's (Missing dependencies, above). INFO, weight 0, when it looks like a sibling: exact specifier equal to the release's version, a name that extends the release's or starts with the same part, or a scope kin to the release's name (watched names never count), and an alias into JSR's `@jsr/` scope (v2) | MEDIUM | 3 |
@@ -985,6 +1026,11 @@ versions were read at all. Comparing them would add about 270 repository archive
 `static.partial-read` (INFO) says what was not read. `STAGE_VERSION` 25.
 
 ## Known limits
+
+- **The package's own record** fires only on what OSV had exported by the run, so not on a
+  package's first malicious releases. Its 90-day projection window was chosen on six live
+  packages. A fork that keeps publishing for more than 90 days under its MAL name is only an
+  INFO note, unless the record lists the new version.
 
 - **Git dependencies** (decision 0020). Only GitHub repositories and archives are read; other
   git hosts, GitHub release assets (owner, 2026-11-12: not read) and tarballs on other hosts
