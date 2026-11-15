@@ -13,7 +13,10 @@ in decision 0019. In short:
   may have removed the malware, so their recall is survivor-biased) are reported apart, not in
   a window.
 - **Flagged:** in the run's report as the tick wrote it (a re-score is a secondary, recall-only
-  figure).
+  figure). A version reported only because its package's own OSV record covers it
+  (`npm.known-malware.self`, `self_known_only`) is flagged only where a reviewer verdict
+  decides its truth: never in the OSV matrices, and not where behaviour or strict truth falls
+  back to the OSV record (or its absence). Otherwise OSV labels would grade themselves.
 - **Truth:** *behaviour* (primary, "flag-worthy"): a reviewer verdict wins (`malicious` and
   `unwanted` are positives, `benign` negative, `unverified` left out), then an OSV record;
   *strict*: the same with `unwanted` a negative (malware only); each has a best and a worst
@@ -44,9 +47,10 @@ from typing import Final, Literal
 
 from pydantic import Field
 
-from kitsunox.core.models import Persisted, Record
+from kitsunox.core.models import Persisted, Record, Severity
 from kitsunox.core.retention import HOLD_DAYS, HeldBlob, HoldReason
 from kitsunox.core.run import RunManifest
+from kitsunox.ecosystems.npm.rules.correlate import KnownMalwareSelf
 from kitsunox.evaluation.confirmations import TAKEDOWNS_DIR
 from kitsunox.evaluation.intervals import Rate, percent, wilson
 from kitsunox.evaluation.labels import MalwareLabel
@@ -61,12 +65,17 @@ from kitsunox.reporting.verdicts import (
     current,
     read_verdicts,
 )
+from kitsunox.stages.correlate import REPORT_SCORE, WEAK_ALONE
 from kitsunox.util.files import atomic_write
 from kitsunox.util.hashing import sha256_hex
 
 DEFAULT_D: Final = 7
 D_SENSITIVITY: Final = (3, 7, 14)
 CATCH_UP_SPAN: Final = timedelta(hours=6)  # capture (the run's as_of) minus publish
+# The rule that reads OSV labels about the package itself, and what its finding adds to a score.
+SELF_KNOWN: Final = KnownMalwareSelf.id
+SELF_KNOWN_WEIGHT: Final = KnownMalwareSelf.weight
+_SEVERE: Final = frozenset({Severity.MEDIUM.value, Severity.HIGH.value, Severity.CRITICAL.value})
 
 Truth = Literal["behaviour", "strict", "osv", "osv-only"]
 Cell = Literal["M", "B"]
@@ -204,6 +213,26 @@ class LiveSample(Record):
     @property
     def shape(self) -> str:
         return "B" if self.new else "A"
+
+    @property
+    def self_known_only(self) -> bool:
+        """Reported, and only because of `npm.known-malware.self`: without its finding no
+        rule reports the version (`correlate.decide`: no other MEDIUM-or-above finding outside
+        `WEAK_ALONE`, and the score less its weight under `REPORT_SCORE`). Read from the
+        ledger's `rule@version:severity` entries, so it works on any ledger."""
+        if not self.reported:
+            return False
+        fired = False
+        for entry in self.rules:
+            rule, _, rest = entry.partition("@")
+            severity = rest.rpartition(":")[2]
+            if severity not in _SEVERE:
+                continue
+            if rule == SELF_KNOWN:
+                fired = True
+            elif rule not in WEAK_ALONE or severity != Severity.MEDIUM.value:
+                return False
+        return fired and self.score - SELF_KNOWN_WEIGHT < REPORT_SCORE
 
     @property
     def confirmation_seen(self) -> bool:
@@ -615,6 +644,22 @@ class _Config:
             return sample.reported_current
         return sample.reported
 
+    def counted(self, sample: LiveSample) -> bool:
+        """Flagged as this matrix counts it: a `self_known_only` report only where a reviewer
+        verdict decides the truth (never under OSV truth), so OSV labels don't grade
+        themselves."""
+        flagged = self.flagged(sample)
+        if not flagged or (self.current and sample.reported_current is not None):
+            return flagged
+        if not sample.self_known_only:
+            return True
+        if self.mode in ("osv", "osv-only"):
+            return False
+        kind = sample.kind
+        return kind in ("malicious", "unwanted", "benign") or (
+            kind == "unverified" and self.bound is not None
+        )
+
 
 def configs_for(d: int) -> tuple[_Config, ...]:
     """The matrices of a report whose headline benign delay is `d` days."""
@@ -729,6 +774,10 @@ class WindowReport(Record):
     misses_watched: int
     rules_tp_fp: dict[str, list[int]] = Field(description="Rule id -> [TP, FP] it fired on.")
     verdicts_after_confirmation: int
+    self_known_only: int = Field(
+        default=0,
+        description="Versions reported only by `npm.known-malware.self` (`self_known_only`).",
+    )
     verdicts: dict[str, int] = Field(
         default_factory=dict, description="Versions per verdict (malicious ... unverified)."
     )
@@ -773,6 +822,7 @@ class _Window:
     misses_watched: int = 0
     rules: dict[str, list[int]] = field(default_factory=dict)
     confirmed: int = 0
+    self_known: int = 0
     verdicts: Counter[str] = field(default_factory=Counter)
     reasons: Counter[str] = field(default_factory=Counter)
     run_ids: set[str] = field(default_factory=set)
@@ -814,7 +864,7 @@ def evaluate_live(
                 settle_by=settle[c.d],
                 weak_takedowns=c.weak,
                 bound=c.bound,
-                flagged=c.flagged(sample),
+                flagged=c.counted(sample),
             )
             for c in configs
         }
@@ -865,6 +915,7 @@ def _add(
 ) -> None:
     acc.versions += 1
     acc.run_ids.add(sample.run_id)
+    acc.self_known += sample.self_known_only
     reviewed = sample.verdict is not None
     kind = sample.kind
     if kind is not None:
@@ -872,9 +923,11 @@ def _add(
         if kind == "unverified":
             acc.reasons[sample.verdict_reason or "none"] += 1
     for c in configs:
-        acc.matrices.setdefault(c.name, _Matrix()).add(cells[c.name], c.flagged(sample), reviewed)
+        acc.matrices.setdefault(c.name, _Matrix()).add(cells[c.name], c.counted(sample), reviewed)
     headline = cells["behaviour"]
-    acc.shapes.setdefault(sample.shape, _Matrix()).add(headline, sample.reported, reviewed)
+    behaviour = next((c for c in configs if c.name == "behaviour"), None)
+    counted = behaviour.counted(sample) if behaviour else sample.reported
+    acc.shapes.setdefault(sample.shape, _Matrix()).add(headline, counted, reviewed)
     for rule in sample.rules:
         rule_id, _, rest = rule.partition("@")
         version = rest.split(":", 1)[0]
@@ -931,6 +984,7 @@ def _freeze(acc: _Window, header: LiveDatasetHeader) -> WindowReport:
         misses_watched=acc.misses_watched,
         rules_tp_fp=dict(sorted(acc.rules.items())),
         verdicts_after_confirmation=acc.confirmed,
+        self_known_only=acc.self_known,
         verdicts={k: acc.verdicts[k] for k in KINDS},
         unverified_reasons={k: acc.reasons[k] for k in (*REASONS, "none") if acc.reasons[k]},
         rule_sets=RuleSets(
@@ -1084,7 +1138,8 @@ def render_live_markdown(report: LiveReport) -> str:
             "Labels later than D days after the release: "
             + ", ".join(f"{k} {v}" for k, v in window.late_labels.items())
             + f". Verdicts recorded after a confirmation was public: "
-            f"{window.verdicts_after_confirmation}.",
+            f"{window.verdicts_after_confirmation}. Reported only by the package's own OSV "
+            f"record (flagged only where a verdict decides): {window.self_known_only}.",
             "Verdicts: "
             + ", ".join(f"{v:,} {k}" for k, v in window.verdicts.items())
             + (

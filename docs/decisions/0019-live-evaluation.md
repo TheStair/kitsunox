@@ -112,3 +112,21 @@ the full D = 7 matrix for window B is complete on 2026-11-30, a day after the pr
 analysis can show D = 7 for versions released through 2026-11-22 (labels fetched by 2026-11-29)
 or the D = 3 sensitivity row (complete on 2026-11-26), and says which.
 
+
+## Addendum 2026-11-15: reports from the package's own OSV record (round 12 P, branch)
+
+Stage 4's `npm.known-malware.self` reports a release when the package's own OSV `MAL-` record
+covers it, which is the same OSV data the OSV truth reads. The owner asked that such reports
+not grade themselves.
+
+A version the rule alone reports (`LiveSample.self_known_only`) counts as flagged only where a
+reviewer verdict (`malicious`, `unwanted`, `benign`) decides its truth:
+
+- It is never flagged in the OSV-truth and OSV-only matrices.
+- It is not flagged in the flag-worthy and strict matrices when there is no verdict, since
+  their truth then falls back to the same OSV record.
+- The `unverified` bounds keep it flagged, because a bound decides from what the pipeline did.
+- "Alone" is read from the ledger's rule entries and score, so old ledgers need no change.
+
+Each window reports the count. See
+[the proposal](../proposals/self-known-malware-round12-P.md) and `docs/evaluation.md`.

@@ -438,3 +438,86 @@ def test_flag_worthy_strict_and_bounds_add_up() -> None:
     assert report.malicious == ("m@1", "u@1")
     md = E.render_live_markdown(report)
     assert "(unverified: gone 1, binary 1)" in md and "Flag-worthy, worst case" in md
+
+
+SELF = "npm.known-malware.self@1:high"
+
+
+@pytest.mark.parametrize(
+    ("rules", "score", "rank", "expected"),
+    [
+        ((SELF,), 5.0, 1, True),
+        ((SELF, "npm.install-hook@3:low", "static.network@2:low"), 7.0, 1, True),
+        ((SELF, "code.capability-gained@2:medium"), 8.0, 1, True),  # WEAK_ALONE: not alone
+        ((SELF, "code.capability-gained@2:medium", "static.network@2:low"), 11.0, 1, False),
+        ((SELF, "npm.install-script-code@4:medium"), 8.0, 1, False),  # reported anyway
+        ((SELF, "code.capability-gained@2:high"), 9.0, 1, False),  # HIGH: severe even if weak
+        (("npm.install-script-code@4:medium",), 3.0, 1, False),  # not the rule
+        ((SELF,), 5.0, None, False),  # not reported
+    ],
+)
+def test_self_known_only(
+    rules: tuple[str, ...], score: float, rank: int | None, expected: bool
+) -> None:
+    sample = E.LiveSample(name="a", version="1", run_id=R1, rules=rules, score=score, rank=rank)
+    assert sample.self_known_only is expected
+
+
+def test_self_known_reports_count_only_where_a_verdict_decides() -> None:
+    """Round 12 P: a version reported only because its own OSV record covers it is not flagged
+    where OSV decides the truth (the OSV matrices, and behaviour truth without a verdict), so
+    the OSV labels don't grade themselves; a reviewer verdict counts it normally."""
+    run = E.RunInfo(
+        as_of=REPORT_AS_OF, window_hours=1, stage4_version=28, stage4_rules="r", pipeline=None
+    )
+    inputs = E.LiveInputs(
+        label_set="x",
+        label_set_sha256="0",
+        label_history={},
+        takedowns_sha256=None,
+        takedowns_scanned_through=None,
+        verdicts_sha256="0",
+        verdict_lines=0,
+        verdict_lines_total=0,
+        ledgers={},
+    )
+    header = E.LiveDatasetHeader(
+        name="t",
+        ecosystem="npm",
+        as_of=LABELS_AT,
+        inputs=inputs,
+        runs={R1: run},
+        unfinished={},
+        pending={},
+        samples=5,
+    )
+    only = {"rules": (SELF,), "score": 5.0}
+    samples = [
+        _seen(None, osv=True).model_copy(update={"name": "osv-only", **only}),
+        _seen("malicious", osv=True).model_copy(update={"name": "mal", **only}),
+        _seen("benign", osv=True).model_copy(update={"name": "ben", **only}),
+        _seen("unverified", osv=True).model_copy(update={"name": "unv", **only}),
+        # Reported by another rule too: flagged everywhere.
+        _seen(None, osv=True).model_copy(
+            update={"name": "both", "rules": (SELF, "npm.install-script-code@4:medium")}
+        ),
+    ]
+    report = E.evaluate_live(header, samples, dataset_sha256="0", windows=())
+    m = report.windows[E.ALL].matrices
+
+    def cells(key: str) -> tuple[int, int, int, int]:
+        return (m[key].tp, m[key].fp, m[key].fn, m[key].tn)
+
+    # behaviour: osv-only FN (OSV decides), mal TP, ben FP, unv left out, both TP
+    assert cells("behaviour") == (2, 1, 1, 0) and m["behaviour"].excluded == {"unverified": 1}
+    # the bounds put `unv` back by what the pipeline decided (flagged)
+    assert cells("behaviour/best") == (3, 1, 1, 0) and cells("behaviour/worst") == (2, 2, 1, 0)
+    # OSV truth: every version is labelled, and only `both` counts as flagged
+    assert cells("osv") == (1, 0, 4, 0) and cells("osv-only") == (1, 0, 4, 0)
+    assert report.windows[E.ALL].by_shape["A"].tp == 2
+    assert report.windows[E.ALL].self_known_only == 4
+    assert "own OSV record (flagged only where a verdict decides): 4." in (
+        E.render_live_markdown(report)
+    )
+    # Misses stay "not reported": these were in the queue for review.
+    assert not report.misses
