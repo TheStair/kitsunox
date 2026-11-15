@@ -2,6 +2,46 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-15 (integration): P1 merged; the 11-14 sample; watchlist still failing
+
+**Stage(s):** Stage 4 (round 12 P), live review, Stage 0 collection
+**Context:** The last merge day before the rule freeze (2026-11-16 to 11-23).
+
+### Decisions
+- **Merge `npm.known-malware.self` as built** (owner, 2026-11-15; entry below): the 90-day
+  window for all-versions records, and a version only this rule reports counts as flagged only
+  where a reviewer verdict decides its truth, in every matrix (the owner kept the extension to
+  the headline and strict fallbacks). Measured: +5 live reports in 17.1 days, 0 benign-looking,
+  0 positives lost on the 3,716 verdicted versions, `vm-day1` +18 malicious, 0 benign.
+- **No data is deleted before the freeze** (owner question: "totally fresh data"). Window B is
+  defined by run `as_of` (`evaluation/live.py`), each version counts in the first run that
+  recorded it, and each ledger records its rule fingerprints. With 1-day retention the
+  pre-freeze runs are pruned by about 11-17. The verdict log, label sets and the 30-day hold
+  stay: they are truth, labels and the base versions Stages 2-3 diff against. To check on
+  11-16: every window-B run carries the same rule fingerprints.
+- **Watchlist refresh left alone** (owner). After the 120 s timeout (`039aed5`) ecosyste.ms
+  failed with HTTP 500 instead (pages 41 and 33, 00:29Z and 01:28Z); the 11-07 list stays in use.
+
+### Challenges
+- **The label-blind sample's U2 misses share one shape.** The 11-14 sample (55 versions) was
+  53 benign and 2 unwanted, both U2 with an install hook: `@jsprismarine/native-network`
+  (`scripts/postinstall.mjs` runs `dist/install.js`, which downloads the vendor's native
+  library) and `@ramp/router` (its postinstall calls the vendor dependency
+  `@ramp/cli/postinstall`, which downloads and runs the vendor's binary). Across all 14 sample
+  days U2 has 18 unwanted of 280 (6.4%, one-sided 95% upper bound 9.4%), and 14 of the 18 are
+  this shape: the hook hands an own-binary or tool download to code `npm.install-download` does
+  not see. 0 malicious in any stratum (upper bounds U1 1.1%, U2 1.1%, U3 1.4%).
+  - **Resolution:** none before the freeze. Fixing it means finding why `followed_files` misses
+    these and measuring the benign cost, and at about 6% of ~2,800 U2 versions a day it could
+    add 100+ unwanted reports a day. First recall item after the freeze.
+
+### Open questions / next steps
+- Before 11-16: the owner grows the disk by 75 GB (growpart, resize2fs).
+- After the freeze: the U2 delegated-download shape above; precision items from the queue
+  (`npm.install-download` on a URL in a YAML template and on a platform package's file name,
+  `npm.install-script-obfuscated` on an unchanged obfuscated rebuild, the Baileys rules on
+  integrator-only code paths).
+
 ## 2026-11-15: `npm.known-malware.self` built and measured (round 12 P, branch)
 
 **Stage(s):** Stage 4 (correlation), live evaluation
