@@ -130,3 +130,29 @@ reviewer verdict (`malicious`, `unwanted`, `benign`) decides its truth:
 
 Each window reports the count. See
 [the proposal](../proposals/self-known-malware-round12-P.md) and `docs/evaluation.md`.
+
+## Addendum 2026-11-23: a fresh unbroken freeze week, 2026-11-25..12-02
+
+The owner's host PC shut down after the tick of 2026-11-19 08:12Z, and collection resumed at
+2026-11-23 16:14Z: the freeze week `[2026-11-16, 2026-11-23)` holds 80 runs (2026-11-16 00:33Z
+to 11-19 07:44Z, all with the same rule fingerprints: Stage 4 version 28, `2c5cae8034c09bf9`),
+about 3⅓ of its 7 days. The four days in between come back only as catch-up runs, whose
+versions the live evaluation sets apart (captured more than 6 hours after release), so they
+count in no window either way.
+
+The owner chose a fresh unbroken week over topping up the short one with a second segment:
+
+- **Window B** is now **`[2026-11-25 00:00Z, 2026-12-02 00:00Z)`**, still the rule freeze, and
+  the results viewer still calls it that. It starts at the first UTC midnight after the
+  catch-up reaches the feed head and hourly ticks resume, so its first hours are not recorded
+  late.
+- **Window B0** keeps the first freeze week, `[2026-11-16, 2026-11-23)`, reported apart. It holds
+  the same 80 runs as before; no run has an `as_of` between 11-19 07:44Z and 11-23 16:14Z.
+- **The freeze runs until window B ends**: no change to any stage's rules from 2026-11-16 to
+  2026-12-02 00:00Z. A change to the evaluation code (like this one) does not touch the
+  pipeline's fingerprints, which each ledger records and the analysis checks.
+- **D = 7:** the full matrix for window B is complete on 2026-12-09. The analysis shows D = 7 for
+  versions released early enough, or the D = 3 sensitivity row (complete 2026-12-05), and says
+  which.
+
+`DEFAULT_WINDOWS` in `evaluation/live.py` and the viewer test follow; nothing else changes.

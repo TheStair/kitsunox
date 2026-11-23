@@ -2,6 +2,43 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-23: host outage cut the freeze week; window B restarts 2026-11-25..12-02
+
+**Stage(s):** live evaluation (Phase 9), collection
+**Context:** The owner's host PC shut down after the tick of 2026-11-19 08:12Z. The VM came back
+on 2026-11-23 16:10Z with 21.8 GB free, below collect's 25 GiB stop line.
+
+### Decisions
+- **A fresh unbroken week for window B** (owner): `[2026-11-25 00:00Z, 2026-12-02 00:00Z)`.
+  The alternative, adding a 4-day second segment to the 3⅓ days collected, would have ended by
+  11-28 but in two pieces. The first week stays as window B0 (80 runs, 11-16 00:33Z to 11-19
+  07:44Z, one rule set: Stage 4 version 28, `2c5cae8034c09bf9`). The rule freeze runs to
+  12-02 00:00Z. [Decision 0019 addendum 2026-11-23](decisions/0019-live-evaluation.md).
+- **Start on 11-25, not 11-24:** the first catch-up slice (feed 145,966,453 to 146,216,453,
+  29,236 changes) left 748,210 of the feed, about three more slices of several hours each. A
+  window that opened while the chain was still behind would record its first hours late, and the
+  evaluation would set those versions apart as catch-up.
+
+### Challenges
+- **Disk at 21.8 GB on restart:** the first tick's prune freed 95 GB (24 runs past the 1-day
+  retention, their blobs and archives), and the owner ran a cleanup that freed ~70 GB more: GNOME's
+  desktop indexer (`localsearch-3`, an 11 GB index of the data directory, now masked), 8 Stage 2
+  caches for rule sets no longer in the code (~12.5 GB; the cache is keyed by rule fingerprint),
+  and the bulk data of rule rounds 4-9 in `~/kitsunox-scratch`. 186 GB free afterwards.
+  - **Resolution:** the round-5 replay set and round-7 integration data were copied to
+    `~/kitsunox-scratch/keep/` first; `fetched/tgz` (1,886 review tarballs) went, and can be
+    fetched again from npm unless npm has removed them.
+- **Watchlist build failing differently:** ecosyste.ms now answers HTTP 400 on ranking page 101.
+  The tick carries on with the 2026-11-15 list (owner, 11-15: leave it). If the source recovers
+  mid-week, the list changes inside window B: a data change like the daily label sync, to note
+  in the analysis.
+
+### Open questions / next steps
+- Confirm hourly ticks are back before 11-25 00:00Z; if not, move window B's start to the next
+  midnight before any run falls in it.
+- On 12-02: check every window-B ledger has the same fingerprints; D = 3 is complete 12-05,
+  D = 7 on 12-09.
+
 ## 2026-11-15 (integration): P1 merged; the 11-14 sample; watchlist still failing
 
 **Stage(s):** Stage 4 (round 12 P), live review, Stage 0 collection
