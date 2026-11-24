@@ -2,6 +2,51 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-24: the last catch-up slice livelocked the tick; given up at the blob floor
+
+**Stage(s):** collection (`collect.py`), review queue
+**Context:** After the 4-day outage (previous entry), the catch-up ran in five slices. The
+first four finished (29k, 47k, 65k and 143k changes; the 143k slice's stages took 6.5 hours).
+The last, `20261124T084321Z-npm`, has 249,975 changes: each slice carries the whole gap's
+window, so a busy package in the last slice brings five days of versions.
+
+### Challenges
+- **A slice too big for the disk blocked every later run.** Its own stages hit the blob
+  store's 10 GB floor at 11:49Z. The next two ticks (11:50Z, 13:05Z) resumed it first: Stage 2
+  fetched ~22 GB of tarballs until the floor, the newer runs' stages were skipped (free below
+  25 GiB), and the prune deleted what had just been fetched (no finished output referenced
+  it). Disk at
+  the time: 138 GB of blobs (the retained slices' tarballs), 60 GB of Stage 2/3 caches, 82 GB
+  of runs, 31 GB free. Left alone, the 143k slice's prune at 01:24Z would have let it start,
+  and its stages would then have held one tick ~10 hours across the start of window B.
+  - **Resolution:** a catch-up whose stages raise `DiskSpaceError` is given up
+    (`stages-given-up.json` in its run directory) and never resumed; the tick's own run gets
+    one retry as a catch-up first. Decision 0006 addendum 2026-11-24;
+    `tests/test_collect.py::test_a_catch_up_stopped_by_the_blob_floor_is_given_up` (fails
+    without the skip in `_stages_pending`).
+  - **Why it worked:** to be confirmed on the next ticks: the slice is given up once, then the
+    waiting runs (`115052Z`, `130538Z` and later) are staged as the 11-23 slices age out.
+    The run's `as_of` (11-24 08:43Z) is between windows B0 and B, so no window loses it.
+    No rule changed: the window B fingerprints are untouched.
+
+### Review queue (11-23 and 11-24)
+- The outage backlog (~2,500 versions from 11-16..11-19 plus the first slice) is reviewed.
+  Consistency re-records: 16 Tailwind-plugin carriers unverified -> malicious once their
+  payload dependency got an OSV record (the tailwindcss-animate-bridge 2.0.8 precedent),
+  `@bellaxchan/wbails` -> malicious (alias to malware), three -> unwanted under the download,
+  background-process and user-wide-skills rulings.
+- Four new reports for the owner (not in OSV): `sdfhbkjcvncvxb` (keyval.org dead-drop
+  Cloudflare lure), and three live Tailwind carriers whose payload packages are not published
+  yet (`tailwindcss-motion-extras`, `tailwind-studio`, `flare-animate`; template identity with
+  OSV-labelled carriers, plugin.js byte-identical).
+- Daily samples: all 18 days reviewed. Malicious 0/360 (U1), 0/358 (U2), 0/270 (U3);
+  one-sided 95% upper bounds 0.83%, 0.83%, 1.10%.
+
+### Open questions / next steps
+- Confirm the waiting runs drain before 2026-11-25 00:00Z and the ticks return to hourly.
+- The Stage 2/3 caches (60 GB) have no retention of their own; measure their growth during
+  window B, a post-freeze item.
+
 ## 2026-11-23: host outage cut the freeze week; window B restarts 2026-11-25..12-02
 
 **Stage(s):** live evaluation (Phase 9), collection

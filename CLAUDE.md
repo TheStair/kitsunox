@@ -355,8 +355,9 @@ Key invariants:
   flagged ones first (that run's archives filled the disk at 108 GB, decision 0010 addendum).
 - **A full disk crashes the VM** (twice on 2026-11-03). `collect` checks free space between
   steps and the blob store refuses writes below `util/disk.BLOB_FLOOR`; a `DiskSpaceError`
-  must never be caught as one package's failure. Side jobs that write gigabytes check
-  `df -h /` first.
+  must never be caught as one package's failure. A catch-up whose stages hit the floor is
+  given up (`stages-given-up.json`), so it can't block later runs. Side jobs that write
+  gigabytes check `df -h /` first.
 - Validation results live in `docs/validation.md`. Add a new dated section after significant
   changes.
 

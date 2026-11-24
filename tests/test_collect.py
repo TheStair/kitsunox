@@ -6,11 +6,13 @@ from datetime import timedelta
 from pathlib import Path
 from typing import NoReturn
 
+import httpx
 import pytest
 
 import kitsunox.collect
 from conftest import AS_OF, Disk, Router, save_watchlist
 from kitsunox.collect import (
+    GIVEN_UP,
     REPORT_ONLY,
     RESCORE_INFO,
     RESCORE_ORIGINALS,
@@ -23,6 +25,7 @@ from kitsunox.core.models import Candidate, Finding, PackageBatch, Severity, Sta
 from kitsunox.core.run import MAX_RUN_FEED_SPAN, Checkpoint, DataDir
 from kitsunox.ecosystems.npm.registry import FEED_PAGE_LIMIT, REPLICATE_URL
 from kitsunox.evaluation.labels import LabelSet, label_store
+from kitsunox.reporting.report import Report
 from kitsunox.stages.static import STAGE_ID as STATIC_STAGE
 from kitsunox.stages.static import WILL_RETRY
 from kitsunox.util import disk
@@ -359,6 +362,59 @@ def test_disk_running_low_mid_tick_leaves_the_stages_for_later(
         line.startswith(f"stages (catch-up {tick.manifest.run_id} from Stage 1): ") for line in log
     ), log
     assert log[-1] == "disk: 500.0 GB free (lowest this tick 500.0 GB)"
+
+
+def test_a_catch_up_stopped_by_the_blob_floor_is_given_up(
+    tmp_path: Path, registry: Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = DataDir(tmp_path)
+    save_watchlist(data, AS_OF - timedelta(hours=1))
+    save_labels(data)
+    feed_from(registry, 0)
+    feed_from(registry, 200)
+    monkeypatch.setattr(kitsunox.collect, "free_bytes", Disk())  # room for every step
+    real = kitsunox.collect.run_stages
+    too_big: list[str] = []
+
+    def floor_for_the_first_run(
+        data: DataDir,
+        run_id: str,
+        client: Callable[[], httpx.Client | None],
+        start: int = 1,
+    ) -> tuple[str, Report]:
+        too_big[:] = too_big or [run_id]  # the first run's tarballs don't fit (250k changes)
+        if run_id == too_big[0]:
+            raise disk.DiskSpaceError("blob store: 10.0 GB free, below the 10.0 GB floor")
+        return real(data, run_id, client, start)
+
+    monkeypatch.setattr(kitsunox.collect, "run_stages", floor_for_the_first_run)
+    log: list[str] = []
+    first = collect(data, now=AS_OF, log=log.append, clients=registry.client).manifest
+    assert first is not None
+    run_dir = data.run_dir(first.run_id)
+    # The tick's own run is not given up: it gets one more try as a catch-up.
+    assert any(line.startswith("stages: FAILED (DiskSpaceError: ") for line in log), log
+    assert not any("given up" in line for line in log) and not (run_dir / GIVEN_UP).exists()
+
+    log.clear()
+    second = collect(data, now=AS_OF + timedelta(hours=1), log=log.append, clients=registry.client)
+    step = f"stages (catch-up {first.run_id} from Stage 1)"
+    failed = [line for line in log if line.startswith(f"{step}: FAILED (DiskSpaceError: ")]
+    assert len(failed) == 1, log
+    assert f"below the 10.0 GB floor; stages given up ({GIVEN_UP})) at " in failed[0]
+    assert "test_collect.py" in failed[0]  # where the error was raised, not the re-raise
+    assert step in second.failed and "disk" not in second.failed
+    assert second.manifest is not None and "stages" not in second.failed  # the new run ran
+    assert (data.run_dir(second.manifest.run_id) / "static.jsonl").exists()
+    record = json.loads((run_dir / GIVEN_UP).read_bytes())
+    assert record["given_up_at"] == (AS_OF + timedelta(hours=1)).isoformat()
+    assert record["reason"] == "blob store: 10.0 GB free, below the 10.0 GB floor"
+
+    log.clear()  # not resumed again, though it is well inside STAGES_CATCH_UP
+    third = collect(data, now=AS_OF + timedelta(hours=2), log=log.append, clients=registry.client)
+    assert third.failed == ()
+    assert not any(first.run_id in line for line in log if line.startswith("stages")), log
+    assert not (run_dir / "static.jsonl").exists()
 
 
 def test_the_blob_floor_stops_an_ingest_without_skipping_packages(

@@ -10,7 +10,10 @@ Each tick, in order:
    what captures tarballs: npm deletes malicious ones, often within hours, so they are fetched
    in the same tick. Runs from the last `STAGES_CATCH_UP` with unfinished stages are resumed
    first, oldest first, from the first stage whose output is missing (from Stage 1 if Stage 2
-   hit network failures; cached tarballs and results make this cheap).
+   hit network failures; cached tarballs and results make this cheap). A catch-up whose
+   stages hit the blob store's floor is given up (`GIVEN_UP` in its run directory): the disk
+   can't hold it, and retrying it every tick re-fetched and pruned ~22 GB an hour and kept
+   every later run's stages waiting (the last slice of the 4-day catch-up, 2026-11-24).
 5. If a Stage 5 results root is configured (`sandbox_results`, from `SANDBOX_RESULTS_ENV`),
    Stage 5 on each run whose stages ran this tick: import package-analysis results the owner
    brought back, refresh the runs they answer, export this run's tarballs for the airgapped
@@ -42,7 +45,8 @@ measures free space first. Below `PRUNE_BELOW` it prunes before anything else; b
 `STOP_BELOW` it writes nothing (the checkpoint stays put, so the next tick covers the gap). It
 checks again before each stage step and before Stage 5, skipping what is left of the tick
 when space runs low (those runs resume on a later tick), and prunes at the end. Inside a step,
-the blob store refuses writes below `disk.BLOB_FLOOR`, which stops that step the same way.
+the blob store refuses writes below `disk.BLOB_FLOOR`, which stops that step the same way
+(a catch-up stopped there is given up: step 4).
 
 This module only wires existing pieces together. It may read the clock, since it decides *when*
 to fetch; the runs it records still carry an explicit `as_of`. The caller holds `DataDir.lock()`.
@@ -131,6 +135,9 @@ STOP_BELOW: Final = 25 * GIB
 QUEUE_DAYS: Final = 7
 # Tarballs of malicious packages are usually deleted within a day or two; later retries are moot.
 STAGES_CATCH_UP = timedelta(hours=48)
+# In a run directory: its stages hit the blob floor as a catch-up and won't be resumed. Its
+# versions are an operational loss, like a run left unfinished past STAGES_CATCH_UP.
+GIVEN_UP: Final = "stages-given-up.json"
 DEFAULT_KEEP_DAYS = 7
 REPORT_ONLY = 5  # a `start` for `_stages`: Stages 1-4 are done, only the report is missing
 # Where the owner puts package-analysis's results (each export's `results/` contents). Not a
@@ -250,11 +257,24 @@ def collect(
     def sandbox(run_id: str, results: pathlib.Path) -> Callable[[], str]:
         return lambda: run_sandbox(data, run_id, results, client())
 
+    def catch_up(run_id: str, start: int) -> Callable[[], str]:
+        action = stages(run_id, start)
+
+        def give_up_on_the_floor() -> str:
+            try:
+                return action()
+            except DiskSpaceError as exc:
+                _give_up(data.run_dir(run_id), now, exc)
+                exc.args = (f"{exc}; stages given up ({GIVEN_UP})",)  # keeps `where(exc)`
+                raise
+
+        return give_up_on_the_floor
+
     for run_id, start in _stages_pending(data, now, exclude=manifest.run_id):
         if not room(f"stages of {run_id}"):
             break
         resume = f"Stage {start}" if start < REPORT_ONLY else "the report"
-        best_effort(f"stages (catch-up {run_id} from {resume})", stages(run_id, start))
+        best_effort(f"stages (catch-up {run_id} from {resume})", catch_up(run_id, start))
     if "disk" not in failed and room(f"stages of {manifest.run_id}"):
         best_effort("stages", stages(manifest.run_id))
     if sandbox_results is not None and "disk" not in failed and room("Stage 5"):
@@ -541,7 +561,7 @@ def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[tuple
         manifest_path = run_dir / "manifest.json"
         if run_dir.name == exclude or not manifest_path.exists():
             continue
-        if (run_dir / "retention.json").exists():
+        if (run_dir / "retention.json").exists() or (run_dir / GIVEN_UP).exists():
             continue
         manifest = RunManifest.load_json(manifest_path.read_bytes())
         if now - manifest.as_of > STAGES_CATCH_UP:
@@ -550,6 +570,12 @@ def _stages_pending(data: DataDir, now: datetime, *, exclude: str) -> list[tuple
         if start is not None:
             pending.append((run_dir.name, start))
     return pending
+
+
+def _give_up(run_dir: pathlib.Path, now: datetime, exc: DiskSpaceError) -> None:
+    """Mark a catch-up run's stages as given up, so later ticks don't resume them."""
+    record = {"given_up_at": now.isoformat(), "reason": str(exc)}
+    atomic_write(run_dir / GIVEN_UP, json.dumps(record, indent=2).encode() + b"\n")
 
 
 def _labels(data: DataDir, now: datetime, client: httpx.Client | None) -> str:

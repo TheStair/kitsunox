@@ -117,7 +117,9 @@ sequenceDiagram
    long gap the catch-up is split over several runs, one per `collect` tick, each with the
    whole gap's window (the checkpoint keeps the earlier `as_of` until a run reaches the feed
    head, recorded as `feed_head`). See the 2026-11-08 addendum to
-   [0006](../decisions/0006-scheduled-collection-and-retention.md).
+   [0006](../decisions/0006-scheduled-collection-and-retention.md). A slice whose stages
+   later hit the blob store's floor is given up (`stages-given-up.json` in its run directory;
+   0006 addendum 2026-11-24), so it can't hold up every later run's stages.
 2. **Feed.** `_changes` returns `{seq, id}` only (see
    [decision 0002](../decisions/0002-data-sources.md)). A package appears once, at its latest
    sequence. `_design/` documents are ignored. Paging stops if the feed doesn't advance.

@@ -185,3 +185,34 @@ neither reported nor sampled, has nothing left to read on disk (the review tools
 registry.npmjs.org and npmmirror, which often no longer serve it); live replays for rule
 measurement cover one day of runs; and the daily sample, drawn after 00:30 UTC, can find the
 first hour of the previous day's tarballs pruned (those are read from the registry instead).
+
+## Addendum (2026-11-24): a catch-up stopped by the blob floor is given up
+
+The last slice of the outage catch-up (run `20261124T084321Z-npm`, 249,975 changes: a package
+in the last slice brings every version from the whole 5-day gap) needs more tarball space than
+the disk had (31 GB free, 10 GB floor) while the earlier slices' runs are still retained.
+Every tick from 11:50Z resumed it first (oldest first), Stage 2 fetched ~22 GB until the blob
+store refused writes, `room()` then skipped every newer run's stages (free below
+`STOP_BELOW`), and the prune deleted the tarballs it had just fetched, since no finished output
+referenced them. Nothing could change that before the run aged out of the 1-day retention,
+and window B of the live evaluation starts 2026-11-25 00:00Z.
+
+**Decision.** A catch-up (a run resumed from an earlier tick) whose stages raise
+`DiskSpaceError` is given up: `collect` writes `stages-given-up.json` (when, why) in its run
+directory and no later tick resumes it. The tick's own run gets one retry this way: it is a
+catch-up on the next tick. Its versions are an operational loss, like a run left unfinished
+past `STAGES_CATCH_UP` (live evaluation counts it as pending until 48 hours, then lost).
+Alternatives: retry until the older runs are pruned (the 01:24Z prune of the 143k-change slice
+would let it start, but its stages would then hold the tick for ~10 hours across the start of
+window B, and the hourly ingests behind it would capture window B's first versions late);
+current run first (keeps the new run's stages but still spends ~22 GB and ~45 minutes a tick
+on a run that can't finish). No rule or score changes: pipeline fingerprints are unchanged.
+
+**Costs (from the review).** The marker means "did not fit in this tick's headroom", not "can
+never fit": `room()` only promises 25 GiB and the floor is 10 GiB, so a catch-up needing more
+than ~15-20 GB while older slices' tarballs are still retained is given up for good, even if a
+later prune would have made room. After a future outage of more than ~10 hours, later slices
+can be lost this way (each is an operational loss in the live evaluation, named in the log
+and the Discord summary). The tick that gives a run up also leaves its own run's stages to the
+next tick (free space is at the floor until the end-of-tick prune). Retrying given-up runs
+once room returns, after the current run, is a post-freeze item.
