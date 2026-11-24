@@ -67,8 +67,8 @@ class CapabilityCache:
         if path is not None and path.exists():
             try:
                 return FileCapabilities.model_validate(json.loads(path.read_bytes()))
-            except ValueError:
-                pass  # a damaged entry is a miss: recompute and overwrite it
+            except ValueError, FileNotFoundError:
+                pass  # a damaged or just-pruned entry is a miss: recompute and overwrite it
         result = analyse_source(content, language)
         if path is not None:
             atomic_write(path, result.model_dump_json().encode())

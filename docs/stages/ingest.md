@@ -30,6 +30,7 @@ uv run kitsunox ingest record --chain
 # Unattended: what the hourly agent (systemd or launchd) runs (watchlist/labels refresh, chained run, prune)
 uv run kitsunox collect
 uv run kitsunox data prune --keep-days 7    # --keep-repo-days N: GitHub archives (Stage 4) sooner
+                                            # also deletes Stage 2/3 cache entries unused for 2 days
 ```
 
 **Live evaluation in the tick** ([0019](../decisions/0019-live-evaluation.md)): after the

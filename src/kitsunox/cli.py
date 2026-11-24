@@ -25,7 +25,7 @@ from kitsunox.collect import (
     run_stages,
     where,
 )
-from kitsunox.core.retention import prune
+from kitsunox.core.retention import CACHE_KEEP_DAYS, prune, prune_caches
 from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import (
     DataDir,
@@ -1166,7 +1166,8 @@ def data_prune(
     ] = None,
 ) -> None:
     """Drop HTTP bodies of runs older than KEEP_DAYS (they can no longer be replayed), keeping
-    packuments of packages with OSV malware records, and compress their changes."""
+    packuments of packages with OSV malware records, and compress their changes. Cache entries
+    unused for 2 days go too."""
     data = DataDir(data_dir)
     labels_id = label_store(data).latest_id(NPM)
     if labels_id is None:
@@ -1188,13 +1189,16 @@ def data_prune(
                 held=held,
             )
             exports, results = prune_sandbox(data, labels.labels.keys())
+            caches = prune_caches(data, now=now)
     except DataDirBusyError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(
         f"{len(report.runs_pruned)} runs pruned, {report.blobs_pinned} blobs pinned, "
         f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB freed); "
-        f"Stage 5: {exports} exports, {results} results removed; {hold}"
+        f"Stage 5: {exports} exports, {results} results removed; caches: "
+        f"{caches.files_deleted} entries unused for {CACHE_KEEP_DAYS} days deleted "
+        f"({caches.bytes_freed / 1e9:.2f} GB); {hold}"
     )
 
 

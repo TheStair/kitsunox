@@ -142,8 +142,8 @@ class ContentCache:
         if path is not None and path.exists():
             try:
                 return tuple(FileMatch.model_validate(m) for m in json.loads(path.read_bytes()))
-            except ValueError:
-                pass  # a damaged entry is a miss: recompute and overwrite it
+            except ValueError, FileNotFoundError:
+                pass  # a damaged or just-pruned entry is a miss: recompute and overwrite it
         result = analyse(content, self.rules)
         if path is not None:
             atomic_write(path, json.dumps([m.model_dump(mode="json") for m in result]).encode())

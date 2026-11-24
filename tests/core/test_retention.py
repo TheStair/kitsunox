@@ -1,5 +1,6 @@
 """Retention: prune old runs, pin packuments of labeled packages, collect unreferenced blobs."""
 
+import os
 from compression import zstd
 from datetime import timedelta
 from pathlib import Path
@@ -8,7 +9,13 @@ import pytest
 
 from conftest import AS_OF, Router
 from kitsunox.core import retention
-from kitsunox.core.retention import PruneReport, RetentionMarker, prune
+from kitsunox.core.retention import (
+    CACHE_KEEP_DAYS,
+    PruneReport,
+    RetentionMarker,
+    prune,
+    prune_caches,
+)
 from kitsunox.core.run import (
     CORRELATE_SNAPSHOT,
     SANDBOX_SNAPSHOT,
@@ -269,3 +276,36 @@ def test_repository_archives_can_go_before_the_run(tmp_path: Path, registry: Rou
     assert {e.url: data.blobs.exists(e.sha256) for e in entries} == {archive: False, refs: True}
     assert not list(data.immutable_index.rglob("*.json"))
     assert (data.run_dir(manifest.run_id) / "changes.jsonl").exists()  # not pruned
+
+
+def test_cache_entries_unused_for_the_keep_days_go(tmp_path: Path) -> None:
+    data = DataDir(tmp_path)
+    now = AS_OF.timestamp()
+    old = now - (CACHE_KEEP_DAYS + 1) * 86400
+    recent = now - 3600
+
+    def entry(rel: str, atime: float, mtime: float) -> Path:
+        path = tmp_path / "cache" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"[]")
+        os.utime(path, (atime, mtime))
+        return path
+
+    stale_static = entry("static/fp/ab/ab01.json", old, old)
+    stale_ast = entry("ast/v9/cd/cd01-js.json", old, old)
+    written = entry("ast/v9/cd/cd02-js.json", old, recent)
+    read = entry("static/fp/ab/ab02.json", recent, old)  # read lately: kept
+    other = entry("other/ef01.json", old, old)  # not a known cache: never swept
+
+    report = prune_caches(data, now=AS_OF)
+
+    assert report.files_deleted == 2
+    assert report.bytes_freed > 0
+    assert not stale_static.exists() and not stale_ast.exists()
+    assert written.exists() and read.exists() and other.exists()
+    assert prune_caches(data, now=AS_OF).files_deleted == 0
+
+
+def test_cache_prune_without_caches_is_a_no_op(tmp_path: Path) -> None:
+    report = prune_caches(DataDir(tmp_path), now=AS_OF)
+    assert (report.files_deleted, report.bytes_freed) == (0, 0)

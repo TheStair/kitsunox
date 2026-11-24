@@ -19,8 +19,9 @@ Each tick, in order:
    brought back, refresh the runs they answer, export this run's tarballs for the airgapped
    analysis VM (`stages/sandbox.py`, decision 0014). Without one, Stage 5 is skipped.
 6. Prune runs older than `keep_days` (repository archives: `keep_repo_days`, default the same),
-   with Stage 5's exports and unused results, if the last prune is older than `PRUNE_EVERY`
-   or free disk space is below `PRUNE_BELOW`.
+   with Stage 5's exports and unused results and the cache entries unused for
+   `CACHE_KEEP_DAYS` (`prune_caches`), if the last prune is older than `PRUNE_EVERY` or free
+   disk space is below `PRUNE_BELOW`.
 6b. Live evaluation (decision 0019), before the prune: each run whose stages ran this tick
    gets its decision ledger (`evaluation/ledger.py`) with this process's rule versions; once
    every `LIVE_EVAL_EVERY`, missing ledgers are backfilled, the due review samples drawn, and
@@ -68,7 +69,14 @@ import httpx
 
 from kitsunox import __version__
 from kitsunox.core.models import PackageBatch
-from kitsunox.core.retention import held_digests, prune, small_tarballs, update_hold
+from kitsunox.core.retention import (
+    CACHE_KEEP_DAYS,
+    held_digests,
+    prune,
+    prune_caches,
+    small_tarballs,
+    update_hold,
+)
 from kitsunox.core.rules import RuleContext
 from kitsunox.core.run import (
     CORRELATE_SNAPSHOT,
@@ -601,6 +609,7 @@ def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | N
         held=held,
     )
     exports, results = prune_sandbox(data, labels.labels.keys())
+    caches = prune_caches(data, now=now)
     path = data.root / "state" / "prune.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"last": now.isoformat()}) + "\n")
@@ -608,7 +617,8 @@ def _prune(data: DataDir, now: datetime, keep_days: int, keep_repo_days: int | N
     return (
         f"{len(report.runs_pruned)} runs pruned, {report.blobs_pinned} blobs pinned, "
         f"{report.blobs_deleted} blobs deleted ({report.bytes_freed / 1e9:.2f} GB){sandbox}; "
-        f"{hold}"
+        f"caches: {caches.files_deleted} entries unused for {CACHE_KEEP_DAYS} days deleted "
+        f"({caches.bytes_freed / 1e9:.2f} GB); {hold}"
     )
 
 

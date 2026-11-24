@@ -216,3 +216,36 @@ can be lost this way (each is an operational loss in the live evaluation, named 
 and the Discord summary). The tick that gives a run up also leaves its own run's stages to the
 next tick (free space is at the floor until the end-of-tick prune). Retrying given-up runs
 once room returns, after the current run, is a post-freeze item.
+
+## Addendum (2026-11-24, later): cache entries unused for 2 days are pruned
+
+Stage 2's rule results (`data/cache/static/<rule fingerprint>/`) and Stage 3's capabilities
+(`data/cache/ast/v<extractor>/`) are cached per file content and were never pruned. Each entry
+is a tiny JSON file that takes a 4 KB disk block. Before the owner's cleanup on 11-24 the two
+caches held ~15M files and 61 GB on disk for well under 1 GB of data (Stage 2: 6.7M files,
+27 GB; Stage 3: 8.4M files, 34 GB), ~14 files per change processed: ~6-7 GB a day at ~120k
+changes a day. They are a likely part of why the ticks of 2026-11-19 ran at 23-25 GB free
+(`collect.log`), before the outage. With the caches empty after the cleanup, one ordinary
+hourly tick (5,934 changes, 20:15Z) wrote 182k entries (0.75 GB, ~31 per change; the rate
+falls as the caches warm). Free disk dipped to 54 GB during the ticks of 11-24, ~27 GB above
+the 25 GiB stop line; unbounded, the caches would have used that up around the fifth day of
+window B, and every tick after that would skip stages.
+
+**Decision.** Each prune (`collect`'s and `kitsunox data prune`) deletes cache entries unused
+for about `CACHE_KEEP_DAYS` = 2 (`core/retention.prune_caches`). "Unused" is the newer of the
+access and modification times; the VM mounts `/` with `relatime`, which records a read at most
+once a day, so an entry can go ~1 day after its last real read. Only the named caches
+(`static`, `ast`) are swept. The caches are pure (keyed by content and rule fingerprint or
+extractor version), so deleting an entry changes no result: a later miss recomputes the same
+answer. The sweep runs under the data-dir lock, like the rest of the prune, and so do the
+stages. `kitsunox eval run` reads the same caches without the lock, so both caches now treat
+an entry that vanishes between the existence check and the read as a miss
+(`FileNotFoundError`), and the sweep skips files that vanish under it. A scan of 1.2M entries
+took 3.5 s.
+
+**Alternatives.** Pack the entries (one file per shard or a SQLite file): the real fix for the
+4 KB-per-entry waste, but a change to Stage 2 and 3 code during the freeze (post-freeze list).
+A hand-run `find -delete` between ticks every few days: works, but depends on someone
+remembering during the presentation week. Keeping 1 day: halves the steady-state size (~7-13 GB
+instead of ~13-20 GB) but recomputes more of each day's repeats. No rule or score changes:
+pipeline fingerprints are unchanged.

@@ -31,6 +31,13 @@ reviewer verdict is malicious (`evaluation.live.hold_requests`), is held for goo
 None). The hold is capped at `HOLD_CAP_BYTES`: past it, the lowest priority
 and oldest go first (`small`, then `sample`, then `reported`; `labeled` never), and the
 update reports what was dropped. Blobs no longer on disk leave the hold.
+
+**Caches** (`prune_caches`). Stage 2's rule results and Stage 3's capabilities are cached per
+file content under `data/cache/` (pure: a hit gives what recomputing would). Each entry is a
+tiny file that takes a 4 KB block, ~14 of them per change, so the caches grew ~6 GB a day with
+no end. Entries unused for about `CACHE_KEEP_DAYS` go; a later miss recomputes the same result.
+"Unused" is the newer of the access and modification times: the VM mounts with `relatime`,
+which records a read at most once a day, so an entry can go ~1 day earlier than its last read.
 """
 
 from __future__ import annotations
@@ -57,6 +64,10 @@ HOLD_DAYS: Final = 30
 HOLD_SMALL_BYTES: Final = 64 * 1024
 # The owner approved ~10 GB (decision 0019): 0.59 GB of small tarballs in 2 days, so ~9 GB in 30.
 HOLD_CAP_BYTES: Final = 15 * 10**9
+# Pure caches under the data directory's `cache/`, by content hash (`stages.static.ContentCache`,
+# `stages.ast.CapabilityCache`). Nothing else there is swept.
+CACHES: Final = ("static", "ast")
+CACHE_KEEP_DAYS: Final = 2
 HoldReason = Literal["labeled", "reported", "sample", "small"]
 HOLD_PRIORITY: Final[tuple[HoldReason, ...]] = ("labeled", "reported", "sample", "small")
 
@@ -73,6 +84,11 @@ class PruneReport(Record):
     blobs_deleted: int
     bytes_freed: int
     blobs_held: int = 0
+
+
+class CachePruneReport(Record):
+    files_deleted: int
+    bytes_freed: int = Field(description="Disk blocks freed, not file sizes (entries are tiny).")
 
 
 class HeldBlob(Record):
@@ -268,6 +284,39 @@ def prune(
         bytes_freed=freed,
         blobs_held=len(held),
     )
+
+
+def prune_caches(
+    data: DataDir, *, now: datetime, keep_days: int = CACHE_KEEP_DAYS
+) -> CachePruneReport:
+    """Delete cache entries unused for about `keep_days` (reads are recorded at most once a day).
+    Callers hold `DataDir.lock()`, as the stages do; `eval run` doesn't, and its caches treat an
+    entry pruned under them as a miss."""
+    cutoff = (now - timedelta(days=keep_days)).timestamp()
+    deleted = freed = 0
+    stack = [data.root / "cache" / name for name in CACHES]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(Path(entry.path))
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:  # e.g. an unlocked writer's temp file, renamed away
+                continue
+            if max(st.st_atime, st.st_mtime) >= cutoff:
+                continue
+            Path(entry.path).unlink(missing_ok=True)
+            deleted += 1
+            freed += st.st_blocks * 512
+    return CachePruneReport(files_deleted=deleted, bytes_freed=freed)
 
 
 def _prune_run(

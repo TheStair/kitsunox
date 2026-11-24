@@ -2,6 +2,42 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-24 (evening): caches get retention; backlog drained; queue, sample and reports
+
+**Stage(s):** collection and retention; review
+**Context:** The last outage catch-up runs drained this afternoon, and window B starts at
+2026-11-25 00:00Z. Measuring disk use before the window showed one more unbounded consumer.
+
+### Decisions
+- **Prune deletes Stage 2/3 cache entries unused for 2 days** (`prune_caches`,
+  [0006 addendum](decisions/0006-scheduled-collection-and-retention.md#addendum-2026-11-24-later-cache-entries-unused-for-2-days-are-pruned)).
+  The caches are pure, so no result changes. Packing the entries is the post-freeze fix.
+
+### Challenges
+- **The caches grew ~6-7 GB a day with no retention.** Each entry is a tiny file in a 4 KB
+  block: ~15M files and 61 GB on disk before the owner deleted the entries written before
+  12:00Z today (the catch-up's). After that, one ordinary tick wrote 182k entries (0.75 GB,
+  from empty caches). Free disk dipped to 54 GB today, ~27 GB above the 25 GiB stop line, so
+  the caches would have crossed it around the fifth day of window B.
+  - **Resolution:** the sweep above, pinned by `test_cache_entries_unused_for_the_keep_days_go`
+    and the collect test's prune line. A reviewer subagent noted that `eval run` reads the
+    caches without the lock, so both caches now treat a just-pruned entry as a miss.
+  - **Why it worked:** to be confirmed from the prune lines once entries pass 2 days old
+    (from 11-26 ~12:00Z), and from free disk through window B.
+- **The give-up worked live.** At 15:45:25Z the stuck catch-up `20261124T084321Z-npm` hit the
+  blob floor and was given up (`stages-given-up.json`). The 16:05 tick then ran the stages of
+  the four waiting runs and its own (17:20-18:28Z). Ticks have been back to under an hour
+  since 18:59Z.
+
+### Other
+- **Review:** the queue's 308 new versions (2 malicious, 253 unwanted, 53 benign) and the
+  2026-11-23 label-blind sample (55 versions, all benign) are recorded, on top of this
+  morning's 2,032.
+- **Reports for the owner** (`~/kitsunox-scratch/reports/2026-11-24/`): animation-timeline-composer
+  (viralnova) and schema-migration-runtime (vice74), two more Tailwind-plugin carriers with the
+  same plugin.js as tailwind-keyframe-utils (MAL-2026-20218) and payload names that 404 today.
+  Earlier in the day: whoami-notifier, fable-csp-poc, and the aowuojuk keyval.org pages.
+
 ## 2026-11-24: watchlist rebuilds failed on a new API page cap; 1,000-item pages
 
 **Stage(s):** Stage 0 (popularity watchlist), collection
