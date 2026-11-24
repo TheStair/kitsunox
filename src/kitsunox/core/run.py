@@ -249,6 +249,9 @@ def make_run_id(ecosystem: str, as_of: datetime) -> str:
 # The ranking pages are 80-100 MB each and the server sometimes stalls mid-page for over 30 s;
 # five such stalls on any of ~130 pages lost whole builds (six ticks on 2026-11-14).
 WATCHLIST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+# 1,000-item pages are ~200 MB decoded (more near the top of the ranking), over the fetcher's
+# default 256 MiB cap; a page over the cap fails the build without a retry.
+WATCHLIST_MAX_BYTES = 1024 * 1024 * 1024
 
 
 def record_watchlist(
@@ -269,6 +272,7 @@ def record_watchlist(
             mode=FetchMode.RECORD,
             client=client,
             timeout=WATCHLIST_TIMEOUT,
+            max_bytes=WATCHLIST_MAX_BYTES,
         )
         try:
             watchlist = build_watchlist(

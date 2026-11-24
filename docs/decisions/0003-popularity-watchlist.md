@@ -76,3 +76,37 @@ Measured on 2026-10-27 while implementing it:
   filter and is credited here and in the stage docs.
 - If ecosyste.ms is unavailable, the previous watchlist keeps working. `--popularity api` is the
   fallback.
+
+## Addendum (2026-11-24): 1,000-item pages after the API capped pagination at page 100
+
+On 2026-11-19 packages.ecosyste.ms began answering HTTP 400 past page 100 (upstream
+ecosyste-ms/packages commit d91434e, PR #1972; the error points bulk users to its open-data
+exports). A build needed ~132 pages of 500, so every rebuild since the VM restart on 11-23
+failed at page 101: 9 failures with HTTP 400 by 16:23Z on 11-24, plus one HTTP 500 (five
+attempts at page 99). Each one cost
+a tick ~13 minutes and ~0.8 GB of downloads. Collection kept using the 2026-11-15 list
+(65,855 packages), as designed.
+
+- **Decision:** `PAGE_SIZE` = 1,000 (the API's maximum, pagy `limit_max`) and `MAX_PAGES` =
+  100 (its cap). A build is now ~66 requests, with 50% headroom before the cap. Past it, the
+  build fails with "did not reach the cutoff within 100 pages" instead of an HTTP 400.
+  - A 1,000-item page is ~200 MB decoded (more near the top of the ranking), over the
+    fetcher's default 256 MiB response cap, which fails without a retry. The watchlist fetch
+    now allows 1 GiB (`WATCHLIST_MAX_BYTES`, next to `WATCHLIST_TIMEOUT`).
+  - pagy silently clamps `per_page` to `limit_max`, and our page size now equals it. A short
+    page before the cutoff therefore fails the build: a cut to `limit_max` would otherwise
+    end it after one page and save a tiny list that looks valid, used for a week.
+- **Alternatives:**
+  - The open-data export: the supported bulk path, but a new format and parser, too large a
+    change during the freeze.
+  - Accepting a list cut off at 50,000 packages: this silently raises the cutoff and drops
+    ~16k watched packages.
+  - Keeping the 11-15 list through window B: popularity would be 17 days stale by 12-02, and
+    the hourly failures would continue unless rebuilds were also held.
+- **Not a rule change:** the watchlist is weekly input data, and each run's ledger records
+  which list it used. The rebuild lands before window B starts (2026-11-25 00:00Z). The next
+  weekly rebuild falls inside window B, as the design always had it.
+- **Unproven:** whether 1,000-item pages stall more often than 500-item ones. Each request
+  is twice the server work, and upstream runs rack-timeout. The 11-14/15 build already took 10
+  failed attempts (7 read timeouts, 3 HTTP 500s) before one succeeded. The 120 s read timeout
+  and the fetcher's retries still apply. If a build fails, the previous list keeps working.

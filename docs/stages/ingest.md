@@ -246,9 +246,11 @@ See also [validation.md](../validation.md) for measured results.
 - **Popularity is up to a week stale** (watchlist rebuilt weekly; ecosyste.ms adds its own sync
   lag). Packages with many dependents but few downloads aren't watched (dependents aren't a
   criterion yet).
-- **Watchlist pages are large and slow.** Each ecosyste.ms ranking page is 80-100 MB, and the
-  server sometimes stalls mid-page. The watchlist fetch allows 120 s between bytes
-  (`WATCHLIST_TIMEOUT`, other fetches 30 s). A failed build is best-effort: the tick keeps the
+- **Watchlist pages are large and slow.** Each ecosyste.ms ranking page of 1,000 packages is
+  ~200 MB, and the server sometimes stalls mid-page. The watchlist fetch allows 120 s between
+  bytes (`WATCHLIST_TIMEOUT`, other fetches 30 s) and responses up to 1 GiB
+  (`WATCHLIST_MAX_BYTES`, others 256 MiB). The API serves at most 100 pages (decision 0003
+  addendum 2026-11-24). A failed build is best-effort: the tick keeps the
   previous list and the next tick tries again.
 - **Coalesced feed entries.** If a package changes again after `until`, its earlier entry moves
   past the range. The next run picks it up, but only if its publish time is still inside that

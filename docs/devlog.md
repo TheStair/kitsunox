@@ -2,6 +2,40 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-24: watchlist rebuilds failed on a new API page cap; 1,000-item pages
+
+**Stage(s):** Stage 0 (popularity watchlist), collection
+**Context:** Every hourly tick since the 11-23 restart tried the weekly watchlist rebuild and
+failed with `HTTP 400` at page 101. packages.ecosyste.ms capped API pagination at page 100 on
+2026-11-19 (upstream commit d91434e), and a build needed ~132 pages of 500.
+
+### Decisions
+- **Ask for 1,000 items a page (the API's maximum), and at most 100 pages**:
+  ~66 requests a build. The watchlist fetch allows 1 GiB responses, since these pages pass
+  the default 256 MiB cap. A short page before the cutoff now fails the build instead of
+  ending it (a silently capped `per_page` would otherwise save a one-page list). Details and alternatives are in the
+  [0003 addendum](decisions/0003-popularity-watchlist.md#addendum-2026-11-24-1000-item-pages-after-the-api-capped-pagination-at-page-100).
+  The open-data export is the long-term path (post-freeze list).
+
+### Challenges
+- **Each failed rebuild cost a tick ~13 minutes and ~0.8 GB of downloads** before the 400
+  (9 such failures plus one HTTP 500 at page 99, 11-23 16:25Z to 11-24 16:23Z). Ingest therefore started
+  later in every tick. The 2026-11-15 list (65,855 packages) stayed in use, so coverage didn't
+  change.
+  - **Resolution:** the changes above, pinned by
+    `test_default_paging_stays_within_the_api_limits`,
+    `test_build_fails_on_a_short_page_before_the_cutoff` and the record test's
+    `WATCHLIST_MAX_BYTES` check. A reviewer subagent caught the response cap before the merge.
+  - **Why it worked:** to be confirmed by the first tick after the merge (expect
+    `watchlist: built` with ~66k packages). If 1,000-item pages stall, the old list keeps
+    working and the failure shows in the log.
+
+### Other
+- npm replaced tailwind-studio (reported 11-23) and its payload name
+  @pixelworkshub/postcss-motionfx with security placeholders at 17:10-17:13Z. The payload had
+  been published on 11-19 (1.0.6) but returned 404 until then, so a 404 doesn't prove a staged
+  name is unpublished.
+
 ## 2026-11-24: the last catch-up slice livelocked the tick; given up at the blob floor
 
 **Stage(s):** collection (`collect.py`), review queue

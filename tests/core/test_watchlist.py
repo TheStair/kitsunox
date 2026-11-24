@@ -5,9 +5,15 @@ import httpx
 import pytest
 
 from conftest import Router
-from kitsunox.core.run import WATCHLIST_TIMEOUT, DataDir, record_watchlist
+from kitsunox.core.run import WATCHLIST_MAX_BYTES, WATCHLIST_TIMEOUT, DataDir, record_watchlist
 from kitsunox.core.store import RecordStore
-from kitsunox.core.watchlist import ECOSYSTEMS_URL, Watchlist, build_watchlist
+from kitsunox.core.watchlist import (
+    ECOSYSTEMS_URL,
+    MAX_PAGES,
+    PAGE_SIZE,
+    Watchlist,
+    build_watchlist,
+)
 from kitsunox.util.http import BlobStore, FetchError, FetchMode, HttpFetcher, Snapshot
 
 BASE = ECOSYSTEMS_URL.format(registry="npmjs.org")
@@ -54,8 +60,23 @@ def test_build_stops_at_cutoff_and_skips_malformed(tmp_path: Path, router: Route
     assert not lookup["small"].watched and lookup["small"].downloads is None
 
 
-def test_build_stops_on_short_page(tmp_path: Path, router: Router) -> None:
+def test_build_fails_on_a_short_page_before_the_cutoff(tmp_path: Path, router: Router) -> None:
+    # A server that silently capped per_page would end the build after one page otherwise.
     router.add_json(page_url(1), [{"name": "only", "downloads": 10**6}])
+    with pytest.raises(FetchError, match="1 items, fewer than the 3 asked for"):
+        build_watchlist(
+            fetcher(tmp_path, router.client()),
+            ecosystem="npm",
+            registry="npmjs.org",
+            built_at=BUILT,
+            page_size=3,
+        )
+
+
+def test_build_accepts_a_short_last_page_past_the_cutoff(tmp_path: Path, router: Router) -> None:
+    router.add_json(
+        page_url(1), [{"name": "big", "downloads": 10**6}, {"name": "s", "downloads": 1}]
+    )
     watchlist = build_watchlist(
         fetcher(tmp_path, router.client()),
         ecosystem="npm",
@@ -63,7 +84,7 @@ def test_build_stops_on_short_page(tmp_path: Path, router: Router) -> None:
         built_at=BUILT,
         page_size=3,
     )
-    assert list(watchlist.entries) == ["only"]
+    assert list(watchlist.entries) == ["big"]
 
 
 def test_build_fails_if_cutoff_never_reached(tmp_path: Path, router: Router) -> None:
@@ -80,6 +101,14 @@ def test_build_fails_if_cutoff_never_reached(tmp_path: Path, router: Router) -> 
             page_size=3,
             max_pages=2,
         )
+
+
+def test_default_paging_stays_within_the_api_limits() -> None:
+    # packages.ecosyste.ms serves at most 1,000 items a page and, since 2026-11-19, answers HTTP
+    # 400 past page 100. The 2026-11-15 list had 65,855 packages; keep 50% headroom over it.
+    assert PAGE_SIZE <= 1_000
+    assert MAX_PAGES <= 100
+    assert PAGE_SIZE * MAX_PAGES >= 1.5 * 65_855
 
 
 def test_build_rejects_error_and_non_list_responses(tmp_path: Path, router: Router) -> None:
@@ -108,7 +137,7 @@ def test_store_latest_respects_not_after(tmp_path: Path) -> None:
 
 def test_record_watchlist_keeps_only_the_derived_list(tmp_path: Path, router: Router) -> None:
     router.add_json(
-        f"{BASE}?sort=downloads&order=desc&per_page=500&page=1",
+        f"{BASE}?sort=downloads&order=desc&per_page=1000&page=1",
         [{"name": "a", "downloads": 50_000}, {"name": "b", "downloads": 1}],
     )
     data = DataDir(tmp_path)
@@ -126,16 +155,16 @@ def test_record_watchlist_keeps_only_the_derived_list(tmp_path: Path, router: Ro
     assert not (tmp_path / "blobs").exists()  # raw pages not persisted
 
 
-def test_record_watchlist_allows_long_stalls_on_its_large_pages(
+def test_record_watchlist_allows_long_stalls_and_large_pages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: list[httpx.Timeout] = []
+    seen: list[tuple[httpx.Timeout, int]] = []
 
     class Stop(Exception):
         pass
 
     def fake_build(fetcher: HttpFetcher, **_: object) -> Watchlist:
-        seen.append(fetcher._client.timeout)
+        seen.append((fetcher._client.timeout, fetcher.max_bytes))
         raise Stop
 
     monkeypatch.setattr("kitsunox.core.run.build_watchlist", fake_build)
@@ -147,5 +176,6 @@ def test_record_watchlist_allows_long_stalls_on_its_large_pages(
             built_at=BUILT,
             min_monthly_downloads=43_000,
         )
-    assert seen == [WATCHLIST_TIMEOUT]
+    assert seen == [(WATCHLIST_TIMEOUT, WATCHLIST_MAX_BYTES)]
+    assert WATCHLIST_MAX_BYTES >= 4 * 256 * 1024 * 1024  # 1,000-item pages pass 256 MiB
     assert WATCHLIST_TIMEOUT.read is not None and WATCHLIST_TIMEOUT.read > 30.0

@@ -1,7 +1,7 @@
 """Watchlist: the set of packages popular enough that tarball stages always look at their changes.
 
 Built weekly from packages.ecosyste.ms, which ranks a registry's packages by last-month
-downloads. One build is ~60k npm packages in ~125 paged requests, against ~100k paced requests a
+downloads. One build is ~66k npm packages in ~66 paged requests, against ~100k paced requests a
 day for per-change lookups (see docs/decisions/0003-popularity-watchlist.md). Raw pages aren't
 kept; the derived list is saved under `data/watchlists/<ecosystem>/<id>.json`, and every run
 records which list (id + SHA-256) it used, so replays see the same popularity.
@@ -20,8 +20,10 @@ from kitsunox.util.http import FetchError, HttpFetcher
 ECOSYSTEMS_URL: Final = "https://packages.ecosyste.ms/api/v1/registries/{registry}/packages"
 WEEKLY_CUTOFF: Final = 10_000  # roadmap decision 3, revised 2026-10-27
 MONTHLY_CUTOFF: Final = 43_000  # ~WEEKLY_CUTOFF * 30 / 7; ecosyste.ms reports last-month counts
-PAGE_SIZE: Final = 500
-MAX_PAGES: Final = 1_000
+# The API's own limits: at most 1,000 items a page, and since 2026-11-19 no page past 100 (HTTP
+# 400). 500-item pages needed ~132 pages and failed every build from then on.
+PAGE_SIZE: Final = 1_000
+MAX_PAGES: Final = 100
 
 
 class WatchEntry(Record):
@@ -66,7 +68,9 @@ def build_watchlist(
     max_pages: int = MAX_PAGES,
 ) -> Watchlist:
     """Page through the registry's packages by descending downloads until counts drop below the
-    cutoff. Items with wrong field types are skipped (the source is third-party data)."""
+    cutoff. Items with wrong field types are skipped (the source is third-party data). A short
+    page before the cutoff fails the build: a server that silently capped `page_size` would
+    otherwise end it after one page, with a list that looks valid."""
     base = ECOSYSTEMS_URL.format(registry=registry)
     entries: dict[str, WatchEntry] = {}
     for page in range(1, max_pages + 1):
@@ -91,8 +95,13 @@ def build_watchlist(
                 monthly_downloads=downloads,
                 dependents=dependents if isinstance(dependents, int) else None,
             )
-        if below_cutoff or len(items) < page_size:
+        if below_cutoff:
             break
+        if len(items) < page_size:  # npm has millions of packages: the cutoff comes first
+            raise FetchError(
+                f"GET {url}: {len(items)} items, fewer than the {page_size} asked for, before "
+                "the cutoff (the server may cap per_page)"
+            )
     else:
         raise FetchError(f"watchlist did not reach the cutoff within {max_pages} pages")
     return Watchlist(
