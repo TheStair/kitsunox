@@ -2,6 +2,55 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-25: window B's first half-day; a monorepo burst, a missed follow-on, three new malicious
+
+**Stage(s):** collection, review (no code changes: rule freeze)
+**Context:** Window B (the frozen evaluation week) began at 00:00Z. The 14 ticks after
+yesterday's queue clear reported 1,071 versions (536 packages), about two and a half times the
+usual.
+
+### Challenges
+- **A monorepo release filled two ticks.** The 00:18Z and 01:18Z runs reported 422 and 451
+  versions; 653 of the day's were 290 `@quenty/*` packages (Nevermore, a Roblox/Luau monorepo)
+  released by GitHub Actions trusted publishing, canaries and releases.
+  - **Resolution:** one reviewer took the whole family. It checked every row by script against
+    its previous or last verdicted version (same scripts block, no new non-`@quenty` dependencies,
+    no new HttpService/loadstring/URL strings in the Luau diffs), with provenance resolving to
+    Quenty/NevermoreEngine for all but one, and read the odd rows in full. All 653 are unwanted
+    by the owner's third-party-download ruling (`preinstall: npx only-allow pnpm`), as were the
+    211 earlier `@quenty` verdicts. The other 418 versions went to 15 ordinary batches.
+  - **Why it matters:** these are true positives under the rulings, but they show how one
+    publisher's release can dominate a day's flag-worthy count. Window B's analysis should show
+    the matrix with and without the largest families.
+- **A follow-on of a reported release was missed.** `create-ai-agent-setup` 2.0.0-alpha.0
+  (reported, rank 17) ships five template configs (`postcss.config.js`, `tailwind.config.js`)
+  whose closing line is followed by 709 spaces and an obfuscated loader: it finds a C2 address in
+  Ethereum transactions through public RPC nodes, fetches `/boot` and runs the reply with `eval`
+  and a detached `node -e`. The CLI's `create` copies the template into the user's project and
+  commits it. 2.0.0, published 34 minutes later with the same five files byte for byte, scored
+  1.0: Stage 2 diffs against 2.0.0-alpha.0, and `correlate.follow-on` carries only a narrow set of
+  evidence (decision 0007 addendum), not `static.padded-code`.
+  - **Resolution:** 2.0.0 is recorded as a missed malicious version (`live verdict`, run
+    20261125T112740Z), so window B counts it as a false negative. Carrying `static.padded-code`
+    on unchanged files is on the post-freeze list, to be measured on the round 6 U follow-on set.
+  - **Evidence of a victim, not an author:** the payload entered the maintainer's GitHub repo in
+    commit 182e046d (2026-06-02), titled as a README translation, which also changed one line in
+    each of the five templates. Version 1.6.1, published six minutes before that commit, is clean.
+
+### Evaluation snapshot
+- Queue cleared: 1,071 versions, 962 unwanted, 106 benign, 3 malicious
+  (`create-ai-agent-setup` 2.0.0-alpha.0; `animatelab` 1.0.9, a Tailwind carrier whose payload
+  `@codesphereio/animatekit` 404s, unpublished by npm at 12:20Z; `findticketsxjn` 1.0.0, the
+  api.keyval.org cloaked-redirect page under a new account), plus the missed 2.0.0 above.
+- npm acted on three of yesterday's reported accounts (four packages) before any OSV record:
+  `schema-migration-runtime` unpublished and its payload name reserved (11-25 12:15Z);
+  `whoami-notifier`, `drivevitiloncheck` and `xf450` replaced with security holders (11-24 ~16:53Z).
+
+### Open questions / next steps
+- `jsclamping` 1.0.1 (benign as published) depends on `uclamp@^0.0.0-stage` from another
+  throwaway account: inert today, but shaped like staging. Watched for new versions.
+- The 11-24 label-blind sample is drawn at the next daily live-eval (~19:00Z).
+
 ## 2026-11-24 (evening): caches get retention; backlog drained; queue, sample and reports
 
 **Stage(s):** collection and retention; review
