@@ -2,6 +2,74 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-26: a 22-hour review gap, a staged dropper family, five new malicious
+
+**Stage(s):** review, live evaluation (no code changes: rule freeze)
+**Context:** Nobody reviewed the queue from 11-25 ~15:20Z to 11-26 13:08Z. Collection kept
+running, and 21 hourly runs left 604 unreviewed versions; the 12:49Z tick added 38 more.
+
+### Challenges
+- **Reported malware waited most of a day for a human.** The pipeline flagged what mattered,
+  but nobody read it: `postcsskit` 1.0.2 (a Tailwind carrier, rank 46 of the 11-25 18:33Z run)
+  was reviewed about 18 hours after its run, and `clamp4js` 1.0.5 (rank 1 of the 20:35Z run)
+  about 16 hours after. Both were still live when reviewed.
+  - **Resolution:** the backlog was cleared in one parallel round (24 queue batches and 6 sample
+    batches, 642 queue versions plus 110 sampled versions), with the three new malicious accounts
+    written up for the owner the same afternoon.
+  - **Still open:** the daily Discord summary is the only push. A per-tick message for new
+    rank-1 entries would cut this delay without touching detection (`notify.py` is output, not a
+    rule), but it is code and waits for the owner after the freeze.
+- **A dropper staged across four throwaway accounts.** `uclamp` (wijino3287, 11-24),
+  `jsclamping` (sinit74116, 11-25 03:13Z), `clamp4js` (vorile2062, 20:18 to 20:43Z) and
+  `clampvalue` (jisixi3757, 21:29 to 21:54Z) are all copies of hughsk/clamp with a postinstall.
+  clamp4js went from an empty hook (1.0.2) to a downloader (1.0.5), to the downloader with an
+  empty `main()` (1.0.9), to the downloader with split strings (`'node:child' + '_process'`,
+  `'htt' + 'ps'`) and an install tracker (1.0.13). The downloader lists Edge and Chrome
+  installer URLs but fetches `normalize(url)`, a finite-difference cipher that turns them into
+  a pastebin and a calcal.ru address (decoded as data), and saves the reply to the temp folder.
+  clampvalue 1.0.2 has the same class, no URLs and a date gate. npm took over `uclamp` and
+  `jsclamping` at 13:07 to 13:10Z on 11-26, but not clamp4js or clampvalue.
+  - **What the scores show:** clamp4js 1.0.5 scored 11 (rank 1: `npm.install-download`,
+    `static.process-exec`, `code.capability-gained`). 1.0.13 scored 3: the split strings removed
+    every capability finding, and only `npm.install-script-changed` kept it in the report.
+    String-splitting evasion against the literal matchers goes on the post-freeze list.
+  - **Verdicts:** 1.0.5 and 1.0.13 malicious; the staging versions benign on behaviour, with
+    notes naming the account (the clamp4js 1.0.9 precedent).
+- **Four window-B misses had OSV labels by the 11-26 09:08Z live-eval.** Each was adjudicated
+  with `live verdict`:
+  - `create-ai-agent-setup` 2.1.0, malicious: the same five padded templates as 2.0.0. Its
+    previous release, 2.0.0, was itself missed, so the follow-on rule could not apply.
+  - `use-sync-external-store-shim` 2.2.0 and `global-error-handling` 1.1.0, unwanted: marker-only
+    webhook beacons (owner ruling 2026-11-08), score 2.
+  - `ep_nxs74552` 1.0.0, unwanted (owner's call): an Etherpad plugin whose `ep.json` hook adds an
+    unauthenticated page showing host, user and cwd. Plugin hooks are not install hooks, so
+    Stage 1 saw nothing.
+- **The create-ai-agent-setup maintainer is about to re-release the loader.** npm removed all
+  three 2.x versions, but the repo's templates still carry it, and commit 4d616cfa (11-26 06:57Z)
+  is "chore(release): 2.1.1 (re-release after 2.x was removed from npm)". The owner has issue text
+  telling the maintainer which lines to delete; a watcher is on new versions.
+- **Report times were estimated, not read.** Several report Status lines said "checked 14:20"
+  or "14:35 UTC" when the clock read 13:37; two verdict notes said 13:20Z for checks made at
+  13:10Z. All were re-checked and restamped from `date -u` (the two verdicts re-recorded).
+  Times in reports and notes come from the clock, never from a guess.
+
+### Evaluation snapshot
+- Queue cleared through run 20261126T124932Z: 642 versions, 470 unwanted, 165 benign,
+  7 malicious (`clamp4js` 1.0.5 and 1.0.13; `postcsskit` 1.0.2, the fifth Tailwind carrier since
+  11-24, payload `@nextlayers/nextcsskit` 404; `findticketsxjn` 1.0.1 and `ticketsforapprove`
+  1.0.0, two more keyval redirect pages from microupdate; `billd-utils` 1.0.9, a silent hostname
+  beacon to a raw IP in a registry-only release with a changed toolchain, medium confidence,
+  possibly a stolen token; `modelbufs` 1.0.1, a targeted dependency-confusion canary).
+- Label-blind samples: 11-24 has 55 versions, 53 benign, 1 unwanted, 1 unverified (binary). 11-25
+  has 55 versions, 54 benign, 1 unwanted (an own-binary download).
+- Retention: the 12:17Z prune deleted no cache entries; the oldest entry was last used 11-24
+  12:58Z, 41 minutes inside the 2-day cutoff. Four disk-low prunes ran in 18 hours; 72 GB free.
+
+### Open questions / next steps
+- Owner: lix 17.1.0 (a 2,560-byte launcher run with `-version`: unwanted or the `--version`
+  exception?), ep_nxs74552, the fabr part blobs (hidden hosting?), billd-utils, and the
+  @wirecat CLIs recorded benign before the PATH ruling.
+
 ## 2026-11-25: window B's first half-day; a monorepo burst, a missed follow-on, three new malicious
 
 **Stage(s):** collection, review (no code changes: rule freeze)
