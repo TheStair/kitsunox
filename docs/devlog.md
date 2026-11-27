@@ -2,6 +2,79 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-27: a second review gap, a hidden payload, OSV and behaviour disagree
+
+**Stage(s):** review, live evaluation (no code changes: rule freeze)
+**Context:** Review stopped again after the 11-26 round (about 13:40Z) and resumed at 12:35Z on
+11-27. Collection ran all 23 ticks without a fault; 647 reported versions and the 11-26
+label-blind sample (55 versions) were waiting.
+
+### Challenges
+- **The review gap repeated, and npm acted first twice.**
+  - `claude-ui-animates` 1.4.2 (claudeshare, the sixth Tailwind carrier) was published at 19:35Z
+    on 11-26 and reported in the 19:53Z run (rank 23). Nobody read it until 12:58Z on 11-27,
+    18 minutes after the package was unpublished (both versions, 12:40:49Z).
+  - `postcsskit`, reported on 11-25 at 18:33Z, was replaced by npm at 12:35Z on 11-27.
+  - The pipeline caught both within one tick. The human step is what made these reports late,
+    which strengthens the case for a per-tick alert after the freeze (still the owner's call).
+- **A payload that returned 404 had existed all along.** The watcher on `@nextlayers/nextcsskit`
+  (postcsskit's payload) fired at 12:35Z. Its packument shows 1.0.1 by harriszx, published
+  11-25 17:07Z, almost an hour before the carrier. It was replaced with a 0.0.1-security holder
+  at 12:34Z.
+  - **What it means:** from 11-26 13:37Z to 11-27 12:05Z the registry answered 404 for a name that
+    had a published version, so npm had hidden it.
+  - **Consequences for review and reports:** "payload 404" can't tell "not yet published" from
+    "already held by npm". The precedent (identical template plus a 404 scoped payload =
+    malicious) stands, and the reports now say the payload may exist in a form we can't see.
+- **OSV and behaviour disagree on two of this week's labels.**
+  - `tzero-mcp` 12.3.0 has OSV MAL-2026-20659 but is benign on behaviour. Its postinstall still
+    only prints a banner. What changed since 12.2.2 is a user-run tool that encrypts the user's
+    own Python, with nothing run at install.
+  - `nishiki-bail` 1.1.20/1.1.21 (MAL-2026-18711) is unwanted: it follows a fixed WhatsApp
+    channel by default, the @wanzforme/bails pattern.
+  - Behaviour truth is the headline, so tzero counts as a negative there and as a miss under OSV
+    truth. Both matrices are reported.
+- **The other window-B miss can't be judged.** OSV labelled
+  `@1outres/dsh-bot-connector-desktop` 0.4.0 and 0.4.1 (MAL-2026-20647). Stage 2 never read
+  them: they were 3%-grown updates with no hook and no dependencies. Their tarballs were never
+  captured, and npm and npmmirror no longer list them. They were published with provenance from
+  an active public repo, so they are recorded unverified (gone).
+- **OSV `published` times are earlier than when records become visible.** clamp4js's record
+  (MAL-2026-20645) says 11-25 23:30Z. The label sync taken at 11-26 05:43Z did not contain it;
+  the 11-27 01:58Z sync did. Release-to-label hours computed from `published` therefore
+  understate the real delay. modelbufs followed the same path (MAL-2026-20672).
+
+### Evaluation snapshot
+- Queue reviewed through run 20261127T110440Z: 647 versions, 511 unwanted, 128 benign,
+  2 unverified (remote), 6 malicious:
+  - `pmintl.net` 1.0.0: a third keyval redirect page from microupdate, reported within its tick,
+    still live, owner alerted;
+  - `claude-ui-animates` 1.4.2: unpublished before review;
+  - four `@ngp-ui/*` 99.0.0 dependency-confusion probes (jr0ch17-bb) that send the hostname by
+    DNS, low severity.
+- Label-blind sample for 11-26: 55 versions, all benign.
+- Live-eval 11-27 05:15Z (labels 01:58Z), window B:
+  - flag-worthy under behaviour truth: TP 1,457, FP 281, FN 9 (recall 99.4%);
+  - strict, malicious only: TP 11, FN 5 (68.8%);
+  - 221,010 versions are still provisional (D = 7 hasn't passed), so the FP rate isn't
+    meaningful yet.
+- Retention: the 2-day cache prune now deletes 1.5 to 2.2 GB a prune (19:19Z, 01:13Z and 08:25Z
+  prunes). 69 GB free.
+
+### Open questions / next steps
+- Owner rulings:
+  - keel-agent 0.124/0.125: install code present but missing its files, recorded benign;
+  - @kurrent/kcap: 1.4.1-beta.8 unwanted before the refresh ruling, 1.4.2-beta.4 benign;
+  - holysheep-cli: reinstalls itself over older copies in other global prefixes;
+  - @docmd/engine-rust: fetches its binary through the unpkg/jsdelivr copy of its own npm
+    package;
+  - react-native-litert-lm: Google's xcframework from GitHub;
+  - artifacts.koliroute.com: is it the depx research receiver on a new domain?
+  - @ia-ccun/idea-plugin-share: a `.deb` fragment shipped as data, to go with the fabr question.
+- Still live and reported: clamp4js (now in OSV), modelbufs (in OSV), billd-utils,
+  findticketsxjn, ticketsforapprove, pmintl.net, class-registry-runtime, fable-csp-poc. The
+  create-ai-agent-setup repo still carries the loader; 2.1.1 is not on npm yet.
+
 ## 2026-11-26: a 22-hour review gap, a staged dropper family, five new malicious
 
 **Stage(s):** review, live evaluation (no code changes: rule freeze)
