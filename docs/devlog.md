@@ -2,6 +2,90 @@
 
 Reverse-chronological. Newest entry first.
 
+## 2026-11-28: a reviewer's helper takes the session down; four more Tailwind carriers; two old misses
+
+**Stage(s):** review, live evaluation (no code changes: rule freeze)
+**Context:** Review of the 11-27 ticks went on after the 11-27 entry until 16:44Z, when the
+session ended. It resumed at 01:16Z on 11-28. The owner then asked for every malware report
+written so far to be rechecked, and for one list of what still needs submitting.
+
+### Challenges
+- **A review subagent's helper script used up the VM's memory, and the session ended with it.**
+  - At 16:44:19Z on 11-27 the kernel OOM killer stopped a python3 helper that a reviewer had
+    written. It had reached 29 GB of the VM's 30 GB (`journalctl -k`). The Claude Code session
+    ended at the same moment, and nothing was reviewed until 01:16Z: 9 ticks, 179 versions.
+  - Collection wasn't affected: the 16:08Z tick had finished at 16:34Z and the next started at
+    17:09Z. A tick needs up to ~18 GB, though, so a runaway helper during a tick could also kill
+    collection.
+  - **Resolution:** every review prompt now requires helpers to run under
+    `prlimit --as=2147483648` (a 2 GB address-space cap). A helper that hits the cap gets fixed,
+    and the cap is never raised.
+  - **Why it worked:** not yet proven. It is a guard, and nothing has tested it yet.
+- **Four more carriers of the Tailwind-plugin template, each found by one weak rule.**
+  - The carriers:
+    - `build-ui-utils` 1.2.8 (nodecraft9): rank 31 in the 12:05Z run;
+    - `token-layout-parser` 2.3.6 (syntaxflew): rank 31, 14:06Z;
+    - `postcss-next` 1.0.3 (olivierio): rank 27, 15:07Z;
+    - `material-utils` 1.0.3 (matrixio): rank 19, 22:13Z.
+  - Each scored 3.0, from `npm.dependency.missing` alone: the scoped payload dependency it
+    declares doesn't resolve.
+  - `postcss-next` 1.0.4 was reported as a follow-on (`correlate.follow-on`, rank 29). npm
+    unpublished every version of it at 17:14:14Z, after the owner's report.
+  - Two layouts:
+    - the flare-animate copy, where `lib/styles/variables.js` requires the payload;
+    - postcsskit's layout, where `plugin.js` is byte-identical to the OSV-labelled
+      `tailwind-keyframe-utils` 1.0.8 and `src/motion.js` requires the payload.
+  - `token-layout-parser` changed the author string. Only the byte-identical files tie it to the
+    others.
+  - All ten payload names seen so far return 404 and are watched.
+  - Every carrier was reported within one tick of release. The ranks are low because a missing
+    dependency alone is weak evidence. Recognising the template's files would raise them, but
+    that is a rule change, so it waits for the end of the freeze.
+- **Two old misses from the redirect-page family.**
+  - The report sweep found `@isla5mic/test` 1.0.6 and 1.0.7 (xfrkbihc, published 11-13 at
+    09:08Z and 09:45Z) still on the registry. They carry the same fake "Checking your browser"
+    page and hostKey as 1.0.5.
+  - Both were read as data and recorded malicious (rank 0).
+  - Stage 2 cleared them in the 09:40Z and 10:41Z runs on 11-13.
+    - `static.html-redirector` (4e02d79) reached the timer's checkout at 14:11Z that day, after
+      both runs.
+    - The scan of held tarballs in the 2026-11-13 entry matched 1.0.0-1.0.5 only.
+  - **Lesson:** when a rule ships, the scan of held tarballs has to be repeated after
+    deployment. It must cover the runs between the first scan and the merge.
+  - Both versions predate window B, so the live numbers don't change.
+- **OSV and behaviour disagree again: `@hanzofc/baileys` 7.2.4** (rank 1, 13:06Z run).
+  - Its report shows the package's OSV record, MAL-2026-17354, which lists 7.0.0 and 7.0.1.
+  - The code matches 7.2.3: it follows a hard-coded WhatsApp channel on connect. That is
+    unwanted under the owner's Baileys ruling of 11-08, so 7.2.4 is recorded unwanted, not
+    malicious.
+- **Report status sweep (scratch, not in the repo).**
+  - All 39 report files were rechecked against the registry at 01:18Z on 11-28. Nine more are
+    now handled by npm, among them the four `@ngp-ui` probes (404 by 14:36Z on 11-27).
+  - The `create-ai-agent-setup` GitHub repo was transferred to another account. The loader is
+    still on its main branch.
+  - The owner now has a single list of what to send: eight clear and live, five for the owner
+    to decide, and the optional host reports. The owner submitted `token-layout-parser` and
+    `postcss-next` on 11-27.
+
+### Evaluation snapshot
+- Queue reviewed from run 20261127T120540Z through 20261128T021540Z (15 runs): 370 versions.
+  - 293 unwanted, 72 benign, 0 unverified.
+  - 5 malicious: the four carriers above and `postcss-next` 1.0.4.
+  - Two further malicious verdicts at rank 0: `@isla5mic/test` 1.0.6 and 1.0.7.
+- Disk: 71 GB free at 03:32Z on 11-28.
+- The 11-28 live-eval (05:15Z) and the 11-27 label-blind sample go in the next entry.
+
+### Open questions / next steps
+- After the freeze:
+  - a rule for the Tailwind carrier template (its byte-identical files);
+  - the per-tick alert. While the session was up, each carrier had a verdict within about an
+    hour of its run starting. During the outage it took 3.1 hours for `material-utils` and 8.2
+    hours for `postcss-next` 1.0.4.
+- Owner rulings still open from 11-27: keel-agent, @kurrent/kcap, holysheep-cli,
+  @docmd/engine-rust, react-native-litert-lm, koliroute, @ia-ccun/idea-plugin-share.
+  - New: `@ohos-ports/canvas-prebuilt` 2.0.0-beta.0, recorded benign. Its postinstall copies
+    shipped `.so` files into a fixed user directory. There is no precedent yet.
+
 ## 2026-11-27: a second review gap, a hidden payload, OSV and behaviour disagree
 
 **Stage(s):** review, live evaluation (no code changes: rule freeze)
